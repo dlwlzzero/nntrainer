@@ -90,6 +90,12 @@ if get_option('enable-opencl')
   nntrainer_inc_abs += meson.current_source_dir() / 'cl_operations'
 endif
 
+if get_option('enable-htp')
+  subdir('dsp_backend')
+  nntrainer_inc += include_directories('dsp_backend')
+  nntrainer_inc_abs += meson.current_source_dir() / 'dsp_backend'
+endif
+
 foreach s : tensor_sources
   nntrainer_sources += meson.current_source_dir() / s
 endforeach
