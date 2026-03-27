@@ -38,14 +38,10 @@ else
     echo -e "${YELLOW}Warning: SDK environment script not found at ${HEXAGON_SDK_HOME}/setup_sdk_env.source${NC}"
 fi
 
-# Create build directory
-# mkdir -p "${BUILD_DIR}"
-# cd "${BUILD_DIR}"
-
 # Configure and build
 echo "Configuring CMake..."
-# build_cmake android
+build_cmake android
 build_cmake hexagon DSP_ARCH=v75
 
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
-echo "Library location: ${BUILD_DIR}/libhmx_dsp.a"
+# echo "Library location: ${BUILD_DIR}/libhmx_dsp.a"
