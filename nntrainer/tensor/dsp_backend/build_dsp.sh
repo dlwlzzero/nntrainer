@@ -13,19 +13,19 @@ set -e
 # Set Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESON_BUILD_DIR="$1"
-BUILD_DIR="${SCRIPT_DIR}/build_dsp"
+# BUILD_DIR="${SCRIPT_DIR}/build_dsp"
 
-if [ -n "${MESON_BUILD_DIR}" ]; then
-    BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
-fi
+# if [ -n "${MESON_BUILD_DIR}" ]; then
+#     BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
+# fi
+
+echo -e "${GREEN}=== Building HTP DSP Backend ===${NC}"
+# echo "Build directory: ${BUILD_DIR}"
 
 if [ -z "${HEXAGON_SDK_HOME}" ]; then
     echo -e "${RED}ERROR: HEXAGON_SDK_HOME not set!"
     exit 1
 fi
-
-echo -e "${GREEN}=== Building HTP DSP Backend ===${NC}"
-echo "Build directory: ${BUILD_DIR}"
 
 # Source SDK environment setup script
 if [ -f "${HEXAGON_SDK_HOME}/setup_sdk_env.source" ]; then
@@ -39,12 +39,12 @@ else
 fi
 
 # Create build directory
-mkdir -p "${BUILD_DIR}"
-cd "${BUILD_DIR}"
+# mkdir -p "${BUILD_DIR}"
+# cd "${BUILD_DIR}"
 
 # Configure and build
 echo "Configuring CMake..."
-build_cmake android
+# build_cmake android
 build_cmake hexagon DSP_ARCH=v75
 
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
