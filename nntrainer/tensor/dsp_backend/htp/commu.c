@@ -448,142 +448,142 @@ bail:
   return err;
 }
 
+// // FastRPC interface
+// AEEResult htp_ops_mat_mul_w16a32(remote_handle64 handle, int32 act_fd, int32 act_offset, int32 wgt_fd, int32 wgt_offset, 
+//                                  int32 out_fd, int32 out_offset, int32 m, int32 k, int32 n) {
+//   uint8_t *p0, *p1, *p2;
+//   p0 = p1 = p2 = NULL;
+
+//   int err = HAP_mmap_get(out_fd, (void **) &p0, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
+
+//   err = HAP_mmap_get(act_fd, (void **) &p1, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
+
+//   err = HAP_mmap_get(wgt_fd, (void **) &p2, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
+
+//   float        *out = (float *) (p0 + out_offset);
+//   const float  *act = (const float *) (p1 + act_offset);
+//   const __fp16 *wgt = (const __fp16 *) (p2 + wgt_offset);
+
+//   size_t out_size = m * n * sizeof(float);
+//   size_t act_size = m * k * sizeof(float);
+//   size_t wgt_size = k * n * sizeof(__fp16);
+
+//   qurt_mem_cache_clean((qurt_addr_t) act, act_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+//   qurt_mem_cache_clean((qurt_addr_t) wgt, wgt_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+
+//   // const uint16_t *w = (const uint16_t *) wgt;
+
+//   // FILE *f = fopen("/data/local/tmp/htp_lib/time.log.txt", "a");
+//   // if(f == NULL) { return -1; }
+//   // fprintf(f, "Print Weight in permuted_mat_mul\n");
+//   // for(int i = 0; i < 32; i++) {
+//   //   for(int j = 0; j < 32; j++) {
+//   //     fprintf(f, "%04x ", w[i*32 + j]);
+//   //   }
+//   //   fprintf(f, "\n");
+//   // }
+//   // fclose(f);
+
+//   hmx_manager_enable_execution();
+
+//   err = hmx_mat_mul_w16a32(act, wgt, out, m, k, n);
+
+//   hmx_manager_disable_execution();
+
+//   qurt_mem_cache_clean((qurt_addr_t) out, out_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
+
+// bail:
+//   if (p0) {
+//     HAP_mmap_put(out_fd);
+//   }
+//   if (p1) {
+//     HAP_mmap_put(act_fd);
+//   }
+//   if (p2) {
+//     HAP_mmap_put(wgt_fd);
+//   }
+//   return err;
+// }
+
 // FastRPC interface
-AEEResult htp_ops_mat_mul_w16a32(remote_handle64 handle, int32 act_fd, int32 act_offset, int32 wgt_fd, int32 wgt_offset, 
-                                 int32 out_fd, int32 out_offset, int32 m, int32 k, int32 n) {
-  uint8_t *p0, *p1, *p2;
-  p0 = p1 = p2 = NULL;
+// AEEResult htp_ops_attention_qkt(remote_handle64 handle, int32 query_fd, int32 query_offset, int32 key_fd, int32 key_offset,
+//                                 int32 output_fd, int32 output_offset, int32 seq_len, int32 k_seq_len, int32 gqa_size, 
+//                                 int32 head_dim, int32 n_kv_heads) {
 
-  int err = HAP_mmap_get(out_fd, (void **) &p0, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
+//    FILE *f = fopen("/data/local/tmp/htp_lib/time.log.txt", "a");
+//    if (f != NULL) {
+//      fprintf(f, "Seq_len : %ld\n", seq_len);
+//      fprintf(f, "\n");
+//      fclose(f);
+//    }
 
-  err = HAP_mmap_get(act_fd, (void **) &p1, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
+//   uint8_t *p0, *p1, *p2;
+//   p0 = p1 = p2 = NULL;
 
-  err = HAP_mmap_get(wgt_fd, (void **) &p2, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
+//   int err = HAP_mmap_get(output_fd, (void **) &p0, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
 
-  float        *out = (float *) (p0 + out_offset);
-  const float  *act = (const float *) (p1 + act_offset);
-  const __fp16 *wgt = (const __fp16 *) (p2 + wgt_offset);
+//   err = HAP_mmap_get(query_fd, (void **) &p1, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
 
-  size_t out_size = m * n * sizeof(float);
-  size_t act_size = m * k * sizeof(float);
-  size_t wgt_size = k * n * sizeof(__fp16);
+//   err = HAP_mmap_get(key_fd, (void **) &p2, NULL);
+//   if (err) {
+//     FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+//     goto bail;
+//   }
 
-  qurt_mem_cache_clean((qurt_addr_t) act, act_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
-  qurt_mem_cache_clean((qurt_addr_t) wgt, wgt_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+//   float        *output  = (float *) (p0 + output_offset);
+//   const float *query   = (const float *) (p1 + query_offset);
+//   const __fp16 *key     = (const __fp16 *) (p2 + key_offset);
 
-  // const uint16_t *w = (const uint16_t *) wgt;
+//   // size_t output_size = k_seq_len * (seq_len * n_q_heads) * sizeof(float);
+//   size_t output_size = 32 * 33 * sizeof(float);
+//   size_t query_size  = (seq_len * gqa_size) * (n_kv_heads * head_dim) * sizeof(float); 
+//   size_t key_size    = k_seq_len * (n_kv_heads * head_dim) * sizeof(__fp16);
 
-  // FILE *f = fopen("/data/local/tmp/htp_lib/time.log.txt", "a");
-  // if(f == NULL) { return -1; }
-  // fprintf(f, "Print Weight in permuted_mat_mul\n");
-  // for(int i = 0; i < 32; i++) {
-  //   for(int j = 0; j < 32; j++) {
-  //     fprintf(f, "%04x ", w[i*32 + j]);
-  //   }
-  //   fprintf(f, "\n");
-  // }
-  // fclose(f);
+//   qurt_mem_cache_clean((qurt_addr_t) query, query_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+//   qurt_mem_cache_clean((qurt_addr_t) key, key_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
 
-  hmx_manager_enable_execution();
+//   // HTP Operation Start
+//   hmx_manager_enable_execution();
 
-  err = hmx_mat_mul_w16a32(act, wgt, out, m, k, n);
+//   err = hmx_attention_qkt(query, key, output, seq_len, k_seq_len, gqa_size, head_dim, n_kv_heads);
 
-  hmx_manager_disable_execution();
+//   hmx_manager_disable_execution();
+//   // HTP Operation End
 
-  qurt_mem_cache_clean((qurt_addr_t) out, out_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
+//   qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
 
-bail:
-  if (p0) {
-    HAP_mmap_put(out_fd);
-  }
-  if (p1) {
-    HAP_mmap_put(act_fd);
-  }
-  if (p2) {
-    HAP_mmap_put(wgt_fd);
-  }
-  return err;
-}
-
-// FastRPC interface
-AEEResult htp_ops_attention_qkt(remote_handle64 handle, int32 query_fd, int32 query_offset, int32 key_fd, int32 key_offset,
-                                int32 output_fd, int32 output_offset, int32 seq_len, int32 k_seq_len, int32 gqa_size, 
-                                int32 head_dim, int32 n_kv_heads) {
-
-   FILE *f = fopen("/data/local/tmp/htp_lib/time.log.txt", "a");
-   if (f != NULL) {
-     fprintf(f, "Seq_len : %ld\n", seq_len);
-     fprintf(f, "\n");
-     fclose(f);
-   }
-
-  uint8_t *p0, *p1, *p2;
-  p0 = p1 = p2 = NULL;
-
-  int err = HAP_mmap_get(output_fd, (void **) &p0, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  err = HAP_mmap_get(query_fd, (void **) &p1, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  err = HAP_mmap_get(key_fd, (void **) &p2, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  float        *output  = (float *) (p0 + output_offset);
-  const float *query   = (const float *) (p1 + query_offset);
-  const __fp16 *key     = (const __fp16 *) (p2 + key_offset);
-
-  // size_t output_size = k_seq_len * (seq_len * n_q_heads) * sizeof(float);
-  size_t output_size = 32 * 33 * sizeof(float);
-  size_t query_size  = (seq_len * gqa_size) * (n_kv_heads * head_dim) * sizeof(float); 
-  size_t key_size    = k_seq_len * (n_kv_heads * head_dim) * sizeof(__fp16);
-
-  qurt_mem_cache_clean((qurt_addr_t) query, query_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
-  qurt_mem_cache_clean((qurt_addr_t) key, key_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
-
-  // HTP Operation Start
-  hmx_manager_enable_execution();
-
-  err = hmx_attention_qkt(query, key, output, seq_len, k_seq_len, gqa_size, head_dim, n_kv_heads);
-
-  hmx_manager_disable_execution();
-  // HTP Operation End
-
-  qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
-
-bail:
-  if (p0) {
-    HAP_mmap_put(output_fd);
-  }
-  if (p1) {
-    HAP_mmap_put(query_fd);
-  }
-  if (p2) {
-    HAP_mmap_put(key_fd);
-  }
-  return err;
-}
+// bail:
+//   if (p0) {
+//     HAP_mmap_put(output_fd);
+//   }
+//   if (p1) {
+//     HAP_mmap_put(query_fd);
+//   }
+//   if (p2) {
+//     HAP_mmap_put(key_fd);
+//   }
+//   return err;
+// }
 
 // // FastRPC interface
 // AEEResult htp_ops_attention(remote_handle64 handle, int32 output_fd, int32 output_offset, int32 query_fd, 
