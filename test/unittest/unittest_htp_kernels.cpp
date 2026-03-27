@@ -11,20 +11,17 @@
 #include <gtest/gtest.h>
 #include <utility>
 
-#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+#if defined(ENABLE_HTP)
 
-#include <blas_kernel_interface.h>
-#include <blas_kernels.h>
 #include <cpu_backend.h>
 #include <nntrainer_test_util.h>
 #include <q4_0_utils.h>
 #include <tensor.h>
 #include <timer.h>
 
-#include <htp_ops.h>
-#include <remote.h>
-#include <rpcmem.h>
-#include <session.h>
+// #include <remote.h>
+// #include <rpcmem.h>
+// #include "host/session.h"
 
 using namespace nntrainer;
 

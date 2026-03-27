@@ -259,7 +259,7 @@ if get_option('enable-opencl')
 endif
 
 if get_option('enable-htp')
-  extra_defines += '-DENABLE-HTP=1'
+  extra_defines += '-DENABLE_HTP=1'
 endif
 
 if get_option('opencl-kernel-path') != ''

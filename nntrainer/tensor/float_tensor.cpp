@@ -27,9 +27,9 @@
 #endif
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-#include "commu.h"
-#include "session.h"
-#include "test.h"
+// #include "commu.h"
+#include "host/session.h"
+// #include "test.h"
 #endif
 
 namespace nntrainer {

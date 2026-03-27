@@ -9,8 +9,8 @@ dsp_backend/
 ├── htp/              # DSP-side code (runs on Hexagon DSP)
 ├── host/             # Host-side code (runs on CPU)
 ├── include/          # Shared header files
-├── build_dsp.sh      # TODO: Add explantion
-└── meson.build       # TODO: Add explantion
+├── build_dsp.sh      # TODO: Add explanation
+└── meson.build       # TODO: Add explanation
 ```
 
 ## Prerequisites

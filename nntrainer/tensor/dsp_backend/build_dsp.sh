@@ -52,8 +52,8 @@ find android_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I
 find hexagon_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I {} mv {} ${BUILD_DIR}/
 
 # Remove original build dir
-rm -rf android_*
-rm -rf hexagon_*
+# rm -rf android_*
+# rm -rf hexagon_*
 
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
 echo "Library location: ${BUILD_DIR}/"
