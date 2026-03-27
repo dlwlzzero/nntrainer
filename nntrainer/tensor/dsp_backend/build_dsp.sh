@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESON_BUILD_DIR="$1"
 BUILD_DIR="${SCRIPT_DIR}/build_dsp"
 
+cd ${SCRIPT_DIR}
+
 if [ -n "${MESON_BUILD_DIR}" ]; then
     BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
 fi
@@ -55,3 +57,5 @@ rm -rf hexagon_*
 
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
 echo "Library location: ${BUILD_DIR}/"
+
+cd -

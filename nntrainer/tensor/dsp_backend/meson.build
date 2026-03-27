@@ -6,13 +6,12 @@ if get_option('enable-htp')
   dsp_build_dir = meson.current_build_dir() / 'htp_dsp'
 
   # Run target to build DSP library
-  run_target(
-    'htp_dsp',
+  custom_target('htp_dsp',
+    output: 'libhtp_ops.so',
     command: [
-      'sh',
-      meson.current_source_dir() / 'build_dsp.sh',
-      meson.current_build_dir()
-    ]
+        meson.current_source_dir() / 'build_dsp.sh',
+        meson.current_build_dir()
+    ],
+    build_by_default: true
   )
-
 endif
