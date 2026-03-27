@@ -10,14 +10,16 @@ NC='\033[0m' # No Color
 
 set -e
 
-# Set Paths
+# Set & Create Build Path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESON_BUILD_DIR="$1"
-# BUILD_DIR="${SCRIPT_DIR}/build_dsp"
+BUILD_DIR="${SCRIPT_DIR}/build_dsp"
 
-# if [ -n "${MESON_BUILD_DIR}" ]; then
-#     BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
-# fi
+if [ -n "${MESON_BUILD_DIR}" ]; then
+    BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
+fi
+
+mkdir -p "${BUILD_DIR}"
 
 echo -e "${GREEN}=== Building HTP DSP Backend ===${NC}"
 # echo "Build directory: ${BUILD_DIR}"
@@ -43,5 +45,13 @@ echo "Configuring CMake..."
 build_cmake android
 build_cmake hexagon DSP_ARCH=v75
 
+# Move .so files to build dir
+find android_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I {} mv {} ${BUILD_DIR}/
+find hexagon_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I {} mv {} ${BUILD_DIR}/
+
+# Remove original build dir
+rm -rf android_*
+rm -rf hexagon_*
+
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
-# echo "Library location: ${BUILD_DIR}/libhmx_dsp.a"
+echo "Library location: ${BUILD_DIR}/"
