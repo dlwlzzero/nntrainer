@@ -27,9 +27,7 @@
 #endif
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-// #include "commu.h"
 #include "host/session.h"
-// #include "test.h"
 #endif
 
 namespace nntrainer {
@@ -991,22 +989,6 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
     } else {
       gemm_q4_0_cl((void *)mdata, data, rdata, M, N, K);
     }
-#elif defined(ENABLE_HTP) && ENABLE_HTP == 1
-    auto handle = get_global_handle();
-    if (handle == -1) {
-      open_dsp_session(CDSP_DOMAIN_ID, 1);
-      handle = get_global_handle();
-    }
-
-    int output_fd, activation_fd, weight_fd;
-
-    const int n_super_blocks = (N * K) / 256;
-    alloc_shared_mem_buf((void **)&rdata, &output_fd, M * N * sizeof(float));
-    alloc_shared_mem_buf((void **)&data, &activation_fd, M * K * sizeof(float));
-    alloc_shared_mem_buf((void **)&mdata, &weight_fd, n_super_blocks * 144);
-
-    htp_ops_mat_mul_permuted_qk_0_d16a32(handle, output_fd, 0, activation_fd, 0,
-                                         weight_fd, 0, M, K, N, 2);
 #else
     gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
 #endif
