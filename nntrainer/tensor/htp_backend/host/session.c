@@ -3,7 +3,7 @@
 #include <stdlib.h>
 
 #include "dsp_capabilities_utils.h"          // $HEXAGON_SDK_ROOT/utils/examples
-#include "htp_ops.h"                         // QAIC auto-generated header for FastRPC
+#include "host/htp_ops.h"                         // QAIC auto-generated header for FastRPC
 
 static remote_handle64 session_handle = -1;  // global session handle
 
