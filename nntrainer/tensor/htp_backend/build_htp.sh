@@ -18,7 +18,7 @@ BUILD_DIR="${SCRIPT_DIR}/build_dsp"
 cd ${SCRIPT_DIR}
 
 if [ -n "${MESON_BUILD_DIR}" ]; then
-    BUILD_DIR="${MESON_BUILD_DIR}/htp_dsp"
+    BUILD_DIR="${MESON_BUILD_DIR}/htp_lib"
 fi
 
 mkdir -p "${BUILD_DIR}"

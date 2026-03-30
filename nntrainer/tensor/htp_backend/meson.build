@@ -17,11 +17,11 @@ foreach d : hexagon_sdk_inc_dirs
 endforeach
 
 if get_option('enable-htp')
-  # Build directory for DSP code
-  dsp_build_dir = meson.current_build_dir() / 'htp_dsp'
+  # Build directory for HTP code
+  dsp_build_dir = meson.current_build_dir() / 'htp_lib'
 
-  # Run target to build DSP library
-  custom_target('htp_dsp',
+  # Run target to build HTP library
+  custom_target('htp_lib',
     output: 'libhtp_ops.so',
     command: [
         meson.current_source_dir() / 'build_htp.sh',
