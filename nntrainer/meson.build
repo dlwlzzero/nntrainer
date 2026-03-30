@@ -66,6 +66,10 @@ foreach elem : nntrainer_elements
   nntrainer_inc_abs += meson.current_source_dir() / elem
 endforeach
 
+if get_option('enable-htp')
+  nntrainer_base_deps += htp_dep
+endif
+
 nntrainer_common_sources = [
   'nntrainer_logger.cpp',
   'app_context.cpp',

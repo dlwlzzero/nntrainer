@@ -21,12 +21,18 @@ if get_option('enable-htp')
   dsp_build_dir = meson.current_build_dir() / 'htp_lib'
 
   # Run target to build HTP library
-  custom_target('htp_lib',
+  htp_lib_target = custom_target('htp_lib',
     output: 'libhtp_ops.so',
     command: [
         meson.current_source_dir() / 'build_htp.sh',
         meson.current_build_dir()
     ],
     build_by_default: true
+  )
+
+  # Declare HTP dependency so nntrainer links against the built library
+  htp_dep = declare_dependency(
+    link_args: ['-L' + dsp_build_dir, '-lhtp_ops'],
+    sources: htp_lib_target,
   )
 endif
