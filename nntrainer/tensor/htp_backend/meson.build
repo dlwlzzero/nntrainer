@@ -19,8 +19,6 @@ endforeach
 if get_option('enable-htp')
   # Build HTP libraries via cmake (for target device deployment)
   # Host-side libhtp_ops.so and DSP-side libhtp_ops_skel.so
-  dsp_build_dir = meson.current_build_dir() / 'htp_lib'
-
   custom_target('htp_lib',
     output: 'libhtp_ops.so',
     command: [
