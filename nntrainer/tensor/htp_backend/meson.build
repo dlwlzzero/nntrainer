@@ -8,7 +8,7 @@ hexagon_sdk_inc_dirs = [
   hexagon_sdk_home / 'incs' / 'stddef',
   hexagon_sdk_home / 'ipc' / 'fastrpc' / 'rpcmem' / 'inc',
   hexagon_sdk_home / 'rtos' / 'qurt',
-  hexagon_sdk_home / 'utils' / 'examples' 
+  hexagon_sdk_home / 'utils' / 'examples'
 ]
 
 nntrainer_inc += include_directories(hexagon_sdk_inc_dirs)
@@ -17,21 +17,33 @@ foreach d : hexagon_sdk_inc_dirs
 endforeach
 
 if get_option('enable-htp')
-  # Build directory for HTP code
-  dsp_build_dir = meson.current_build_dir() / 'htp_lib'
+  # Find FastRPC library from Hexagon SDK
+  cc = meson.get_compiler('c')
+  cdsprpc_dep = cc.find_library('cdsprpc', required: true)
 
-  # Run target to build HTP library
-  htp_lib_target = custom_target('htp_lib',
-    output: 'libhtp_ops.so',
+  # Build host-side HTP library directly with meson
+  htp_host_lib = shared_library('htp_ops',
+    [
+      meson.current_source_dir() / 'include' / 'host' / 'htp_ops_stub.c',
+      hexagon_sdk_home / 'utils' / 'examples' / 'dsp_capabilities_utils.c',
+      meson.current_source_dir() / 'host' / 'op_export.c',
+      meson.current_source_dir() / 'host' / 'session.c',
+    ],
+    include_directories: nntrainer_inc,
+    dependencies: [cdsprpc_dep],
+    install: true,
+    install_dir: get_option('libdir')
+  )
+
+  htp_dep = declare_dependency(link_with: htp_host_lib)
+
+  # Build DSP-side library (for device deployment, not linked into nntrainer)
+  custom_target('htp_dsp_lib',
+    output: 'libhtp_ops_skel.so',
     command: [
         meson.current_source_dir() / 'build_htp.sh',
         meson.current_build_dir()
     ],
     build_by_default: true
-  )
-
-  # Declare HTP dependency so nntrainer links against the built library
-  htp_dep = declare_dependency(
-    link_args: ['-L' + dsp_build_dir, '-lhtp_ops'],
   )
 endif
