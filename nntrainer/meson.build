@@ -68,6 +68,9 @@ endforeach
 
 if get_option('enable-htp')
   nntrainer_base_deps += htp_dep
+  htp_link_depends = [htp_lib_target]
+else
+  htp_link_depends = []
 endif
 
 nntrainer_common_sources = [
@@ -114,7 +117,8 @@ else
       include_directories: nntrainer_inc,
       install: true,
       install_dir: nntrainer_libdir,
-      vs_module_defs : nntrainer_def
+      vs_module_defs : nntrainer_def,
+      link_depends: htp_link_depends
     )
   else
     nntrainer_shared = shared_library('nntrainer',
@@ -122,7 +126,8 @@ else
       dependencies: nntrainer_base_deps,
       include_directories: nntrainer_inc,
       install: true,
-      install_dir: nntrainer_libdir
+      install_dir: nntrainer_libdir,
+      link_depends: htp_link_depends
     )
   endif
 
