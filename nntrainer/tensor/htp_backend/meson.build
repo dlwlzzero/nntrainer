@@ -17,25 +17,12 @@ foreach d : hexagon_sdk_inc_dirs
 endforeach
 
 if get_option('enable-htp')
-  # Build host-side HTP library directly with meson
-  # FastRPC symbols (cdsprpc) are resolved at runtime on target device
-  htp_host_lib = shared_library('htp_ops',
-    [
-      meson.current_source_dir() / 'include' / 'host' / 'htp_ops_stub.c',
-      hexagon_sdk_home / 'utils' / 'examples' / 'dsp_capabilities_utils.c',
-      meson.current_source_dir() / 'host' / 'op_export.c',
-      meson.current_source_dir() / 'host' / 'session.c',
-    ],
-    include_directories: nntrainer_inc,
-    install: true,
-    install_dir: get_option('libdir')
-  )
+  # Build HTP libraries via cmake (for target device deployment)
+  # Host-side libhtp_ops.so and DSP-side libhtp_ops_skel.so
+  dsp_build_dir = meson.current_build_dir() / 'htp_lib'
 
-  htp_dep = declare_dependency(link_with: htp_host_lib)
-
-  # Build DSP-side library (for device deployment, not linked into nntrainer)
-  custom_target('htp_dsp_lib',
-    output: 'libhtp_ops_skel.so',
+  custom_target('htp_lib',
+    output: 'libhtp_ops.so',
     command: [
         meson.current_source_dir() / 'build_htp.sh',
         meson.current_build_dir()
