@@ -33,6 +33,5 @@ if get_option('enable-htp')
   # Declare HTP dependency so nntrainer links against the built library
   htp_dep = declare_dependency(
     link_args: ['-L' + dsp_build_dir, '-lhtp_ops'],
-    sources: htp_lib_target,
   )
 endif
