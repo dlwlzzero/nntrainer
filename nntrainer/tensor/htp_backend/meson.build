@@ -18,7 +18,7 @@ endforeach
 
 if get_option('enable-htp')
   # Build host-side HTP library directly with meson
-  # cdsprpc (FastRPC) is resolved at runtime on target device
+  # FastRPC symbols (cdsprpc) are resolved at runtime on target device
   htp_host_lib = shared_library('htp_ops',
     [
       meson.current_source_dir() / 'include' / 'host' / 'htp_ops_stub.c',
@@ -27,7 +27,6 @@ if get_option('enable-htp')
       meson.current_source_dir() / 'host' / 'session.c',
     ],
     include_directories: nntrainer_inc,
-    link_args: ['-lcdsprpc'],
     install: true,
     install_dir: get_option('libdir')
   )
