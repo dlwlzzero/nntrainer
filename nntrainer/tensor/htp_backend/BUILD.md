@@ -51,6 +51,7 @@ htp_backend/
 │   ├── htp_ops.idl              # FastRPC IDL definition
 │   ├── message.h                # Host-DSP message protocol
 │   └── op_reg.h                 # Op registration
+├── htp_interface.h              # Runtime dlopen/dlsym interface to libhtp_ops.so
 ├── CMakeLists.txt               # Hexagon SDK cmake build
 ├── build_htp.sh                 # Build script invoked by meson
 └── meson.build                  # Meson integration
@@ -77,9 +78,9 @@ When `enable-htp=true`:
    - Registers `custom_target` to invoke `build_htp.sh`
 
 2. **Compile phase** (`ninja`):
-   - `float_tensor.cpp` compiles with `ENABLE_HTP=1`, includes `host/session.h`
-   - `session.h` contains **declarations only** (no SDK dependencies)
-   - `libnntrainer.so` links without HTP library dependencies
+   - `float_tensor.cpp` compiles with `ENABLE_HTP=1`, includes `htp_interface.h`
+   - `htp_interface.h` loads `libhtp_ops.so` at runtime via `dlopen`/`dlsym`
+   - `libnntrainer.so` links without any HTP library dependencies
 
 ### Layer 2: CMake via build_htp.sh (target device libraries)
 
@@ -99,9 +100,11 @@ The `custom_target` invokes `build_htp.sh` which:
   exists on the target device
 - **nntrainer** must compile on the build host without target-only libraries
 
-This is solved by keeping `session.h` free of SDK dependencies (declarations
-only). Function definitions live in `session.c` and are compiled by cmake
-into `libhtp_ops.so` for the target device.
+This is solved by **runtime loading**: `htp_interface.h` uses `dlopen`/`dlsym`
+(via the existing `DynamicLibraryLoader` utility) to load `libhtp_ops.so`
+symbols at runtime. No compile-time link against `libhtp_ops.so` or the
+Hexagon SDK is required. Function definitions live in `session.c` and
+`op_export.c`, compiled by cmake into `libhtp_ops.so` for the target device.
 
 ## Build Instructions
 
@@ -139,14 +142,26 @@ build_cmake hexagon DSP_ARCH=v75
 
 ## Key Design Decisions
 
-### session.h: declarations only
+### htp_interface.h: runtime loading via dlopen/dlsym
 
-`session.h` is included by `float_tensor.cpp` (C++) but must not pull in
-Hexagon SDK headers (`remote.h`, `rpcmem.h`). Therefore:
+`float_tensor.cpp` (C++) must call functions from `libhtp_ops.so` but cannot
+link against it at compile time (the library and its Hexagon SDK dependencies
+only exist on the target device). This is solved by `htp_interface.h`:
 
-- All function bodies are in `session.c` (compiled by cmake, not meson)
-- `remote_handle64` is typedef'd with an include guard to avoid conflicts
-- `extern "C"` wrapping ensures correct C++ linkage
+- **Singleton pattern**: `HtpInterface::instance()` lazily loads `libhtp_ops.so`
+  via `dlopen` and resolves all symbols via `dlsym` on first access
+- **Cross-platform**: Uses the existing `DynamicLibraryLoader` utility
+  (same pattern as `memory_pool.h` uses for `libcdsprpc.so`)
+- **Graceful degradation**: If `libhtp_ops.so` is not found, all function
+  pointers remain `nullptr` with an error message to stderr
+- **Wrapped functions** (from `session.h`): `open_dsp_session`,
+  `close_dsp_session`, `get_global_handle`, `init_htp_backend`,
+  `create_htp_message_channel`, `alloc_shared_mem_buf`, `free_shared_mem_buf`
+- **Wrapped functions** (from `op_export.h`): `htp_ops_rpc_rms_norm_f32`,
+  `htp_ops_rpc_mat_mul_permuted_w16a32`
+
+This approach follows the same pattern used by
+[llama.cpp-npu](https://github.com/haozixu/llama.cpp-npu) for HTP integration.
 
 ### Meson options
 

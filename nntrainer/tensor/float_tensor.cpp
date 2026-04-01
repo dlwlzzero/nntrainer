@@ -27,7 +27,7 @@
 #endif
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-#include "host/session.h"
+#include "htp_interface.h"
 #endif
 
 namespace nntrainer {
@@ -979,7 +979,7 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
   case Tdatatype::Q6_K:
     gemm_q6_K(M, N, K, data, K, (void *)mdata, N, rdata, N);
     break;
-  case Tdatatype::Q4_0:
+  case Tdatatype::Q4_0:{
     M = getDim().height();
     K = getDim().width();
     N = input.getDim().width();
@@ -989,11 +989,14 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
     } else {
       gemm_q4_0_cl((void *)mdata, data, rdata, M, N, K);
     }
+#elif defined(ENABLE_HTP) && ENABLE_HTP == 1
+    auto &htp = nntrainer::htp::HtpInterface::instance();
+    nntrainer::htp::remote_handle64 handle = htp.get_global_handle();
 #else
     gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
 #endif
     break;
-
+  }
   default:
     throw std::invalid_argument("Error: unsupported datatype");
   }
