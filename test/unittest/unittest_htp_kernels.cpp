@@ -66,14 +66,12 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
                             const uint32_t N) {
   auto &htp = htp::HtpInterface::instance();
 
-  ASSERT_NE(htp.open_dsp_session, nullptr) << "HTP library not loaded";
+  ASSERT_NE(htp.htp_ops_mat_mul_permuted_w16a32, nullptr)
+    << "HTP library not loaded";
 
   auto handle = htp.get_global_handle();
-  if (handle == 0) {
-    htp.open_dsp_session(CDSP_DOMAIN_ID, 1);
-    handle = htp.get_global_handle();
-  }
-  ASSERT_NE(handle, (uint64_t)0) << "Failed to open DSP session";
+  ASSERT_NE(handle, (uint64_t)0)
+    << "DSP session not opened (handle == 0)";
 
   // Generate random test data
   std::vector<float> activation =
@@ -120,9 +118,9 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   permute_weight_to_fp16_tiles(weight.data(), weight_ptr, K, N);
 
   // Run on DSP
-  err = htp.htp_ops_rpc_mat_mul_permuted_w16a32(output_fd, 0, activation_fd, 0,
-                                                weight_fd, 0, M, K, N);
-  ASSERT_EQ(err, 0) << "htp_ops_rpc_mat_mul_permuted_w16a32 failed";
+  err = htp.htp_ops_mat_mul_permuted_w16a32(handle, output_fd, 0, activation_fd,
+                                            0, weight_fd, 0, M, K, N);
+  ASSERT_EQ(err, 0) << "htp_ops_mat_mul_permuted_w16a32 failed";
 
   // Compare results
   std::vector<float> hmx_dst(M * N);
@@ -146,21 +144,37 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
     run_w16a32_test(M, K, N);                                                  \
   }
 
-// Test various GEMM dimensions (M > 1)
+// Test square GEMM dimensions (K == N, M > 1)
 DECLARE_w16a32_test_M_K_N(32, 32, 32);
 DECLARE_w16a32_test_M_K_N(32, 256, 256);
 DECLARE_w16a32_test_M_K_N(32, 512, 512);
 DECLARE_w16a32_test_M_K_N(32, 1024, 1024);
 
-// Test GEMV case (M = 1)
+// Test rectangular GEMM dimensions (K != N, M > 1)
+DECLARE_w16a32_test_M_K_N(32, 256, 512);
+DECLARE_w16a32_test_M_K_N(32, 512, 256);
+DECLARE_w16a32_test_M_K_N(32, 1024, 256);
+DECLARE_w16a32_test_M_K_N(32, 256, 1024);
+DECLARE_w16a32_test_M_K_N(32, 64, 512);
+DECLARE_w16a32_test_M_K_N(32, 512, 64);
+
+// Test GEMV case (M = 1, K == N)
 DECLARE_w16a32_test_M_K_N(1, 32, 32);
 DECLARE_w16a32_test_M_K_N(1, 256, 256);
 DECLARE_w16a32_test_M_K_N(1, 512, 512);
 DECLARE_w16a32_test_M_K_N(1, 1024, 1024);
 
+// Test GEMV case with rectangular dimensions (M = 1, K != N)
+DECLARE_w16a32_test_M_K_N(1, 256, 512);
+DECLARE_w16a32_test_M_K_N(1, 512, 256);
+DECLARE_w16a32_test_M_K_N(1, 1024, 64);
+DECLARE_w16a32_test_M_K_N(1, 64, 1024);
+
 // Test non-power-of-2 M dimensions
 DECLARE_w16a32_test_M_K_N(28, 256, 256);
 DECLARE_w16a32_test_M_K_N(68, 256, 256);
+DECLARE_w16a32_test_M_K_N(28, 512, 256);
+DECLARE_w16a32_test_M_K_N(68, 256, 512);
 
 #else
 
@@ -180,6 +194,18 @@ GTEST_API_ int main(int argc, char **argv) {
     return 0;
   }
 
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  auto &htp = nntrainer::htp::HtpInterface::instance();
+  if (htp.open_dsp_session) {
+    int err = htp.open_dsp_session(CDSP_DOMAIN_ID, 1);
+    if (err != 0) {
+      std::cerr << "Open DSP session failed" << std::endl;
+      return 1;
+    }
+    htp.init_htp_backend();
+  }
+#endif
+
   try {
     result = RUN_ALL_TESTS();
   } catch (...) {
@@ -187,7 +213,6 @@ GTEST_API_ int main(int argc, char **argv) {
   }
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  auto &htp = nntrainer::htp::HtpInterface::instance();
   if (htp.close_dsp_session) {
     htp.close_dsp_session();
   }
