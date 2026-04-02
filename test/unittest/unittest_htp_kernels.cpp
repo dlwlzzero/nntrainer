@@ -1,351 +1,201 @@
-// // SPDX-License-Identifier: Apache-2.0
-// /**
-//  * @file	unittest_hmx_kernels.cpp
-//  * @date	27 February 2026
-//  * @brief	Test setup for Q4_0 HMX kernels
-//  * @see		https://github.com/nnstreamer/nntrainer
-//  * @bug		No known bugs except for NYI items
-//  */
-
-// #include <cstring>
-// #include <gtest/gtest.h>
-// #include <utility>
-
-// #if defined(ENABLE_HTP)
-
-// #include <cpu_backend.h>
-// #include <nntrainer_test_util.h>
-// #include <q4_0_utils.h>
-// #include <tensor.h>
-// #include <timer.h>
-
-// // #include <remote.h>
-// // #include <rpcmem.h>
-// // #include "host/session.h"
-
-// using namespace nntrainer;
-
-// #define QK4_0 32
-
-// typedef struct {
-//   __fp16 scales[8];
-//   uint8_t quants[8 * QK4_0 / 2];
-// } __attribute__((packed)) my_block_q4_0;
-
-// static inline int align_up(size_t size, size_t align) {
-//   return (size + align - 1) / align * align;
-// }
-
-// static void quantize_to_q4_0_superblocks(const float *weight_f32,
-//                                          uint8_t *weight_q4, int n, int k) {
-//   const int n_super_blocks = (n * k) / 256;
-//   my_block_q4_0 *mw = (my_block_q4_0 *)weight_q4;
-
-//   for (int sb = 0; sb < n_super_blocks; ++sb) {
-//     int base_col = sb * 8;
-//     for (int g = 0; g < 8; ++g) {
-//       int col = base_col + g;
-//       if (col >= n) {
-//         mw[sb].scales[g] = (__fp16)0.0f;
-//         for (int qq = 0; qq < QK4_0 / 2; ++qq) {
-//           mw[sb].quants[g * (QK4_0 / 2) + qq] = 0;
-//         }
-//         continue;
-//       }
-
-//       // compute absolute max and sign-extreme value
-//       float amax = 0.0f;
-//       float maxv = 0.0f;
-//       for (int r = 0; r < k; ++r) {
-//         float v = weight_f32[r * n + col];
-//         if (amax < fabsf(v)) {
-//           amax = fabsf(v);
-//           maxv = v;
-//         }
-//       }
-
-//       // follow quantize_row_q4_0_ref logic: d = max / -8
-//       float d = maxv / -8.0f;
-//       float id = d ? 1.0f / d : 0.0f;
-//       mw[sb].scales[g] = (__fp16)d;
-
-//       uint8_t *qptr = &mw[sb].quants[g * (QK4_0 / 2)];
-//       // pack 32 values into 16 bytes: pairs (0..15) and (16..31)
-//       for (int j = 0; j < QK4_0 / 2; ++j) {
-//         float x0 = weight_f32[(0 + j) * n + col] * id;
-//         float x1 = weight_f32[(QK4_0 / 2 + j) * n + col] * id;
-
-//         int xi0 = (int)(x0 + 8.5f);
-//         int xi1 = (int)(x1 + 8.5f);
-//         if (xi0 < 0)
-//           xi0 = 0;
-//         if (xi0 > 15)
-//           xi0 = 15;
-//         if (xi1 < 0)
-//           xi1 = 0;
-//         if (xi1 > 15)
-//           xi1 = 15;
-
-//         qptr[j] = (uint8_t)((xi0 & 0x0F) | ((xi1 & 0x0F) << 4));
-//       }
-//     }
-//   }
-// }
-
-// static void run_q4_0_test(const uint32_t M, const uint32_t K,
-//                           const uint32_t N) {
-//   nntrainer::init_backend();
-
-//   // Open DSP session
-//   auto handle = get_global_handle();
-//   if (handle == -1) {
-//     open_dsp_session(CDSP_DOMAIN_ID, 1);
-//     handle = get_global_handle();
-//   }
-
-//   ASSERT_NE(handle, -1) << "Failed to open DSP session";
-
-//   std::vector<float> activation =
-//     generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
-//   std::vector<float> weight =
-//     generate_random_vector<float, false>(N * K, -0.01f, 0.01f);
-
-//   std::vector<float> ref_dst(M * N, 0.0f);
-//   std::vector<float> hmx_q4_dst(M * N, 0.0f);
-
-//   const int n_super_blocks = (N * K) / 256;
-//   const size_t weight_q4_size = n_super_blocks * 144;
-
-//   // Generate result from SGEMM
-//   nntrainer::sgemm(0, false, true, M, N, K, 1.F, activation.data(), K,
-//                    weight.data(), K, 0.F, ref_dst.data(), N);
-
-//   // Allocate shared memory for HMX
-//   float *output_ptr;
-//   float *activation_ptr;
-//   uint8_t *weight_ptr;
-//   int output_fd, activation_fd, weight_fd;
-
-//   int err = alloc_shared_mem_buf((void **)&output_ptr, &output_fd,
-//                                  M * N * sizeof(float));
-//   ASSERT_EQ(err, 0) << "Failed to allocate output buffer";
-
-//   err = alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
-//                              M * K * sizeof(float));
-//   ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
-
-//   err = alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd, weight_q4_size);
-//   ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
-
-//   // Copy data to shared memory
-//   memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
-//   quantize_to_q4_0_superblocks(weight.data(), weight_ptr, N, K);
-
-//   // Warmup & Calibration
-//   unsigned int run_count = 5;
-//   auto t_w1 = std::chrono::high_resolution_clock::now();
-//   for (unsigned int i = 0; i < run_count; ++i) {
-//     htp_ops_mat_mul_permuted_qk_0_d16a32(handle, output_fd, 0, activation_fd, 0,
-//                                          weight_fd, 0, M, K, N, 2);
-//   }
-//   auto t_w2 = std::chrono::high_resolution_clock::now();
-//   double avg_time =
-//     std::chrono::duration<double>(t_w2 - t_w1).count() / run_count;
-
-//   if (avg_time > 0) {
-//     run_count = std::max(1u, (unsigned int)(0.5 / avg_time));
-//   } else {
-//     run_count = 100;
-//   }
-
-//   // HMX Q4_0 GEMM
-//   Timer timer1{};
-//   for (unsigned int i = 0; i < run_count; ++i) {
-//     htp_ops_mat_mul_permuted_qk_0_d16a32(handle, output_fd, 0, activation_fd, 0,
-//                                          weight_fd, 0, M, K, N, 2);
-//   }
-//   auto t2 = timer1.GetElapsedMilliseconds();
-
-//   // Copy result back
-//   memcpy(hmx_q4_dst.data(), output_ptr, M * N * sizeof(float));
-
-//   std::cout << "Q4_0 GEMM: " << M << " x " << K << " x " << N << std::endl;
-//   std::cout << " - HMX time: " << t2 / (run_count * 1.0f) << " ms" << std::endl;
-
-//   float mse_err = mse<float>(ref_dst.data(), hmx_q4_dst.data(), M * N);
-//   std::cout << " - MSE (vs FP32): " << mse_err << std::endl;
-
-//   // Q4_0 quantization is lossy, expect some error
-//   EXPECT_IN_RANGE(mse_err, 0.0f, 0.1f);
-
-//   // Free shared memory
-//   free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
-//   free_shared_mem_buf(activation_ptr, activation_fd, M * K * sizeof(float));
-//   free_shared_mem_buf(weight_ptr, weight_fd, weight_q4_size);
-// }
-
-// #define DECLARE_q4_0_test_M_K_N(M, K, N)                                       \
-//   TEST(nntrainer_hmx_kernels, q4_0_test_##M##_##K##_##N) {                     \
-//     run_q4_0_test(M, K, N);                                                    \
-//   }
-
-// // Test various matrix dimensions
-// DECLARE_q4_0_test_M_K_N(32, 32, 32);
-// DECLARE_q4_0_test_M_K_N(68, 256, 256);
-// DECLARE_q4_0_test_M_K_N(68, 512, 512);
-// DECLARE_q4_0_test_M_K_N(68, 1024, 1024);
-
-// DECLARE_q4_0_test_M_K_N(28, 256, 256);
-// DECLARE_q4_0_test_M_K_N(28, 512, 512);
-
-// // Test GEMV case (M = 1)
-// TEST(nntrainer_hmx_kernels, q4_0_gemv_test) {
-//   nntrainer::init_backend();
-
-//   auto handle = get_global_handle();
-//   if (handle == -1) {
-//     open_dsp_session(CDSP_DOMAIN_ID, 1);
-//     handle = get_global_handle();
-//   }
-
-//   ASSERT_NE(handle, -1) << "Failed to open DSP session";
-
-//   const uint32_t M = 1;
-//   const uint32_t K = 512;
-//   const uint32_t N = 512;
-
-//   std::vector<float> activation =
-//     generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
-//   std::vector<float> weight =
-//     generate_random_vector<float, false>(N * K, -0.01f, 0.01f);
-
-//   std::vector<float> ref_dst(M * N, 0.0f);
-//   std::vector<float> hmx_q4_dst(M * N, 0.0f);
-
-//   const int n_super_blocks = (N * K) / 256;
-//   const size_t weight_q4_size = n_super_blocks * 144;
-
-//   nntrainer::sgemm(0, false, true, M, N, K, 1.F, activation.data(), K,
-//                    weight.data(), K, 0.F, ref_dst.data(), N);
-
-//   float *output_ptr;
-//   float *activation_ptr;
-//   uint8_t *weight_ptr;
-//   int output_fd, activation_fd, weight_fd;
-
-//   alloc_shared_mem_buf((void **)&output_ptr, &output_fd, M * N * sizeof(float));
-//   alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
-//                        M * K * sizeof(float));
-//   alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd, weight_q4_size);
-
-//   memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
-//   quantize_to_q4_0_superblocks(weight.data(), weight_ptr, N, K);
-
-//   htp_ops_mat_mul_permuted_qk_0_d16a32(handle, output_fd, 0, activation_fd, 0,
-//                                        weight_fd, 0, M, K, N, 2);
-
-//   memcpy(hmx_q4_dst.data(), output_ptr, M * N * sizeof(float));
-
-//   std::cout << "Q4_0 GEMV: " << M << " x " << K << " x " << N << std::endl;
-
-//   float mse_err = mse<float>(ref_dst.data(), hmx_q4_dst.data(), M * N);
-//   std::cout << " - MSE (vs FP32): " << mse_err << std::endl;
-
-//   EXPECT_IN_RANGE(mse_err, 0.0f, 0.1f);
-
-//   free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
-//   free_shared_mem_buf(activation_ptr, activation_fd, M * K * sizeof(float));
-//   free_shared_mem_buf(weight_ptr, weight_fd, weight_q4_size);
-// }
-
-// // Test quantization accuracy
-// TEST(nntrainer_hmx_kernels, q4_0_quantization_accuracy) {
-//   nntrainer::init_backend();
-
-//   auto handle = get_global_handle();
-//   if (handle == -1) {
-//     open_dsp_session(CDSP_DOMAIN_ID, 1);
-//     handle = get_global_handle();
-//   }
-
-//   ASSERT_NE(handle, -1) << "Failed to open DSP session";
-
-//   const uint32_t M = 1;
-//   const uint32_t K = 256;
-//   const uint32_t N = 256;
-
-//   std::vector<float> activation =
-//     generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
-//   std::vector<float> weight =
-//     generate_random_vector<float, false>(N * K, -0.01f, 0.01f);
-
-//   std::vector<float> ref_dst(M * N, 0.0f);
-//   std::vector<float> hmx_q4_dst(M * N, 0.0f);
-
-//   const int n_super_blocks = (N * K) / 256;
-//   const size_t weight_q4_size = n_super_blocks * 144;
-
-//   nntrainer::sgemm(0, false, true, M, N, K, 1.F, activation.data(), K,
-//                    weight.data(), K, 0.F, ref_dst.data(), N);
-
-//   float *output_ptr;
-//   float *activation_ptr;
-//   uint8_t *weight_ptr;
-//   int output_fd, activation_fd, weight_fd;
-
-//   alloc_shared_mem_buf((void **)&output_ptr, &output_fd, M * N * sizeof(float));
-//   alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
-//                        M * K * sizeof(float));
-//   alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd, weight_q4_size);
-
-//   memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
-//   quantize_to_q4_0_superblocks(weight.data(), weight_ptr, N, K);
-
-//   htp_ops_mat_mul_permuted_qk_0_d16a32(handle, output_fd, 0, activation_fd, 0,
-//                                        weight_fd, 0, M, K, N, 2);
-
-//   memcpy(hmx_q4_dst.data(), output_ptr, M * N * sizeof(float));
-
-//   float mse_err = mse<float>(ref_dst.data(), hmx_q4_dst.data(), M * N);
-
-//   std::cout << "Q4_0 Quantization Test: " << M << " x " << K << " x " << N
-//             << std::endl;
-//   std::cout << " - MSE: " << mse_err << std::endl;
-
-//   EXPECT_LT(mse_err, 0.1f);
-
-//   free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
-//   free_shared_mem_buf(activation_ptr, activation_fd, M * K * sizeof(float));
-//   free_shared_mem_buf(weight_ptr, weight_fd, weight_q4_size);
-// }
-
-// #else
-
-// TEST(nntrainer_hmx_kernels, hmx_not_enabled) {
-//   GTEST_SKIP() << "HTP is not enabled";
-// }
-
-// #endif // ENABLE_HTP
-
-// GTEST_API_ int main(int argc, char **argv) {
-//   int result = -1;
-
-//   try {
-//     testing::InitGoogleTest(&argc, argv);
-//   } catch (...) {
-//     std::cerr << "Error during InitGoogleTest" << std::endl;
-//     return 0;
-//   }
-
-//   try {
-//     result = RUN_ALL_TESTS();
-//   } catch (...) {
-//     std::cerr << "Error during RUN_ALL_TESTS()" << std::endl;
-//   }
-
-// #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-//   close_dsp_session();
-// #endif
-
-//   return result;
-// }
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * @file	unittest_htp_kernels.cpp
+ * @date	27 February 2026
+ * @brief	Unit tests for HTP (Hexagon Tensor Processor) kernels
+ * @see		https://github.com/nnstreamer/nntrainer
+ * @bug		No known bugs except for NYI items
+ */
+
+#include <cstring>
+#include <gtest/gtest.h>
+#include <utility>
+
+#if defined(ENABLE_HTP)
+
+#include <cpu_backend.h>
+#include <htp_interface.h>
+#include <nntrainer_test_util.h>
+#include <tensor.h>
+
+using namespace nntrainer;
+
+#define CDSP_DOMAIN_ID 3
+
+/**
+ * @brief Permute fp16 weights into the HMX tile layout expected by
+ *        hmx_mat_mul_permuted_w16a32.
+ *
+ * The layout groups weights into 32x32 tiles. Within each tile the
+ * element at row i, column j is stored at:
+ *   tile[(i & ~1) * 32 + j * 2 + (i & 1)]
+ *
+ * @param weight_f32  Original weights in row-major [K x N] layout (float)
+ * @param weight_fp16 Output buffer in permuted fp16 tile layout
+ * @param k           Number of rows (reduction dimension)
+ * @param n           Number of columns (output dimension)
+ */
+static void permute_weight_to_fp16_tiles(const float *weight_f32,
+                                         __fp16 *weight_fp16, int k, int n) {
+  for (int i = 0; i < k; ++i) {
+    for (int j = 0; j < n; ++j) {
+      int i0 = i / 32, i1 = i % 32;
+      int j0 = j / 32, j1 = j % 32;
+
+      int tile_idx = j0 * (k / 32) + i0;
+      __fp16 *tile = weight_fp16 + tile_idx * 1024;
+      tile[(i1 & ~1) * 32 + j1 * 2 + (i1 & 1)] = (__fp16)weight_f32[i * n + j];
+    }
+  }
+}
+
+/**
+ * @brief Run a single w16a32 matmul test with the given dimensions.
+ *
+ * The test:
+ *   1. Generates random activation [M x K] (float) and weight [K x N] (float)
+ *   2. Computes the reference result via CPU sgemm
+ *   3. Permutes the weights into the HMX fp16 tile layout
+ *   4. Calls htp_ops_rpc_mat_mul_permuted_w16a32 on the DSP
+ *   5. Compares the DSP result against a mixed-precision CPU reference
+ *      (fp32 activation x fp16 weight accumulated in fp32) using MSE
+ *
+ * @param M  Number of output rows (batch dimension)
+ * @param K  Reduction dimension
+ * @param N  Number of output columns
+ */
+static void run_w16a32_test(const uint32_t M, const uint32_t K,
+                            const uint32_t N) {
+  auto &htp = htp::HtpInterface::instance();
+
+  ASSERT_NE(htp.open_dsp_session, nullptr) << "HTP library not loaded";
+
+  auto handle = htp.get_global_handle();
+  if (handle == 0) {
+    htp.open_dsp_session(CDSP_DOMAIN_ID, 1);
+    handle = htp.get_global_handle();
+  }
+  ASSERT_NE(handle, (uint64_t)0) << "Failed to open DSP session";
+
+  // Generate random test data
+  std::vector<float> activation =
+    generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
+  std::vector<float> weight =
+    generate_random_vector<float, false>(N * K, -0.1f, 0.1f);
+
+  // Compute mixed-precision reference: fp32 activation x fp16 weight
+  // This matches what the DSP does (fp16 weight, fp32 activation, fp32 output)
+  std::vector<float> ref_dst(M * N, 0.0f);
+  for (uint32_t i = 0; i < M; ++i) {
+    for (uint32_t j = 0; j < N; ++j) {
+      float sum = 0.0f;
+      for (uint32_t l = 0; l < K; ++l) {
+        float a = activation[i * K + l];
+        float w = (float)((__fp16)weight[l * N + j]);
+        sum += a * w;
+      }
+      ref_dst[i * N + j] = sum;
+    }
+  }
+
+  // Allocate shared memory for DSP
+  float *output_ptr = nullptr;
+  float *activation_ptr = nullptr;
+  __fp16 *weight_ptr = nullptr;
+  int output_fd, activation_fd, weight_fd;
+
+  int err = htp.alloc_shared_mem_buf((void **)&output_ptr, &output_fd,
+                                     M * N * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate output buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
+                                 M * K * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd,
+                                 K * N * sizeof(__fp16));
+  ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
+
+  // Copy activation data and permute weights
+  memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
+  memset(weight_ptr, 0, K * N * sizeof(__fp16));
+  permute_weight_to_fp16_tiles(weight.data(), weight_ptr, K, N);
+
+  // Run on DSP
+  err = htp.htp_ops_rpc_mat_mul_permuted_w16a32(output_fd, 0, activation_fd, 0,
+                                                weight_fd, 0, M, K, N);
+  ASSERT_EQ(err, 0) << "htp_ops_rpc_mat_mul_permuted_w16a32 failed";
+
+  // Compare results
+  std::vector<float> hmx_dst(M * N);
+  memcpy(hmx_dst.data(), output_ptr, M * N * sizeof(float));
+
+  float mse_err = mse<float>(hmx_dst.data(), ref_dst.data(), M * N);
+  std::cout << "W16A32 GEMM: " << M << " x " << K << " x " << N << std::endl;
+  std::cout << " - MSE (vs mixed-precision ref): " << mse_err << std::endl;
+
+  // fp16 weights introduce some precision loss, but MSE should be small
+  EXPECT_IN_RANGE(mse_err, 0.0f, 0.01f);
+
+  // Cleanup
+  htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
+  htp.free_shared_mem_buf(activation_ptr, activation_fd,
+                          M * K * sizeof(float));
+  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(__fp16));
+}
+
+// Macro to declare parameterized w16a32 tests
+#define DECLARE_w16a32_test_M_K_N(M, K, N)                                     \
+  TEST(nntrainer_htp_kernels, w16a32_matmul_##M##_##K##_##N) {                 \
+    run_w16a32_test(M, K, N);                                                  \
+  }
+
+// Test various GEMM dimensions (M > 1)
+DECLARE_w16a32_test_M_K_N(32, 32, 32);
+DECLARE_w16a32_test_M_K_N(32, 256, 256);
+DECLARE_w16a32_test_M_K_N(32, 512, 512);
+DECLARE_w16a32_test_M_K_N(32, 1024, 1024);
+
+// Test GEMV case (M = 1)
+DECLARE_w16a32_test_M_K_N(1, 32, 32);
+DECLARE_w16a32_test_M_K_N(1, 256, 256);
+DECLARE_w16a32_test_M_K_N(1, 512, 512);
+DECLARE_w16a32_test_M_K_N(1, 1024, 1024);
+
+// Test non-power-of-2 M dimensions
+DECLARE_w16a32_test_M_K_N(28, 256, 256);
+DECLARE_w16a32_test_M_K_N(68, 256, 256);
+
+#else
+
+TEST(nntrainer_htp_kernels, htp_not_enabled) {
+  GTEST_SKIP() << "HTP is not enabled";
+}
+
+#endif // ENABLE_HTP
+
+GTEST_API_ int main(int argc, char **argv) {
+  int result = -1;
+
+  try {
+    testing::InitGoogleTest(&argc, argv);
+  } catch (...) {
+    std::cerr << "Error during InitGoogleTest" << std::endl;
+    return 0;
+  }
+
+  try {
+    result = RUN_ALL_TESTS();
+  } catch (...) {
+    std::cerr << "Error during RUN_ALL_TESTS()" << std::endl;
+  }
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  auto &htp = nntrainer::htp::HtpInterface::instance();
+  if (htp.close_dsp_session) {
+    htp.close_dsp_session();
+  }
+#endif
+
+  return result;
+}
