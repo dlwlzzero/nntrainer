@@ -85,3 +85,23 @@ LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := googletest_main
 include $(BUILD_EXECUTABLE)
 
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := unittest_htp_kernels
+LOCAL_CFLAGS := -Itests/googletest/include -Itests -pthread -fexceptions -fopenmp -static-openmp -DMIN_CPP_VERSION=201703L -DNNTR_NUM_THREADS=1 -D__LOGGING__=1 -DENABLE_TEST=1 -DREDUCE_TOLERANCE=1 -march=armv8.2-a+fp16+dotprod+i8mm -O3 -frtti -DENABLE_HTP=1
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+
+LOCAL_SRC_FILES := \
+    tests/unittest_htp_kernels.cpp \
+    tests/nntrainer_test_util.cpp
+
+LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include/host
+
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main
+include $(BUILD_EXECUTABLE)
+
