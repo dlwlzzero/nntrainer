@@ -1,9 +1,16 @@
-# HTP Backend Build Guide
+---
+title: How to Build and Test HTP Backend
+...
+
+# How to Build and Test HTP Backend
 
 ## Overview
 
-The HTP (Hexagon Tensor Processor) backend offloads tensor operations to
-Qualcomm's Hexagon DSP. The build produces two shared libraries:
+The HTP (Hexagon Tensor Processor) backend offloads tensor operations
+(matrix multiply, RMS norm, flash attention) to Qualcomm's Hexagon DSP
+using HMX and HVX hardware accelerators.
+
+The build produces two shared libraries:
 
 | Library | Runs on | Description |
 |---------|---------|-------------|
@@ -63,11 +70,13 @@ htp_backend/
 - **CMake >= 3.14.3**
 - `HEXAGON_SDK_HOME` environment variable pointing to SDK root
 
-## Build System Architecture
+## Build Instructions
+
+### Build System Architecture
 
 The HTP backend uses a **two-layer build system**:
 
-### Layer 1: Meson (nntrainer integration)
+#### Layer 1: Meson (nntrainer integration)
 
 When `enable-htp=true`:
 
@@ -82,7 +91,7 @@ When `enable-htp=true`:
    - `htp_interface.h` loads `libhtp_ops.so` at runtime via `dlopen`/`dlsym`
    - `libnntrainer.so` links without any HTP library dependencies
 
-### Layer 2: CMake via build_htp.sh (target device libraries)
+#### Layer 2: CMake via build_htp.sh (target device libraries)
 
 The `custom_target` invokes `build_htp.sh` which:
 
@@ -92,7 +101,7 @@ The `custom_target` invokes `build_htp.sh` which:
 4. Copies built libraries to `${BUILD_DIR}/htp_lib/`
 5. Copies QAIC-generated files to `include/host/`
 
-### Why two build systems?
+#### Why two build systems?
 
 - **DSP code** requires the Hexagon cross-compiler toolchain (only available
   through the SDK's cmake integration via `hexagon_fun.cmake`)
@@ -105,8 +114,6 @@ This is solved by **runtime loading**: `htp_interface.h` uses `dlopen`/`dlsym`
 symbols at runtime. No compile-time link against `libhtp_ops.so` or the
 Hexagon SDK is required. Function definitions live in `session.c` and
 `op_export.c`, compiled by cmake into `libhtp_ops.so` for the target device.
-
-## Build Instructions
 
 ### Full build (with HTP)
 
@@ -139,6 +146,31 @@ cd nntrainer/nntrainer/tensor/htp_backend
 build_cmake android
 build_cmake hexagon DSP_ARCH=v75
 ```
+
+## Running Unit Tests
+
+### On-device test binary
+
+The build produces `htp_ops_test` in the build output directory. To run it on
+an Android device:
+
+```bash
+# Push test binary and libraries to device
+adb push build/nntrainer/tensor/htp_backend/htp_lib/htp_ops_test /data/local/tmp/
+adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops.so /data/local/tmp/
+
+# Run on device
+adb shell
+cd /data/local/tmp
+export LD_LIBRARY_PATH=.
+./htp_ops_test
+```
+
+### On-device op validation
+
+The DSP-side library includes built-in op validation tests (`htp/op_tests.cc`).
+These tests run directly on the Hexagon DSP and validate correctness of HMX/HVX
+operations against reference implementations.
 
 ## Key Design Decisions
 
