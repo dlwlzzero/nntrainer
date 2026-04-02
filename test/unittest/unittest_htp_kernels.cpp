@@ -71,6 +71,7 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   auto handle = htp.get_global_handle();
   if (handle == 0) {
     htp.open_dsp_session(CDSP_DOMAIN_ID, 1);
+    htp.init_htp_backend();
     handle = htp.get_global_handle();
   }
   ASSERT_NE(handle, (uint64_t)0) << "Failed to open DSP session";
