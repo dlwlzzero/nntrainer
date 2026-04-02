@@ -34,6 +34,10 @@ using htp_ops_rpc_rms_norm_f32_fn_t = int(int, int, int, int, int, int);
 using htp_ops_rpc_mat_mul_permuted_w16a32_fn_t =
   int(int, int, int, int, int, int, int, int, int);
 
+/** Function pointer types matching host/htp_ops.h signatures (with handle) */
+using htp_ops_mat_mul_permuted_w16a32_fn_t =
+  int(remote_handle64, int, int, int, int, int, int, int, int, int);
+
 /**
  * @brief Singleton interface that loads libhtp_ops.so at runtime and resolves
  *        all exported symbols via dlsym. No compile-time link against
@@ -53,6 +57,10 @@ struct HtpInterface {
   htp_ops_rpc_rms_norm_f32_fn_t *htp_ops_rpc_rms_norm_f32 = nullptr;
   htp_ops_rpc_mat_mul_permuted_w16a32_fn_t
     *htp_ops_rpc_mat_mul_permuted_w16a32 = nullptr;
+
+  /* htp_ops.h functions (with handle) */
+  htp_ops_mat_mul_permuted_w16a32_fn_t *htp_ops_mat_mul_permuted_w16a32 =
+    nullptr;
 
   static HtpInterface &instance() {
     static HtpInterface inst = load();
@@ -97,6 +105,11 @@ private:
     iface.htp_ops_rpc_mat_mul_permuted_w16a32 =
       sym<htp_ops_rpc_mat_mul_permuted_w16a32_fn_t>(
         lib, "htp_ops_rpc_mat_mul_permuted_w16a32");
+
+    /* htp_ops.h (with handle) */
+    iface.htp_ops_mat_mul_permuted_w16a32 =
+      sym<htp_ops_mat_mul_permuted_w16a32_fn_t>(
+        lib, "htp_ops_mat_mul_permuted_w16a32");
 
     return iface;
   }
