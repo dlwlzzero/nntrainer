@@ -144,21 +144,37 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
     run_w16a32_test(M, K, N);                                                  \
   }
 
-// Test various GEMM dimensions (M > 1)
+// Test square GEMM dimensions (K == N, M > 1)
 DECLARE_w16a32_test_M_K_N(32, 32, 32);
 DECLARE_w16a32_test_M_K_N(32, 256, 256);
 DECLARE_w16a32_test_M_K_N(32, 512, 512);
 DECLARE_w16a32_test_M_K_N(32, 1024, 1024);
 
-// Test GEMV case (M = 1)
+// Test rectangular GEMM dimensions (K != N, M > 1)
+DECLARE_w16a32_test_M_K_N(32, 256, 512);
+DECLARE_w16a32_test_M_K_N(32, 512, 256);
+DECLARE_w16a32_test_M_K_N(32, 1024, 256);
+DECLARE_w16a32_test_M_K_N(32, 256, 1024);
+DECLARE_w16a32_test_M_K_N(32, 64, 512);
+DECLARE_w16a32_test_M_K_N(32, 512, 64);
+
+// Test GEMV case (M = 1, K == N)
 DECLARE_w16a32_test_M_K_N(1, 32, 32);
 DECLARE_w16a32_test_M_K_N(1, 256, 256);
 DECLARE_w16a32_test_M_K_N(1, 512, 512);
 DECLARE_w16a32_test_M_K_N(1, 1024, 1024);
 
+// Test GEMV case with rectangular dimensions (M = 1, K != N)
+DECLARE_w16a32_test_M_K_N(1, 256, 512);
+DECLARE_w16a32_test_M_K_N(1, 512, 256);
+DECLARE_w16a32_test_M_K_N(1, 1024, 64);
+DECLARE_w16a32_test_M_K_N(1, 64, 1024);
+
 // Test non-power-of-2 M dimensions
 DECLARE_w16a32_test_M_K_N(28, 256, 256);
 DECLARE_w16a32_test_M_K_N(68, 256, 256);
+DECLARE_w16a32_test_M_K_N(28, 512, 256);
+DECLARE_w16a32_test_M_K_N(68, 256, 512);
 
 #else
 
