@@ -9,14 +9,11 @@
 
 #include <cstring>
 #include <gtest/gtest.h>
-#include <utility>
 
 #if defined(ENABLE_HTP)
 
-#include <cpu_backend.h>
 #include <htp_interface.h>
 #include <nntrainer_test_util.h>
-#include <tensor.h>
 
 using namespace nntrainer;
 
