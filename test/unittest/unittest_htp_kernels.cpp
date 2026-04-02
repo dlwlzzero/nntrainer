@@ -12,6 +12,7 @@
 
 #if defined(ENABLE_HTP)
 
+#include <fp16.h>
 #include <htp_interface.h>
 #include <nntrainer_test_util.h>
 
@@ -28,20 +29,21 @@ using namespace nntrainer;
  *   tile[(i & ~1) * 32 + j * 2 + (i & 1)]
  *
  * @param weight_f32  Original weights in row-major [K x N] layout (float)
- * @param weight_fp16 Output buffer in permuted fp16 tile layout
+ * @param weight_fp16 Output buffer in permuted fp16 tile layout (uint16_t)
  * @param k           Number of rows (reduction dimension)
  * @param n           Number of columns (output dimension)
  */
 static void permute_weight_to_fp16_tiles(const float *weight_f32,
-                                         __fp16 *weight_fp16, int k, int n) {
+                                         uint16_t *weight_fp16, int k, int n) {
   for (int i = 0; i < k; ++i) {
     for (int j = 0; j < n; ++j) {
       int i0 = i / 32, i1 = i % 32;
       int j0 = j / 32, j1 = j % 32;
 
       int tile_idx = j0 * (k / 32) + i0;
-      __fp16 *tile = weight_fp16 + tile_idx * 1024;
-      tile[(i1 & ~1) * 32 + j1 * 2 + (i1 & 1)] = (__fp16)weight_f32[i * n + j];
+      uint16_t *tile = weight_fp16 + tile_idx * 1024;
+      tile[(i1 & ~1) * 32 + j1 * 2 + (i1 & 1)] =
+        compute_fp32_to_fp16(weight_f32[i * n + j]);
     }
   }
 }
@@ -51,11 +53,10 @@ static void permute_weight_to_fp16_tiles(const float *weight_f32,
  *
  * The test:
  *   1. Generates random activation [M x K] (float) and weight [K x N] (float)
- *   2. Computes the reference result via CPU sgemm
+ *   2. Computes a mixed-precision CPU reference (fp32 activation x fp16 weight)
  *   3. Permutes the weights into the HMX fp16 tile layout
  *   4. Calls htp_ops_rpc_mat_mul_permuted_w16a32 on the DSP
- *   5. Compares the DSP result against a mixed-precision CPU reference
- *      (fp32 activation x fp16 weight accumulated in fp32) using MSE
+ *   5. Compares the DSP result against the CPU reference using MSE
  *
  * @param M  Number of output rows (batch dimension)
  * @param K  Reduction dimension
@@ -88,7 +89,7 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
       float sum = 0.0f;
       for (uint32_t l = 0; l < K; ++l) {
         float a = activation[i * K + l];
-        float w = (float)((__fp16)weight[l * N + j]);
+        float w = compute_fp16_to_fp32(compute_fp32_to_fp16(weight[l * N + j]));
         sum += a * w;
       }
       ref_dst[i * N + j] = sum;
@@ -98,7 +99,7 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   // Allocate shared memory for DSP
   float *output_ptr = nullptr;
   float *activation_ptr = nullptr;
-  __fp16 *weight_ptr = nullptr;
+  uint16_t *weight_ptr = nullptr;
   int output_fd, activation_fd, weight_fd;
 
   int err = htp.alloc_shared_mem_buf((void **)&output_ptr, &output_fd,
@@ -110,12 +111,12 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
 
   err = htp.alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd,
-                                 K * N * sizeof(__fp16));
+                                 K * N * sizeof(uint16_t));
   ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
 
   // Copy activation data and permute weights
   memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
-  memset(weight_ptr, 0, K * N * sizeof(__fp16));
+  memset(weight_ptr, 0, K * N * sizeof(uint16_t));
   permute_weight_to_fp16_tiles(weight.data(), weight_ptr, K, N);
 
   // Run on DSP
@@ -131,17 +132,15 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   std::cout << "W16A32 GEMM: " << M << " x " << K << " x " << N << std::endl;
   std::cout << " - MSE (vs mixed-precision ref): " << mse_err << std::endl;
 
-  // fp16 weights introduce some precision loss, but MSE should be small
   EXPECT_IN_RANGE(mse_err, 0.0f, 0.01f);
 
   // Cleanup
   htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
   htp.free_shared_mem_buf(activation_ptr, activation_fd,
                           M * K * sizeof(float));
-  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(__fp16));
+  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
 }
 
-// Macro to declare parameterized w16a32 tests
 #define DECLARE_w16a32_test_M_K_N(M, K, N)                                     \
   TEST(nntrainer_htp_kernels, w16a32_matmul_##M##_##K##_##N) {                 \
     run_w16a32_test(M, K, N);                                                  \
