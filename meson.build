@@ -258,6 +258,10 @@ if get_option('enable-opencl')
   endif
 endif
 
+if get_option('enable-htp')
+  extra_defines += '-DENABLE_HTP=1'
+endif
+
 if get_option('opencl-kernel-path') != ''
   message ('OpenCL kernel path set to: @0@'.format(get_option('opencl-kernel-path')))
   extra_defines += '-DOPENCL_KERNEL_PATH=@0@'.format(get_option('opencl-kernel-path'))
