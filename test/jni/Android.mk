@@ -829,7 +829,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := unittest_ccapi
 LOCAL_CFLAGS := -I$(GTEST_PATH)/include -I../include -pthread -fexceptions -fopenmp -static-openmp -DMIN_CPP_VERSION=201703L -DNNTR_NUM_THREADS=1 -D__LOGGING__=1 -DENABLE_TEST=1 -DREDUCE_TOLERANCE=1 $(ARM_MARCH_FLAGS) -O3 -frtti
 LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
-LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp 
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
 
 LOCAL_SRC_FILES := \
     ../ccapi/unittest_ccapi.cpp
@@ -843,5 +843,26 @@ ifeq ($(MESON_ENABLE_OPENCL), 1)
 LOCAL_SHARED_LIBRARIES += opencl
 LOCAL_STATIC_LIBRARIES += clblast
 endif
+
+include $(BUILD_EXECUTABLE)
+
+# unittest_htp_kernels
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := unittest_htp_kernels
+LOCAL_CFLAGS := -I$(GTEST_PATH)/include -I../include -pthread -fexceptions -fopenmp -static-openmp -DMIN_CPP_VERSION=201703L -DNNTR_NUM_THREADS=1 -D__LOGGING__=1 -DENABLE_TEST=1 -DREDUCE_TOLERANCE=1 $(ARM_MARCH_FLAGS) -O3 -frtti -DENABLE_FP16=1 -DENABLE_HTP=1
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+
+LOCAL_SRC_FILES := \
+    ../unittest/unittest_htp_kernels.cpp
+
+LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include \
+    $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include/host
+
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main test_util
 
 include $(BUILD_EXECUTABLE)
