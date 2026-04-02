@@ -114,7 +114,7 @@ Hexagon SDK is required. Function definitions live in `session.c` and
 export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
 
 cd nntrainer
-meson setup build -Denable-htp=true
+meson setup build -Dwerror=false -Denable-htp=true # TODO: Remove werror option
 ninja -C build
 ```
 
