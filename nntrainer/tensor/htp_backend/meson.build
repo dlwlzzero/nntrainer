@@ -8,7 +8,7 @@ hexagon_sdk_inc_dirs = [
   hexagon_sdk_home / 'incs' / 'stddef',
   hexagon_sdk_home / 'ipc' / 'fastrpc' / 'rpcmem' / 'inc',
   hexagon_sdk_home / 'rtos' / 'qurt',
-  hexagon_sdk_home / 'utils' / 'examples' 
+  hexagon_sdk_home / 'utils' / 'examples'
 ]
 
 nntrainer_inc += include_directories(hexagon_sdk_inc_dirs)
@@ -17,10 +17,8 @@ foreach d : hexagon_sdk_inc_dirs
 endforeach
 
 if get_option('enable-htp')
-  # Build directory for HTP code
-  dsp_build_dir = meson.current_build_dir() / 'htp_lib'
-
-  # Run target to build HTP library
+  # Build HTP libraries via cmake (for target device deployment)
+  # Host-side libhtp_ops.so and DSP-side libhtp_ops_skel.so
   custom_target('htp_lib',
     output: 'libhtp_ops.so',
     command: [
