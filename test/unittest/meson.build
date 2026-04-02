@@ -90,6 +90,10 @@ if get_option('enable-opencl')
   test_target += [['unittest_attention_kernels_cl', []]]
 endif
 
+# if get_option('enable-htp')
+#   test_target += [['unittest_htp_kernels', []]]
+# endif
+
 if get_option('enable-fp16')
   test_target += [['unittest_nntrainer_tensor_fp16', []]]
   test_target += [['unittest_nntrainer_tensor_pool_fp16', []]]
