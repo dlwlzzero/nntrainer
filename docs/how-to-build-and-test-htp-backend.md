@@ -1,13 +1,9 @@
----
-title: How to Build and Test HTP Backend
-...
-
 # How to Build and Test HTP Backend
 
 ## Overview
 
 The HTP (Hexagon Tensor Processor) backend offloads tensor operations
-(matrix multiply, RMS norm, flash attention) to Qualcomm's Hexagon DSP
+to Qualcomm's Hexagon DSP
 using HMX and HVX hardware accelerators.
 
 The build produces two shared libraries:
@@ -41,23 +37,22 @@ After a successful build:
 
 ```
 build/nntrainer/tensor/htp_backend/htp_lib/
-├── libhtp_ops.so        # Host stub library (deploy to /vendor/lib64/)
-├── libhtp_ops_skel.so   # DSP skel library (deploy to /vendor/lib/rfsa/dsp/sdsp/)
-└── htp_ops_test          # Test binary
+├── libhtp_ops.so        # Host stub library
+├── libhtp_ops_skel.so   # DSP skel library
+└── htp_ops_test         # Test binary
 ```
 
 ### Standalone cmake build (without meson)
 
 ```bash
 export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
-source ${HEXAGON_SDK_HOME}/setup_sdk_env.source
 
 cd nntrainer/nntrainer/tensor/htp_backend
 build_cmake android
-build_cmake hexagon DSP_ARCH=v75
+build_cmake hexagon DSP_ARCH=v73/v75
 ```
 
-## Running Unit Tests
+## Running Unit Tests (TODO)
 
 ### On-device test binary
 
@@ -66,13 +61,14 @@ an Android device:
 
 ```bash
 # Push test binary and libraries to device
-adb push build/nntrainer/tensor/htp_backend/htp_lib/htp_ops_test /data/local/tmp/
-adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops.so /data/local/tmp/
+adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops_skel.so /data/local/tmp/target
+adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops.so /data/local/tmp/target
 
 # Run on device
 adb shell
 cd /data/local/tmp
 export LD_LIBRARY_PATH=.
+export DSP_LIBRARY_PATH=.
 ./htp_ops_test
 ```
 
