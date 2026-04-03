@@ -69,6 +69,31 @@ Android device before running the build.
 build_cmake hexagon DSP_ARCH=<dsp_ver> 
 ```
 
+## Running Standalone Tests on Device
+
+After the [Standalone cmake build](#standalone-cmake-build-without-meson),
+`run.sh` automates pushing the build artifacts to a connected Android device
+and executing the test binary (`htp_ops_test`) compiled from `host/test.c`.
+
+```bash
+cd nntrainer/nntrainer/tensor/htp_backend
+
+# Use default target directory (/data/local/tmp/htp_backend)
+./run.sh
+
+# Or specify a custom target directory on the device
+./run.sh /data/local/tmp/my_test_dir
+```
+
+**Requirements:**
+- A Qualcomm Android device must be connected and accessible via `adb`.
+- The standalone cmake build must be completed first (`./build_htp.sh`).
+- The `adb_dir` variable at the top of `run.sh` must be set to the actual `adb` path on your system before running the script:
+  ```bash
+  # run.sh
+  adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
+  ```
+
 ## Running Unit Tests
 
 Unit tests for the HTP backend are located under `test/unittest/`.
