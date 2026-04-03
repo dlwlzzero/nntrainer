@@ -22,7 +22,7 @@ using namespace nntrainer;
 
 /**
  * @brief Permute fp16 weights into the HMX tile layout expected by
- *        hmx_mat_mul_permuted_w16a32.
+ *        hmx_mat_mul_af32_pwf16_of32.
  *
  * The layout groups weights into 32x32 tiles. Within each tile the
  * element at row i, column j is stored at:
@@ -66,7 +66,7 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
                             const uint32_t N) {
   auto &htp = htp::HtpInterface::instance();
 
-  ASSERT_NE(htp.htp_ops_mat_mul_permuted_w16a32, nullptr)
+  ASSERT_NE(htp.htp_ops_mat_mul_af32_pwf16_of32, nullptr)
     << "HTP library not loaded";
 
   auto handle = htp.get_global_handle();
@@ -118,7 +118,7 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   permute_weight_to_fp16_tiles(weight.data(), weight_ptr, K, N);
 
   // Run on DSP
-  err = htp.htp_ops_mat_mul_permuted_w16a32(handle, output_fd, 0, activation_fd,
+  err = htp.htp_ops_mat_mul_af32_pwf16_of32(handle, output_fd, 0, activation_fd,
                                             0, weight_fd, 0, M, K, N);
   ASSERT_EQ(err, 0) << "htp_ops_mat_mul_permuted_w16a32 failed";
 

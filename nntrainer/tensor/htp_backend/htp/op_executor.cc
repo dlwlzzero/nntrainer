@@ -106,7 +106,7 @@ int execute_op_simple(struct OpComputeRequest *req) {
         add_buffer(in_bufs, params->weight, weight_size);
 
         validate_in_bufs();
-        ret = hmx_mat_mul_permuted_w16a32((float *) OUT_PTR(0), (float *) IN_PTR(0), (__fp16 *) IN_PTR(1), m, k, n);
+        ret = hmx_mat_mul_af32_pwf16_of32((float *) OUT_PTR(0), (float *) IN_PTR(0), (__fp16 *) IN_PTR(1), m, k, n);
         validate_out_bufs();
       }
       break;

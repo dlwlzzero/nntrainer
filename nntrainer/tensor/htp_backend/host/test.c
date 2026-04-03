@@ -314,7 +314,7 @@ static void test_mat_mul_rpc(remote_handle64 handle) {
     }
   }
 
-  htp_ops_mat_mul_permuted_w16a32(handle, output_fd, 0, activation_fd, 0, weight_fd, 0, m, k, n);
+  htp_ops_mat_mul_af32_pwf16_of32(handle, output_fd, 0, activation_fd, 0, weight_fd, 0, m, k, n);
 
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {

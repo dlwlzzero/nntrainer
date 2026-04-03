@@ -29,13 +29,10 @@ using create_htp_message_channel_fn_t = int(int, unsigned int);
 using alloc_shared_mem_buf_fn_t = int(void **, int *, size_t);
 using free_shared_mem_buf_fn_t = void(void *, int, size_t);
 
-/** Function pointer types matching host/op_export.h signatures */
-using htp_ops_rpc_rms_norm_f32_fn_t = int(int, int, int, int, int, int);
-using htp_ops_rpc_mat_mul_permuted_w16a32_fn_t =
-  int(int, int, int, int, int, int, int, int, int);
-
 /** Function pointer types matching host/htp_ops.h signatures (with handle) */
-using htp_ops_mat_mul_permuted_w16a32_fn_t =
+using htp_ops_mat_mul_af32_pwf16_of32_fn_t =
+  int(remote_handle64, int, int, int, int, int, int, int, int, int);
+using htp_ops_mat_mul_af32_wf16_of32_fn_t =
   int(remote_handle64, int, int, int, int, int, int, int, int, int);
 
 /**
@@ -53,14 +50,9 @@ struct HtpInterface {
   alloc_shared_mem_buf_fn_t *alloc_shared_mem_buf = nullptr;
   free_shared_mem_buf_fn_t *free_shared_mem_buf = nullptr;
 
-  /* op_export.h functions */
-  htp_ops_rpc_rms_norm_f32_fn_t *htp_ops_rpc_rms_norm_f32 = nullptr;
-  htp_ops_rpc_mat_mul_permuted_w16a32_fn_t
-    *htp_ops_rpc_mat_mul_permuted_w16a32 = nullptr;
-
   /* htp_ops.h functions (with handle) */
-  htp_ops_mat_mul_permuted_w16a32_fn_t *htp_ops_mat_mul_permuted_w16a32 =
-    nullptr;
+  htp_ops_mat_mul_af32_pwf16_of32_fn_t *htp_ops_mat_mul_af32_pwf16_of32 = nullptr;
+  htp_ops_mat_mul_af32_wf16_of32_fn_t *htp_ops_mat_mul_af32_wf16_of32 = nullptr;
 
   static HtpInterface &instance() {
     static HtpInterface inst = load();
@@ -99,17 +91,13 @@ private:
     iface.free_shared_mem_buf =
       sym<free_shared_mem_buf_fn_t>(lib, "free_shared_mem_buf");
 
-    /* op_export.h */
-    iface.htp_ops_rpc_rms_norm_f32 =
-      sym<htp_ops_rpc_rms_norm_f32_fn_t>(lib, "htp_ops_rpc_rms_norm_f32");
-    iface.htp_ops_rpc_mat_mul_permuted_w16a32 =
-      sym<htp_ops_rpc_mat_mul_permuted_w16a32_fn_t>(
-        lib, "htp_ops_rpc_mat_mul_permuted_w16a32");
-
     /* htp_ops.h (with handle) */
-    iface.htp_ops_mat_mul_permuted_w16a32 =
-      sym<htp_ops_mat_mul_permuted_w16a32_fn_t>(
-        lib, "htp_ops_mat_mul_permuted_w16a32");
+    iface.htp_ops_mat_mul_af32_pwf16_of32 =
+      sym<htp_ops_mat_mul_af32_pwf16_of32_fn_t>(
+        lib, "htp_ops_mat_mul_af32_pwf16_of32");
+    iface.htp_ops_mat_mul_af32_wf16_of32 =
+      sym<htp_ops_mat_mul_af32_wf16_of32_fn_t>(
+        lib, "htp_ops_mat_mul_af32_wf16_of32");
 
     return iface;
   }
