@@ -15,6 +15,7 @@ The build produces two shared libraries:
 
 ## Prerequisites
 
+- nntrainer basic setup must be completed first. See [Getting Started](getting-started.md).
 - **Hexagon SDK >= v6.0.0.2** with setup complete
 - **CMake >= 3.14.3**
 - `HEXAGON_SDK_HOME` environment variable pointing to SDK root
@@ -31,9 +32,7 @@ meson setup build -Dwerror=false -Denable-htp=true
 ninja -C build
 ```
 
-### Build output
-
-After a successful build:
+Build output:
 
 ```
 build/nntrainer/tensor/htp_backend/htp_lib/
@@ -48,9 +47,23 @@ build/nntrainer/tensor/htp_backend/htp_lib/
 export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
 
 cd nntrainer/nntrainer/tensor/htp_backend
-build_cmake android
-build_cmake hexagon DSP_ARCH=v73/v75
+./build_htp.sh
 ```
+
+Build output:
+
+```
+nntrainer/nntrainer/tensor/htp_backend/build_htp/
+├── libhtp_ops.so        # Host stub library
+├── libhtp_ops_skel.so   # DSP skel library
+└── htp_ops_test         # Test binary
+```
+
+### DSP architecture setting
+
+The target device's DSP architecture must be specified via the `DSP_ARCH`
+option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
+Android device before running the build.
 
 ## Running Unit Tests
 
