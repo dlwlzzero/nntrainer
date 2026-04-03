@@ -176,6 +176,136 @@ DECLARE_w16a32_test_M_K_N(68, 256, 256);
 DECLARE_w16a32_test_M_K_N(28, 512, 256);
 DECLARE_w16a32_test_M_K_N(68, 256, 512);
 
+/**
+ * @brief Run a single wf16a32 matmul test with the given dimensions.
+ *
+ * Unlike the w16a32 (permuted) test, weights are stored in standard
+ * row-major fp16 layout without HMX tile permutation.
+ *
+ * The test:
+ *   1. Generates random activation [M x K] (float) and weight [K x N] (float)
+ *   2. Computes a mixed-precision CPU reference (fp32 activation x fp16 weight)
+ *   3. Converts weights to row-major fp16 (no permutation)
+ *   4. Calls htp_ops_mat_mul_af32_wf16_of32 on the DSP
+ *   5. Compares the DSP result against the CPU reference using MSE
+ *
+ * @param M  Number of output rows (batch dimension)
+ * @param K  Reduction dimension
+ * @param N  Number of output columns
+ */
+static void run_wf16a32_test(const uint32_t M, const uint32_t K,
+                             const uint32_t N) {
+  auto &htp = htp::HtpInterface::instance();
+
+  ASSERT_NE(htp.htp_ops_mat_mul_af32_wf16_of32, nullptr)
+    << "HTP library not loaded";
+
+  auto handle = htp.get_global_handle();
+  ASSERT_NE(handle, (uint64_t)0) << "DSP session not opened (handle == 0)";
+
+  // Generate random test data
+  std::vector<float> activation =
+    generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
+  std::vector<float> weight =
+    generate_random_vector<float, false>(K * N, -0.1f, 0.1f);
+
+  // Compute mixed-precision reference: fp32 activation x fp16 weight
+  std::vector<float> ref_dst(M * N, 0.0f);
+  for (uint32_t i = 0; i < M; ++i) {
+    for (uint32_t j = 0; j < N; ++j) {
+      float sum = 0.0f;
+      for (uint32_t l = 0; l < K; ++l) {
+        float a = activation[i * K + l];
+        float w = compute_fp16_to_fp32(compute_fp32_to_fp16(weight[l * N + j]));
+        sum += a * w;
+      }
+      ref_dst[i * N + j] = sum;
+    }
+  }
+
+  // Allocate shared memory for DSP
+  float *output_ptr = nullptr;
+  float *activation_ptr = nullptr;
+  uint16_t *weight_ptr = nullptr;
+  int output_fd, activation_fd, weight_fd;
+
+  int err = htp.alloc_shared_mem_buf((void **)&output_ptr, &output_fd,
+                                     M * N * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate output buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
+                                 M * K * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd,
+                                 K * N * sizeof(uint16_t));
+  ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
+
+  // Copy activation and convert weights to row-major fp16 (no permutation)
+  memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
+  for (uint32_t i = 0; i < K * N; ++i) {
+    weight_ptr[i] = compute_fp32_to_fp16(weight[i]);
+  }
+
+  // Run on DSP
+  err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, output_fd, 0, activation_fd,
+                                           0, weight_fd, 0, M, K, N);
+  ASSERT_EQ(err, 0) << "htp_ops_mat_mul_af32_wf16_of32 failed";
+
+  // Compare results
+  std::vector<float> hmx_dst(M * N);
+  memcpy(hmx_dst.data(), output_ptr, M * N * sizeof(float));
+
+  float mse_err = mse<float>(hmx_dst.data(), ref_dst.data(), M * N);
+  std::cout << "WF16A32 GEMM: " << M << " x " << K << " x " << N << std::endl;
+  std::cout << " - MSE (vs mixed-precision ref): " << mse_err << std::endl;
+
+  EXPECT_IN_RANGE(mse_err, 0.0f, 0.01f);
+
+  // Cleanup
+  htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
+  htp.free_shared_mem_buf(activation_ptr, activation_fd,
+                          M * K * sizeof(float));
+  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
+}
+
+#define DECLARE_wf16a32_test_M_K_N(M, K, N)                                    \
+  TEST(nntrainer_htp_kernels, wf16a32_matmul_##M##_##K##_##N) {                \
+    run_wf16a32_test(M, K, N);                                                  \
+  }
+
+// Test square GEMM dimensions (K == N, M > 1)
+DECLARE_wf16a32_test_M_K_N(32, 32, 32);
+DECLARE_wf16a32_test_M_K_N(32, 256, 256);
+DECLARE_wf16a32_test_M_K_N(32, 512, 512);
+DECLARE_wf16a32_test_M_K_N(32, 1024, 1024);
+
+// Test rectangular GEMM dimensions (K != N, M > 1)
+DECLARE_wf16a32_test_M_K_N(32, 256, 512);
+DECLARE_wf16a32_test_M_K_N(32, 512, 256);
+DECLARE_wf16a32_test_M_K_N(32, 1024, 256);
+DECLARE_wf16a32_test_M_K_N(32, 256, 1024);
+DECLARE_wf16a32_test_M_K_N(32, 64, 512);
+DECLARE_wf16a32_test_M_K_N(32, 512, 64);
+
+// Test GEMV case (M = 1, K == N)
+DECLARE_wf16a32_test_M_K_N(1, 32, 32);
+DECLARE_wf16a32_test_M_K_N(1, 256, 256);
+DECLARE_wf16a32_test_M_K_N(1, 512, 512);
+DECLARE_wf16a32_test_M_K_N(1, 1024, 1024);
+
+// Test GEMV case with rectangular dimensions (M = 1, K != N)
+DECLARE_wf16a32_test_M_K_N(1, 256, 512);
+DECLARE_wf16a32_test_M_K_N(1, 512, 256);
+DECLARE_wf16a32_test_M_K_N(1, 1024, 64);
+DECLARE_wf16a32_test_M_K_N(1, 64, 1024);
+
+// Test non-power-of-2 M dimensions
+DECLARE_wf16a32_test_M_K_N(28, 256, 256);
+DECLARE_wf16a32_test_M_K_N(68, 256, 256);
+DECLARE_wf16a32_test_M_K_N(28, 512, 256);
+DECLARE_wf16a32_test_M_K_N(68, 256, 512);
+
 #else
 
 TEST(nntrainer_htp_kernels, htp_not_enabled) {
