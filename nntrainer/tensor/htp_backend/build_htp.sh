@@ -13,7 +13,7 @@ set -e
 # Set & Create Build Path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESON_BUILD_DIR="$1"
-BUILD_DIR="${SCRIPT_DIR}/build_dsp"
+BUILD_DIR="${SCRIPT_DIR}/build_htp"
 
 cd ${SCRIPT_DIR}
 
