@@ -919,6 +919,54 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   float *rdata = output.getData<float>();
   const float alpha = 1.0f;
 
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  // HTP accelerated path: only for standard (non-transposed) matmul without
+  // accumulation. Falls through to CPU for unsupported configurations.
+  if (!trans && !trans_in && beta == 0.0f) {
+    auto &htp = nntrainer::htp::HtpInterface::instance();
+    if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
+        htp.free_shared_mem_buf && htp.get_global_handle) {
+      auto handle = htp.get_global_handle();
+      if (handle != 0) {
+        size_t act_size = M * K * sizeof(float);
+        size_t wt_size = K * N * sizeof(_FP16);
+        size_t out_size = M * N * sizeof(float);
+
+        void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
+        int act_fd = -1, wt_fd = -1, out_fd = -1;
+
+        int err = 0;
+        err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
+        err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
+        err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
+
+        if (err == 0) {
+          memcpy(act_buf, data, act_size);
+          memcpy(wt_buf, mdata, wt_size);
+
+          err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, out_fd, 0, act_fd,
+                                                   0, wt_fd, 0, M, K, N);
+          if (err == 0) {
+            memcpy(rdata, out_buf, out_size);
+            htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+            htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+            htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+            return output;
+          }
+        }
+
+        if (act_buf)
+          htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+        if (wt_buf)
+          htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+        if (out_buf)
+          htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+        // Fall through to CPU path on error
+      }
+    }
+  }
+#endif // ENABLE_HTP
+
   /// shortcut handling in case of vector
   /// for vector, (1 * K) == (K * 1) in current memory layout...
   /// and please note that N, K, M is a fixed place holder after considering
