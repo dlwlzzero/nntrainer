@@ -52,28 +52,25 @@ build_cmake android
 build_cmake hexagon DSP_ARCH=v73/v75
 ```
 
-## Running Unit Tests (TODO)
+## Running Unit Tests
 
-### On-device test binary
-
-The build produces `htp_ops_test` in the build output directory. To run it on
-an Android device:
+Unit tests for the HTP backend are located under `test/unittest/`.
+Before running the tests, `libhtp_ops.so` and `libhtp_ops_skel.so` must
+already be built via the [Full build](#full-build-with-meson) or
+[Standalone cmake build](#standalone-cmake-build-without-meson) steps above.
 
 ```bash
-# Push test binary and libraries to device
-adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops_skel.so /data/local/tmp/target
-adb push build/nntrainer/tensor/htp_backend/htp_lib/libhtp_ops.so /data/local/tmp/target
+# 1. Build and push nntrainer test binaries to device
+$ ./tools/android_test.sh
 
-# Run on device
-adb shell
-cd /data/local/tmp
-export LD_LIBRARY_PATH=.
-export DSP_LIBRARY_PATH=.
-./htp_ops_test
+# 2. Push HTP libraries to the test directory on device
+$ adb push /path/to/libhtp_ops.so /data/local/tmp/nntr_android_test
+$ adb push /path/to/libhtp_ops_skel.so /data/local/tmp/nntr_android_test
+
+# 3. Run unittest on device
+$ adb shell
+(adb) $ cd /data/local/tmp/nntr_android_test
+(adb) $ export LD_LIBRARY_PATH=.
+(adb) $ export DSP_LIBRARY_PATH=.
+(adb) $ ./<unittest_name>
 ```
-
-### On-device op validation
-
-The DSP-side library includes built-in op validation tests (`htp/op_tests.cc`).
-These tests run directly on the Hexagon DSP and validate correctness of HMX/HVX
-operations against reference implementations.
