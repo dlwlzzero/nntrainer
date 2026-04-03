@@ -85,14 +85,6 @@ cd nntrainer/nntrainer/tensor/htp_backend
 ./run.sh /data/local/tmp/my_test_dir
 ```
 
-The script performs the following steps:
-
-1. Pushes the built artifacts to the device via `adb push`:
-   - `build_htp/libhtp_ops.so`
-   - `build_htp/libhtp_ops_skel.so`
-   - `build_htp/htp_ops_test`
-2. Executes `htp_ops_test` on the device with `LD_LIBRARY_PATH` set to the target directory.
-
 **Requirements:**
 - A Qualcomm Android device must be connected and accessible via `adb`.
 - The standalone cmake build must be completed first (`./build_htp.sh`).
