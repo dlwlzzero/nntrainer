@@ -32,9 +32,7 @@ meson setup build -Dwerror=false -Denable-htp=true
 ninja -C build
 ```
 
-### Build output
-
-After a successful build:
+Build output:
 
 ```
 build/nntrainer/tensor/htp_backend/htp_lib/
@@ -52,7 +50,7 @@ cd nntrainer/nntrainer/tensor/htp_backend
 ./build_htp.sh
 ```
 
-After a successful build, the output files are located at:
+Build output:
 
 ```
 nntrainer/nntrainer/tensor/htp_backend/build_htp/
