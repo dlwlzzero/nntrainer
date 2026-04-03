@@ -64,6 +64,10 @@ nntrainer/nntrainer/tensor/htp_backend/build_htp/
 The target device's DSP architecture must be specified via the `DSP_ARCH`
 option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
 Android device before running the build.
+```
+# use can choose v73, v75, v79
+build_cmake hexagon DSP_ARCH=<dsp_ver> 
+```
 
 ## Running Unit Tests
 
