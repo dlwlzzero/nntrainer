@@ -62,7 +62,7 @@ static void permute_weight_to_fp16_tiles(const float *weight_f32,
  * @param K  Reduction dimension
  * @param N  Number of output columns
  */
-static void run_w16a32_test(const uint32_t M, const uint32_t K,
+static void run_mat_mul_af32_pwf16_of32_test(const uint32_t M, const uint32_t K,
                             const uint32_t N) {
   auto &htp = htp::HtpInterface::instance();
 
@@ -139,42 +139,42 @@ static void run_w16a32_test(const uint32_t M, const uint32_t K,
   htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
 }
 
-#define DECLARE_w16a32_test_M_K_N(M, K, N)                                     \
-  TEST(nntrainer_htp_kernels, w16a32_matmul_##M##_##K##_##N) {                 \
-    run_w16a32_test(M, K, N);                                                  \
+#define DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(M, K, N)                                     \
+  TEST(nntrainer_htp_kernels, mat_mul_af32_pwf16_of32_##M##_##K##_##N) {                 \
+    run_mat_mul_af32_pwf16_of32_test(M, K, N);                                                  \
   }
 
 // Test square GEMM dimensions (K == N, M > 1)
-DECLARE_w16a32_test_M_K_N(32, 32, 32);
-DECLARE_w16a32_test_M_K_N(32, 256, 256);
-DECLARE_w16a32_test_M_K_N(32, 512, 512);
-DECLARE_w16a32_test_M_K_N(32, 1024, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 32, 32);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 512, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 1024, 1024);
 
 // Test rectangular GEMM dimensions (K != N, M > 1)
-DECLARE_w16a32_test_M_K_N(32, 256, 512);
-DECLARE_w16a32_test_M_K_N(32, 512, 256);
-DECLARE_w16a32_test_M_K_N(32, 1024, 256);
-DECLARE_w16a32_test_M_K_N(32, 256, 1024);
-DECLARE_w16a32_test_M_K_N(32, 64, 512);
-DECLARE_w16a32_test_M_K_N(32, 512, 64);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 256, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 1024, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 256, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 64, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(32, 512, 64);
 
 // Test GEMV case (M = 1, K == N)
-DECLARE_w16a32_test_M_K_N(1, 32, 32);
-DECLARE_w16a32_test_M_K_N(1, 256, 256);
-DECLARE_w16a32_test_M_K_N(1, 512, 512);
-DECLARE_w16a32_test_M_K_N(1, 1024, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 32, 32);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 512, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 1024, 1024);
 
 // Test GEMV case with rectangular dimensions (M = 1, K != N)
-DECLARE_w16a32_test_M_K_N(1, 256, 512);
-DECLARE_w16a32_test_M_K_N(1, 512, 256);
-DECLARE_w16a32_test_M_K_N(1, 1024, 64);
-DECLARE_w16a32_test_M_K_N(1, 64, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 256, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 1024, 64);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(1, 64, 1024);
 
 // Test non-power-of-2 M dimensions
-DECLARE_w16a32_test_M_K_N(28, 256, 256);
-DECLARE_w16a32_test_M_K_N(68, 256, 256);
-DECLARE_w16a32_test_M_K_N(28, 512, 256);
-DECLARE_w16a32_test_M_K_N(68, 256, 512);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(28, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(68, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(28, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(68, 256, 512);
 
 /**
  * @brief Run a single wf16a32 matmul test with the given dimensions.
@@ -193,7 +193,7 @@ DECLARE_w16a32_test_M_K_N(68, 256, 512);
  * @param K  Reduction dimension
  * @param N  Number of output columns
  */
-static void run_wf16a32_test(const uint32_t M, const uint32_t K,
+static void run_mat_mul_af32_wf16_of32_test(const uint32_t M, const uint32_t K,
                              const uint32_t N) {
   auto &htp = htp::HtpInterface::instance();
 
@@ -269,42 +269,42 @@ static void run_wf16a32_test(const uint32_t M, const uint32_t K,
   htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
 }
 
-#define DECLARE_wf16a32_test_M_K_N(M, K, N)                                    \
-  TEST(nntrainer_htp_kernels, wf16a32_matmul_##M##_##K##_##N) {                \
-    run_wf16a32_test(M, K, N);                                                  \
+#define DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(M, K, N)                                    \
+  TEST(nntrainer_htp_kernels, mat_mul_af32_wf16_of32_##M##_##K##_##N) {                \
+    run_mat_mul_af32_wf16_of32_test(M, K, N);                                                  \
   }
 
 // Test square GEMM dimensions (K == N, M > 1)
-DECLARE_wf16a32_test_M_K_N(32, 32, 32);
-DECLARE_wf16a32_test_M_K_N(32, 256, 256);
-DECLARE_wf16a32_test_M_K_N(32, 512, 512);
-DECLARE_wf16a32_test_M_K_N(32, 1024, 1024);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 32, 32);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 256, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 512, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 1024, 1024);
 
 // Test rectangular GEMM dimensions (K != N, M > 1)
-DECLARE_wf16a32_test_M_K_N(32, 256, 512);
-DECLARE_wf16a32_test_M_K_N(32, 512, 256);
-DECLARE_wf16a32_test_M_K_N(32, 1024, 256);
-DECLARE_wf16a32_test_M_K_N(32, 256, 1024);
-DECLARE_wf16a32_test_M_K_N(32, 64, 512);
-DECLARE_wf16a32_test_M_K_N(32, 512, 64);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 256, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 512, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 1024, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 256, 1024);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 64, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(32, 512, 64);
 
 // Test GEMV case (M = 1, K == N)
-DECLARE_wf16a32_test_M_K_N(1, 32, 32);
-DECLARE_wf16a32_test_M_K_N(1, 256, 256);
-DECLARE_wf16a32_test_M_K_N(1, 512, 512);
-DECLARE_wf16a32_test_M_K_N(1, 1024, 1024);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 32, 32);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 256, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 512, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 1024, 1024);
 
 // Test GEMV case with rectangular dimensions (M = 1, K != N)
-DECLARE_wf16a32_test_M_K_N(1, 256, 512);
-DECLARE_wf16a32_test_M_K_N(1, 512, 256);
-DECLARE_wf16a32_test_M_K_N(1, 1024, 64);
-DECLARE_wf16a32_test_M_K_N(1, 64, 1024);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 256, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 512, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 1024, 64);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(1, 64, 1024);
 
 // Test non-power-of-2 M dimensions
-DECLARE_wf16a32_test_M_K_N(28, 256, 256);
-DECLARE_wf16a32_test_M_K_N(68, 256, 256);
-DECLARE_wf16a32_test_M_K_N(28, 512, 256);
-DECLARE_wf16a32_test_M_K_N(68, 256, 512);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(28, 256, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(68, 256, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(28, 512, 256);
+DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(68, 256, 512);
 
 #else
 
