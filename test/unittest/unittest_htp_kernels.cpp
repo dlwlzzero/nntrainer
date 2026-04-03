@@ -206,17 +206,20 @@ static void run_mat_mul_af32_wf16_of32_test(const uint32_t M, const uint32_t K,
   // Generate random test data
   std::vector<float> activation =
     generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
+  // weight is stored in [N x K] layout (row: output dim, col: reduction dim)
+  // as expected by hmx_mat_mul_af32_wf16_of32
   std::vector<float> weight =
-    generate_random_vector<float, false>(K * N, -0.1f, 0.1f);
+    generate_random_vector<float, false>(N * K, -0.1f, 0.1f);
 
   // Compute mixed-precision reference: fp32 activation x fp16 weight
+  // C[i,j] = sum_l A[i,l] * W[j,l]  (W in [N x K]: weight[j * K + l])
   std::vector<float> ref_dst(M * N, 0.0f);
   for (uint32_t i = 0; i < M; ++i) {
     for (uint32_t j = 0; j < N; ++j) {
       float sum = 0.0f;
       for (uint32_t l = 0; l < K; ++l) {
         float a = activation[i * K + l];
-        float w = compute_fp16_to_fp32(compute_fp32_to_fp16(weight[l * N + j]));
+        float w = compute_fp16_to_fp32(compute_fp32_to_fp16(weight[j * K + l]));
         sum += a * w;
       }
       ref_dst[i * N + j] = sum;
@@ -238,12 +241,12 @@ static void run_mat_mul_af32_wf16_of32_test(const uint32_t M, const uint32_t K,
   ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
 
   err = htp.alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd,
-                                 K * N * sizeof(uint16_t));
+                                 N * K * sizeof(uint16_t));
   ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
 
-  // Copy activation and convert weights to row-major fp16 (no permutation)
+  // Copy activation and convert weights to row-major fp16 [N x K] (no permutation)
   memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
-  for (uint32_t i = 0; i < K * N; ++i) {
+  for (uint32_t i = 0; i < N * K; ++i) {
     weight_ptr[i] = compute_fp32_to_fp16(weight[i]);
   }
 
@@ -266,7 +269,7 @@ static void run_mat_mul_af32_wf16_of32_test(const uint32_t M, const uint32_t K,
   htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
   htp.free_shared_mem_buf(activation_ptr, activation_fd,
                           M * K * sizeof(float));
-  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
+  htp.free_shared_mem_buf(weight_ptr, weight_fd, N * K * sizeof(uint16_t));
 }
 
 #define DECLARE_mat_mul_af32_wf16_of32_test_M_K_N(M, K, N)                                    \
