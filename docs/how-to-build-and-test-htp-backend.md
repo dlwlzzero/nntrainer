@@ -98,8 +98,7 @@ cd nntrainer/nntrainer/tensor/htp_backend
 
 Unit tests for the HTP backend are located under `test/unittest/`.
 Before running the tests, `libhtp_ops.so` and `libhtp_ops_skel.so` must
-already be built via the [Full build](#full-build-with-meson) or
-[Standalone cmake build](#standalone-cmake-build-without-meson) steps above.
+already be built via the [Full build](#full-build-with-meson) steps above.
 
 ```bash
 # 1. Build and push nntrainer test binaries to device
@@ -113,6 +112,5 @@ $ adb push /path/to/libhtp_ops_skel.so /data/local/tmp/nntr_android_test
 $ adb shell
 (adb) $ cd /data/local/tmp/nntr_android_test
 (adb) $ export LD_LIBRARY_PATH=.
-(adb) $ export DSP_LIBRARY_PATH=.
 (adb) $ ./<unittest_name>
 ```
