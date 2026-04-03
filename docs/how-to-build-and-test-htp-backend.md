@@ -96,7 +96,11 @@ The script performs the following steps:
 **Requirements:**
 - A Qualcomm Android device must be connected and accessible via `adb`.
 - The standalone cmake build must be completed first (`./build_htp.sh`).
-- `adb` must be available at `/usr/lib/android-sdk/platform-tools/adb` (the default path in `run.sh`).
+- The `adb_dir` variable at the top of `run.sh` must be set to the actual `adb` path on your system before running the script:
+  ```bash
+  # run.sh
+  adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
+  ```
 
 ## Running Unit Tests
 
