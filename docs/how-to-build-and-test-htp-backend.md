@@ -15,6 +15,7 @@ The build produces two shared libraries:
 
 ## Prerequisites
 
+- nntrainer basic setup must be completed first. See [Getting Started](getting-started.md).
 - **Hexagon SDK >= v6.0.0.2** with setup complete
 - **CMake >= 3.14.3**
 - `HEXAGON_SDK_HOME` environment variable pointing to SDK root
