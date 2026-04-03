@@ -48,9 +48,23 @@ build/nntrainer/tensor/htp_backend/htp_lib/
 export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
 
 cd nntrainer/nntrainer/tensor/htp_backend
-build_cmake android
-build_cmake hexagon DSP_ARCH=v73/v75
+./build_htp.sh
 ```
+
+After a successful build, the output files are located at:
+
+```
+nntrainer/nntrainer/tensor/htp_backend/build_htp/
+├── libhtp_ops.so        # Host stub library
+├── libhtp_ops_skel.so   # DSP skel library
+└── htp_ops_test         # Test binary
+```
+
+### DSP architecture setting
+
+The target device's DSP architecture must be specified via the `DSP_ARCH`
+option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
+Android device before running the build.
 
 ## Running Unit Tests
 
