@@ -317,7 +317,7 @@ bail:
 }
 
 // FastRPC interface
-AEEResult htp_ops_mat_mul_permuted_qk_0_d16a32(remote_handle64 handle, int32 output_fd, int32 output_offset,
+AEEResult htp_ops_mat_mul_af32_pwqk0_of32(remote_handle64 handle, int32 output_fd, int32 output_offset,
                                           int32 activation_fd, int32 activation_offset, int32 weight_fd,
                                           int32 weight_offset, int32 m, int32 k, int32 n, int32 weight_type) {
   uint8_t *p0, *p1, *p2;
@@ -353,7 +353,7 @@ AEEResult htp_ops_mat_mul_permuted_qk_0_d16a32(remote_handle64 handle, int32 out
   qurt_mem_cache_clean((qurt_addr_t) weight, weight_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
 
   hmx_manager_enable_execution();
-  err = hmx_mat_mul_permuted_qk_0_d16a32(output, activation, weight, m, k, n, GGML_TYPE_Q4_0);
+  err = hmx_mat_mul_af32_pwqk0_of32(output, activation, weight, m, k, n, GGML_TYPE_Q4_0);
   hmx_manager_disable_execution();
 
   qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);

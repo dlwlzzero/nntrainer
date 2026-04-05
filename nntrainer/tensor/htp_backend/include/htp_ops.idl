@@ -17,6 +17,8 @@ interface htp_ops : remote_handle64 {
         in int32 m, in int32 k, in int32 n);
     AEEResult mat_mul_af32_wf16_of32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 fd2, in int32 offset2,
         in int32 m, in int32 k, in int32 n);
+    AEEResult mat_mul_af32_pwqk0_of32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 fd2, in int32 offset2,
+        in int32 m, in int32 k, in int32 n, in int32 wgt_dt);
     
     AEEResult test_ops();
 };

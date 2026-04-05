@@ -929,10 +929,10 @@ static void core_dot_fp16_hmx_worker_fn(void *data, int _worker_index) {
   worker_pool_synctoken_jobdone(&st->sync_ctx);
 }
 
-int mat_mul_qk_0_d16a32_out_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
+int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
                                        int k, int n, enum ggml_type w_type);
 
-int hmx_mat_mul_permuted_qk_0_d16a32(float *restrict dst, const float *restrict activation,
+int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activation,
                                      const uint8_t *restrict permuted_weight, int m, int k, int n,
                                      enum ggml_type weight_type) {
   if (!dst || !activation || !permuted_weight || !m || !n || !k) {
@@ -948,7 +948,7 @@ int hmx_mat_mul_permuted_qk_0_d16a32(float *restrict dst, const float *restrict 
 
   // for large m, k (e.g. prefill FFN Down), use out-staionary version
   if (m >= 128 && k > n && n > 1024) {
-    return mat_mul_qk_0_d16a32_out_stationary(dst, activation, permuted_weight, m, k, n, weight_type);
+    return mat_mul_af32_pwqk0_of32_stationary(dst, activation, permuted_weight, m, k, n, weight_type);
   }
 
   size_t super_block_size = get_super_block_size(weight_type);
@@ -1356,7 +1356,7 @@ void transfer_activation_chunk_multithread(__fp16 *dst, const float *src, int n_
   worker_pool_synctoken_wait(&state.sync_ctx);
 }
 
-int mat_mul_qk_0_d16a32_out_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
+int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
                                        int k, int n, enum ggml_type weight_type) {
   // NOTE(hzx): this constraint on k originates from 2D DMA, consider alternative ways to load activation
   assert(k < 16384);
