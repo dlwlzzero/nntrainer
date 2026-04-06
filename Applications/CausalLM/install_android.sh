@@ -206,7 +206,8 @@ for htp_dir in \
     "$SCRIPT_DIR/jni/libs/arm64-v8a" \
     "$SCRIPT_DIR/lib" \
     "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a" \
-    "$NNTRAINER_ROOT/builddir/build/nntrainer/tensor/htp_backend/htp_lib"; do
+    "$NNTRAINER_ROOT/builddir/nntrainer/tensor/htp_backend/htp_lib" \
+    "$NNTRAINER_ROOT/nntrainer/tensor/htp_backend/build_htp"; do
     if [ -f "$htp_dir/libhtp_ops.so" ]; then
         adb push "$htp_dir/libhtp_ops.so" "$INSTALL_DIR/" 2>&1 | tail -1
         HTP_LIB_DIR="$htp_dir"

@@ -121,13 +121,20 @@ log_success "nntrainer ready"
 # Copy HTP libraries to CausalLM libs directory if HTP build is enabled
 if [ "$ENABLE_HTP" = "1" ]; then
     log_info "Copying HTP libraries..."
-    HTP_BUILD_DIR="$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a"
-    HTP_MESON_BUILD_DIR="$NNTRAINER_ROOT/builddir/build/nntrainer/tensor/htp_backend/htp_lib"
+    # Candidate paths where libhtp_ops.so may have been built:
+    #   1) meson install output (ninja install with install: true)
+    #   2) meson build directory (custom_target output)
+    #   3) standalone cmake build (./build_htp.sh without meson)
+    HTP_SEARCH_DIRS=(
+        "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a"
+        "$NNTRAINER_ROOT/builddir/nntrainer/tensor/htp_backend/htp_lib"
+        "$NNTRAINER_ROOT/nntrainer/tensor/htp_backend/build_htp"
+    )
     LIBS_DIR="$SCRIPT_DIR/jni/libs/arm64-v8a"
     mkdir -p "$LIBS_DIR"
 
     HTP_COPIED=false
-    for htp_dir in "$HTP_BUILD_DIR" "$HTP_MESON_BUILD_DIR"; do
+    for htp_dir in "${HTP_SEARCH_DIRS[@]}"; do
         if [ -f "$htp_dir/libhtp_ops.so" ]; then
             cp "$htp_dir/libhtp_ops.so" "$LIBS_DIR/"
             log_success "libhtp_ops.so copied from $htp_dir"
@@ -144,8 +151,10 @@ if [ "$ENABLE_HTP" = "1" ]; then
     if [ "$HTP_COPIED" = false ]; then
         log_warning "libhtp_ops.so not found in build output. HTP acceleration may not work on device."
         log_info "Checked paths:"
-        log_info "  - $HTP_BUILD_DIR"
-        log_info "  - $HTP_MESON_BUILD_DIR"
+        for d in "${HTP_SEARCH_DIRS[@]}"; do
+            log_info "  - $d"
+        done
+        log_info "Please build HTP libraries first. See docs/how-to-build-and-test-htp-backend.md"
     fi
 fi
 
