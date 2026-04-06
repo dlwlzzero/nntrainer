@@ -534,8 +534,9 @@ static void run_mat_mul_af32_pwqk0_of32_test(const uint32_t M,
             << std::endl;
   std::cout << " - MSE (vs Q4_0-dequantized ref): " << mse_err << std::endl;
 
-  // Higher tolerance than fp16 tests due to 4-bit quantization error
-  EXPECT_IN_RANGE(mse_err, 0.0f, 0.1f);
+  // Scale tolerance with dimensions, matching CPU backend convention
+  constexpr float eps = 1e-5;
+  EXPECT_LE(mse_err, eps * M * K * N);
 
   // Cleanup
   htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
