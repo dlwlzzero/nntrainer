@@ -59,4 +59,10 @@ rm -rf hexagon_*
 echo -e "${GREEN}=== HMX DSP Backend build complete ===${NC}"
 echo "Library location: ${BUILD_DIR}/"
 
+# If called by meson, copy libhtp_ops.so to MESON_BUILD_DIR so that
+# meson's custom_target can find the declared output file.
+if [ -n "${MESON_BUILD_DIR}" ] && [ -f "${BUILD_DIR}/libhtp_ops.so" ]; then
+    cp "${BUILD_DIR}/libhtp_ops.so" "${MESON_BUILD_DIR}/"
+fi
+
 cd -
