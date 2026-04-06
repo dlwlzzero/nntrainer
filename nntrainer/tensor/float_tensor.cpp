@@ -1038,7 +1038,90 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
       gemm_q4_0_cl((void *)mdata, data, rdata, M, N, K);
     }
 #elif defined(ENABLE_HTP) && ENABLE_HTP == 1
-    // TODO
+    {
+      bool htp_done = false;
+      // HTP requires K multiple of 256 (QK_K super-block) and N multiple of 32
+      if (K % 256 == 0 && N % 32 == 0) {
+        auto &htp = nntrainer::htp::HtpInterface::instance();
+        if (htp.htp_ops_mat_mul_af32_pwqk0_of32 && htp.alloc_shared_mem_buf &&
+            htp.free_shared_mem_buf && htp.get_global_handle) {
+          auto handle = htp.get_global_handle();
+          if (handle != 0) {
+            size_t act_size = (size_t)M * K * sizeof(float);
+            size_t out_size = (size_t)M * N * sizeof(float);
+
+            // Unpack repacked q4_0x → standard block_q4_0
+            constexpr size_t BLK_ELEMS = 32;
+            constexpr size_t BLK_BYTES = 18; // sizeof(block_q4_0): 2B scale + 16B quants
+            size_t n_blocks = (size_t)N * K / BLK_ELEMS;
+            size_t q4_data_size = n_blocks * BLK_BYTES;
+            std::vector<uint8_t> unpacked(q4_data_size);
+            unpack_q4_0(mdata, unpacked.data(), q4_data_size, N, K);
+
+            // Convert block_q4_0 → my_block_q4_0 (super-block) format
+            // my_block_q4_0: [8 x fp16 scales (16B), 8 x 16B quants (128B)] = 144B
+            constexpr size_t GROUPS_PER_SUPER = 8;
+            constexpr size_t SUPER_BYTES = 144;
+            size_t n_supers = n_blocks / GROUPS_PER_SUPER;
+            size_t wt_size = n_supers * SUPER_BYTES;
+
+            void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
+            int act_fd = -1, wt_fd = -1, out_fd = -1;
+
+            int err = 0;
+            err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
+            err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
+            err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
+
+            if (err == 0) {
+              memcpy(act_buf, data, act_size);
+
+              // Reformat: gather scales first, then quants for each super-block
+              const uint8_t *src = unpacked.data();
+              uint8_t *dst_ptr = static_cast<uint8_t *>(wt_buf);
+              for (size_t sb = 0; sb < n_supers; ++sb) {
+                uint8_t *sb_dst = dst_ptr + sb * SUPER_BYTES;
+                const uint8_t *sb_src = src + sb * GROUPS_PER_SUPER * BLK_BYTES;
+                for (int g = 0; g < 8; ++g) {
+                  memcpy(sb_dst + g * 2,
+                         sb_src + g * BLK_BYTES, 2);
+                }
+                for (int g = 0; g < 8; ++g) {
+                  memcpy(sb_dst + 16 + g * 16,
+                         sb_src + g * BLK_BYTES + 2, 16);
+                }
+              }
+
+              constexpr int GGML_TYPE_Q4_0_VAL = 2;
+              err = htp.htp_ops_mat_mul_af32_pwqk0_of32(
+                handle, out_fd, 0, act_fd, 0, wt_fd, 0, M, K, N,
+                GGML_TYPE_Q4_0_VAL);
+
+              if (err == 0) {
+                memcpy(rdata, out_buf, out_size);
+                htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+                htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+                htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+                htp_done = true;
+              }
+            }
+
+            if (!htp_done) {
+              if (act_buf)
+                htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+              if (wt_buf)
+                htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+              if (out_buf)
+                htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+            }
+          }
+        }
+      }
+      // Fall back to CPU path if HTP not available or failed
+      if (!htp_done) {
+        gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
+      }
+    }
 #else
     gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
 #endif
