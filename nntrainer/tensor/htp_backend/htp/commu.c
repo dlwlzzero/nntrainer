@@ -17,6 +17,7 @@
 #include "htp/op_executor.h"
 #include "htp/ops.h"
 #include "htp/power.h"
+#include "htp/quants.h"
 #include "htp/vtcm_mgr.h"
 #include "host/htp_ops.h"  // QAIC auto-generated header for FastRPC
 #include "message.h"
@@ -460,7 +461,7 @@ AEEResult htp_ops_mat_mul_af32_pwqk0_of32(remote_handle64 handle, int32 output_f
 
   size_t output_size     = m * n * sizeof(float);
   size_t activation_size = m * k * sizeof(float);
-  size_t weight_size     = k * n * sizeof(uint8_t);
+  size_t weight_size     = (size_t)k * n / QK_K * sizeof(my_block_q4_0);
 
   qurt_mem_cache_clean((qurt_addr_t) activation, activation_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
   qurt_mem_cache_clean((qurt_addr_t) weight, weight_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
