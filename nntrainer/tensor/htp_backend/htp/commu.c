@@ -317,61 +317,6 @@ bail:
 }
 
 // FastRPC interface
-AEEResult htp_ops_mat_mul_af32_pwqk0_of32(remote_handle64 handle, int32 output_fd, int32 output_offset,
-                                          int32 activation_fd, int32 activation_offset, int32 weight_fd,
-                                          int32 weight_offset, int32 m, int32 k, int32 n, int32 weight_type) {
-  uint8_t *p0, *p1, *p2;
-  p0 = p1 = p2 = NULL;
-
-  int err = HAP_mmap_get(output_fd, (void **) &p0, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  err = HAP_mmap_get(activation_fd, (void **) &p1, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  err = HAP_mmap_get(weight_fd, (void **) &p2, NULL);
-  if (err) {
-    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
-    goto bail;
-  }
-
-  float        *output     = (float *) (p0 + output_offset);
-  const float  *activation = (const float *) (p1 + activation_offset);
-  const uint8_t *weight     = (const uint8_t *) (p2 + weight_offset);
-
-  size_t output_size     = m * n * sizeof(float);
-  size_t activation_size = m * k * sizeof(float);
-  size_t weight_size     = k * n * sizeof(uint8_t);
-
-  qurt_mem_cache_clean((qurt_addr_t) activation, activation_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
-  qurt_mem_cache_clean((qurt_addr_t) weight, weight_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
-
-  hmx_manager_enable_execution();
-  err = hmx_mat_mul_af32_pwqk0_of32(output, activation, weight, m, k, n, GGML_TYPE_Q4_0);
-  hmx_manager_disable_execution();
-
-  qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
-
-bail:
-  if (p0) {
-    HAP_mmap_put(output_fd);
-  }
-  if (p1) {
-    HAP_mmap_put(activation_fd);
-  }
-  if (p2) {
-    HAP_mmap_put(weight_fd);
-  }
-  return err;
-}
-
-// FastRPC interface
 AEEResult htp_ops_mat_mul_af32_pwf16_of32(remote_handle64 handle, int32 output_fd, int32 output_offset,
                                           int32 activation_fd, int32 activation_offset, int32 weight_fd,
                                           int32 weight_offset, int32 m, int32 k, int32 n) {
@@ -480,6 +425,61 @@ bail:
   }
   if (p2) {
     HAP_mmap_put(wgt_fd);
+  }
+  return err;
+}
+
+// FastRPC interface
+AEEResult htp_ops_mat_mul_af32_pwqk0_of32(remote_handle64 handle, int32 output_fd, int32 output_offset,
+                                          int32 activation_fd, int32 activation_offset, int32 weight_fd,
+                                          int32 weight_offset, int32 m, int32 k, int32 n, int32 weight_type) {
+  uint8_t *p0, *p1, *p2;
+  p0 = p1 = p2 = NULL;
+
+  int err = HAP_mmap_get(output_fd, (void **) &p0, NULL);
+  if (err) {
+    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+    goto bail;
+  }
+
+  err = HAP_mmap_get(activation_fd, (void **) &p1, NULL);
+  if (err) {
+    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+    goto bail;
+  }
+
+  err = HAP_mmap_get(weight_fd, (void **) &p2, NULL);
+  if (err) {
+    FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+    goto bail;
+  }
+
+  float        *output     = (float *) (p0 + output_offset);
+  const float  *activation = (const float *) (p1 + activation_offset);
+  const uint8_t *weight     = (const uint8_t *) (p2 + weight_offset);
+
+  size_t output_size     = m * n * sizeof(float);
+  size_t activation_size = m * k * sizeof(float);
+  size_t weight_size     = k * n * sizeof(uint8_t);
+
+  qurt_mem_cache_clean((qurt_addr_t) activation, activation_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+  qurt_mem_cache_clean((qurt_addr_t) weight, weight_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+
+  hmx_manager_enable_execution();
+  err = hmx_mat_mul_af32_pwqk0_of32(output, activation, weight, m, k, n, GGML_TYPE_Q4_0);
+  hmx_manager_disable_execution();
+
+  qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);
+
+bail:
+  if (p0) {
+    HAP_mmap_put(output_fd);
+  }
+  if (p1) {
+    HAP_mmap_put(activation_fd);
+  }
+  if (p2) {
+    HAP_mmap_put(weight_fd);
   }
   return err;
 }

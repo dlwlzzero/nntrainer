@@ -16,3 +16,8 @@ int htp_ops_rpc_mat_mul_af32_wf16_of32(int output_fd, int output_offset, int act
                                         int weight_fd, int weight_offset, int m, int k, int n) {
   return htp_ops_mat_mul_af32_wf16_of32(get_global_handle(), output_fd, output_offset, activation_fd, activation_offset, weight_fd, weight_offset, m, k, n);
 }
+
+int htp_ops_rpc_mat_mul_af32_pwqk0_of32(int output_fd, int output_offset, int activation_fd, int activation_offset,
+                                        int weight_fd, int weight_offset, int m, int k, int n, int weight_type){
+  return htp_ops_mat_mul_af32_pwqk0_of32(get_global_handle(), output_fd, output_offset, activation_fd, activation_offset, weight_fd, weight_offset, m, k, n, weight_type);
+}
