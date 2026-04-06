@@ -192,11 +192,29 @@ else
     log_warning "libomp.so not found (skipping)"
 fi
 
-log_info "  [6/6] libcausallm_api.so (CausalLM API library)..."
+log_info "  [6/7] libcausallm_api.so (CausalLM API library)..."
 if [ -f "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" ]; then
     adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" "$INSTALL_DIR/" 2>&1 | tail -1
 else
     log_warning "libcausallm_api.so not found (Optional, skipping)"
+fi
+
+log_info "  [7/7] libhtp_ops.so (HTP DSP operations library)..."
+HTP_LIB_FOUND=false
+# Check multiple possible locations for libhtp_ops.so
+for htp_path in \
+    "$SCRIPT_DIR/jni/libs/arm64-v8a/libhtp_ops.so" \
+    "$SCRIPT_DIR/lib/libhtp_ops.so" \
+    "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libhtp_ops.so"; do
+    if [ -f "$htp_path" ]; then
+        adb push "$htp_path" "$INSTALL_DIR/" 2>&1 | tail -1
+        HTP_LIB_FOUND=true
+        log_success "libhtp_ops.so pushed from $htp_path"
+        break
+    fi
+done
+if [ "$HTP_LIB_FOUND" = false ]; then
+    log_warning "libhtp_ops.so not found (HTP acceleration disabled, CPU fallback will be used)"
 fi
 
 log_success "All libraries pushed"
@@ -256,6 +274,7 @@ log_info "  - libnntrainer.so"
 log_info "  - libccapi-nntrainer.so"
 log_info "  - libc++_shared.so"
 log_info "  - libomp.so (if available)"
+log_info "  - libhtp_ops.so (if available, for HTP DSP acceleration)"
 log_header "How to run"
 log_info "To run CausalLM on the device:"
 log_info "  1. Push your model files to: $MODEL_DIR/"
