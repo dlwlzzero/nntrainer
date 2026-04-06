@@ -9,6 +9,7 @@ MODEL_DIR="$INSTALL_DIR/models"
 
 # Set SCRIPT_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NNTRAINER_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Color codes
 RED='\033[0;31m'
