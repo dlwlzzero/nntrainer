@@ -44,6 +44,11 @@
 #include <models/gemma3/function.h>
 #include <sys/resource.h>
 
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+#include <htp_interface.h>
+#define CDSP_DOMAIN_ID 3
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -132,6 +137,23 @@ std::string resolve_architecture(std::string model_type,
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  auto &htp = nntrainer::htp::HtpInterface::instance();
+  if (htp.open_dsp_session) {
+    int err = htp.open_dsp_session(CDSP_DOMAIN_ID, 1);
+    if (err != 0) {
+      std::cerr << "HTP: Failed to open DSP session (error=" << err << ")"
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    htp.init_htp_backend();
+    std::cout << "HTP: DSP session opened successfully" << std::endl;
+  } else {
+    std::cerr << "HTP: libhtp_ops.so not loaded, falling back to CPU"
+              << std::endl;
+  }
+#endif
 
   /** Register all runnable causallm models to factory */
   causallm::Factory::Instance().registerModel(
@@ -298,8 +320,20 @@ int main(int argc, char *argv[]) {
 
   } catch (const std::exception &e) {
     std::cerr << "\n[!] FATAL ERROR: " << e.what() << "\n";
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+    if (htp.close_dsp_session) {
+      htp.close_dsp_session();
+    }
+#endif
     return EXIT_FAILURE;
   }
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  if (htp.close_dsp_session) {
+    htp.close_dsp_session();
+    std::cout << "HTP: DSP session closed" << std::endl;
+  }
+#endif
 
   return EXIT_SUCCESS;
 }

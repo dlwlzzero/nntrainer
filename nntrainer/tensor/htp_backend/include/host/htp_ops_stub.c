@@ -273,13 +273,13 @@ struct Interface {
 #endif
 
 static const Parameter parameters[5] = {{SLIM_IFPTR32(0x8,0x10),{{(const uintptr_t)0x0,0}}, 4,SLIM_IFPTR32(0x4,0x8),0,0},{SLIM_IFPTR32(0x4,0x8),{{(const uintptr_t)0xdeadc0de,(const uintptr_t)0}}, 0,SLIM_IFPTR32(0x4,0x8),3,0},{SLIM_IFPTR32(0x4,0x8),{{(const uintptr_t)0xdeadc0de,(const uintptr_t)0}}, 0,SLIM_IFPTR32(0x4,0x8),0,0},{0x4,{{(const uintptr_t)0,(const uintptr_t)1}}, 2,0x4,0,0},{0x4,{{(const uintptr_t)0,(const uintptr_t)1}}, 2,0x4,0,0}};
-static const Parameter* const parameterArrays[14] = {(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[4])),(&(parameters[0])),(&(parameters[1])),(&(parameters[2]))};
-static const Method methods[6] = {{REMOTE_SCALARS_MAKEX(0,0,0x2,0x0,0x0,0x1),0x4,0x0,2,2,(&(parameterArrays[11])),0x4,0x1},{REMOTE_SCALARS_MAKEX(0,0,0x0,0x0,0x1,0x0),0x0,0x0,1,1,(&(parameterArrays[13])),0x1,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x0,0x0,0x0,0x0),0x0,0x0,0,0,0,0x0,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x8,0x0,2,2,(&(parameterArrays[9])),0x4,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x18,0x0,6,6,(&(parameterArrays[0])),0x4,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x24,0x0,9,9,(&(parameterArrays[0])),0x4,0x0}};
-static const Method* const methodArrays[8] = {&(methods[0]),&(methods[1]),&(methods[2]),&(methods[3]),&(methods[2]),&(methods[4]),&(methods[5]),&(methods[2])};
-static const char strings[164] = "mat_mul_permuted_w16a32\0destroy_channel\0create_channel\0rms_norm_f32\0init_backend\0test_ops\0offset2\0offset1\0offset0\0close\0size\0open\0fd2\0ne1\0ne0\0fd1\0fd0\0uri\0fd\0k\0m\0h\0";
-static const uint16_t methodStrings[28] = {0,146,106,142,98,130,90,159,157,128,55,146,106,142,98,138,134,40,154,120,125,150,161,114,161,81,24,68};
-static const uint16_t methodStringsArrays[8] = {20,23,27,17,26,10,0,25};
-__QAIC_SLIM_EXPORT const Interface __QAIC_SLIM(htp_ops_slim) = {8,&(methodArrays[0]),0,0,&(methodStringsArrays [0]),methodStrings,strings};
+static const Parameter* const parameterArrays[15] = {(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[3])),(&(parameters[4])),(&(parameters[0])),(&(parameters[1])),(&(parameters[2]))};
+static const Method methods[7] = {{REMOTE_SCALARS_MAKEX(0,0,0x2,0x0,0x0,0x1),0x4,0x0,2,2,(&(parameterArrays[12])),0x4,0x1},{REMOTE_SCALARS_MAKEX(0,0,0x0,0x0,0x1,0x0),0x0,0x0,1,1,(&(parameterArrays[14])),0x1,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x0,0x0,0x0,0x0),0x0,0x0,0,0,0,0x0,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x8,0x0,2,2,(&(parameterArrays[10])),0x4,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x18,0x0,6,6,(&(parameterArrays[0])),0x4,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x24,0x0,9,9,(&(parameterArrays[0])),0x4,0x0},{REMOTE_SCALARS_MAKEX(0,0,0x1,0x0,0x0,0x0),0x28,0x0,10,10,(&(parameterArrays[0])),0x4,0x0}};
+static const Method* const methodArrays[10] = {&(methods[0]),&(methods[1]),&(methods[2]),&(methods[3]),&(methods[2]),&(methods[4]),&(methods[5]),&(methods[5]),&(methods[6]),&(methods[2])};
+static const char strings[218] = "mat_mul_af32_pwqk0_of32\0mat_mul_af32_pwf16_of32\0mat_mul_af32_wf16_of32\0destroy_channel\0create_channel\0rms_norm_f32\0init_backend\0test_ops\0offset2\0offset1\0offset0\0wgt_dt\0close\0size\0open\0fd2\0ne1\0ne0\0fd1\0fd0\0uri\0fd\0k\0m\0h\0";
+static const uint16_t methodStrings[49] = {0,200,153,196,145,184,137,213,211,182,161,48,200,153,196,145,184,137,213,211,182,24,200,153,196,145,184,137,213,211,182,102,200,153,196,145,192,188,87,208,174,179,204,215,168,215,128,71,115};
+static const uint16_t methodStringsArrays[10] = {41,44,48,38,47,31,21,11,0,46};
+__QAIC_SLIM_EXPORT const Interface __QAIC_SLIM(htp_ops_slim) = {10,&(methodArrays[0]),0,0,&(methodStringsArrays [0]),methodStrings,strings};
 #endif //_HTP_OPS_SLIM_H
 
 
@@ -370,12 +370,42 @@ static __inline int _stub_method_3(remote_handle64 _handle, uint32_t _mid, uint3
    }
    return _nErr;
 }
-__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_mat_mul_permuted_w16a32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_STUB_ATTRIBUTE {
+__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_mat_mul_af32_pwf16_of32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_STUB_ATTRIBUTE {
    uint32_t _mid = 6;
    return _stub_method_3(_handle, _mid, (uint32_t*)&fd0, (uint32_t*)&offset0, (uint32_t*)&fd1, (uint32_t*)&offset1, (uint32_t*)&fd2, (uint32_t*)&offset2, (uint32_t*)&m, (uint32_t*)&k, (uint32_t*)&n);
 }
-__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_test_ops)(remote_handle64 _handle) __QAIC_STUB_ATTRIBUTE {
+__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_mat_mul_af32_wf16_of32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_STUB_ATTRIBUTE {
    uint32_t _mid = 7;
+   return _stub_method_3(_handle, _mid, (uint32_t*)&fd0, (uint32_t*)&offset0, (uint32_t*)&fd1, (uint32_t*)&offset1, (uint32_t*)&fd2, (uint32_t*)&offset2, (uint32_t*)&m, (uint32_t*)&k, (uint32_t*)&n);
+}
+static __inline int _stub_method_4(remote_handle64 _handle, uint32_t _mid, uint32_t _in0[1], uint32_t _in1[1], uint32_t _in2[1], uint32_t _in3[1], uint32_t _in4[1], uint32_t _in5[1], uint32_t _in6[1], uint32_t _in7[1], uint32_t _in8[1], uint32_t _in9[1]) {
+   remote_arg _pra[1] = {0};
+   uint32_t _primIn[10]= {0};
+   int _nErr = 0;
+   _pra[0].buf.pv = (void*)_primIn;
+   _pra[0].buf.nLen = sizeof(_primIn);
+   _COPY(_primIn, 0, _in0, 0, 4);
+   _COPY(_primIn, 4, _in1, 0, 4);
+   _COPY(_primIn, 8, _in2, 0, 4);
+   _COPY(_primIn, 12, _in3, 0, 4);
+   _COPY(_primIn, 16, _in4, 0, 4);
+   _COPY(_primIn, 20, _in5, 0, 4);
+   _COPY(_primIn, 24, _in6, 0, 4);
+   _COPY(_primIn, 28, _in7, 0, 4);
+   _COPY(_primIn, 32, _in8, 0, 4);
+   _COPY(_primIn, 36, _in9, 0, 4);
+   _TRY_FARF(_nErr, __QAIC_REMOTE(remote_handle64_invoke)(_handle, REMOTE_SCALARS_MAKEX(0, _mid, 1, 0, 0, 0), _pra));
+   _CATCH_FARF(_nErr) {
+      _QAIC_FARF(RUNTIME_ERROR, "ERROR 0x%x: handle=0x%"PRIx64", scalar=0x%x, method ID=%d: %s failed\n", _nErr , _handle, REMOTE_SCALARS_MAKEX(0, _mid, 1, 0, 0, 0), _mid, __func__);
+   }
+   return _nErr;
+}
+__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_mat_mul_af32_pwqk0_of32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n, int32 wgt_dt) __QAIC_STUB_ATTRIBUTE {
+   uint32_t _mid = 8;
+   return _stub_method_4(_handle, _mid, (uint32_t*)&fd0, (uint32_t*)&offset0, (uint32_t*)&fd1, (uint32_t*)&offset1, (uint32_t*)&fd2, (uint32_t*)&offset2, (uint32_t*)&m, (uint32_t*)&k, (uint32_t*)&n, (uint32_t*)&wgt_dt);
+}
+__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_test_ops)(remote_handle64 _handle) __QAIC_STUB_ATTRIBUTE {
+   uint32_t _mid = 9;
    return _stub_method(_handle, _mid);
 }
 #ifdef __cplusplus

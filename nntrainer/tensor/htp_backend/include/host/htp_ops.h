@@ -257,7 +257,9 @@ __QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_init_backend)(remote_handle
 __QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_create_channel)(remote_handle64 _h, int32 fd, uint32 size) __QAIC_HEADER_ATTRIBUTE;
 __QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_destroy_channel)(remote_handle64 _h) __QAIC_HEADER_ATTRIBUTE;
 __QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_rms_norm_f32)(remote_handle64 _h, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 ne0, int32 ne1) __QAIC_HEADER_ATTRIBUTE;
-__QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_mat_mul_permuted_w16a32)(remote_handle64 _h, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_HEADER_ATTRIBUTE;
+__QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_mat_mul_af32_pwf16_of32)(remote_handle64 _h, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_HEADER_ATTRIBUTE;
+__QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_mat_mul_af32_wf16_of32)(remote_handle64 _h, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n) __QAIC_HEADER_ATTRIBUTE;
+__QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_mat_mul_af32_pwqk0_of32)(remote_handle64 _h, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 fd2, int32 offset2, int32 m, int32 k, int32 n, int32 wgt_dt) __QAIC_HEADER_ATTRIBUTE;
 __QAIC_HEADER_EXPORT AEEResult __QAIC_HEADER(htp_ops_test_ops)(remote_handle64 _h) __QAIC_HEADER_ATTRIBUTE;
 #ifndef htp_ops_URI
 #define htp_ops_URI "file:///libhtp_ops_skel.so?htp_ops_skel_handle_invoke&_modver=1.0"

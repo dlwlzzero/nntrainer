@@ -19,12 +19,14 @@ endforeach
 if get_option('enable-htp')
   # Build HTP libraries via cmake (for target device deployment)
   # Host-side libhtp_ops.so and DSP-side libhtp_ops_skel.so
-  custom_target('htp_lib',
+  htp_lib = custom_target('htp_lib',
     output: 'libhtp_ops.so',
     command: [
         meson.current_source_dir() / 'build_htp.sh',
         meson.current_build_dir()
     ],
-    build_by_default: true
+    build_by_default: true,
+    install: true,
+    install_dir: nntrainer_libdir
   )
 endif

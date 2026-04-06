@@ -22,23 +22,48 @@ The build produces two shared libraries:
 
 ## Build Instructions
 
-### Full build (with meson)
+Hexagon DSP is only available on Android devices, so the build must target Android.
+
+### Android build (with meson)
 
 ```bash
 export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
 
 cd nntrainer
-meson setup build -Dwerror=false -Denable-htp=true
-ninja -C build
+./tools/package_android.sh -Dwerror=false -Dmmap-read=false -Denable-htp=true
 ```
 
 Build output:
 
 ```
-build/nntrainer/tensor/htp_backend/htp_lib/
+builddir/nntrainer/tensor/htp_backend/
 ├── libhtp_ops.so        # Host stub library
 ├── libhtp_ops_skel.so   # DSP skel library
 └── htp_ops_test         # Test binary
+```
+
+### CausalLM application build
+
+To build the CausalLM application with HTP support:
+
+```bash
+cd Applications/CausalLM
+./build_android.sh
+```
+
+This will:
+1. Build nntrainer (if not already built via `package_android.sh`)
+2. Auto-detect `libhtp_ops.so` from the nntrainer build output
+3. Copy HTP libraries to `jni/libs/arm64-v8a/`
+4. Build CausalLM executables and libraries with `-DENABLE_HTP=1`
+
+After build, install to device and run:
+
+```bash
+./install_android.sh
+adb push res/qwen3/qwen3-4b /data/local/tmp/nntrainer/causallm/models/qwen3-4b/
+adb shell /data/local/tmp/nntrainer/causallm/run_causallm.sh \
+  /data/local/tmp/nntrainer/causallm/models/qwen3-4b
 ```
 
 ### Standalone cmake build (without meson)
@@ -98,7 +123,7 @@ cd nntrainer/nntrainer/tensor/htp_backend
 
 Unit tests for the HTP backend are located under `test/unittest/`.
 Before running the tests, `libhtp_ops.so` and `libhtp_ops_skel.so` must
-already be built via the [Full build](#full-build-with-meson) steps above.
+already be built via the [Android build](#android-build-with-meson) steps above.
 
 ```bash
 # 1. Build and push nntrainer test binaries to device

@@ -17,6 +17,8 @@
 #include "HAP_farf.h"
 #include "HAP_perf.h"
 
+#define __vec_aligned__ __attribute__((aligned(VLEN)))
+
 #define WEIGHT_AREA_SIZE     (1 * 1024 * 1024)
 #define ACTIVATION_AREA_SIZE (1 * 1024 * 1024)
 #define OUTPUT_AREA_SIZE     (1 * 1024 * 1024)
@@ -750,122 +752,161 @@ static void transfer_output_chunk_fp16_to_fp32(float *restrict dst, const __fp16
   }
 }
 
-int hmx_mat_mul_permuted_w16a32(float *restrict dst, const float *restrict activation,
-                                const __fp16 *restrict permuted_weight, int m, int k, int n) {                                  
+int hmx_mat_mul_af32_pwf16_of32(float *restrict out, const float *restrict act,
+                                const __fp16 *restrict p_wgt, int m, int k, int n) {                                  
+  if (!out || !act || !p_wgt || !m || !n || !k) { return -1; }
+  if (k % 32 != 0 || n % 32 != 0) { return -1; }
+  if (!is_aligned(out, VLEN) || !is_aligned(act, VLEN) || !is_aligned(p_wgt, VLEN)) { return -1; }
 
-  int64_t total_s = HAP_perf_get_qtimer_count();
-  if (!dst || !activation || !permuted_weight || !m || !n || !k) {
-    return -1;
-  }
-  if (k % 32 != 0 || n % 32 != 0) {
-    // TODO(hzx): can we remove this restriction?
-    return -1;
-  }
-  if (!is_aligned(dst, VLEN) || !is_aligned(activation, VLEN) || !is_aligned(permuted_weight, VLEN)) {
-    return -1;
-  }
-
-  const size_t weight_area_size     = WEIGHT_AREA_SIZE;
-  const size_t activation_area_size = ACTIVATION_AREA_SIZE;
-  const size_t output_area_size     = OUTPUT_AREA_SIZE;
+  const size_t vtcm_size     = WEIGHT_AREA_SIZE;
 
   // VTCM layout: weight | activation | output | scales
   uint8_t *vtcm_ptr        = (uint8_t *) vtcm_manager_get_vtcm_base();
-  __fp16  *vtcm_weight     = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, weight_area_size);
-  __fp16  *vtcm_activation = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, activation_area_size);
-  __fp16  *vtcm_output     = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, output_area_size);
+  __fp16  *vtcm_weight     = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, vtcm_size);
+  __fp16  *vtcm_activation = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, vtcm_size);
+  __fp16  *vtcm_output     = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, vtcm_size);
   __fp16  *vtcm_scales     = (__fp16 *) vtcm_seq_alloc(&vtcm_ptr, 256);
 
   hmx_init_column_scales(vtcm_scales, Q6_V_vsplat_R(0x3c00));  // fp16: 1.0
 
   size_t vec_dot_size       = k * sizeof(__fp16);
-  size_t m_chunk_max_n_rows = align_down(activation_area_size / vec_dot_size, HMX_FP16_TILE_N_ROWS);
-  size_t n_chunk_max_n_cols = align_down(weight_area_size / vec_dot_size, HMX_FP16_TILE_N_COLS);
+  size_t m_chunk_max_n_rows = align_down(vtcm_size / vec_dot_size, HMX_FP16_TILE_N_ROWS);
+  size_t n_chunk_max_n_cols = align_down(vtcm_size / vec_dot_size, HMX_FP16_TILE_N_COLS);
 
   size_t m_chunk_n_rows = 0, n_chunk_n_cols = 0;
-  find_chunk_size(m_chunk_max_n_rows, n_chunk_max_n_cols, output_area_size / sizeof(__fp16), HMX_FP16_TILE_N_ROWS,
+  find_chunk_size(m_chunk_max_n_rows, n_chunk_max_n_cols, vtcm_size / sizeof(__fp16), HMX_FP16_TILE_N_ROWS,
                   HMX_FP16_TILE_N_COLS, &m_chunk_n_rows, &n_chunk_n_cols);
 
-  // FARF(ALWAYS, "computed chunk size: %d, %d", m_chunk_n_rows, n_chunk_n_cols);
   assert(m_chunk_n_rows > 0 && n_chunk_n_cols > 0);
 
-  int64_t activation_load_time, weight_load_time, hmx_core_time, output_store_time;
-  activation_load_time = weight_load_time = hmx_core_time = output_store_time = 0;
-
   for (size_t mr = 0; mr < m; mr += m_chunk_n_rows) {
-    // transfer activation matrix chunk into VTCM
     size_t n_rows = smin(m - mr, m_chunk_n_rows);
-
-    int64_t act_t0 = HAP_perf_get_qtimer_count();
     {
-      const float *activation_chunk = activation + mr * k;
+      const float *activation_chunk = act + mr * k;
       transfer_activation_chunk_fp32_to_fp16(vtcm_activation, activation_chunk, n_rows, k, k);
     }
-    activation_load_time += HAP_perf_get_qtimer_count() - act_t0;
-
-    // FARF(ALWAYS, "transfer activation ok, mr = %d, n_rows = %d", mr, n_rows);
 
     for (size_t nc = 0; nc < n; nc += n_chunk_n_cols) {
       size_t n_cols = smin(n - nc, n_chunk_n_cols);
-
-      int64_t wei_t0 = HAP_perf_get_qtimer_count();
       {
-        const __fp16 *permuted_weight_chunk = permuted_weight + nc * k;
+        const __fp16 *permuted_weight_chunk = p_wgt + nc * k;
         transfer_permuted_weight_chunk_fp16(vtcm_weight, permuted_weight_chunk, n_cols, k);
       }
-      weight_load_time += HAP_perf_get_qtimer_count() - wei_t0;
-
-      // FARF(ALWAYS, "transfer weight ok, nc = %d, n_cols = %d", nc, n_cols);
-
-      int64_t core_t0 = HAP_perf_get_qtimer_count();
+      
       {
         const int n_row_tiles = ceil_div(n_rows, HMX_FP16_TILE_N_ROWS);
         const int n_col_tiles = ceil_div(n_cols, HMX_FP16_TILE_N_COLS);
 
         core_dot_chunk_fp16(vtcm_output, vtcm_activation, vtcm_weight, vtcm_scales, n_row_tiles, n_col_tiles, k / 32);
       }
-      hmx_core_time += HAP_perf_get_qtimer_count() - core_t0;
 
-      // FARF(ALWAYS, "core compute ok, (%d, %d) tiles", n_row_tiles, n_col_tiles);
-
-      int64_t out_t0 = HAP_perf_get_qtimer_count();
       {
-        float *output = dst + (mr * n + nc);
+        float *output = out + (mr * n + nc);
         transfer_output_chunk_fp16_to_fp32(output, vtcm_output, n_rows, n_cols, n);
       }
-      output_store_time += HAP_perf_get_qtimer_count() - out_t0;
-
-      // FARF(ALWAYS, "transfer output ok, (%d, %d)", mr, nc);
     }
   }
-  int64_t total_e = HAP_perf_get_qtimer_count() - total_s;
 
-  FILE *f = fopen("/data/local/tmp/htp_lib/time.log.txt", "a");
-  if (f != NULL) {
-    fprintf(f, "hmx_mat_mul_permuted_w16a32\n");
-    fprintf(f, "m_chunk_n_rows = %zu, n_chunk_n_cols = %zu\n\n", m_chunk_n_rows, n_chunk_n_cols);
-    // fprintf(f, "Total clk: %lld clk\n", total_e);
-    // fprintf(f, "- Accumulated Query Load/Quantize clk : %lld clk\n", activation_load_time);
-    // fprintf(f, "- Accumulated Key Load clk            : %lld clk\n", weight_load_time);
-    // fprintf(f, "- Accumulated Dot Product clk         : %lld clk\n", hmx_core_time);
-    // fprintf(f, "- Accumulated Output Load clk         : %lld clk\n", output_store_time);
-    fprintf(f, "Total Time: %lld ms\n", HAP_perf_qtimer_count_to_us(total_e));
-    fprintf(f, "- Accumulated Query Load/Quantize Time: %lld ms\n", HAP_perf_qtimer_count_to_us(activation_load_time));
-    fprintf(f, "- Accumulated Key Load Time           : %lld ms\n", HAP_perf_qtimer_count_to_us(weight_load_time));
-    fprintf(f, "- Accumulated Dot Product Time        : %lld ms\n", HAP_perf_qtimer_count_to_us(hmx_core_time));
-    fprintf(f, "- Accumulated Output Load Time        : %lld ms\n", HAP_perf_qtimer_count_to_us(output_store_time));
-    fprintf(f, "\n");
-    fclose(f);
+  return 0;
+}
+
+int hmx_mat_mul_af32_wf16_of32(float *restrict out, const float *restrict act, const __fp16 *restrict wgt, int m, int k, int n) {
+  if(!act || !wgt || !out || !m || !k || !n){ return -1; }
+  if (k % 32 != 0 || n % 32 != 0) { return -1; }
+  if (!is_aligned(out, VLEN) || !is_aligned(act, VLEN) || !is_aligned(wgt, VLEN)) { return -1; }
+  
+  // Prepare Constants
+  static int32_t transpose_vscatter_indices_base[32] __vec_aligned__;
+  for (int i = 0; i < 32; ++i) {
+    transpose_vscatter_indices_base[i] = i * 128;  // range [0, 4096), two HMX tiles
   }
-  // FARF(ALWAYS, "%s: m = %d, k = %d, n = %d", __func__, m, k, n);
-  // FARF(ALWAYS, "    activation load: %lld us", HAP_perf_qtimer_count_to_us(activation_load_time));
-  // FARF(ALWAYS, "    weight     load: %lld us", HAP_perf_qtimer_count_to_us(weight_load_time));
-  // FARF(ALWAYS, "    core     matmul: %lld us", HAP_perf_qtimer_count_to_us(hmx_core_time));
-  // FARF(ALWAYS, "    output    store: %lld us", HAP_perf_qtimer_count_to_us(output_store_time));
 
-  // size_t weight_size = k * n * sizeof(__fp16);
-  // float  bandwidth   = 1e-3 * weight_size / HAP_perf_qtimer_count_to_us(weight_load_time);
-  // FARF(ALWAYS, "    weight load bandwidth: %.2f GB/s", bandwidth);
+  // VTCM Allocation
+  const size_t vtcm_size = ACTIVATION_AREA_SIZE;
+  
+  uint8_t *vtcm_base = (uint8_t *)vtcm_manager_get_vtcm_base();
+  __fp16 *vtcm_a      = (__fp16 *)vtcm_seq_alloc(&vtcm_base, vtcm_size);
+  __fp16 *vtcm_w      = (__fp16 *)vtcm_seq_alloc(&vtcm_base, vtcm_size);
+  __fp16 *vtcm_o      = (__fp16 *)vtcm_seq_alloc(&vtcm_base, vtcm_size);
+  __fp16 *vtcm_scales = (__fp16 *)vtcm_seq_alloc(&vtcm_base, 256);
+  
+  hmx_init_column_scales(vtcm_scales, Q6_V_vsplat_R(0x3c00));  // fp16: 1.0
+  
+  // Find max chunk size
+  size_t dot_size = k * sizeof(__fp16);
+  size_t m_chunk_max_n_rows = align_down(vtcm_size / dot_size, HMX_FP16_TILE_N_ROWS);
+  size_t n_chunk_max_n_cols = align_down(vtcm_size / dot_size, HMX_FP16_TILE_N_COLS);
+  size_t m_chunk_n_rows = 0, n_chunk_n_cols = 0;
+  
+  find_chunk_size(m_chunk_max_n_rows, n_chunk_max_n_cols, vtcm_size / sizeof(__fp16), HMX_FP16_TILE_N_ROWS,
+                HMX_FP16_TILE_N_COLS, &m_chunk_n_rows, &n_chunk_n_cols);
+  
+  assert(m_chunk_n_rows > 0 && n_chunk_n_cols > 0);
+
+  for (size_t mr = 0; mr < m; mr += m_chunk_n_rows) {
+    size_t n_rows = smin(m - mr, m_chunk_n_rows);
+    
+    // Act Load to vtcm_a
+    {
+      const float *act_chunk = act + mr * k;
+      transfer_activation_chunk_fp32_to_fp16(vtcm_a, act_chunk, n_rows, k, k);
+    }
+    
+    for (size_t nc = 0; nc < n; nc += n_chunk_n_cols){
+      size_t n_cols = ((nc + n_chunk_n_cols) <= n) ? n_chunk_n_cols : (n - nc);
+
+      // Wgt Load to vtcm_w
+      {
+        const __fp16 *w_tile_ld_base = wgt + nc * k;
+        // l2fetch(w_tile_ld_base, k * sizeof(__fp16), k * sizeof(__fp16), n_cols, 1);
+        const HVX_Vector v_step         = Q6_V_vsplat_R(4);
+        const HVX_Vector v_offsets_base = vmem(transpose_vscatter_indices_base);
+        const size_t n_col_tiles = ceil_div(n_cols, HMX_FP16_TILE_N_COLS);
+        
+        for(int r0 = 0; r0 < n_col_tiles; ++r0){
+            __fp16 *out_base = vtcm_w + r0 * HMX_FP16_TILE_N_COLS * k;
+            HVX_Vector v_offsets = v_offsets_base;
+            
+            for (int r1 = 0; r1 < HMX_FP16_TILE_N_COLS; ++r1){
+                int r = r0 * HMX_FP16_TILE_N_COLS + r1;
+                if (r >= n_cols) { break; }
+                const __fp16 *p_in = w_tile_ld_base + r * k;
+                
+                // clang-format off
+                // #pragma unroll
+                for (int d = 0; d < k; d += 64) {
+                  const size_t ne = smin(k - d, 64);
+                
+                  // NOTE(hzx): use vsetq2 instead of vsetq to avoid all-zero mask!
+                  const HVX_VectorPred q_mask = Q6_Q_vsetq2_R(ne * sizeof(__fp16));
+                  const HVX_Vector v_in = Q6_V_vmux_QVV(q_mask, vmemu(p_in), Q6_V_vzero());
+                
+                  __fp16 *out_dual_tile = out_base + d / 32 * HMX_FP16_TILE_N_ELMS;
+                  Q6_vscatter_RMVwV((size_t) out_dual_tile, HMX_FP16_TILE_SIZE * 2 - 1, v_offsets, v_in);
+                
+                  p_in += ne;
+                }
+                // clang-format on
+            
+                v_offsets = Q6_Vw_vadd_VwVw(v_offsets, v_step);
+            }
+        }
+      }
+
+      // AWT dot product
+      {
+        const int n_row_tiles = ceil_div(n_rows, HMX_FP16_TILE_N_ROWS);
+        const int n_col_tiles = ceil_div(n_cols, HMX_FP16_TILE_N_COLS);
+        core_dot_chunk_fp16(vtcm_o, vtcm_a, vtcm_w, vtcm_scales, n_row_tiles, n_col_tiles, k / 32);
+      }
+
+      // Output Load
+      {
+        float *output = out + (mr * n + nc);
+        transfer_output_chunk_fp16_to_fp32(output, vtcm_o, n_rows, n_cols, n);
+      }
+    }
+  }
 
   return 0;
 }
@@ -888,10 +929,10 @@ static void core_dot_fp16_hmx_worker_fn(void *data, int _worker_index) {
   worker_pool_synctoken_jobdone(&st->sync_ctx);
 }
 
-int mat_mul_qk_0_d16a32_out_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
+int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
                                        int k, int n, enum ggml_type w_type);
 
-int hmx_mat_mul_permuted_qk_0_d16a32(float *restrict dst, const float *restrict activation,
+int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activation,
                                      const uint8_t *restrict permuted_weight, int m, int k, int n,
                                      enum ggml_type weight_type) {
   if (!dst || !activation || !permuted_weight || !m || !n || !k) {
@@ -907,7 +948,7 @@ int hmx_mat_mul_permuted_qk_0_d16a32(float *restrict dst, const float *restrict 
 
   // for large m, k (e.g. prefill FFN Down), use out-staionary version
   if (m >= 128 && k > n && n > 1024) {
-    return mat_mul_qk_0_d16a32_out_stationary(dst, activation, permuted_weight, m, k, n, weight_type);
+    return mat_mul_af32_pwqk0_of32_stationary(dst, activation, permuted_weight, m, k, n, weight_type);
   }
 
   size_t super_block_size = get_super_block_size(weight_type);
@@ -1315,7 +1356,7 @@ void transfer_activation_chunk_multithread(__fp16 *dst, const float *src, int n_
   worker_pool_synctoken_wait(&state.sync_ctx);
 }
 
-int mat_mul_qk_0_d16a32_out_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
+int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
                                        int k, int n, enum ggml_type weight_type) {
   // NOTE(hzx): this constraint on k originates from 2D DMA, consider alternative ways to load activation
   assert(k < 16384);

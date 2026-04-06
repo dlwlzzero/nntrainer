@@ -106,6 +106,35 @@ if [ ! -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrai
 fi
 log_success "nntrainer ready"
 
+# Auto-detect HTP support: check if libhtp_ops.so was built
+ENABLE_HTP=0
+HTP_SEARCH_DIRS=(
+    "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a"
+    "$NNTRAINER_ROOT/builddir/nntrainer/tensor/htp_backend"
+    "$NNTRAINER_ROOT/nntrainer/tensor/htp_backend/build_htp"
+)
+for htp_dir in "${HTP_SEARCH_DIRS[@]}"; do
+    if [ -f "$htp_dir/libhtp_ops.so" ]; then
+        ENABLE_HTP=1
+        HTP_LIB_DIR="$htp_dir"
+        break
+    fi
+done
+
+if [ "$ENABLE_HTP" = "1" ]; then
+    log_info "HTP (Hexagon Tensor Processor) support: ENABLED (found libhtp_ops.so)"
+    LIBS_DIR="$SCRIPT_DIR/jni/libs/arm64-v8a"
+    mkdir -p "$LIBS_DIR"
+    cp "$HTP_LIB_DIR/libhtp_ops.so" "$LIBS_DIR/"
+    log_success "libhtp_ops.so copied from $HTP_LIB_DIR"
+    if [ -f "$HTP_LIB_DIR/libhtp_ops_skel.so" ]; then
+        cp "$HTP_LIB_DIR/libhtp_ops_skel.so" "$LIBS_DIR/"
+        log_success "libhtp_ops_skel.so copied from $HTP_LIB_DIR"
+    fi
+else
+    log_info "HTP support: disabled (libhtp_ops.so not found in build output)"
+fi
+
 # Step 2: Build tokenizer library if not present
 log_step "2/4" "Build Tokenizer Library"
 
@@ -153,8 +182,11 @@ cd "$SCRIPT_DIR/jni"
 rm -rf libs obj
 
 log_info "Building with ndk-build (builds causallm_core, nntrainer_causallm, nntr_quantize)..."
-# We explicitly set paths to ensure outputs are predictable
-if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk causallm_core nntrainer_causallm  nntr_quantize -j $(nproc); then
+NDK_HTP_FLAG=""
+if [ "$ENABLE_HTP" = "1" ]; then
+    NDK_HTP_FLAG="ENABLE_HTP=1"
+fi
+if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk $NDK_HTP_FLAG causallm_core nntrainer_causallm nntr_quantize -j $(nproc); then
     log_success "Build completed successfully"
 else
     log_error "Build failed"
