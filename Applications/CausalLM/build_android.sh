@@ -118,6 +118,37 @@ if [ ! -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrai
 fi
 log_success "nntrainer ready"
 
+# Copy HTP libraries to CausalLM libs directory if HTP build is enabled
+if [ "$ENABLE_HTP" = "1" ]; then
+    log_info "Copying HTP libraries..."
+    HTP_BUILD_DIR="$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a"
+    HTP_MESON_BUILD_DIR="$NNTRAINER_ROOT/builddir/build/nntrainer/tensor/htp_backend/htp_lib"
+    LIBS_DIR="$SCRIPT_DIR/jni/libs/arm64-v8a"
+    mkdir -p "$LIBS_DIR"
+
+    HTP_COPIED=false
+    for htp_dir in "$HTP_BUILD_DIR" "$HTP_MESON_BUILD_DIR"; do
+        if [ -f "$htp_dir/libhtp_ops.so" ]; then
+            cp "$htp_dir/libhtp_ops.so" "$LIBS_DIR/"
+            log_success "libhtp_ops.so copied from $htp_dir"
+            HTP_COPIED=true
+            # Also copy skel if available (needed on device DSP)
+            if [ -f "$htp_dir/libhtp_ops_skel.so" ]; then
+                cp "$htp_dir/libhtp_ops_skel.so" "$LIBS_DIR/"
+                log_success "libhtp_ops_skel.so copied from $htp_dir"
+            fi
+            break
+        fi
+    done
+
+    if [ "$HTP_COPIED" = false ]; then
+        log_warning "libhtp_ops.so not found in build output. HTP acceleration may not work on device."
+        log_info "Checked paths:"
+        log_info "  - $HTP_BUILD_DIR"
+        log_info "  - $HTP_MESON_BUILD_DIR"
+    fi
+fi
+
 # Step 2: Build tokenizer library if not present
 log_step "2/4" "Build Tokenizer Library"
 
