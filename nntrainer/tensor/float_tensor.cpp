@@ -1038,8 +1038,7 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
       gemm_q4_0_cl((void *)mdata, data, rdata, M, N, K);
     }
 #elif defined(ENABLE_HTP) && ENABLE_HTP == 1
-    auto &htp = nntrainer::htp::HtpInterface::instance();
-    nntrainer::htp::remote_handle64 handle = htp.get_global_handle();
+    // TODO
 #else
     gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
 #endif
