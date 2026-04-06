@@ -36,7 +36,7 @@ cd nntrainer
 Build output:
 
 ```
-builddir/nntrainer/tensor/htp_backend/htp_lib/
+builddir/nntrainer/tensor/htp_backend/
 ├── libhtp_ops.so        # Host stub library
 ├── libhtp_ops_skel.so   # DSP skel library
 └── htp_ops_test         # Test binary
@@ -48,12 +48,12 @@ To build the CausalLM application with HTP support:
 
 ```bash
 cd Applications/CausalLM
-ENABLE_HTP=1 ./build_android.sh
+./build_android.sh
 ```
 
 This will:
-1. Run `package_android.sh` with `-Denable-htp=true`
-2. Build `libhtp_ops.so` and `libhtp_ops_skel.so` via meson
+1. Build nntrainer (if not already built via `package_android.sh`)
+2. Auto-detect `libhtp_ops.so` from the nntrainer build output
 3. Copy HTP libraries to `jni/libs/arm64-v8a/`
 4. Build CausalLM executables and libraries with `-DENABLE_HTP=1`
 
