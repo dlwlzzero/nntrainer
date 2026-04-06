@@ -85,6 +85,14 @@ log_info "NNTRAINER_ROOT: $NNTRAINER_ROOT"
 log_info "ANDROID_NDK: $ANDROID_NDK"
 log_info "Working directory: $(pwd)"
 
+# Check if HTP support is requested
+ENABLE_HTP=${ENABLE_HTP:-0}
+if [ "$ENABLE_HTP" = "1" ]; then
+    log_info "HTP (Hexagon Tensor Processor) support: ENABLED"
+else
+    log_info "HTP support: disabled (set ENABLE_HTP=1 to enable)"
+fi
+
 # Step 1: Build nntrainer for Android if not already built
 log_step "1/4" "Build nntrainer for Android"
 
@@ -94,7 +102,11 @@ if [ ! -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrai
     if [ -d "$NNTRAINER_ROOT/builddir" ]; then
         rm -rf builddir
     fi
-    ./tools/package_android.sh
+    EXTRA_MESON_ARGS=""
+    if [ "$ENABLE_HTP" = "1" ]; then
+        EXTRA_MESON_ARGS="-Denable-htp=true"
+    fi
+    ./tools/package_android.sh $EXTRA_MESON_ARGS
 else
     log_info "nntrainer for Android already built (skipping)"
 fi
@@ -154,7 +166,11 @@ rm -rf libs obj
 
 log_info "Building with ndk-build (builds causallm_core, nntrainer_causallm, nntr_quantize)..."
 # We explicitly set paths to ensure outputs are predictable
-if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk causallm_core nntrainer_causallm  nntr_quantize -j $(nproc); then
+NDK_HTP_FLAG=""
+if [ "$ENABLE_HTP" = "1" ]; then
+    NDK_HTP_FLAG="ENABLE_HTP=1"
+fi
+if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk $NDK_HTP_FLAG causallm_core nntrainer_causallm  nntr_quantize -j $(nproc); then
     log_success "Build completed successfully"
 else
     log_error "Build failed"
