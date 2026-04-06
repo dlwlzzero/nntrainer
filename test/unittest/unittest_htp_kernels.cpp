@@ -478,13 +478,19 @@ static void run_mat_mul_af32_pwqk0_of32_test(const uint32_t M,
     }
   }
 
-  // Compute CPU reference: C[i,j] = sum_l activation[i,l] * weight_deq[j,l]
+  // Compute CPU reference matching DSP precision:
+  //   DSP converts activation fp32->fp16 and dequantizes weight to fp16
+  //   before fp16 x fp16 matmul, so we simulate the same truncation here.
   std::vector<float> ref_dst(M * N, 0.0f);
   for (uint32_t i = 0; i < M; ++i) {
     for (uint32_t j = 0; j < N; ++j) {
       float sum = 0.0f;
       for (uint32_t l = 0; l < K; ++l) {
-        sum += activation[i * K + l] * weight_deq[j * K + l];
+        float a = compute_fp16_to_fp32(
+          compute_fp32_to_fp16(activation[i * K + l]));
+        float w = compute_fp16_to_fp32(
+          compute_fp32_to_fp16(weight_deq[j * K + l]));
+        sum += a * w;
       }
       ref_dst[i * N + j] = sum;
     }
