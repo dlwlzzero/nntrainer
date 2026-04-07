@@ -881,10 +881,16 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
         if (err == 0) {
           memcpy(act_buf, data, act_size);
 
-          // Quantize FP32 weights to FP16
+          // Transpose [K × N] → [N × K] and quantize FP32 → FP16.
+          // HTP kernel expects weight in [N × K] layout:
+          //   C[i,j] = Σ_l A[i,l] * W[j,l]  (W stored as weight[j * K + l])
+          // but mdata is row-major [K × N] (stride N), so we transpose.
           _FP16 *wt_fp16 = static_cast<_FP16 *>(wt_buf);
-          for (size_t i = 0; i < static_cast<size_t>(K) * N; ++i) {
-            wt_fp16[i] = static_cast<_FP16>(mdata[i]);
+          for (unsigned int n_idx = 0; n_idx < N; ++n_idx) {
+            for (unsigned int k_idx = 0; k_idx < K; ++k_idx) {
+              wt_fp16[n_idx * K + k_idx] =
+                static_cast<_FP16>(mdata[k_idx * N + n_idx]);
+            }
           }
 
           err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, out_fd, 0, act_fd,
