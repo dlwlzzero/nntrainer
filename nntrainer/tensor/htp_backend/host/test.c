@@ -12,8 +12,6 @@
 #include "message.h"
 #include "op_reg.h"
 
-#define QK4_0 32
-
 static inline int64_t get_time_us() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -310,109 +308,6 @@ static void test_mat_mul_rpc(remote_handle64 handle) {
   free_shared_mem_buf(weight, weight_fd, k * n * sizeof(__fp16));
 }
 
-typedef struct {
-  __fp16  scales[8];
-  uint8_t quants[8 * QK4_0 / 2];
-} __attribute__((packed)) my_block_q4_0;
-
-static void test_mat_mul_qk_0_rpc(remote_handle64 handle){
-  
-  int m = 32;
-  int k = 32;
-  int n = 32;
-  
-  float *activation, *output;
-  uint8_t *weight;
-
-  int output_fd, activation_fd, weight_fd;
-
-  const int n_super_blocks = (n * k ) / 256;
-
-  alloc_shared_mem_buf((void **) &output, &output_fd, m * n * sizeof(float));
-  alloc_shared_mem_buf((void **) &activation, &activation_fd, m * k * sizeof(float));
-  alloc_shared_mem_buf((void **) &weight, &weight_fd, n_super_blocks * 144);
-
-  float *weight_ref = (float *) malloc(n * k * sizeof(float));
-  float *output_ref = (float *) malloc(m * n * sizeof(float));
-  memset(output_ref, 0, m * n * sizeof(float));
-
-  for (int i = 0; i < m; ++i)
-    for (int j = 0; j < k; ++j)
-      activation[i * k + j] = rand_01();
-  
-  for (int i = 0; i < k; ++i)
-    for (int j = 0; j < n; ++j)
-      weight_ref[i * n + j] = rand_01();
-
-  // quantize weight_ref(fp32) into weight(Q4_0 super-blocks)
-  my_block_q4_0 *mw = (my_block_q4_0 *) weight;
-  for (int sb = 0; sb < n_super_blocks; ++sb) {
-    int base_col = sb * 8;
-    for (int g = 0; g < 8; ++g) {
-      int col = base_col + g;
-      if (col >= n) {
-        mw[sb].scales[g] = (__fp16) 0.0f;
-        for (int qq = 0; qq < QK4_0 / 2; ++qq) {
-          mw[sb].quants[g * (QK4_0 / 2) + qq] = 0;
-        }
-        continue;
-      }
-
-      // compute absolute max and sign-extreme value
-      float amax = 0.0f;
-      float maxv = 0.0f;
-      for (int r = 0; r < k; ++r) {
-        float v = weight_ref[r * n + col];
-        if (amax < fabsf(v)) {
-          amax = fabsf(v);
-          maxv = v;
-        }
-      }
-
-      // follow quantize_row_q4_0_ref logic: d = max / -8
-      float d = maxv / -8.0f;
-      float id = d ? 1.0f / d : 0.0f;
-      mw[sb].scales[g] = (__fp16) d;
-
-      uint8_t *qptr = &mw[sb].quants[g * (QK4_0 / 2)];
-      // pack 32 values into 16 bytes: pairs (0..15) and (16..31)
-      for (int j = 0; j < QK4_0 / 2; ++j) {
-        float x0 = weight_ref[(0 + j) * n + col] * id;
-        float x1 = weight_ref[(QK4_0 / 2 + j) * n + col] * id;
-
-        int xi0 = (int) (x0 + 8.5f);
-        int xi1 = (int) (x1 + 8.5f);
-        if (xi0 < 0) xi0 = 0;
-        if (xi0 > 15) xi0 = 15;
-        if (xi1 < 0) xi1 = 0;
-        if (xi1 > 15) xi1 = 15;
-
-        qptr[j] = (uint8_t)((xi0 & 0x0F) | ((xi1 & 0x0F) << 4));
-      }
-    }
-  }
-
-  // call HMX RPC for quantized matrix multiplication
-  htp_ops_mat_mul_af32_pwqk0_of32(handle, output_fd, 0, activation_fd, 0, weight_fd, 0, m, k, n, 2);
-
-  // compute reference (matmul on FP32)
-  for (int i = 0; i < m; ++i)
-    for (int j = 0; j < n; ++j)
-      for (int l = 0; l < k; ++l)
-        output_ref[i * n + j] += activation[i * k + l] * weight_ref[l * n + j];
-
-  // compare results
-  for (int i = 0; i < m * n; ++i)
-      printf("#%d: hmx=%g, ref=%g, diff=%g\n", i, output[i], output_ref[i], output[i] - output_ref[i]);
-
-  free(weight_ref);
-  free(output_ref);
-
-  free_shared_mem_buf(output, output_fd, m * n * sizeof(float));
-  free_shared_mem_buf(activation, activation_fd, m * k * sizeof(float));
-  free_shared_mem_buf(weight, weight_fd, n_super_blocks * 144);
-}
-
 int main(int argc, char **argv) {
   int err = open_dsp_session(CDSP_DOMAIN_ID, 1);
   if (err != 0) {
@@ -423,8 +318,6 @@ int main(int argc, char **argv) {
   init_htp_backend();
 
   // test_mat_mul_rpc(get_global_handle());
-
-  // test_mat_mul_qk_0_rpc(get_global_handle());
 
   // htp_ops_test_ops(get_global_handle());
 
