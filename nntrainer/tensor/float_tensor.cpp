@@ -28,6 +28,7 @@
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
 #include "htp_interface.h"
+#include <unordered_map>
 #endif
 
 namespace nntrainer {
@@ -858,7 +859,8 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
 
 #if defined(ENABLE_FP16) && defined(ENABLE_HTP) && ENABLE_HTP == 1
   // HTP accelerated path: only for standard (non-transposed) matmul without
-  // accumulation. Quantizes FP32 weights to FP16 on the fly.
+  // accumulation. Converts FP32 weights to FP16 once and caches in shared
+  // memory so subsequent calls skip the transpose+convert overhead.
   // Falls through to CPU for unsupported configurations.
   if (!trans && !trans_in && beta == 0.0f) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
@@ -866,48 +868,69 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
         htp.free_shared_mem_buf && htp.get_global_handle) {
       auto handle = htp.get_global_handle();
       if (handle != 0) {
-        size_t act_size = M * K * sizeof(float);
-        size_t wt_size = K * N * sizeof(_FP16);
-        size_t out_size = M * N * sizeof(float);
-        size_t total_size = act_size + wt_size + out_size;
+        // --- Weight cache: convert FP32→FP16 [N×K] once, reuse thereafter ---
+        struct WtCacheEntry {
+          void *buf;
+          int fd;
+          size_t size;
+        };
+        static std::unordered_map<const float *, WtCacheEntry> wt_cache;
 
-        size_t act_offset = 0;
-        size_t wt_offset = act_size;
-        size_t out_offset = act_size + wt_size;
+        size_t wt_size = static_cast<size_t>(K) * N * sizeof(_FP16);
+        int wt_fd = -1;
+        void *wt_buf = nullptr;
+        bool wt_cached = false;
 
-        void *io_buf = nullptr;
-        int io_fd = -1;
-
-        int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, total_size);
-
-        if (err == 0) {
-          char *base = static_cast<char *>(io_buf);
-          memcpy(base + act_offset, data, act_size);
-
-          // Transpose [K × N] → [N × K] and quantize FP32 → FP16.
-          // HTP kernel expects weight in [N × K] layout:
-          //   C[i,j] = Σ_l A[i,l] * W[j,l]  (W stored as weight[j * K + l])
-          // but mdata is row-major [K × N] (stride N), so we transpose.
-          _FP16 *wt_fp16 = reinterpret_cast<_FP16 *>(base + wt_offset);
-          for (unsigned int n_idx = 0; n_idx < N; ++n_idx) {
-            for (unsigned int k_idx = 0; k_idx < K; ++k_idx) {
-              wt_fp16[n_idx * K + k_idx] =
-                static_cast<_FP16>(mdata[k_idx * N + n_idx]);
-            }
-          }
-
-          err = htp.htp_ops_mat_mul_af32_wf16_of32(
-            handle, io_fd, out_offset, io_fd, act_offset, io_fd, wt_offset, M,
-            K, N);
+        auto wt_it = wt_cache.find(mdata);
+        if (wt_it != wt_cache.end() && wt_it->second.size == wt_size) {
+          wt_buf = wt_it->second.buf;
+          wt_fd = wt_it->second.fd;
+          wt_cached = true;
+        } else {
+          // First call for this weight: allocate, transpose+convert, cache
+          int err = htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
           if (err == 0) {
-            memcpy(rdata, base + out_offset, out_size);
-            htp.free_shared_mem_buf(io_buf, io_fd, total_size);
-            return output;
+            _FP16 *wt_fp16 = static_cast<_FP16 *>(wt_buf);
+            for (unsigned int n_idx = 0; n_idx < N; ++n_idx) {
+              for (unsigned int k_idx = 0; k_idx < K; ++k_idx) {
+                wt_fp16[n_idx * K + k_idx] =
+                  static_cast<_FP16>(mdata[k_idx * N + n_idx]);
+              }
+            }
+            wt_cache[mdata] = {wt_buf, wt_fd, wt_size};
+            wt_cached = true;
           }
         }
 
-        if (io_buf)
-          htp.free_shared_mem_buf(io_buf, io_fd, total_size);
+        if (wt_cached) {
+          // --- Activation + output: allocate per-call ---
+          size_t act_size = static_cast<size_t>(M) * K * sizeof(float);
+          size_t out_size = static_cast<size_t>(M) * N * sizeof(float);
+          size_t io_size = act_size + out_size;
+
+          void *io_buf = nullptr;
+          int io_fd = -1;
+          int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, io_size);
+
+          if (err == 0) {
+            char *base = static_cast<char *>(io_buf);
+            size_t act_offset = 0;
+            size_t out_offset = act_size;
+
+            memcpy(base + act_offset, data, act_size);
+
+            err = htp.htp_ops_mat_mul_af32_wf16_of32(
+              handle, io_fd, out_offset, io_fd, act_offset, wt_fd, 0, M, K, N);
+            if (err == 0) {
+              memcpy(rdata, base + out_offset, out_size);
+              htp.free_shared_mem_buf(io_buf, io_fd, io_size);
+              return output;
+            }
+          }
+
+          if (io_buf)
+            htp.free_shared_mem_buf(io_buf, io_fd, io_size);
+        }
         // Fall through to CPU path on error
       }
     }
