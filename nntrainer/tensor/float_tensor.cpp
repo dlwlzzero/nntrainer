@@ -869,23 +869,26 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
         size_t act_size = M * K * sizeof(float);
         size_t wt_size = K * N * sizeof(_FP16);
         size_t out_size = M * N * sizeof(float);
+        size_t total_size = act_size + wt_size + out_size;
 
-        void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
-        int act_fd = -1, wt_fd = -1, out_fd = -1;
+        size_t act_offset = 0;
+        size_t wt_offset = act_size;
+        size_t out_offset = act_size + wt_size;
 
-        int err = 0;
-        err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
-        err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
-        err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
+        void *io_buf = nullptr;
+        int io_fd = -1;
+
+        int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, total_size);
 
         if (err == 0) {
-          memcpy(act_buf, data, act_size);
+          char *base = static_cast<char *>(io_buf);
+          memcpy(base + act_offset, data, act_size);
 
           // Transpose [K × N] → [N × K] and quantize FP32 → FP16.
           // HTP kernel expects weight in [N × K] layout:
           //   C[i,j] = Σ_l A[i,l] * W[j,l]  (W stored as weight[j * K + l])
           // but mdata is row-major [K × N] (stride N), so we transpose.
-          _FP16 *wt_fp16 = static_cast<_FP16 *>(wt_buf);
+          _FP16 *wt_fp16 = reinterpret_cast<_FP16 *>(base + wt_offset);
           for (unsigned int n_idx = 0; n_idx < N; ++n_idx) {
             for (unsigned int k_idx = 0; k_idx < K; ++k_idx) {
               wt_fp16[n_idx * K + k_idx] =
@@ -893,23 +896,18 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
             }
           }
 
-          err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, out_fd, 0, act_fd,
-                                                   0, wt_fd, 0, M, K, N);
+          err = htp.htp_ops_mat_mul_af32_wf16_of32(
+            handle, io_fd, out_offset, io_fd, act_offset, io_fd, wt_offset, M,
+            K, N);
           if (err == 0) {
-            memcpy(rdata, out_buf, out_size);
-            htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-            htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-            htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+            memcpy(rdata, base + out_offset, out_size);
+            htp.free_shared_mem_buf(io_buf, io_fd, total_size);
             return output;
           }
         }
 
-        if (act_buf)
-          htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-        if (wt_buf)
-          htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-        if (out_buf)
-          htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+        if (io_buf)
+          htp.free_shared_mem_buf(io_buf, io_fd, total_size);
         // Fall through to CPU path on error
       }
     }
