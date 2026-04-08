@@ -14,19 +14,6 @@
 
 namespace {
 
-size_t ggml_super_block_size(enum ggml_type type) {
-  // TODO: more types
-  switch (type) {
-    case GGML_TYPE_Q4_0:
-    case GGML_TYPE_IQ4_NL:
-      return sizeof(my_block_q4_0);
-    case GGML_TYPE_Q8_0:
-      return sizeof(my_block_q8_0);
-    default:
-      return -1;
-  }
-}
-
 enum ggml_type matmul_op_to_weight_type(enum HtpOpsIndex op) {
   switch (op) {
     case HTP_OPS_MAT_MUL_PERMUTED_W16A32:
