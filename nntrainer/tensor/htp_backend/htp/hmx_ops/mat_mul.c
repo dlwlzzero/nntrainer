@@ -43,17 +43,6 @@ static inline void swap_ptr(void **p1, void **p2) {
   *p2     = t;
 }
 
-static inline size_t get_super_block_size(enum ggml_type weight_type) {
-  switch (weight_type) {
-    case GGML_TYPE_Q4_0:
-    case GGML_TYPE_IQ4_NL:
-      return sizeof(my_block_q4_0);
-    case GGML_TYPE_Q8_0:
-      return sizeof(my_block_q8_0);
-    default:
-      return 0;
-  }
-}
 
 static inline int dma_issue_load_from_ddr(dma_desc_1d_t *desc, void *vtcm_dst, const void *src, size_t size) {
   dma_wait_for_idle();
