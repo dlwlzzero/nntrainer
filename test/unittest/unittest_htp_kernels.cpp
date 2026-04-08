@@ -16,6 +16,7 @@
 #include <fp16.h>
 #include <htp_interface.h>
 #include <nntrainer_test_util.h>
+#include <q4_0_utils.h>
 
 using namespace nntrainer;
 
