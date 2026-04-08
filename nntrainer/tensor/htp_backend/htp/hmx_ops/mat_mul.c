@@ -726,11 +726,16 @@ void dequantize_common_weight_chunk_qk_0_to_fp16_hvx(__fp16 *vtcm_dst, const voi
 // x4x2 row layout for Q8_0:
 //   [quants: K bytes | scale_blocks: (K/256)*16 bytes]
 //   Each group's 32 bytes: int8 quants[0..31]
+// k_block:  number of K elements to process in this call
+// k_offset: starting K index within the full row (0 when processing full K)
+// full_k:   total K dimension of the weight matrix (needed for scale offset calculation)
 static void dequantize_x4x2_weight_to_fp16_tiles_task(__fp16 *restrict vtcm_dst, const uint8_t *restrict vtcm_src,
-                                                      int n_cols, int k_block, size_t row_stride,
-                                                      enum ggml_type weight_type, int start_tile, int end_tile) {
+                                                      int n_cols, int k_block, int k_offset, int full_k,
+                                                      size_t row_stride, enum ggml_type weight_type,
+                                                      int start_tile, int end_tile) {
   const int n_k_tiles = k_block / HMX_FP16_TILE_N_COLS;
-  const int qrow_size = (weight_type == GGML_TYPE_Q8_0) ? k_block : (k_block / 2);
+  // Quant region size of the FULL row (before scale blocks)
+  const int full_qrow_size = (weight_type == GGML_TYPE_Q8_0) ? full_k : (full_k / 2);
 
   for (int t = start_tile; t < end_tile; ++t) {
     int ct = t / n_k_tiles;  // N-dimension tile index
@@ -738,18 +743,17 @@ static void dequantize_x4x2_weight_to_fp16_tiles_task(__fp16 *restrict vtcm_dst,
 
     __fp16 *tile = vtcm_dst + t * HMX_FP16_TILE_N_ELMS;
 
-    // Which group within a row does this tile cover?
-    int group_idx  = kt;             // group index (each group = 32 k-elements)
-    int sb_idx     = group_idx / 8;  // super-block index
-    int grp_in_sb  = group_idx % 8;  // group within super-block (0..7)
-    int sub_blk    = grp_in_sb / 4;  // sub-block (0 or 1)
-    int grp_in_sub = grp_in_sb % 4;  // group within sub-block (0..3)
+    // Absolute group index within the full row (accounting for k_offset)
+    int abs_group_idx = (k_offset / 32) + kt;
+    int sb_idx        = abs_group_idx / 8;
+    int grp_in_sb     = abs_group_idx % 8;
+    int sub_blk       = grp_in_sb / 4;
+    int grp_in_sub    = grp_in_sb % 4;
 
     if (weight_type == GGML_TYPE_Q4_0 || weight_type == GGML_TYPE_IQ4_NL) {
-      // Byte offset of this group's 16 packed quant bytes within a row
+      // Byte offsets within the FULL row
       int q_off = sb_idx * 128 + sub_blk * 64 + grp_in_sub * 16;
-      // Byte offset of this group's FP16 scale within a row
-      int s_off = qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
 
       for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
         int row = ct * HMX_FP16_TILE_N_COLS + n_local;
@@ -781,7 +785,7 @@ static void dequantize_x4x2_weight_to_fp16_tiles_task(__fp16 *restrict vtcm_dst,
       }
     } else if (weight_type == GGML_TYPE_Q8_0) {
       int q_off = sb_idx * QK_Q8_0x4x2 + grp_in_sb * 32;
-      int s_off = qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
 
       for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
         int row = ct * HMX_FP16_TILE_N_COLS + n_local;
@@ -814,6 +818,8 @@ typedef struct {
   const uint8_t *src;
   int            n_cols;
   int            k_block;
+  int            k_offset;
+  int            full_k;
   size_t         row_stride;
   enum ggml_type weight_type;
 } x4x2_dequantize_task_state_t;
@@ -832,15 +838,20 @@ static void dequantize_x4x2_worker_loop(void *data, int _worker_index) {
     int end_tile   = smin(start_tile + state->n_chunks_per_task, state->n_tot_chunks);
 
     dequantize_x4x2_weight_to_fp16_tiles_task(state->dst, state->src, state->n_cols, state->k_block,
-                                               state->row_stride, state->weight_type, start_tile, end_tile);
+                                               state->k_offset, state->full_k, state->row_stride,
+                                               state->weight_type, start_tile, end_tile);
   }
 
   worker_pool_synctoken_jobdone(&(state->sync_ctx));
 }
 
 // Multi-threaded x4x2 dequantization: distributes tile range across HVX workers
+// k_block:  number of K elements to dequantize
+// k_offset: starting K index within the full row (0 for full-K paths)
+// full_k:   total K dimension of the weight matrix
 void dequantize_x4x2_weight_chunk_to_fp16_tiles(__fp16 *vtcm_dst, const void *vtcm_src, int n_cols, int k_block,
-                                                 size_t row_stride, enum ggml_type weight_type) {
+                                                 int k_offset, int full_k, size_t row_stride,
+                                                 enum ggml_type weight_type) {
   assert(n_cols % HMX_FP16_TILE_N_COLS == 0);
   assert(k_block % HMX_FP16_TILE_N_COLS == 0);
 
@@ -857,6 +868,8 @@ void dequantize_x4x2_weight_chunk_to_fp16_tiles(__fp16 *vtcm_dst, const void *vt
   state.src         = (const uint8_t *) vtcm_src;
   state.n_cols      = n_cols;
   state.k_block     = k_block;
+  state.k_offset    = k_offset;
+  state.full_k      = full_k;
   state.row_stride  = row_stride;
   state.weight_type = weight_type;
 
@@ -1215,7 +1228,8 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
           }
 
           // x4x2 tile-based dequantization with vscatter
-          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, buf_curr, n_cols, k, weight_row_stride, weight_type);
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, buf_curr, n_cols, k, 0, k, weight_row_stride,
+                                                      weight_type);
 
           swap_ptr(&buf_curr, &buf_next);
         }
@@ -1288,8 +1302,8 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
       {
         // B0: x4x2 tile-based dequantization
         dma_wait_for_idle();
-        dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[0], vtcm_qweight, n_cols_A0, k, weight_row_stride,
-                                                    weight_type);
+        dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[0], vtcm_qweight, n_cols_A0, k, 0, k,
+                                                    weight_row_stride, weight_type);
 
         // A1
         const size_t n_cols_A1 = smin(n - 1 * n_chunk_n_cols, n_chunk_n_cols);
@@ -1319,7 +1333,7 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
         // B1: x4x2 tile-based dequantization
         if (1 < n_chunk_cnt) {
           dma_wait_for_idle();
-          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[1], vtcm_qweight, n_cols_A1, k,
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[1], vtcm_qweight, n_cols_A1, k, 0, k,
                                                       weight_row_stride, weight_type);
         }
       }
@@ -1370,7 +1384,7 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
         // wait for DMA (A_{i+2}), compute B_{i+2}
         if (i + 2 < n_chunk_cnt) {
           dma_wait_for_idle();
-          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[(i + 2) % 2], vtcm_qweight, n_cols_p2, k,
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[(i + 2) % 2], vtcm_qweight, n_cols_p2, k, 0, k,
                                                       weight_row_stride, weight_type);
         }
       }
@@ -1654,7 +1668,7 @@ int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restric
         // dequantize weight block (x4x2 tile-based with vscatter)
         {
           worker_pool_synctoken_wait(&fetch_task_state.sync_ctx);
-          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, vtcm_scratch0, n_blk_sz, k_blk_sz,
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, vtcm_scratch0, n_blk_sz, k_blk_sz, kk, k,
                                                       weight_row_stride, weight_type);
         }
         t_b += HAP_perf_get_qtimer_count() - t1;
