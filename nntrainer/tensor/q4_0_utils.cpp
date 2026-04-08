@@ -302,6 +302,66 @@ void Q4_0Utils::repackToX4x2_Q4_0(const block_q4_0 *src_q4_0,
   }
 }
 
+void Q4_0Utils::repackToX4x2_Q4_0x8(const block_q4_0x8 *src_x8,
+                                     uint8_t *dst_x4x2, size_t N, size_t K,
+                                     size_t *out_row_stride) {
+  assert(K % 256 == 0);
+  assert(N % 8 == 0);
+
+  const size_t nblocks = K / QK4_0; // blocks per row
+  const size_t quants_per_row = K / 2;
+  const size_t n_superblocks_per_row = K / 256;
+  const size_t scales_per_row = n_superblocks_per_row * 16;
+  const size_t row_stride = quants_per_row + scales_per_row;
+
+  *out_row_stride = row_stride;
+
+  const uint64_t xor_mask = 0x8888888888888888ULL;
+
+  // block_q4_0x8 data is stored as groups of 8 rows.
+  // Within each group, blocks are stored sequentially:
+  //   group0: [blk_x8(row0-7, col_blk0), blk_x8(row0-7, col_blk1), ...]
+  //   group1: [blk_x8(row8-15, col_blk0), ...]
+  const block_q4_0x8 *src = src_x8;
+
+  for (size_t row_base = 0; row_base < N; row_base += 8) {
+    for (size_t x = 0; x < nblocks; ++x) {
+      const block_q4_0x8 *blk = src++;
+
+      // Unpack this block_q4_0x8 into 8 rows' x4x2 data
+      // block_q4_0x8 layout (with XOR applied by quantizer):
+      //   d[8]: scales for 8 rows
+      //   qs[0..63]:   first 8 bytes of each row's block (rows 0-7), XORed
+      //   qs[64..127]: second 8 bytes of each row's block (rows 0-7), XORed
+
+      size_t sb_idx = x / 8;
+      size_t grp_in_sb = x % 8;
+      size_t sub_blk = grp_in_sb / 4;
+      size_t grp_in_sub = grp_in_sb % 4;
+      size_t q_off = sb_idx * 128 + sub_blk * 64 + grp_in_sub * 16;
+      size_t s_off = quants_per_row + sb_idx * 16 + grp_in_sb * 2;
+
+      for (int r = 0; r < 8; ++r) {
+        size_t row = row_base + r;
+        if (row >= N) break;
+        uint8_t *dst_row = dst_x4x2 + row * row_stride;
+
+        // Reverse XOR and copy 16 quant bytes (two 8-byte halves)
+        uint64_t lo, hi;
+        std::memcpy(&lo, &blk->qs[r * 8], sizeof(uint64_t));
+        std::memcpy(&hi, &blk->qs[64 + r * 8], sizeof(uint64_t));
+        lo ^= xor_mask;
+        hi ^= xor_mask;
+        std::memcpy(dst_row + q_off, &lo, sizeof(uint64_t));
+        std::memcpy(dst_row + q_off + 8, &hi, sizeof(uint64_t));
+
+        // Copy scale (FP16)
+        std::memcpy(dst_row + s_off, &blk->d[r], sizeof(uint16_t));
+      }
+    }
+  }
+}
+
 void Q4_0Utils::repackToX4x2_Q8_0(const int8_t *src_q8_0,
                                     const uint16_t *scales,
                                     uint8_t *dst_x4x2, size_t N, size_t K,

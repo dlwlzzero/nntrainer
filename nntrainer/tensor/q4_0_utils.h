@@ -152,6 +152,21 @@ public:
                                  size_t N, size_t K, size_t *out_row_stride);
 
   /**
+   * @brief Repack Q4_0 weights from block_q4_0x8 interleaved format to x4x2
+   * row-strided format. This directly converts from the block_q4_0x8 format
+   * (used by the model quantizer with XOR mask) to x4x2 format (used by DSP),
+   * reversing the XOR mask in the process.
+   * @param[in] src_x8 source data in block_q4_0x8 format
+   * @param[in] N number of output rows (must be divisible by 8)
+   * @param[in] K number of input columns (must be divisible by 256)
+   * @param[out] dst_x4x2 output buffer in x4x2 row-strided format
+   * @param[out] out_row_stride bytes per row in the output
+   */
+  static void repackToX4x2_Q4_0x8(const block_q4_0x8 *src_x8,
+                                   uint8_t *dst_x4x2, size_t N, size_t K,
+                                   size_t *out_row_stride);
+
+  /**
    * @brief Repack Q8_0 weights from block_q8_0-like format to x4x2
    * row-strided format. Similar to Q4_0 but quants are 8-bit.
    * @param[in] src_q8_0 source data in int8 quantized format
