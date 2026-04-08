@@ -10,6 +10,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstring>
 
 #include "cpu_backend.h"
 #include "fp16.h"
@@ -246,6 +247,93 @@ void Q4_0Utils::printBlockQ4_0(const block_q4_0 *block) {
     printf("%i %i ", block->qs[i] & 0x0F, (block->qs[i] >> 4) & 0x0F);
   }
   printf("| scale:%f\n", compute_fp16_to_fp32(block->d));
+}
+
+void Q4_0Utils::repackToX4x2_Q4_0(const block_q4_0 *src_q4_0,
+                                   uint8_t *dst_x4x2, size_t N, size_t K,
+                                   size_t *out_row_stride) {
+  // x4x2 format: each row (one output neuron) stores K elements as:
+  //   [packed_quants: K/2 bytes] [scale_blocks: (K/256) * 16 bytes]
+  // Within packed_quants: 4 groups of 32 elements interleaved as x4x2 blocks
+  //   Each 256-element super-block has 128 bytes of packed 4-bit values
+  //   arranged as 4 groups x 2 sub-blocks (lo/hi nibbles)
+  // Scale blocks: 8 FP16 scales per 256-element block
+
+  assert(K % 256 == 0);
+  const size_t n_groups_per_row = K / QK4_0;  // groups of 32 elements per row
+  const size_t quants_per_row = K / 2;         // bytes of packed 4-bit quants
+  const size_t n_superblocks_per_row = K / 256;
+  const size_t scales_per_row = n_superblocks_per_row * 16;  // 16 bytes per scale block
+  const size_t row_stride = quants_per_row + scales_per_row;
+
+  *out_row_stride = row_stride;
+
+  for (size_t row = 0; row < N; ++row) {
+    uint8_t *dst_row = dst_x4x2 + row * row_stride;
+    uint8_t *dst_quants = dst_row;
+    uint8_t *dst_scales = dst_row + quants_per_row;
+
+    // Source: each row has n_groups_per_row block_q4_0 blocks
+    const block_q4_0 *src_row = src_q4_0 + row * n_groups_per_row;
+
+    // Pack quants: interleave 4 groups into x4x2 sub-blocks (128 bytes per 256 elements)
+    for (size_t sb = 0; sb < n_superblocks_per_row; ++sb) {
+      // Each super-block has 8 groups of 32 elements
+      // x4x2 layout: groups 0-3 share lo nibbles, groups 4-7 share hi nibbles
+      // Pack all 8 groups' quants into 128 bytes
+      uint8_t *sb_quants = dst_quants + sb * 128;
+      uint16_t *sb_scales = (uint16_t *)(dst_scales + sb * 16);
+
+      for (int g = 0; g < 8; ++g) {
+        const block_q4_0 *group = &src_row[sb * 8 + g];
+
+        // Copy 16 bytes of packed quants for this group
+        // In x4x2, groups 0-3 go to sub-block 0, groups 4-7 to sub-block 1
+        // Each sub-block has 4 groups x 16 bytes = 64 bytes
+        int sub_blk = g / 4;
+        int sub_idx = g % 4;
+        std::memcpy(sb_quants + sub_blk * 64 + sub_idx * 16, group->qs,
+                    QK4_0 / 2);
+
+        // Copy scale (FP16, stored as uint16_t)
+        sb_scales[g] = group->d;
+      }
+    }
+  }
+}
+
+void Q4_0Utils::repackToX4x2_Q8_0(const int8_t *src_q8_0,
+                                    const uint16_t *scales,
+                                    uint8_t *dst_x4x2, size_t N, size_t K,
+                                    size_t *out_row_stride) {
+  assert(K % 256 == 0);
+  const size_t n_groups_per_row = K / 32;
+  const size_t quants_per_row = K;  // 1 byte per element for Q8_0
+  const size_t n_superblocks_per_row = K / 256;
+  const size_t scales_per_row = n_superblocks_per_row * 16;
+  const size_t row_stride = quants_per_row + scales_per_row;
+
+  *out_row_stride = row_stride;
+
+  for (size_t row = 0; row < N; ++row) {
+    uint8_t *dst_row = dst_x4x2 + row * row_stride;
+    int8_t *dst_quants = (int8_t *)dst_row;
+    uint8_t *dst_scales_region = dst_row + quants_per_row;
+
+    const int8_t *src_row_quants = src_q8_0 + row * K;
+    const uint16_t *src_row_scales = scales + row * n_groups_per_row;
+
+    // Copy quants directly (Q8_0 quants are stored as-is in x4x2)
+    std::memcpy(dst_quants, src_row_quants, K);
+
+    // Pack scales into x4x2 scale blocks (8 scales per 256-element block)
+    for (size_t sb = 0; sb < n_superblocks_per_row; ++sb) {
+      uint16_t *sb_scales = (uint16_t *)(dst_scales_region + sb * 16);
+      for (int g = 0; g < 8; ++g) {
+        sb_scales[g] = src_row_scales[sb * 8 + g];
+      }
+    }
+  }
 }
 
 } // namespace nntrainer

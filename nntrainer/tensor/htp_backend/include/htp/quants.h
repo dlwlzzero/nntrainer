@@ -30,6 +30,24 @@ typedef struct {
   int8_t quants[8 * QK8_0];
 } __attribute__((packed)) my_block_q8_0;
 
+// x4x2 format constants: 4 groups x 2 sub-blocks (lo/hi nibbles)
+// Row layout: [packed_quants | scale_blocks]
+#define QK_Q4_0x4x2          256  // 4 groups × 2 sub-blocks × 32 elements
+#define QK_Q8_0x4x2          256
+#define HMX_X4X2_SCALES_PER_BLK  8
+#define HMX_X4X2_DBLK_SIZE       16  // 8 × sizeof(__fp16) = 16 bytes per scale block
+
+// Compute the row stride for x4x2 weight format (bytes per weight row of K elements)
+// Q4_0/IQ4_NL: quants = K/2 bytes, scales = (K/QK_Q4_0x4x2) * HMX_X4X2_DBLK_SIZE bytes
+// Q8_0:        quants = K bytes,   scales = (K/QK_Q8_0x4x2) * HMX_X4X2_DBLK_SIZE bytes
+static inline size_t compute_x4x2_row_stride_q4_0(int k) {
+  return (size_t)(k / 2) + (size_t)(k / QK_Q4_0x4x2) * HMX_X4X2_DBLK_SIZE;
+}
+
+static inline size_t compute_x4x2_row_stride_q8_0(int k) {
+  return (size_t)k + (size_t)(k / QK_Q8_0x4x2) * HMX_X4X2_DBLK_SIZE;
+}
+
 enum ggml_type {
   GGML_TYPE_F32     = 0,
   GGML_TYPE_F16     = 1,
@@ -72,3 +90,16 @@ enum ggml_type {
   // GGML_TYPE_IQ4_NL_8_8 = 38,
   GGML_TYPE_COUNT   = 39,
 };
+
+// Unified helper to compute x4x2 row stride by weight type
+static inline size_t compute_x4x2_row_stride(int k, enum ggml_type weight_type) {
+  switch (weight_type) {
+    case GGML_TYPE_Q4_0:
+    case GGML_TYPE_IQ4_NL:
+      return compute_x4x2_row_stride_q4_0(k);
+    case GGML_TYPE_Q8_0:
+      return compute_x4x2_row_stride_q8_0(k);
+    default:
+      return 0;
+  }
+}

@@ -15,7 +15,7 @@ extern "C" {
 // Matrix Multiplication Operations
 int hmx_mat_mul_af32_pwf16_of32(float *restrict out, const float *act, const __fp16 *p_wgt, int m, int k, int n);
 int hmx_mat_mul_af32_wf16_of32(float *restrict out, const float *restrict act, const __fp16 *restrict wgt, int m, int k, int n);
-int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *activation, const uint8_t *permuted_weight, int m, int k, int n, enum ggml_type weight_type);
+int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *activation, const uint8_t *permuted_weight, int m, int k, int n, size_t weight_row_stride, enum ggml_type weight_type);
 
 int hvx_rms_norm_f32(float *restrict dst, const float *restrict src, int ne0, int ne1);
 
