@@ -1103,14 +1103,15 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
           htp.free_shared_mem_buf && htp.get_global_handle) {
         auto handle = htp.get_global_handle();
         if (handle != 0 && K % 256 == 0 && N % 32 == 0) {
-          // Weight data is in block_q4_0x8 interleaved format (from quantizer).
+          // Weight data is in block_q4_0x4 interleaved format on ARM
+          // (the quantizer's repack_q4_0 packs to x4 on ARM, x8 on x86).
           // Directly convert to x4x2 row-strided format for DSP.
           size_t row_stride = (size_t)(K / 2) + (size_t)(K / 256) * 16;
           size_t wt_size = (size_t)N * row_stride;
           std::vector<uint8_t> weight_x4x2(wt_size, 0);
           size_t actual_stride = 0;
-          Q4_0Utils::repackToX4x2_Q4_0x8(
-            reinterpret_cast<const block_q4_0x8 *>(mdata),
+          Q4_0Utils::repackToX4x2_Q4_0x4(
+            reinterpret_cast<const block_q4_0x4 *>(mdata),
             weight_x4x2.data(), N, K, &actual_stride);
 
           size_t act_size = M * K * sizeof(float);

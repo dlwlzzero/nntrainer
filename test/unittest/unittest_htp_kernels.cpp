@@ -555,25 +555,25 @@ DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(28, 512, 256);
 DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(128, 4096, 2048);
 
 /**
- * @brief Simulate the quantizer's packing: block_q4_0 → block_q4_0x8 (with XOR)
+ * @brief Simulate the ARM quantizer's packing: block_q4_0 → block_q4_0x4
+ * (with XOR, blck_size_interleave=8, matching nntr_make_block_q4_0x4 in NEON)
  */
-static void pack_q4_0_to_q4_0x8(const block_q4_0 *src, block_q4_0x8 *dst,
+static void pack_q4_0_to_q4_0x4(const block_q4_0 *src, block_q4_0x4 *dst,
                                  int N, int K) {
   const int nblocks = K / QK4_0;
   const uint64_t xor_mask = 0x8888888888888888ULL;
 
-  for (int b = 0; b < N; b += 8) {
+  for (int b = 0; b < N; b += 4) {
     for (int x = 0; x < nblocks; ++x) {
-      // Gather 8 rows' block x
-      block_q4_0 tmp[8];
-      for (int i = 0; i < 8; ++i) {
+      block_q4_0 tmp[4];
+      for (int i = 0; i < 4; ++i)
         tmp[i] = src[(b + i) * nblocks + x];
-      }
-      // Pack with XOR mask (same as nntr_make_block_q4_0x8 in ggml_impl)
-      for (int i = 0; i < 8; ++i) dst->d[i] = tmp[i].d;
-      for (int i = 0; i < 16; ++i) {
-        int src_id = i % 8;
-        int src_off = (i / 8) * 8;
+
+      for (int i = 0; i < 4; ++i) dst->d[i] = tmp[i].d;
+      // blck_size_interleave=8: end = 32 * 2 / 8 = 8
+      for (int i = 0; i < 8; ++i) {
+        int src_id = i % 4;
+        int src_off = (i / 4) * 8;
         int dst_off = i * 8;
         uint64_t elems;
         memcpy(&elems, &tmp[src_id].qs[src_off], sizeof(uint64_t));
@@ -586,10 +586,11 @@ static void pack_q4_0_to_q4_0x8(const block_q4_0 *src, block_q4_0x8 *dst,
 }
 
 /**
- * @brief Test that repackToX4x2_Q4_0x8 (block_q4_0x8 → x4x2) produces the
+ * @brief Test that repackToX4x2_Q4_0x4 (block_q4_0x4 → x4x2) produces the
  * same DSP results as the original path (block_q4_0 → x4x2).
+ * This tests the ARM model-inference path.
  */
-static void run_repack_q4_0x8_to_x4x2_test(const uint32_t M,
+static void run_repack_q4_0x4_to_x4x2_test(const uint32_t M,
                                              const uint32_t K,
                                              const uint32_t N) {
   auto &htp = htp::HtpInterface::instance();
@@ -612,9 +613,9 @@ static void run_repack_q4_0x8_to_x4x2_test(const uint32_t M,
     quantize_row_q4_0_ref(weight_f32.data() + row * K,
                           weight_q4.data() + row * nblocks, K);
 
-  // Pack to block_q4_0x8 (simulates quantizer)
-  std::vector<block_q4_0x8> weight_x8((N / 8) * nblocks);
-  pack_q4_0_to_q4_0x8(weight_q4.data(), weight_x8.data(), N, K);
+  // Pack to block_q4_0x4 (simulates ARM quantizer)
+  std::vector<block_q4_0x4> weight_x4((N / 4) * nblocks);
+  pack_q4_0_to_q4_0x4(weight_q4.data(), weight_x4.data(), N, K);
 
   // Path A: block_q4_0 → x4x2 (direct, known-good)
   size_t row_stride = (size_t)(K / 2) + (size_t)(K / 256) * 16;
@@ -622,16 +623,16 @@ static void run_repack_q4_0x8_to_x4x2_test(const uint32_t M,
   std::vector<uint8_t> x4x2_A(wt_size, 0);
   repack_q4_0_to_x4x2(weight_q4.data(), x4x2_A.data(), N, K);
 
-  // Path B: block_q4_0x8 → x4x2 (new direct function)
+  // Path B: block_q4_0x4 → x4x2 (new direct function)
   std::vector<uint8_t> x4x2_B(wt_size, 0);
   size_t actual_stride = 0;
-  nntrainer::Q4_0Utils::repackToX4x2_Q4_0x8(weight_x8.data(), x4x2_B.data(),
+  nntrainer::Q4_0Utils::repackToX4x2_Q4_0x4(weight_x4.data(), x4x2_B.data(),
                                               N, K, &actual_stride);
   ASSERT_EQ(actual_stride, row_stride);
 
   // Compare the two x4x2 outputs byte-for-byte
   EXPECT_EQ(x4x2_A, x4x2_B)
-    << "repackToX4x2_Q4_0x8 output differs from repackToX4x2_Q4_0 output";
+    << "repackToX4x2_Q4_0x4 output differs from repackToX4x2_Q4_0 output";
 
   // Also verify DSP produces correct results via path B
   std::vector<float> weight_deq(N * K);
@@ -670,7 +671,7 @@ static void run_repack_q4_0x8_to_x4x2_test(const uint32_t M,
   memcpy(hmx_dst.data(), output_ptr, M * N * sizeof(float));
 
   float mse_err = mse<float>(hmx_dst.data(), ref_dst.data(), M * N);
-  std::cout << "Q4_0x8→x4x2 GEMM: " << M << "x" << K << "x" << N
+  std::cout << "Q4_0x4→x4x2 GEMM: " << M << "x" << K << "x" << N
             << "  MSE=" << mse_err << std::endl;
   EXPECT_IN_RANGE(mse_err, 0.0f, 0.05f);
 
@@ -679,15 +680,15 @@ static void run_repack_q4_0x8_to_x4x2_test(const uint32_t M,
   htp.free_shared_mem_buf(wt_ptr, wt_fd, wt_size);
 }
 
-#define DECLARE_repack_q4_0x8_test(M, K, N)                                    \
-  TEST(nntrainer_htp_kernels, repack_q4_0x8_to_x4x2_##M##_##K##_##N) {        \
-    run_repack_q4_0x8_to_x4x2_test(M, K, N);                                  \
+#define DECLARE_repack_q4_0x4_test(M, K, N)                                    \
+  TEST(nntrainer_htp_kernels, repack_q4_0x4_to_x4x2_##M##_##K##_##N) {        \
+    run_repack_q4_0x4_to_x4x2_test(M, K, N);                                  \
   }
 
-DECLARE_repack_q4_0x8_test(32, 256, 256);
-DECLARE_repack_q4_0x8_test(1, 512, 512);
-DECLARE_repack_q4_0x8_test(32, 1024, 256);
-DECLARE_repack_q4_0x8_test(128, 4096, 2048);
+DECLARE_repack_q4_0x4_test(32, 256, 256);
+DECLARE_repack_q4_0x4_test(1, 512, 512);
+DECLARE_repack_q4_0x4_test(32, 1024, 256);
+DECLARE_repack_q4_0x4_test(128, 4096, 2048);
 
 #else
 

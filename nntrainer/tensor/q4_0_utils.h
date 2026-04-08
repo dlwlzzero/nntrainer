@@ -152,10 +152,23 @@ public:
                                  size_t N, size_t K, size_t *out_row_stride);
 
   /**
+   * @brief Repack Q4_0 weights from block_q4_0x4 interleaved format to x4x2
+   * row-strided format. On ARM, the quantizer packs Q4_0 data into block_q4_0x4
+   * (4 rows interleaved with XOR mask). This directly converts to x4x2.
+   * @param[in] src_x4 source data in block_q4_0x4 format
+   * @param[in] N number of output rows (must be divisible by 4)
+   * @param[in] K number of input columns (must be divisible by 256)
+   * @param[out] dst_x4x2 output buffer in x4x2 row-strided format
+   * @param[out] out_row_stride bytes per row in the output
+   */
+  static void repackToX4x2_Q4_0x4(const block_q4_0x4 *src_x4,
+                                   uint8_t *dst_x4x2, size_t N, size_t K,
+                                   size_t *out_row_stride);
+
+  /**
    * @brief Repack Q4_0 weights from block_q4_0x8 interleaved format to x4x2
-   * row-strided format. This directly converts from the block_q4_0x8 format
-   * (used by the model quantizer with XOR mask) to x4x2 format (used by DSP),
-   * reversing the XOR mask in the process.
+   * row-strided format. On x86, the quantizer packs Q4_0 data into block_q4_0x8
+   * (8 rows interleaved with XOR mask). This directly converts to x4x2.
    * @param[in] src_x8 source data in block_q4_0x8 format
    * @param[in] N number of output rows (must be divisible by 8)
    * @param[in] K number of input columns (must be divisible by 256)
