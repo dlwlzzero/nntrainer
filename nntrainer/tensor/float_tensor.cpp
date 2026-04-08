@@ -1103,15 +1103,23 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
           htp.free_shared_mem_buf && htp.get_global_handle) {
         auto handle = htp.get_global_handle();
         if (handle != 0 && K % 256 == 0 && N % 32 == 0) {
+          // Weight data is in block_q4_0x8 interleaved format (from quantizer).
+          // First unpack to standard block_q4_0, then repack to x4x2.
+          size_t nblocks = K / QK4_0;
+          size_t data_size_x8 = (N / 8) * nblocks * sizeof(block_q4_0x8);
+          std::vector<uint8_t> unpacked_q4_0(N * nblocks * sizeof(block_q4_0));
+          Q4_0Utils::unpackBlocksQ4_0x8(
+            reinterpret_cast<const block_q4_0x8 *>(mdata), data_size_x8, N, K,
+            reinterpret_cast<block_q4_0 *>(unpacked_q4_0.data()));
+
           // Repack block_q4_0 weights to x4x2 row-strided format
-          // Compute row stride: K/2 quant bytes + (K/256)*16 scale bytes
           size_t row_stride = (size_t)(K / 2) + (size_t)(K / 256) * 16;
           size_t wt_size = (size_t)N * row_stride;
           std::vector<uint8_t> weight_x4x2(wt_size, 0);
           size_t actual_stride = 0;
           Q4_0Utils::repackToX4x2_Q4_0(
-            reinterpret_cast<const block_q4_0 *>(mdata), weight_x4x2.data(), N,
-            K, &actual_stride);
+            reinterpret_cast<const block_q4_0 *>(unpacked_q4_0.data()),
+            weight_x4x2.data(), N, K, &actual_stride);
 
           size_t act_size = M * K * sizeof(float);
           size_t out_size = M * N * sizeof(float);
