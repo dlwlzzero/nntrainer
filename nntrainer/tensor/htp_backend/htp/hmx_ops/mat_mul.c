@@ -1004,13 +1004,13 @@ void dequantize_x4x2_weight_chunk_to_fp16_tiles(__fp16 *vtcm_dst, const void *vt
 
   int n_col_tiles = n_cols / HMX_FP16_TILE_N_COLS;
   int n_k_tiles   = k_block / HMX_FP16_TILE_N_COLS;
-  int n_tot_tiles = n_col_tiles * n_k_tiles;
+  int n_tot_chunks = n_col_tiles * n_k_tiles;
 
   int    n_workers         = num_hvx128_contexts;
-  size_t n_tiles_per_task  = ceil_div(n_tot_tiles, n_workers);
+  size_t n_chunks_per_task = ceil_div(n_tot_chunks, n_workers);
 
   x4x2_dequantize_task_state_t state;
-  INIT_COMMON_TASK_STATE_MEMBERS(state, n_tot_tiles, n_tiles_per_task);
+  INIT_COMMON_TASK_STATE_MEMBERS(state, n_tot_chunks, n_chunks_per_task);
   state.dst         = vtcm_dst;
   state.src         = (const uint8_t *) vtcm_src;
   state.n_cols      = n_cols;
