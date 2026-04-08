@@ -28,6 +28,7 @@
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
 #include "htp_interface.h"
+#include "q4_0_utils.h"
 #endif
 
 namespace nntrainer {
@@ -1097,7 +1098,58 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
     }
 #elif defined(ENABLE_HTP) && ENABLE_HTP == 1
     {
-      // TODO
+      auto &htp = nntrainer::htp::HtpInterface::instance();
+      if (htp.htp_ops_mat_mul_af32_pwqk0_of32 && htp.alloc_shared_mem_buf &&
+          htp.free_shared_mem_buf && htp.get_global_handle) {
+        auto handle = htp.get_global_handle();
+        if (handle != 0 && K % 256 == 0 && N % 32 == 0) {
+          // Repack block_q4_0 weights to x4x2 row-strided format
+          // Compute row stride: K/2 quant bytes + (K/256)*16 scale bytes
+          size_t row_stride = (size_t)(K / 2) + (size_t)(K / 256) * 16;
+          size_t wt_size = (size_t)N * row_stride;
+          std::vector<uint8_t> weight_x4x2(wt_size, 0);
+          size_t actual_stride = 0;
+          Q4_0Utils::repackToX4x2_Q4_0(
+            reinterpret_cast<const block_q4_0 *>(mdata), weight_x4x2.data(), N,
+            K, &actual_stride);
+
+          size_t act_size = M * K * sizeof(float);
+          size_t out_size = M * N * sizeof(float);
+
+          void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
+          int act_fd = -1, wt_fd = -1, out_fd = -1;
+
+          int err = 0;
+          err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
+          err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
+          err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
+
+          if (err == 0) {
+            memcpy(act_buf, data, act_size);
+            memcpy(wt_buf, weight_x4x2.data(), wt_size);
+
+            // weight_type = 2 (GGML_TYPE_Q4_0)
+            err = htp.htp_ops_mat_mul_af32_pwqk0_of32(
+              handle, out_fd, 0, act_fd, 0, wt_fd, 0, M, K, N, 2);
+            if (err == 0) {
+              memcpy(rdata, out_buf, out_size);
+              htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+              htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+              htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+              break;
+            }
+          }
+
+          if (act_buf)
+            htp.free_shared_mem_buf(act_buf, act_fd, act_size);
+          if (wt_buf)
+            htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
+          if (out_buf)
+            htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+        }
+        // Fall through to CPU path on error or unsupported dimensions
+      }
+      gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
     }
 #else
     gemm_q4_0(M, N, K, data, K, (void *)mdata, N, rdata, N);
