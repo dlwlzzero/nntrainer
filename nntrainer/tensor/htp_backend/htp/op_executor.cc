@@ -74,7 +74,9 @@ int execute_op_simple(struct OpComputeRequest *req) {
         add_buffer(in_bufs, params->src, size);
 
         validate_in_bufs();
-        ret = hvx_rms_norm_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), params->ne0, params->ne1);
+        float eps;
+        memcpy(&eps, &params->eps_bits, sizeof(float));
+        ret = hvx_rms_norm_f32((float *) OUT_PTR(0), (const float *) IN_PTR(0), params->ne0, params->ne1, eps);
         validate_out_bufs();
       }
       break;

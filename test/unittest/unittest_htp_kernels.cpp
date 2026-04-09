@@ -701,9 +701,10 @@ DECLARE_repack_q4_0x4_test(128, 4096, 2048);
  * @param src  Input buffer  [ne1 x ne0]
  * @param ne0  Number of elements per row (feature dimension)
  * @param ne1  Number of rows
+ * @param eps  Epsilon for numerical stability
  */
-static void rms_norm_f32_ref(float *dst, const float *src, int ne0, int ne1) {
-  const float eps = 1e-5f;
+static void rms_norm_f32_ref(float *dst, const float *src, int ne0, int ne1,
+                             float eps) {
   for (int j = 0; j < ne1; ++j) {
     const float *x = src + j * ne0;
     float       *y = dst + j * ne0;
@@ -720,18 +721,20 @@ static void rms_norm_f32_ref(float *dst, const float *src, int ne0, int ne1) {
 }
 
 /**
- * @brief Run a single rms_norm_f32 test with the given dimensions.
+ * @brief Run a single rms_norm_f32 test with the given dimensions and epsilon.
  *
  * The test:
  *   1. Generates random input [ne1 x ne0] (float)
  *   2. Computes a CPU reference via rms_norm_f32_ref
- *   3. Calls htp_ops_rms_norm_f32 on the DSP
+ *   3. Calls htp_ops_rms_norm_f32 on the DSP (epsilon passed as int32 bits)
  *   4. Compares the DSP result against the CPU reference using MSE
  *
  * @param ne0  Number of elements per row (feature dimension)
  * @param ne1  Number of rows
+ * @param eps  Epsilon for numerical stability
  */
-static void run_rms_norm_f32_test(const int ne0, const int ne1) {
+static void run_rms_norm_f32_test(const int ne0, const int ne1,
+                                  const float eps) {
   auto &htp = htp::HtpInterface::instance();
 
   ASSERT_NE(htp.htp_ops_rms_norm_f32, nullptr)
@@ -746,7 +749,11 @@ static void run_rms_norm_f32_test(const int ne0, const int ne1) {
 
   // Compute CPU reference
   std::vector<float> ref_dst(ne0 * ne1);
-  rms_norm_f32_ref(ref_dst.data(), input.data(), ne0, ne1);
+  rms_norm_f32_ref(ref_dst.data(), input.data(), ne0, ne1, eps);
+
+  // Convert epsilon to int32 bit representation for RPC
+  int32_t eps_bits;
+  memcpy(&eps_bits, &eps, sizeof(float));
 
   // The kernel uses stride = ne0 (contiguous rows). The inner function
   // writes ceil(ne0/32) full vectors per row, so the last row may write
@@ -772,7 +779,8 @@ static void run_rms_norm_f32_test(const int ne0, const int ne1) {
   memcpy(src_ptr, input.data(), ne0 * ne1 * sizeof(float));
 
   // Run on DSP
-  err = htp.htp_ops_rms_norm_f32(handle, dst_fd, 0, src_fd, 0, ne0, ne1);
+  err = htp.htp_ops_rms_norm_f32(handle, dst_fd, 0, src_fd, 0, ne0, ne1,
+                                 eps_bits);
   ASSERT_EQ(err, 0) << "htp_ops_rms_norm_f32 failed";
 
   // Copy DSP result (only the ne0*ne1 logical elements)
@@ -780,7 +788,8 @@ static void run_rms_norm_f32_test(const int ne0, const int ne1) {
   memcpy(dsp_dst.data(), dst_ptr, ne0 * ne1 * sizeof(float));
 
   float mse_err = mse<float>(dsp_dst.data(), ref_dst.data(), ne0 * ne1);
-  std::cout << "RMS Norm F32: ne0=" << ne0 << ", ne1=" << ne1 << std::endl;
+  std::cout << "RMS Norm F32: ne0=" << ne0 << ", ne1=" << ne1
+            << ", eps=" << eps << std::endl;
   std::cout << " - MSE (vs CPU ref): " << mse_err << std::endl;
 
   EXPECT_IN_RANGE(mse_err, 0.0f, 1e-6f);
@@ -790,24 +799,30 @@ static void run_rms_norm_f32_test(const int ne0, const int ne1) {
   htp.free_shared_mem_buf(src_ptr, src_fd, buf_size);
 }
 
-#define DECLARE_rms_norm_f32_test(NE0, NE1)                                    \
-  TEST(nntrainer_htp_kernels, rms_norm_f32_##NE0##_##NE1) {                    \
-    run_rms_norm_f32_test(NE0, NE1);                                           \
+#define DECLARE_rms_norm_f32_test(NE0, NE1, EPS_TAG, EPS_VAL)                 \
+  TEST(nntrainer_htp_kernels, rms_norm_f32_##NE0##_##NE1##_##EPS_TAG) {       \
+    run_rms_norm_f32_test(NE0, NE1, EPS_VAL);                                 \
   }
 
-// Test with ne0 as multiples of 32 (no leftover elements)
-DECLARE_rms_norm_f32_test(32, 1);
-DECLARE_rms_norm_f32_test(128, 1);
-DECLARE_rms_norm_f32_test(4096, 1);
+// Test with eps=1e-5 (LLaMA default)
+// ne0 as multiples of 32 (no leftover elements)
+DECLARE_rms_norm_f32_test(32, 1, eps1e5, 1e-5f);
+DECLARE_rms_norm_f32_test(128, 1, eps1e5, 1e-5f);
+DECLARE_rms_norm_f32_test(4096, 1, eps1e5, 1e-5f);
 
-// Test with ne0 not a multiple of 32 (leftover handling)
-DECLARE_rms_norm_f32_test(100, 1);
-DECLARE_rms_norm_f32_test(4000, 1);
+// ne0 not a multiple of 32 (leftover handling)
+DECLARE_rms_norm_f32_test(100, 1, eps1e5, 1e-5f);
+DECLARE_rms_norm_f32_test(4000, 1, eps1e5, 1e-5f);
 
-// Test with multiple rows (ne1 > 1)
-DECLARE_rms_norm_f32_test(128, 8);
-DECLARE_rms_norm_f32_test(4096, 4);
-DECLARE_rms_norm_f32_test(4096, 16);
+// Multiple rows (ne1 > 1)
+DECLARE_rms_norm_f32_test(128, 8, eps1e5, 1e-5f);
+DECLARE_rms_norm_f32_test(4096, 4, eps1e5, 1e-5f);
+DECLARE_rms_norm_f32_test(4096, 16, eps1e5, 1e-5f);
+
+// Test with eps=1e-6 (Qwen3 default)
+DECLARE_rms_norm_f32_test(128, 1, eps1e6, 1e-6f);
+DECLARE_rms_norm_f32_test(4096, 1, eps1e6, 1e-6f);
+DECLARE_rms_norm_f32_test(4096, 4, eps1e6, 1e-6f);
 
 #else
 

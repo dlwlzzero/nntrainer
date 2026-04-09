@@ -265,7 +265,7 @@ AEEResult htp_ops_destroy_channel(remote_handle64 handle) {
 
 // FastRPC interface
 AEEResult htp_ops_rms_norm_f32(remote_handle64 handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 ne0,
-                               int32 ne1) {
+                               int32 ne1, int32 eps_bits) {
   int64_t t0 = HAP_perf_get_qtimer_count();
 
   // TODO(hzx): maybe we should cache fd -> address mapping
@@ -290,8 +290,11 @@ AEEResult htp_ops_rms_norm_f32(remote_handle64 handle, int32 fd0, int32 offset0,
   size_t       input_size = ne0 * ne1 * sizeof(float);  // This can be inaccurate
   qurt_mem_cache_clean((qurt_addr_t) input, input_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
 
+  float eps;
+  memcpy(&eps, &eps_bits, sizeof(float));
+
   float *output = (float *) (p0 + offset0);
-  err           = hvx_rms_norm_f32(output, input, ne0, ne1);
+  err           = hvx_rms_norm_f32(output, input, ne0, ne1, eps);
   if (err) {
     FARF(ALWAYS, "%s: bad input or alignment", __func__);
     goto bail;

@@ -71,7 +71,10 @@ static void test_rms_norm_f32_rpc(remote_handle64 handle, int ne0) {
   }
 
   int64_t t0             = get_time_us();
-  err                    = htp_ops_rms_norm_f32(handle, fd_dst, 0, fd_src, 0, ne0, 1);
+  float test_eps = 1e-5f;
+  int32_t test_eps_bits;
+  memcpy(&test_eps_bits, &test_eps, sizeof(float));
+  err                    = htp_ops_rms_norm_f32(handle, fd_dst, 0, fd_src, 0, ne0, 1, test_eps_bits);
   int64_t rpc_elapsed_us = get_time_us() - t0;
   fprintf(stderr, "rms_norm_f32 RPC took %ld us\n", rpc_elapsed_us);
 
@@ -140,11 +143,15 @@ static void test_rms_norm_f32_chan(void *chan, int ne0) {
     struct OpComputeRequest compute_req = {
       .op = HTP_OPS_RMS_NORM_F32,
     };
+    float chan_eps = 1e-5f;
+    int32_t chan_eps_bits;
+    memcpy(&chan_eps_bits, &chan_eps, sizeof(float));
     struct RmsNormF32Params params = {
       .dst = { .fd = fd_dst, .offset = 0, },
       .src = { .fd = fd_src, .offset = 0, },
       .ne0 = ne0,
       .ne1 = 1,
+      .eps_bits = chan_eps_bits,
     };
 
     size_t req_size     = sizeof(req_hdr) + sizeof(compute_req) + sizeof(params);

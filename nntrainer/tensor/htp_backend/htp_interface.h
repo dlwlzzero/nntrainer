@@ -37,7 +37,7 @@ using htp_ops_mat_mul_af32_wf16_of32_fn_t =
 using htp_ops_mat_mul_af32_pwqk0_of32_fn_t =
   int(remote_handle64, int, int, int, int, int, int, int, int, int, int);
 using htp_ops_rms_norm_f32_fn_t =
-  int(remote_handle64, int, int, int, int, int, int);
+  int(remote_handle64, int, int, int, int, int, int, int);
 
 /**
  * @brief Singleton interface that loads libhtp_ops.so at runtime and resolves
