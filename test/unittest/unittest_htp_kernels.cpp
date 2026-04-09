@@ -690,6 +690,125 @@ DECLARE_repack_q4_0x4_test(1, 512, 512);
 DECLARE_repack_q4_0x4_test(32, 1024, 256);
 DECLARE_repack_q4_0x4_test(128, 4096, 2048);
 
+/**
+ * @brief CPU reference implementation of RMS normalization (f32).
+ *
+ * For each row of ne0 elements:
+ *   scale = 1 / sqrt(mean(x^2) + eps)
+ *   y[i]  = x[i] * scale
+ *
+ * @param dst  Output buffer [ne1 x ne0]
+ * @param src  Input buffer  [ne1 x ne0]
+ * @param ne0  Number of elements per row (feature dimension)
+ * @param ne1  Number of rows
+ */
+static void rms_norm_f32_ref(float *dst, const float *src, int ne0, int ne1) {
+  const float eps = 1e-5f;
+  for (int j = 0; j < ne1; ++j) {
+    const float *x = src + j * ne0;
+    float       *y = dst + j * ne0;
+    float sum = 0.0f;
+    for (int i = 0; i < ne0; ++i) {
+      sum += x[i] * x[i];
+    }
+    float mean  = sum / ne0;
+    float scale = 1.0f / std::sqrt(mean + eps);
+    for (int i = 0; i < ne0; ++i) {
+      y[i] = x[i] * scale;
+    }
+  }
+}
+
+/**
+ * @brief Run a single rms_norm_f32 test with the given dimensions.
+ *
+ * The test:
+ *   1. Generates random input [ne1 x ne0] (float)
+ *   2. Computes a CPU reference via rms_norm_f32_ref
+ *   3. Calls htp_ops_rms_norm_f32 on the DSP
+ *   4. Compares the DSP result against the CPU reference using MSE
+ *
+ * @param ne0  Number of elements per row (feature dimension)
+ * @param ne1  Number of rows
+ */
+static void run_rms_norm_f32_test(const int ne0, const int ne1) {
+  auto &htp = htp::HtpInterface::instance();
+
+  ASSERT_NE(htp.htp_ops_rms_norm_f32, nullptr)
+    << "HTP library not loaded (htp_ops_rms_norm_f32 missing)";
+
+  auto handle = htp.get_global_handle();
+  ASSERT_NE(handle, (uint64_t)0) << "DSP session not opened (handle == 0)";
+
+  // Generate random input data
+  std::vector<float> input =
+    generate_random_vector<float, false>(ne0 * ne1, -1.0f, 1.0f);
+
+  // Compute CPU reference
+  std::vector<float> ref_dst(ne0 * ne1);
+  rms_norm_f32_ref(ref_dst.data(), input.data(), ne0, ne1);
+
+  // The kernel uses stride = ne0 (contiguous rows). The inner function
+  // writes ceil(ne0/32) full vectors per row, so the last row may write
+  // past ne0*ne1 floats. Allocate enough to cover that overflow.
+  int ne0_padded = ((ne0 + 31) / 32) * 32;
+  size_t buf_size =
+    (size_t)((ne1 > 0 ? (ne1 - 1) * ne0 : 0) + ne0_padded) * sizeof(float);
+
+  // Allocate shared memory for DSP
+  float *src_ptr = nullptr;
+  float *dst_ptr = nullptr;
+  int src_fd, dst_fd;
+
+  int err = htp.alloc_shared_mem_buf((void **)&dst_ptr, &dst_fd, buf_size);
+  ASSERT_EQ(err, 0) << "Failed to allocate output buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&src_ptr, &src_fd, buf_size);
+  ASSERT_EQ(err, 0) << "Failed to allocate input buffer";
+
+  // Copy input data contiguously (kernel uses stride = ne0).
+  // Zero-fill first to clear any padding beyond ne0*ne1.
+  memset(src_ptr, 0, buf_size);
+  memcpy(src_ptr, input.data(), ne0 * ne1 * sizeof(float));
+
+  // Run on DSP
+  err = htp.htp_ops_rms_norm_f32(handle, dst_fd, 0, src_fd, 0, ne0, ne1);
+  ASSERT_EQ(err, 0) << "htp_ops_rms_norm_f32 failed";
+
+  // Copy DSP result (only the ne0*ne1 logical elements)
+  std::vector<float> dsp_dst(ne0 * ne1);
+  memcpy(dsp_dst.data(), dst_ptr, ne0 * ne1 * sizeof(float));
+
+  float mse_err = mse<float>(dsp_dst.data(), ref_dst.data(), ne0 * ne1);
+  std::cout << "RMS Norm F32: ne0=" << ne0 << ", ne1=" << ne1 << std::endl;
+  std::cout << " - MSE (vs CPU ref): " << mse_err << std::endl;
+
+  EXPECT_IN_RANGE(mse_err, 0.0f, 1e-6f);
+
+  // Cleanup
+  htp.free_shared_mem_buf(dst_ptr, dst_fd, buf_size);
+  htp.free_shared_mem_buf(src_ptr, src_fd, buf_size);
+}
+
+#define DECLARE_rms_norm_f32_test(NE0, NE1)                                    \
+  TEST(nntrainer_htp_kernels, rms_norm_f32_##NE0##_##NE1) {                    \
+    run_rms_norm_f32_test(NE0, NE1);                                           \
+  }
+
+// Test with ne0 as multiples of 32 (no leftover elements)
+DECLARE_rms_norm_f32_test(32, 1);
+DECLARE_rms_norm_f32_test(128, 1);
+DECLARE_rms_norm_f32_test(4096, 1);
+
+// Test with ne0 not a multiple of 32 (leftover handling)
+DECLARE_rms_norm_f32_test(100, 1);
+DECLARE_rms_norm_f32_test(4000, 1);
+
+// Test with multiple rows (ne1 > 1)
+DECLARE_rms_norm_f32_test(128, 8);
+DECLARE_rms_norm_f32_test(4096, 4);
+DECLARE_rms_norm_f32_test(4096, 16);
+
 #else
 
 TEST(nntrainer_htp_kernels, htp_not_enabled) {
