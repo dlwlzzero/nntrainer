@@ -459,15 +459,16 @@ AEEResult htp_ops_mat_mul_af32_pwqk0_of32(remote_handle64 handle, int32 output_f
   const float  *activation = (const float *) (p1 + activation_offset);
   const uint8_t *weight     = (const uint8_t *) (p2 + weight_offset);
 
-  size_t output_size     = m * n * sizeof(float);
-  size_t activation_size = m * k * sizeof(float);
-  size_t weight_size     = (size_t)k * n / QK_K * sizeof(my_block_q4_0);
+  size_t weight_row_stride = compute_x4x2_row_stride(k, GGML_TYPE_Q4_0);
+  size_t output_size       = m * n * sizeof(float);
+  size_t activation_size   = m * k * sizeof(float);
+  size_t weight_size       = (size_t)n * weight_row_stride;
 
   qurt_mem_cache_clean((qurt_addr_t) activation, activation_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
   qurt_mem_cache_clean((qurt_addr_t) weight, weight_size, QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
 
   hmx_manager_enable_execution();
-  err = hmx_mat_mul_af32_pwqk0_of32(output, activation, weight, m, k, n, GGML_TYPE_Q4_0);
+  err = hmx_mat_mul_af32_pwqk0_of32(output, activation, weight, m, k, n, weight_row_stride, GGML_TYPE_Q4_0);
   hmx_manager_disable_execution();
 
   qurt_mem_cache_clean((qurt_addr_t) output, output_size, QURT_MEM_CACHE_FLUSH, QURT_MEM_DCACHE);

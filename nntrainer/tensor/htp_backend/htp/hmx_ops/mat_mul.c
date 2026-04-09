@@ -43,17 +43,6 @@ static inline void swap_ptr(void **p1, void **p2) {
   *p2     = t;
 }
 
-static inline size_t get_super_block_size(enum ggml_type weight_type) {
-  switch (weight_type) {
-    case GGML_TYPE_Q4_0:
-    case GGML_TYPE_IQ4_NL:
-      return sizeof(my_block_q4_0);
-    case GGML_TYPE_Q8_0:
-      return sizeof(my_block_q8_0);
-    default:
-      return 0;
-  }
-}
 
 static inline int dma_issue_load_from_ddr(dma_desc_1d_t *desc, void *vtcm_dst, const void *src, size_t size) {
   dma_wait_for_idle();
@@ -69,6 +58,29 @@ static inline int dma_issue_load_from_ddr(dma_desc_1d_t *desc, void *vtcm_dst, c
   desc->dst        = (uint32_t) vtcm_dst;
 
   return dma_submit_one(desc);
+}
+
+static inline int dma_issue_load_2d(dma_desc_2d_t *desc, void *vtcm_dst, const void *src, uint16_t roi_width,
+                                    uint16_t roi_height, uint16_t src_stride, uint16_t dst_stride) {
+  dma_wait_for_idle();
+
+  desc->next             = 0;
+  desc->length           = 0;
+  desc->type             = DMA_DESC_TYPE_2D;
+  desc->src_bypass       = 1;
+  desc->dst_bypass       = 0;
+  desc->ordered          = 1;
+  desc->dstate           = DMA_DESC_DSTATE_PENDING;
+  desc->src              = (uint32_t) src;
+  desc->dst              = (uint32_t) vtcm_dst;
+  desc->roi_width        = roi_width;
+  desc->roi_height       = roi_height;
+  desc->src_stride       = src_stride;
+  desc->dst_stride       = dst_stride;
+  desc->src_width_offset = 0;
+  desc->dst_width_offset = 0;
+
+  return dma_submit_one((dma_desc_1d_t *) desc);
 }
 
 static void find_chunk_size(size_t x_max, size_t y_max, size_t xy_max, size_t x_unit, size_t y_unit, size_t *x_out,
@@ -696,15 +708,193 @@ void dequantize_common_weight_chunk_qk_0_to_fp16_hvx(__fp16 *vtcm_dst, const voi
   worker_pool_synctoken_wait(&(state.sync_ctx));
 }
 
+// ==================== x4x2 dequantization kernels ====================
+
+// Dequantize x4x2 weight data into HMX FP16 tile layout.
+// Processes tiles [start_tile, end_tile).
+//
+// HMX tile layout: tile element at (k_local, n_local) is stored at
+//   tile[(k_local & ~1) * 32 + n_local * 2 + (k_local & 1)]
+//
+// x4x2 row layout for Q4_0/IQ4_NL:
+//   [packed_quants: K/2 bytes | scale_blocks: (K/256)*16 bytes]
+//   Within packed_quants, each 256-element super-block has 128 bytes:
+//     sub-block 0 (groups 0-3): bytes 0-63, each group 16 bytes
+//     sub-block 1 (groups 4-7): bytes 64-127, each group 16 bytes
+//   Each group's 16 bytes: byte[j] = elem[j] | (elem[j+16] << 4)
+//
+// x4x2 row layout for Q8_0:
+//   [quants: K bytes | scale_blocks: (K/256)*16 bytes]
+//   Each group's 32 bytes: int8 quants[0..31]
+// k_block:  number of K elements to process in this call
+// k_offset: starting K index within the full row (0 when processing full K)
+// full_k:   total K dimension of the weight matrix (needed for scale offset calculation)
+static void dequantize_x4x2_weight_to_fp16_tiles_task(__fp16 *restrict vtcm_dst, const uint8_t *restrict vtcm_src,
+                                                      int n_cols, int k_block, int k_offset, int full_k,
+                                                      size_t row_stride, enum ggml_type weight_type,
+                                                      int start_tile, int end_tile) {
+  const int n_k_tiles = k_block / HMX_FP16_TILE_N_COLS;
+  // Quant region size of the FULL row (before scale blocks)
+  const int full_qrow_size = (weight_type == GGML_TYPE_Q8_0) ? full_k : (full_k / 2);
+
+  for (int t = start_tile; t < end_tile; ++t) {
+    int ct = t / n_k_tiles;  // N-dimension tile index
+    int kt = t % n_k_tiles;  // K-dimension tile index
+
+    __fp16 *tile = vtcm_dst + t * HMX_FP16_TILE_N_ELMS;
+
+    // Absolute group index within the full row (accounting for k_offset)
+    int abs_group_idx = (k_offset / 32) + kt;
+    int sb_idx        = abs_group_idx / 8;
+    int grp_in_sb     = abs_group_idx % 8;
+    int sub_blk       = grp_in_sb / 4;
+    int grp_in_sub    = grp_in_sb % 4;
+
+    if (weight_type == GGML_TYPE_Q4_0 || weight_type == GGML_TYPE_IQ4_NL) {
+      // Byte offsets within the FULL row
+      int q_off = sb_idx * 128 + sub_blk * 64 + grp_in_sub * 16;
+      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+
+      for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
+        int row = ct * HMX_FP16_TILE_N_COLS + n_local;
+
+        if (row >= n_cols) {
+          // Zero-fill remaining tile rows
+          for (int kl = 0; kl < 32; ++kl) {
+            tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = (__fp16) 0;
+          }
+          continue;
+        }
+
+        const uint8_t *row_data = vtcm_src + row * row_stride;
+        const uint8_t *qs       = row_data + q_off;
+        __fp16         scale    = *((const __fp16 *) (row_data + s_off));
+        float          scale_f  = (float) scale;
+
+        for (int j = 0; j < 16; ++j) {
+          int q_lo = qs[j] & 0x0F;
+          int q_hi = (qs[j] >> 4) & 0x0F;
+
+          __fp16 v_lo = (__fp16) ((float) (q_lo - 8) * scale_f);
+          __fp16 v_hi = (__fp16) ((float) (q_hi - 8) * scale_f);
+
+          // k_local = j for lo nibble (elements 0..15), j+16 for hi nibble (elements 16..31)
+          tile[(j & ~1) * 32 + n_local * 2 + (j & 1)]             = v_lo;
+          tile[((j + 16) & ~1) * 32 + n_local * 2 + ((j + 16) & 1)] = v_hi;
+        }
+      }
+    } else if (weight_type == GGML_TYPE_Q8_0) {
+      int q_off = sb_idx * QK_Q8_0x4x2 + grp_in_sb * 32;
+      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+
+      for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
+        int row = ct * HMX_FP16_TILE_N_COLS + n_local;
+
+        if (row >= n_cols) {
+          for (int kl = 0; kl < 32; ++kl) {
+            tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = (__fp16) 0;
+          }
+          continue;
+        }
+
+        const uint8_t *row_data = vtcm_src + row * row_stride;
+        const int8_t  *qs       = (const int8_t *) (row_data + q_off);
+        __fp16         scale    = *((const __fp16 *) (row_data + s_off));
+        float          scale_f  = (float) scale;
+
+        for (int kl = 0; kl < 32; ++kl) {
+          __fp16 v = (__fp16) ((float) qs[kl] * scale_f);
+          tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = v;
+        }
+      }
+    }
+  }
+}
+
+// Task state for x4x2 dequantization worker
+typedef struct {
+  EXPAND_COMMON_TASK_STATE_MEMBERS
+  __fp16        *dst;
+  const uint8_t *src;
+  int            n_cols;
+  int            k_block;
+  int            k_offset;
+  int            full_k;
+  size_t         row_stride;
+  enum ggml_type weight_type;
+} x4x2_dequantize_task_state_t;
+
+static void dequantize_x4x2_worker_loop(void *data, int _worker_index) {
+  (void) _worker_index;
+  x4x2_dequantize_task_state_t *state = (x4x2_dequantize_task_state_t *) data;
+
+  while (1) {
+    unsigned int task_id = worker_pool_atomic_inc_return(&(state->task_id)) - 1;
+    if (task_id >= state->n_tasks) {
+      break;
+    }
+
+    int start_tile = task_id * state->n_chunks_per_task;
+    int end_tile   = smin(start_tile + state->n_chunks_per_task, state->n_tot_chunks);
+
+    dequantize_x4x2_weight_to_fp16_tiles_task(state->dst, state->src, state->n_cols, state->k_block,
+                                               state->k_offset, state->full_k, state->row_stride,
+                                               state->weight_type, start_tile, end_tile);
+  }
+
+  worker_pool_synctoken_jobdone(&(state->sync_ctx));
+}
+
+// Multi-threaded x4x2 dequantization: distributes tile range across HVX workers
+// k_block:  number of K elements to dequantize
+// k_offset: starting K index within the full row (0 for full-K paths)
+// full_k:   total K dimension of the weight matrix
+void dequantize_x4x2_weight_chunk_to_fp16_tiles(__fp16 *vtcm_dst, const void *vtcm_src, int n_cols, int k_block,
+                                                 int k_offset, int full_k, size_t row_stride,
+                                                 enum ggml_type weight_type) {
+  assert(n_cols % HMX_FP16_TILE_N_COLS == 0);
+  assert(k_block % HMX_FP16_TILE_N_COLS == 0);
+
+  int n_col_tiles = n_cols / HMX_FP16_TILE_N_COLS;
+  int n_k_tiles   = k_block / HMX_FP16_TILE_N_COLS;
+  int n_tot_chunks = n_col_tiles * n_k_tiles;
+
+  int    n_workers         = num_hvx128_contexts;
+  size_t n_chunks_per_task = ceil_div(n_tot_chunks, n_workers);
+
+  x4x2_dequantize_task_state_t state;
+  INIT_COMMON_TASK_STATE_MEMBERS(state, n_tot_chunks, n_chunks_per_task);
+  state.dst         = vtcm_dst;
+  state.src         = (const uint8_t *) vtcm_src;
+  state.n_cols      = n_cols;
+  state.k_block     = k_block;
+  state.k_offset    = k_offset;
+  state.full_k      = full_k;
+  state.row_stride  = row_stride;
+  state.weight_type = weight_type;
+
+  worker_pool_job_t job;
+  job.fptr = dequantize_x4x2_worker_loop;
+  job.dptr = &state;
+
+  worker_pool_synctoken_init(&(state.sync_ctx), n_workers);
+  for (int i = 0; i < n_workers; ++i) {
+    worker_pool_submit(NULL, job);
+  }
+  worker_pool_synctoken_wait(&(state.sync_ctx));
+}
+
+// ==================== end x4x2 dequantization ====================
+
 static void core_dot_chunk_fp16(__fp16 *output, const __fp16 *activation, const __fp16 *weight, const __fp16 *scales,
                                 int n_row_tiles, int n_col_tiles, int n_dot_tiles) {
   hmx_unit_acquire();
-
-  asm volatile("mxclracc.hf");
   hmx_set_output_scales(scales);
 
   for (int r = 0; r < n_row_tiles; ++r) {
     for (int c = 0; c < n_col_tiles; ++c) {
+      asm volatile("mxclracc.hf");  // clear accumulator per output tile
+
       const __fp16 *row_tiles = activation + r * n_dot_tiles * HMX_FP16_TILE_N_ELMS;
       const __fp16 *col_tiles = weight + c * n_dot_tiles * HMX_FP16_TILE_N_ELMS;
 
@@ -930,11 +1120,11 @@ static void core_dot_fp16_hmx_worker_fn(void *data, int _worker_index) {
 }
 
 int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
-                                       int k, int n, enum ggml_type w_type);
+                                       int k, int n, size_t weight_row_stride, enum ggml_type w_type);
 
 int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activation,
                                      const uint8_t *restrict permuted_weight, int m, int k, int n,
-                                     enum ggml_type weight_type) {
+                                     size_t weight_row_stride, enum ggml_type weight_type) {
   if (!dst || !activation || !permuted_weight || !m || !n || !k) {
     return -1;
   }
@@ -946,13 +1136,13 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
     return -1;
   }
 
-  // for large m, k (e.g. prefill FFN Down), use out-staionary version
+  // for large m, k (e.g. prefill FFN Down), use out-stationary version
   if (m >= 128 && k > n && n > 1024) {
-    return mat_mul_af32_pwqk0_of32_stationary(dst, activation, permuted_weight, m, k, n, weight_type);
+    return mat_mul_af32_pwqk0_of32_stationary(dst, activation, permuted_weight, m, k, n, weight_row_stride,
+                                               weight_type);
   }
 
-  size_t super_block_size = get_super_block_size(weight_type);
-  if (super_block_size == 0) {
+  if (weight_row_stride == 0) {
     return -1;
   }
 
@@ -1010,15 +1200,15 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
       void *buf_curr = vtcm_scratch0;
       void *buf_next = vtcm_scratch1;
 
-      static dma_desc_1d_t desc
+      static dma_desc_2d_t desc_2d
         __attribute__((aligned(64)));  // NOTE(hzx): make sure the DMA descriptor's lifetime is long enough
 
-      // issue async DDR data transfer for the first weight chunk
+      // issue async 2D DMA transfer for the first weight chunk (x4x2 row-strided format)
       {
-        const size_t n_cols_first            = smin(n, n_chunk_n_cols);
-        const size_t first_weight_chunk_size = n_cols_first * k / QK_K * super_block_size;
+        const size_t n_cols_first = smin(n, n_chunk_n_cols);
 
-        dma_issue_load_from_ddr(&desc, buf_curr, permuted_weight, first_weight_chunk_size);
+        dma_issue_load_2d(&desc_2d, buf_curr, permuted_weight, (uint16_t) weight_row_stride,
+                          (uint16_t) n_cols_first, (uint16_t) weight_row_stride, (uint16_t) weight_row_stride);
       }
 
       for (size_t nc = 0; nc < n; nc += n_chunk_n_cols) {
@@ -1030,17 +1220,16 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
 
           const size_t nc_next = nc + n_chunk_n_cols;
           if (nc_next < n) {
-            const size_t n_cols_next = smin(n - nc_next, n_chunk_n_cols);
+            const size_t   n_cols_next        = smin(n - nc_next, n_chunk_n_cols);
+            const uint8_t *next_weight_chunk  = permuted_weight + nc_next * weight_row_stride;
 
-            const size_t   next_weight_chunk_size = n_cols_next * k / QK_K * super_block_size;
-            const uint8_t *next_weight_chunk      = permuted_weight + nc_next * k / QK_K * super_block_size;
-
-            dma_issue_load_from_ddr(&desc, buf_next, next_weight_chunk, next_weight_chunk_size);
+            dma_issue_load_2d(&desc_2d, buf_next, next_weight_chunk, (uint16_t) weight_row_stride,
+                              (uint16_t) n_cols_next, (uint16_t) weight_row_stride, (uint16_t) weight_row_stride);
           }
 
-          const uint8_t *permuted_weight_chunk = permuted_weight + (nc * k / QK_K) * super_block_size;
-          dequantize_permuted_weight_chunk_qk_0_to_fp16_hvx(vtcm_weight, permuted_weight_chunk, n_cols * k, k,
-                                                            weight_type, buf_curr);
+          // x4x2 tile-based dequantization with vscatter
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, buf_curr, n_cols, k, 0, k, weight_row_stride,
+                                                      weight_type);
 
           swap_ptr(&buf_curr, &buf_next);
         }
@@ -1081,7 +1270,7 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
     // MM ||    C2    ||
     // ST || D1 |     ||
 
-    static dma_desc_1d_t _Alignas(64) dma_desc;
+    static dma_desc_2d_t _Alignas(64) dma_desc;
     static core_dot_fp16_task_state_t mm_task_state;
     static worker_pool_job_t          mm_task_job;
 
@@ -1096,13 +1285,12 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
       void *vtcm_weight_bufs[2] = { vtcm_scratch0, vtcm_scratch1 };
       void *vtcm_output_bufs[2] = { vtcm_output, vtcm_scratch2 };
 
-      // prologue: A0
+      // prologue: A0 (2D DMA load for x4x2 format)
       const size_t n_cols_A0 = smin(n - 0 * n_chunk_n_cols, n_chunk_n_cols);
       {
-        const size_t chunk_size_A0 = n_cols_A0 * k / QK_K * super_block_size;
-
         const uint8_t *qweight_chunk_A0 = permuted_weight;
-        dma_issue_load_from_ddr(&dma_desc, vtcm_qweight, qweight_chunk_A0, chunk_size_A0);
+        dma_issue_load_2d(&dma_desc, vtcm_qweight, qweight_chunk_A0, (uint16_t) weight_row_stride,
+                          (uint16_t) n_cols_A0, (uint16_t) weight_row_stride, (uint16_t) weight_row_stride);
       }
 
       {
@@ -1112,18 +1300,17 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
 
       // prologue: B0, A1, C0, B1
       {
-        // B0
+        // B0: x4x2 tile-based dequantization
         dma_wait_for_idle();
-        dequantize_permuted_weight_chunk_qk_0_to_fp16_hvx(vtcm_weight_bufs[0], NULL, n_cols_A0 * k, k, weight_type,
-                                                          vtcm_qweight);
+        dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[0], vtcm_qweight, n_cols_A0, k, 0, k,
+                                                    weight_row_stride, weight_type);
 
         // A1
         const size_t n_cols_A1 = smin(n - 1 * n_chunk_n_cols, n_chunk_n_cols);
         if (1 < n_chunk_cnt) {
-          const size_t chunk_size_A1 = n_cols_A1 * k / QK_K * super_block_size;
-
-          const uint8_t *qweight_chunk_A1 = permuted_weight + n_chunk_n_cols * k / QK_K * super_block_size;
-          dma_issue_load_from_ddr(&dma_desc, vtcm_qweight, qweight_chunk_A1, chunk_size_A1);
+          const uint8_t *qweight_chunk_A1 = permuted_weight + n_chunk_n_cols * weight_row_stride;
+          dma_issue_load_2d(&dma_desc, vtcm_qweight, qweight_chunk_A1, (uint16_t) weight_row_stride,
+                            (uint16_t) n_cols_A1, (uint16_t) weight_row_stride, (uint16_t) weight_row_stride);
         }
 
         // C0
@@ -1143,11 +1330,11 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
           worker_pool_submit(hmx_worker_pool_ctx, mm_task_job);
         }
 
-        // B1
+        // B1: x4x2 tile-based dequantization
         if (1 < n_chunk_cnt) {
           dma_wait_for_idle();
-          dequantize_permuted_weight_chunk_qk_0_to_fp16_hvx(vtcm_weight_bufs[1], NULL, n_cols_A1 * k, k, weight_type,
-                                                            vtcm_qweight);
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[1], vtcm_qweight, n_cols_A1, k, 0, k,
+                                                      weight_row_stride, weight_type);
         }
       }
 
@@ -1161,11 +1348,11 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
         const size_t n_cols_p1 = smin(n - nc_p1, n_chunk_n_cols);
         const size_t n_cols_p2 = smin(n - nc_p2, n_chunk_n_cols);
 
-        // issue A_{i+2}
+        // issue A_{i+2} (2D DMA)
         if (i + 2 < n_chunk_cnt) {
-          const size_t   chunk_size_p2    = n_cols_p2 * k / QK_K * super_block_size;
-          const uint8_t *qweight_chunk_p2 = permuted_weight + nc_p2 * k / QK_K * super_block_size;
-          dma_issue_load_from_ddr(&dma_desc, vtcm_qweight, qweight_chunk_p2, chunk_size_p2);
+          const uint8_t *qweight_chunk_p2 = permuted_weight + nc_p2 * weight_row_stride;
+          dma_issue_load_2d(&dma_desc, vtcm_qweight, qweight_chunk_p2, (uint16_t) weight_row_stride,
+                            (uint16_t) n_cols_p2, (uint16_t) weight_row_stride, (uint16_t) weight_row_stride);
         }
 
         // wait for HMX (C_{i})
@@ -1197,8 +1384,8 @@ int hmx_mat_mul_af32_pwqk0_of32(float *restrict dst, const float *restrict activ
         // wait for DMA (A_{i+2}), compute B_{i+2}
         if (i + 2 < n_chunk_cnt) {
           dma_wait_for_idle();
-          dequantize_permuted_weight_chunk_qk_0_to_fp16_hvx(vtcm_weight_bufs[(i + 2) % 2], NULL, n_cols_p2 * k, k,
-                                                            weight_type, vtcm_qweight);
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight_bufs[(i + 2) % 2], vtcm_qweight, n_cols_p2, k, 0, k,
+                                                      weight_row_stride, weight_type);
         }
       }
     }
@@ -1357,12 +1544,11 @@ void transfer_activation_chunk_multithread(__fp16 *dst, const float *src, int n_
 }
 
 int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restrict x, const uint8_t *restrict w, int m,
-                                       int k, int n, enum ggml_type weight_type) {
+                                       int k, int n, size_t weight_row_stride, enum ggml_type weight_type) {
   // NOTE(hzx): this constraint on k originates from 2D DMA, consider alternative ways to load activation
   assert(k < 16384);
   // assume k % 32 == 0 && n % 32 == 0
-  const size_t super_block_size = get_super_block_size(weight_type);
-  if (super_block_size == 0) {
+  if (weight_row_stride == 0) {
     return -1;
   }
 
@@ -1447,20 +1633,20 @@ int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restric
           dma_wait_for_idle();
         }
 
-        // fetch weight block into VTCM
+        // fetch weight block into VTCM (x4x2 row-strided format via 2D DMA)
         {
+          // In x4x2 format, weight for column nc, k-offset kk:
+          // Each row starts at w + row_idx * weight_row_stride
+          // We need n_blk_sz rows, starting from row nc
+          // Within each row, we need the k-range [kk, kk+k_blk_sz)
+          // For simplicity, fetch entire rows and let dequant handle sub-ranges
           qweight_fetch_task_state_t *s = &fetch_task_state;
 
-          size_t width_ne  = HMX_FP16_TILE_N_COLS * k_blk_sz;
-          size_t stride_ne = HMX_FP16_TILE_N_COLS * k;
-          size_t width     = width_ne / QK_K * super_block_size;
-          size_t stride    = stride_ne / QK_K * super_block_size;
-
           s->dst    = vtcm_scratch0;
-          s->src    = w + (nc * k + HMX_FP16_TILE_N_COLS * kk) / QK_K * super_block_size;
-          s->height = n_col_tiles;
-          s->width  = width;
-          s->stride = stride;
+          s->src    = w + nc * weight_row_stride;
+          s->height = n_blk_sz;
+          s->width  = weight_row_stride;
+          s->stride = weight_row_stride;
 
           worker_pool_synctoken_init(&s->sync_ctx, 1);
           worker_pool_submit(fetch_task_worker_pool_ctx, fetch_task_job);
@@ -1479,12 +1665,11 @@ int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restric
           transfer_activation_chunk_multithread(vtcm_activation, (float *) vtcm_scratch1, m_blk_sz, k_blk_sz, k_blk_sz);
         }
 
-        // dequantize weight block
+        // dequantize weight block (x4x2 tile-based with vscatter)
         {
-          // vtcm_scratch0 is used to store the qweight chunk
           worker_pool_synctoken_wait(&fetch_task_state.sync_ctx);
-          dequantize_permuted_weight_chunk_qk_0_to_fp16_hvx(vtcm_weight, NULL /*unused*/, n_blk_sz * k_blk_sz,
-                                                            -1 /*unused*/, weight_type, vtcm_scratch0);
+          dequantize_x4x2_weight_chunk_to_fp16_tiles(vtcm_weight, vtcm_scratch0, n_blk_sz, k_blk_sz, kk, k,
+                                                      weight_row_stride, weight_type);
         }
         t_b += HAP_perf_get_qtimer_count() - t1;
 

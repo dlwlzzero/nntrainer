@@ -14,19 +14,6 @@
 
 namespace {
 
-size_t ggml_super_block_size(enum ggml_type type) {
-  // TODO: more types
-  switch (type) {
-    case GGML_TYPE_Q4_0:
-    case GGML_TYPE_IQ4_NL:
-      return sizeof(my_block_q4_0);
-    case GGML_TYPE_Q8_0:
-      return sizeof(my_block_q8_0);
-    default:
-      return -1;
-  }
-}
-
 enum ggml_type matmul_op_to_weight_type(enum HtpOpsIndex op) {
   switch (op) {
     case HTP_OPS_MAT_MUL_PERMUTED_W16A32:
@@ -116,14 +103,14 @@ int execute_op_simple(struct OpComputeRequest *req) {
     case HTP_OPS_MAT_MUL_PERMUTED_W4D16A32_IQ4_NL:
       {
         auto   weight_type      = matmul_op_to_weight_type(static_cast<HtpOpsIndex>(req->op));
-        size_t super_block_size = ggml_super_block_size(weight_type);
 
         auto params = reinterpret_cast<MatMulParams *>(req->payload);
         int  m = params->m, k = params->k, n = params->n;
 
-        size_t output_size     = m * n * sizeof(float);
-        size_t activation_size = m * k * sizeof(float);
-        size_t weight_size     = k * n / QK_K * super_block_size;
+        size_t weight_row_stride = compute_x4x2_row_stride(k, weight_type);
+        size_t output_size       = m * n * sizeof(float);
+        size_t activation_size   = m * k * sizeof(float);
+        size_t weight_size       = (size_t)n * weight_row_stride;
 
         add_buffer(out_bufs, params->output, output_size);
         add_buffer(in_bufs, params->activation, activation_size);
@@ -132,8 +119,8 @@ int execute_op_simple(struct OpComputeRequest *req) {
         // int64_t t0 = HAP_perf_get_qtimer_count();
         validate_in_bufs();
         // int64_t t1 = HAP_perf_get_qtimer_count();
-        ret =
-          hmx_mat_mul_af32_pwqk0_of32((float *) OUT_PTR(0), (float *) IN_PTR(0), IN_PTR(1), m, k, n, weight_type);
+        ret = hmx_mat_mul_af32_pwqk0_of32((float *) OUT_PTR(0), (float *) IN_PTR(0), IN_PTR(1), m, k, n,
+                                           weight_row_stride, weight_type);
         // int64_t t2 = HAP_perf_get_qtimer_count();
         validate_out_bufs();
         // int64_t t3 = HAP_perf_get_qtimer_count();
