@@ -345,9 +345,28 @@ static __inline int _stub_method_2(remote_handle64 _handle, uint32_t _mid, uint3
    }
    return _nErr;
 }
-__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_rms_norm_f32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 ne0, int32 ne1) __QAIC_STUB_ATTRIBUTE {
+static __inline int _stub_method_2b(remote_handle64 _handle, uint32_t _mid, uint32_t _in0[1], uint32_t _in1[1], uint32_t _in2[1], uint32_t _in3[1], uint32_t _in4[1], uint32_t _in5[1], uint32_t _in6[1]) {
+   remote_arg _pra[1] = {0};
+   uint32_t _primIn[7]= {0};
+   int _nErr = 0;
+   _pra[0].buf.pv = (void*)_primIn;
+   _pra[0].buf.nLen = sizeof(_primIn);
+   _COPY(_primIn, 0, _in0, 0, 4);
+   _COPY(_primIn, 4, _in1, 0, 4);
+   _COPY(_primIn, 8, _in2, 0, 4);
+   _COPY(_primIn, 12, _in3, 0, 4);
+   _COPY(_primIn, 16, _in4, 0, 4);
+   _COPY(_primIn, 20, _in5, 0, 4);
+   _COPY(_primIn, 24, _in6, 0, 4);
+   _TRY_FARF(_nErr, __QAIC_REMOTE(remote_handle64_invoke)(_handle, REMOTE_SCALARS_MAKEX(0, _mid, 1, 0, 0, 0), _pra));
+   _CATCH_FARF(_nErr) {
+      _QAIC_FARF(RUNTIME_ERROR, "ERROR 0x%x: handle=0x%"PRIx64", scalar=0x%x, method ID=%d: %s failed\n", _nErr , _handle, REMOTE_SCALARS_MAKEX(0, _mid, 1, 0, 0, 0), _mid, __func__);
+   }
+   return _nErr;
+}
+__QAIC_STUB_EXPORT AEEResult __QAIC_STUB(htp_ops_rms_norm_f32)(remote_handle64 _handle, int32 fd0, int32 offset0, int32 fd1, int32 offset1, int32 ne0, int32 ne1, int32 eps_bits) __QAIC_STUB_ATTRIBUTE {
    uint32_t _mid = 5;
-   return _stub_method_2(_handle, _mid, (uint32_t*)&fd0, (uint32_t*)&offset0, (uint32_t*)&fd1, (uint32_t*)&offset1, (uint32_t*)&ne0, (uint32_t*)&ne1);
+   return _stub_method_2b(_handle, _mid, (uint32_t*)&fd0, (uint32_t*)&offset0, (uint32_t*)&fd1, (uint32_t*)&offset1, (uint32_t*)&ne0, (uint32_t*)&ne1, (uint32_t*)&eps_bits);
 }
 static __inline int _stub_method_3(remote_handle64 _handle, uint32_t _mid, uint32_t _in0[1], uint32_t _in1[1], uint32_t _in2[1], uint32_t _in3[1], uint32_t _in4[1], uint32_t _in5[1], uint32_t _in6[1], uint32_t _in7[1], uint32_t _in8[1]) {
    remote_arg _pra[1] = {0};

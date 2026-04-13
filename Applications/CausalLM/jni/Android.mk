@@ -102,6 +102,9 @@ LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
 
 LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) $(CAUSALLM_COMMON_INCLUDES)
+ifeq ($(ENABLE_HTP),1)
+LOCAL_C_INCLUDES += $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend
+endif
 
 include $(BUILD_SHARED_LIBRARY)
 

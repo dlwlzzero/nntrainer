@@ -22,6 +22,7 @@ struct RmsNormF32Params {
   struct RpcmemBufAddr src;
   int32_t       ne0;
   int32_t       ne1;
+  int32_t       eps_bits;
 } __attribute__((packed));
 
 struct MatMulParams {

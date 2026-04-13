@@ -370,7 +370,7 @@ static __inline int _skel_method_2(int (*_pfn)(remote_handle64, int32, int32, in
    _QAIC_CATCH(_nErr) {}
    return _nErr;
 }
-static __inline int _skel_method_3(int (*_pfn)(remote_handle64, int32, int32, int32, int32, int32, int32), remote_handle64 _h, uint32_t _sc, remote_arg* _pra) {
+static __inline int _skel_method_3(int (*_pfn)(remote_handle64, int32, int32, int32, int32, int32, int32, int32), remote_handle64 _h, uint32_t _sc, remote_arg* _pra) {
    remote_arg* _praEnd = 0;
    uint32_t _in0[1] = {0};
    uint32_t _in1[1] = {0};
@@ -378,6 +378,7 @@ static __inline int _skel_method_3(int (*_pfn)(remote_handle64, int32, int32, in
    uint32_t _in3[1] = {0};
    uint32_t _in4[1] = {0};
    uint32_t _in5[1] = {0};
+   uint32_t _in6[1] = {0};
    uint32_t* _primIn= 0;
    int _nErr = 0;
    _praEnd = ((_pra + REMOTE_SCALARS_INBUFS(_sc)) + REMOTE_SCALARS_OUTBUFS(_sc) + REMOTE_SCALARS_INHANDLES(_sc) + REMOTE_SCALARS_OUTHANDLES(_sc));
@@ -386,7 +387,7 @@ static __inline int _skel_method_3(int (*_pfn)(remote_handle64, int32, int32, in
    _QAIC_ASSERT(_nErr, REMOTE_SCALARS_INHANDLES(_sc)==0);
    _QAIC_ASSERT(_nErr, REMOTE_SCALARS_OUTHANDLES(_sc)==0);
    _QAIC_ASSERT(_nErr, (_pra + ((1 + 0) + (((0 + 0) + 0) + 0))) <= _praEnd);
-   _QAIC_ASSERT(_nErr, _pra[0].buf.nLen >= 24);
+   _QAIC_ASSERT(_nErr, _pra[0].buf.nLen >= 28);
    _primIn = _pra[0].buf.pv;
    _COPY(_in0, 0, _primIn, 0, 4);
    _COPY(_in1, 0, _primIn, 4, 4);
@@ -394,7 +395,8 @@ static __inline int _skel_method_3(int (*_pfn)(remote_handle64, int32, int32, in
    _COPY(_in3, 0, _primIn, 12, 4);
    _COPY(_in4, 0, _primIn, 16, 4);
    _COPY(_in5, 0, _primIn, 20, 4);
-   _TRY(_nErr, _pfn(_h, (int32)*_in0, (int32)*_in1, (int32)*_in2, (int32)*_in3, (int32)*_in4, (int32)*_in5));
+   _COPY(_in6, 0, _primIn, 24, 4);
+   _TRY(_nErr, _pfn(_h, (int32)*_in0, (int32)*_in1, (int32)*_in2, (int32)*_in3, (int32)*_in4, (int32)*_in5, (int32)*_in6));
    _QAIC_CATCH(_nErr) {}
    return _nErr;
 }

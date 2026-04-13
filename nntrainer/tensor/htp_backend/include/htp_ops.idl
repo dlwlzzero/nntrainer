@@ -12,7 +12,7 @@ interface htp_ops : remote_handle64 {
     AEEResult destroy_channel();
 
     /* ops RPC interface */
-    AEEResult rms_norm_f32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 ne0, in int32 ne1);
+    AEEResult rms_norm_f32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 ne0, in int32 ne1, in int32 eps_bits);
     AEEResult mat_mul_af32_pwf16_of32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 fd2, in int32 offset2,
         in int32 m, in int32 k, in int32 n);
     AEEResult mat_mul_af32_wf16_of32(in int32 fd0, in int32 offset0, in int32 fd1, in int32 offset1, in int32 fd2, in int32 offset2,
