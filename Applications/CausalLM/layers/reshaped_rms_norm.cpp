@@ -12,8 +12,13 @@
  */
 
 #include <cmath>
+#include <cstring>
 #include <cpu_backend.h>
 #include <reshaped_rms_norm.h>
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+#include <htp_interface.h>
+#endif
 
 namespace causallm {
 
@@ -82,17 +87,67 @@ void ReshapedRMSNormLayer::incremental_forwarding(
     out_step.reshape(step_reshaped_dim);
 
     if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
-      ///@todo rms_norm_wrt_width_something() should be refactored to
-      /// nntrainer::Tensor operation.
-#ifdef ENABLE_FP16
-      nntrainer::rms_norm_wrt_width_fp16_intrinsic(
-        in_step.getData<float>(), out_step.getData<float>(),
-        in_step.getDim().height(), in_step.getDim().width(), epsilon);
-#else
-      nntrainer::rms_norm_wrt_width_fp32_intrinsic(
-        in_step.getData<float>(), out_step.getData<float>(),
-        in_step.getDim().height(), in_step.getDim().width(), epsilon);
+      bool htp_done = false;
+      const int ne0 = static_cast<int>(in_step.getDim().width());
+      const int ne1 = static_cast<int>(in_step.getDim().height());
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+      {
+        auto &htp = nntrainer::htp::HtpInterface::instance();
+        if (htp.htp_ops_rms_norm_f32 && htp.alloc_shared_mem_buf &&
+            htp.free_shared_mem_buf && htp.get_global_handle) {
+          auto handle = htp.get_global_handle();
+          if (handle != 0) {
+            float eps_f = epsilon;
+            int32_t eps_bits;
+            std::memcpy(&eps_bits, &eps_f, sizeof(float));
+
+            // HVX writes/reads up to VLEN=32 floats past the end of the last
+            // row; reserve padding only for the final row.
+            const int ne0_padded = ((ne0 + 31) / 32) * 32;
+            const size_t buf_elems = static_cast<size_t>(
+              (ne1 > 0 ? (ne1 - 1) * ne0 : 0) + ne0_padded);
+            const size_t buf_size = buf_elems * sizeof(float);
+            const size_t total_size = buf_size * 2; // src + dst back-to-back
+
+            void *io_buf = nullptr;
+            int io_fd = -1;
+            int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, total_size);
+            if (err == 0 && io_buf) {
+              char *base = static_cast<char *>(io_buf);
+              std::memset(base, 0, total_size);
+              std::memcpy(base, in_step.getData<float>(),
+                          static_cast<size_t>(ne0) * ne1 * sizeof(float));
+
+              err = htp.htp_ops_rms_norm_f32(
+                handle, io_fd, static_cast<int>(buf_size), io_fd, 0, ne0, ne1,
+                eps_bits);
+
+              if (err == 0) {
+                std::memcpy(out_step.getData<float>(), base + buf_size,
+                            static_cast<size_t>(ne0) * ne1 * sizeof(float));
+                htp_done = true;
+              }
+              htp.free_shared_mem_buf(io_buf, io_fd, total_size);
+            }
+          }
+        }
+      }
 #endif
+
+      if (!htp_done) {
+        ///@todo rms_norm_wrt_width_something() should be refactored to
+        /// nntrainer::Tensor operation.
+#ifdef ENABLE_FP16
+        nntrainer::rms_norm_wrt_width_fp16_intrinsic(
+          in_step.getData<float>(), out_step.getData<float>(),
+          in_step.getDim().height(), in_step.getDim().width(), epsilon);
+#else
+        nntrainer::rms_norm_wrt_width_fp32_intrinsic(
+          in_step.getData<float>(), out_step.getData<float>(),
+          in_step.getDim().height(), in_step.getDim().width(), epsilon);
+#endif
+      }
     } else {
       throw std::invalid_argument(
         "Error: not yet implemented for this data type");
