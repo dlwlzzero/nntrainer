@@ -858,9 +858,12 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
   const float alpha = 1.0f;
 
 #if defined(ENABLE_FP16) && defined(ENABLE_HTP) && ENABLE_HTP == 1
-  // HTP accelerated path: only for standard (non-transposed) matmul without
-  // accumulation. Converts FP32 weights to FP16 on the fly.
-  // Falls through to CPU for unsupported configurations.
+  // HTP accelerated path for the (FP32 activation) x (FP32 weight) case:
+  // only for standard (non-transposed) matmul without accumulation. Converts
+  // FP32 weights to FP16 on the fly (per-forward transpose + cast). Kept as
+  // legacy fallback for layers that still store FP32 weights; models that
+  // pre-convert weights to FP16 via weight_converter_hmx.py dispatch to
+  // dotFloat32Float16 below and skip this loop entirely.
   if (!trans && !trans_in && beta == 0.0f) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
     if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
@@ -979,16 +982,21 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   const float alpha = 1.0f;
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  // HTP accelerated path: only for standard (non-transposed) matmul without
-  // accumulation. Falls through to CPU for unsupported configurations.
-  if (!trans && !trans_in && beta == 0.0f) {
+  // HTP accelerated path: caller must pre-store the FP16 weight in
+  // [N × K] row-major layout (i.e. caller passes the weight as the `input`
+  // RHS with trans_in = true). This matches the HMX matmul kernel contract
+  // so the weight bytes can be memcpy'd straight into RPC shared memory
+  // without any runtime transpose or dtype conversion. See Section B of the
+  // qwen3 HMX plan and weight_converter_hmx.py for the offline step that
+  // produces these bytes.
+  if (!trans && trans_in && beta == 0.0f) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
     if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
         htp.free_shared_mem_buf && htp.get_global_handle) {
       auto handle = htp.get_global_handle();
       if (handle != 0) {
         size_t act_size = M * K * sizeof(float);
-        size_t wt_size = K * N * sizeof(_FP16);
+        size_t wt_size = N * K * sizeof(_FP16);
         size_t out_size = M * N * sizeof(float);
 
         void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;

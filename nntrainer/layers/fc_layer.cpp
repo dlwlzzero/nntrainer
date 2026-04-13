@@ -43,7 +43,8 @@ FullyConnectedLayer::FullyConnectedLayer() :
   LayerImpl(),
   lora_scaling(1.0f),
   fc_props(props::Unit(), props::LoraRank(), props::LoraAlpha()),
-  quantizer(nullptr) {
+  quantizer(nullptr),
+  is_weight_transposed(false) {
   weight_idx.fill(std::numeric_limits<unsigned>::max());
   lora_idx.fill(std::numeric_limits<unsigned>::max());
 }
@@ -103,10 +104,25 @@ void FullyConnectedLayer::finalize(InitLayerContext &context) {
     TensorDim::TensorType(context.getFormat(), context.getActivationDataType()),
     is_nchw ? 0b0001 : 0b0100);
 
-  /** Weight Dimension : (1, 1, in_dim.width(), unit)*/
+  /**
+   * Pre-transposed weight layout ([1,1,N,K] instead of [1,1,K,N]) is enabled
+   * for FP16 weight dtype in NCHW format. The raw bytes then coincide with
+   * the HTP HMX matmul kernel contract ([N × K] row-major FP16), so the
+   * forward path can feed them to the kernel with zero conversion. The
+   * forward/incremental_forward call sites pass trans_in=true to preserve
+   * mathematical semantics. See weight_converter_hmx.py and Section B/E of
+   * the qwen3 HMX plan.
+   */
+  is_weight_transposed =
+    is_nchw &&
+    context.getWeightDataType() == ml::train::TensorDim::DataType::FP16;
+
+  /** Weight Dimension : (1, 1, in_dim.width(), unit) or, when transposed for
+   * HTP FP16, (1, 1, unit, in_dim.width()). */
   TensorDim weight_dim(
-    1, is_nchw ? 1 : unit, is_nchw ? in_dim.width() : 1,
-    is_nchw ? unit : in_dim.channel(),
+    1, is_nchw ? 1 : unit,
+    is_nchw ? (is_weight_transposed ? unit : in_dim.width()) : 1,
+    is_nchw ? (is_weight_transposed ? in_dim.width() : unit) : in_dim.channel(),
     TensorDim::TensorType(context.getFormat(), context.getWeightDataType()),
     is_nchw ? 0b0011 : 0b0101);
 
@@ -214,7 +230,7 @@ void FullyConnectedLayer::forwarding(RunLayerContext &context, bool training) {
     Tensor weight_ = quantizer->dequantize(weight, input_.getDataType());
     input_.dot(weight_, hidden_, false, false);
   } else {
-    input_.dot(weight, hidden_, false, false);
+    input_.dot(weight, hidden_, false, is_weight_transposed);
   }
 
   if (!std::get<props::LoraRank>(fc_props).empty()) {
@@ -272,7 +288,7 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
     Tensor hidden_step = hidden_.getSharedDataTensor(
       hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
 
-    input_step.dot(weight, hidden_step, false, false);
+    input_step.dot(weight, hidden_step, false, is_weight_transposed);
 
     if (!std::get<props::LoraRank>(fc_props).empty()) {
       nntrainer::TensorDim hidden_tmp_lora_step_dim = hidden_tmp_lora.getDim();

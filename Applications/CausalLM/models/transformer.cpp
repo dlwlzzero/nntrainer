@@ -402,13 +402,15 @@ std::vector<LayerHandle> Transformer::createMlp(const int layer_id, int dim,
     {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_up"),
      withKey("unit", hidden_dim), withKey("disable_bias", "true"),
      withKey("input_layers", input_name),
-     withKey("weight_initializer", "ones")}));
+     withKey("weight_initializer", "ones"),
+     withKey("weight_dtype", FC_LAYER_DTYPE)}));
   layers.push_back(createLayer(
     "fully_connected",
     {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_gate"),
      withKey("unit", hidden_dim), withKey("disable_bias", "true"),
      withKey("input_layers", input_name),
-     withKey("weight_initializer", "ones")}));
+     withKey("weight_initializer", "ones"),
+     withKey("weight_dtype", FC_LAYER_DTYPE)}));
 
   layers.push_back(createLayer(
     "swiglu",
@@ -423,7 +425,8 @@ std::vector<LayerHandle> Transformer::createMlp(const int layer_id, int dim,
      withKey("unit", dim), withKey("disable_bias", "true"),
      withKey("input_layers",
              "layer" + std::to_string(layer_id) + "_ffn_swiglu"),
-     withKey("weight_initializer", "ones")}));
+     withKey("weight_initializer", "ones"),
+     withKey("weight_dtype", FC_LAYER_DTYPE)}));
 
   return layers;
 }

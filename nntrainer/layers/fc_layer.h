@@ -122,6 +122,11 @@ private:
   std::array<unsigned int, 2> weight_idx; /**< indices of the weights */
   std::array<unsigned int, 4> lora_idx;   /**< indices of the lora weights */
   std::unique_ptr<nntrainer::Quantizer> quantizer;
+  bool is_weight_transposed; /**< weight stored as [1,1,N,K] instead of the
+                                  default [1,1,K,N]. Enabled for FP16 weight
+                                  dtype so that the raw bytes already match
+                                  the HTP HMX matmul kernel contract
+                                  (see weight_converter_hmx.py). */
 };
 } // namespace nntrainer
 
