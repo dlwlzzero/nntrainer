@@ -1,6 +1,6 @@
 {
     "model_type": "CausalLM",
-    "model_tensor_type": "FP32-FP16",
+    "model_tensor_type": "FP16-FP32",
     "model_file_name": "nntr_qwen3_0_6b_hmx_w16a32.bin",
 
     "fc_layer_dtype" : "FP16",
