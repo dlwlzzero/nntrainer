@@ -2,3 +2,8 @@
 android*
 hexagon*
 build_htp/
+
+# RPC output
+include/host/htp_ops_skel.c
+include/host/htp_ops_stub.c
+include/host/htp_ops.h
