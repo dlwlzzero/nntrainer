@@ -998,39 +998,44 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
         htp.free_shared_mem_buf && htp.get_global_handle) {
       auto handle = htp.get_global_handle();
       if (handle != 0) {
-        size_t act_size = M * K * sizeof(float);
-        size_t wt_size = N * K * sizeof(_FP16);
-        size_t out_size = M * N * sizeof(float);
+        // Single shared-memory allocation for activation, weight, and output;
+        // each section starts at a 128-byte aligned offset to satisfy the
+        // HVX VLEN alignment the HMX kernel requires for its loads/stores.
+        constexpr size_t kAlign = 128;
+        auto align_up = [](size_t x, size_t a) {
+          return (x + a - 1) & ~(a - 1);
+        };
 
-        void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
-        int act_fd = -1, wt_fd = -1, out_fd = -1;
+        const size_t act_size = M * K * sizeof(float);
+        const size_t wt_size = N * K * sizeof(_FP16);
+        const size_t out_size = M * N * sizeof(float);
 
-        int err = 0;
-        err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
-        err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
-        err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
+        const size_t act_off = 0;
+        const size_t wt_off = align_up(act_off + act_size, kAlign);
+        const size_t out_off = align_up(wt_off + wt_size, kAlign);
+        const size_t total_size = align_up(out_off + out_size, kAlign);
 
-        if (err == 0) {
-          memcpy(act_buf, data, act_size);
-          memcpy(wt_buf, mdata, wt_size);
+        void *io_buf = nullptr;
+        int io_fd = -1;
+        int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, total_size);
 
-          err = htp.htp_ops_mat_mul_af32_pwf16_of32(handle, out_fd, 0, act_fd,
-                                                    0, wt_fd, 0, M, K, N);
+        if (err == 0 && io_buf) {
+          char *base = static_cast<char *>(io_buf);
+          memcpy(base + act_off, data, act_size);
+          memcpy(base + wt_off, mdata, wt_size);
+
+          err = htp.htp_ops_mat_mul_af32_pwf16_of32(
+            handle, io_fd, static_cast<int>(out_off), io_fd,
+            static_cast<int>(act_off), io_fd, static_cast<int>(wt_off), M, K,
+            N);
           if (err == 0) {
-            memcpy(rdata, out_buf, out_size);
-            htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-            htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-            htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+            memcpy(rdata, base + out_off, out_size);
+            htp.free_shared_mem_buf(io_buf, io_fd, total_size);
             return output;
           }
-        }
 
-        if (act_buf)
-          htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-        if (wt_buf)
-          htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-        if (out_buf)
-          htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+          htp.free_shared_mem_buf(io_buf, io_fd, total_size);
+        }
         // Fall through to CPU path on error
       }
     }
