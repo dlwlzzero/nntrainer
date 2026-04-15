@@ -982,16 +982,19 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   const float alpha = 1.0f;
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  // HTP accelerated path: caller must pre-store the FP16 weight in
-  // [N × K] row-major layout (i.e. caller passes the weight as the `input`
-  // RHS with trans_in = true). This matches the HMX matmul kernel contract
-  // so the weight bytes can be memcpy'd straight into RPC shared memory
-  // without any runtime transpose or dtype conversion. See Section B of the
-  // qwen3 HMX plan and weight_converter_hmx.py for the offline step that
-  // produces these bytes.
-  if (!trans && trans_in && beta == 0.0f) {
+  // HTP accelerated path: caller must pre-store the FP16 weight in the
+  // HMX 32x32 tile-permuted layout expected by hmx_mat_mul_af32_pwf16_of32
+  // (total bytes = N * K * sizeof(_FP16); tile_idx = j0*(K/32) + i0;
+  //  intra-tile address = (i1 & ~1)*32 + j1*2 + (i1 & 1)). The offline
+  // converter that produces this byte layout lives in
+  // Applications/CausalLM/res/qwen3/qwen3-4b/weight_converter_hmx.py
+  // (permute_weight_to_fp16_tiles); the C reference is at
+  // test/unittest/unittest_htp_kernels.cpp:38-51. The kernel additionally
+  // requires K%32==0 and N%32==0 (128B VLEN alignment); when this does
+  // not hold we fall through to the CPU path.
+  if (!trans && trans_in && beta == 0.0f && (K % 32 == 0) && (N % 32 == 0)) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
-    if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
+    if (htp.htp_ops_mat_mul_af32_pwf16_of32 && htp.alloc_shared_mem_buf &&
         htp.free_shared_mem_buf && htp.get_global_handle) {
       auto handle = htp.get_global_handle();
       if (handle != 0) {
@@ -1011,8 +1014,8 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
           memcpy(act_buf, data, act_size);
           memcpy(wt_buf, mdata, wt_size);
 
-          err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, out_fd, 0, act_fd,
-                                                   0, wt_fd, 0, M, K, N);
+          err = htp.htp_ops_mat_mul_af32_pwf16_of32(handle, out_fd, 0, act_fd,
+                                                    0, wt_fd, 0, M, K, N);
           if (err == 0) {
             memcpy(rdata, out_buf, out_size);
             htp.free_shared_mem_buf(act_buf, act_fd, act_size);
