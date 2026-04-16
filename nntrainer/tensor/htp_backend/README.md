@@ -18,28 +18,29 @@ The host application loads `libhtp_ops.so` at runtime via `htp_interface.h`
 on the DSP through two paths:
 
 ```
-  Android CPU (Host)                          Hexagon DSP
- +--------------------------+     FastRPC    +----------------------------+
- |  nntrainer               |    (direct)    |  libhtp_ops_skel.so        |
- |    |                     |                |                            |
- |    v                     |  htp_ops.idl   |                            |
- |  htp_interface.h ------->|  (QAIC gen)    |                            |
- |  [dlopen singleton]      |=====[stub]========>[skeleton]               |
- |                          |                |       |                    |
- |  libhtp_ops.so           |                |       v                   |
- |  +--------------------+  |                |    commu.c                 |
- |  | session.c          |  |                |       |                   |
- |  |  (open/close DSP)  |  |                |       v                   |
- |  | op_export.c        |  |                |    op_executor.cc          |
- |  |  (inject handle)   |  |                |    [dispatch]              |
- |  +--------------------+  |                |     /        \            |
- |                          |                |    v          v           |
- |                          |  msg channel   | hvx_ops/   hmx_ops/      |
- |      [OpComputeRequest]  |====[rpcmem]====>| (vector)   (matrix)      |
- |                          |                |                            |
- +--------------------------+                +----------------------------+
-               |                                          |
-               +--------- shared rpcmem (DDR) -----------+
+    Android CPU (Host)                             Hexagon DSP
+ +------------------------------+               +------------------------------+
+ |                              |    FastRPC     |                              |
+ |  nntrainer                   |   (direct)     |  libhtp_ops_skel.so          |
+ |    |                         |                |                              |
+ |    v                         |  htp_ops.idl   |                              |
+ |  htp_interface.h             |  (QAIC gen)    |                              |
+ |  [dlopen singleton]          |====[stub]=========>[skeleton]                 |
+ |    |                         |                |       |                      |
+ |    v                         |                |       v                      |
+ |  libhtp_ops.so               |                |    commu.c                   |
+ |  +------------------------+  |                |       |                      |
+ |  | session.c              |  |                |       v                      |
+ |  |   (open/close DSP)     |  |                |    op_executor.cc            |
+ |  | op_export.c            |  |                |    [dispatch]                |
+ |  |   (inject handle)      |  |                |      /       \              |
+ |  +------------------------+  |                |     v         v             |
+ |                              |  msg channel   |  hvx_ops/  hmx_ops/         |
+ |  [OpComputeRequest] -------->==[rpcmem]======>|  (vector)  (matrix)         |
+ |                              |                |                              |
+ +------------------------------+               +------------------------------+
+                |                                               |
+                +------------ shared rpcmem (DDR) -------------+
 ```
 
 - **FastRPC direct calls** -- auto-generated from `htp_ops.idl` by the QAIC
@@ -54,29 +55,29 @@ on the DSP through two paths:
   OpComputeRequest
         |
         v
-  op_executor.cc -----> op_reg.h (HTP_OPS_* enum, param structs)
+  op_executor.cc -------> op_reg.h (HTP_OPS_* enum, param structs)
         |
-        +---------------------+----------------------+
-        |                     |                      |
-        v                     v                      v
-   hvx_ops/              hmx_ops/              hmx_ops/
-   rms_norm.c            mat_mul.c             flash_attn.c
-   (HVX SIMD)            (HMX tiles)           (HMX + HVX)
-        |                     |                      |
-        v                     v                      v
-  +----------------------------------------------------------+
-  |  worker_pool.c  (up to 6 threads)                        |
-  +----------------------------------------------------------+
-        |                     |                      |
-        v                     v                      v
-  +----------------------------------------------------------+
-  |  VTCM (on-chip scratchpad)          vtcm_mgr.cc          |
-  +----------------------------------------------------------+
-        |
-        v
-  +----------------------------------------------------------+
-  |  DDR (shared rpcmem)                mmap_mgr.cc           |
-  +----------------------------------------------------------+
+        +-----------------+-----------------+
+        |                 |                 |
+        v                 v                 v
+    hvx_ops/          hmx_ops/          hmx_ops/
+    rms_norm.c        mat_mul.c         flash_attn.c
+    (HVX SIMD)        (HMX tiles)       (HMX + HVX)
+        |                 |                 |
+        v                 v                 v
+  +-----------------------------------------------------+
+  |  worker_pool.c  (up to 6 threads)                   |
+  +-----------------------------------------------------+
+        |                 |                 |
+        v                 v                 v
+  +-----------------------------------------------------+
+  |  VTCM (on-chip scratchpad)         vtcm_mgr.cc      |
+  +-----------------------------------------------------+
+        |                 |                 |
+        v                 v                 v
+  +-----------------------------------------------------+
+  |  DDR (shared rpcmem)               mmap_mgr.cc      |
+  +-----------------------------------------------------+
 ```
 
 `op_executor.cc` routes each request to the appropriate HVX kernel
