@@ -7,7 +7,7 @@ Qualcomm's Hexagon DSP using HMX (matrix accelerator) and HVX (vector SIMD)
 hardware units. The build produces two shared libraries: `libhtp_ops.so`
 (host-side FastRPC stub) and `libhtp_ops_skel.so` (DSP-side compute kernels).
 
-For build and test instructions, see [How to Build and Test HTP Backend](../../../docs/how-to-use-htp-backend.md).
+For build and test instructions, see [How to Use HTP Backend](../../../docs/how-to-use-htp-backend.md).
 
 ## Architecture
 
@@ -96,7 +96,7 @@ staging between DDR and the compute units.
    add a wrapper in `host/op_export.c` that injects the global session handle,
    and register the corresponding function pointer type in `htp_interface.h`.
 4. For build and test workflows, see
-   [How to Build and Test HTP Backend](../../../docs/how-to-use-htp-backend.md).
+   [How to Use HTP Backend](../../../docs/how-to-use-htp-backend.md).
 
 ## Directory structure
 
