@@ -9,61 +9,6 @@ hardware units. The build produces two shared libraries: `libhtp_ops.so`
 
 For build and test instructions, see [How to Build and Test HTP Backend](../../../docs/how-to-use-htp-backend.md).
 
-```
-htp_backend
-├── htp_interface.h        : runtime dlopen loader (singleton) -- resolves libhtp_ops.so symbols at runtime
-├── CMakeLists.txt         : cross-compile build for Android host (HLOS) and Hexagon DSP targets
-├── meson.build            : integration with nntrainer meson build system
-├── build_htp.sh           : standalone build script (invokes CMake for android + hexagon)
-├── run.sh                 : push build artifacts to device and run tests via adb
-│
-├── host/                  [runs on Android CPU -- compiled into libhtp_ops.so]
-│   ├── session.c          : FastRPC session lifecycle, rpcmem alloc/free, DSP connection
-│   ├── op_export.c        : op wrappers that inject global session handle into RPC calls
-│   └── test.c             : host-side standalone test (RMS norm, MatMul correctness checks)
-│
-├── htp/                   [runs on Hexagon DSP -- compiled into libhtp_ops_skel.so]
-│   ├── commu.c            : FastRPC skeleton entry points, message channel receiver loop
-│   ├── op_executor.cc     : central dispatch -- routes OpComputeRequest to HVX/HMX kernels
-│   ├── worker_pool.c      : thread pool (up to 6 workers) for parallel kernel execution
-│   ├── vtcm_mgr.cc        : VTCM (on-chip scratchpad) allocator
-│   ├── hmx_mgr.c          : HMX resource acquisition and spin-lock synchronization
-│   ├── mmap_mgr.cc        : caches HAP_mmap fd-to-va mappings
-│   ├── power.c            : DCVS power and clock configuration
-│   ├── op_tests.cc        : on-DSP micro-benchmarks and validation utilities
-│   ├── hvx_ops/           (HVX vector kernels)
-│   │   ├── rms_norm.c     : RMS normalization (f32)
-│   │   ├── precompute_table.c : exp2 lookup table for softmax in flash attention
-│   │   └── mm_benchmark.c : HVX MatMul benchmarks (fp16, fp32, int16, int32)
-│   └── hmx_ops/           (HMX matrix kernels)
-│       ├── mat_mul.c      : MatMul with f16 and quantized weights (Q4_0, Q8_0, IQ4_NL)
-│       ├── flash_attn.c   : flash attention with grouped-query attention (GQA) support
-│       └── flash_attn_sp_hdim.c : flash attention variant (single-parallel head dim)
-│
-└── include/
-    ├── message.h          : message protocol structs (MessageHeader, RequestHeader, OpComputeRequest)
-    ├── op_reg.h           : operation enum (HTP_OPS_*) and parameter structs
-    ├── htp_ops.idl        : FastRPC IDL interface definition (input to QAIC code generator)
-    ├── host/
-    │   ├── session.h      : host session and memory management declarations
-    │   └── op_export.h    : host op wrapper declarations
-    └── htp/
-        ├── ops.h          : all public HTP operation declarations
-        ├── op_executor.h  : execute_op_simple() declaration
-        ├── worker_pool.h  : worker pool API (init, submit, sync tokens, atomics)
-        ├── vtcm_mgr.h     : VTCM allocator API
-        ├── hmx_mgr.h      : HMX manager API (setup, lock/unlock)
-        ├── power.h        : power setup/reset
-        ├── mmap_mgr.h     : mmap cache API
-        ├── utils.h        : utility macros (ceil_div, align_up, etc.)
-        ├── quants.h       : quantization block structs and ggml_type enum
-        ├── dma_utils.h    : DMA descriptor structures and helpers
-        ├── hvx_internal.h : HVX constants (VLEN=128), l2fetch, variable-length stores
-        ├── hvx_math.h     : HVX math intrinsics (exp2, log2 polynomial approximations)
-        ├── hvx_convert.h  : HVX type conversions (fp16/fp32/qf16/wsf)
-        └── hmx_utils.h    : HMX tile constants (32x32) and helpers
-```
-
 ## Architecture
 
 ### Host-DSP communication
@@ -152,3 +97,60 @@ staging between DDR and the compute units.
    and register the corresponding function pointer type in `htp_interface.h`.
 4. For build and test workflows, see
    [How to Build and Test HTP Backend](../../../docs/how-to-use-htp-backend.md).
+
+## Directory structure
+
+```
+htp_backend
+├── htp_interface.h        : runtime dlopen loader (singleton) -- resolves libhtp_ops.so symbols at runtime
+├── CMakeLists.txt         : cross-compile build for Android host (HLOS) and Hexagon DSP targets
+├── meson.build            : integration with nntrainer meson build system
+├── build_htp.sh           : standalone build script (invokes CMake for android + hexagon)
+├── run.sh                 : push build artifacts to device and run tests via adb
+│
+├── host/                  [runs on Android CPU -- compiled into libhtp_ops.so]
+│   ├── session.c          : FastRPC session lifecycle, rpcmem alloc/free, DSP connection
+│   ├── op_export.c        : op wrappers that inject global session handle into RPC calls
+│   └── test.c             : host-side standalone test (RMS norm, MatMul correctness checks)
+│
+├── htp/                   [runs on Hexagon DSP -- compiled into libhtp_ops_skel.so]
+│   ├── commu.c            : FastRPC skeleton entry points, message channel receiver loop
+│   ├── op_executor.cc     : central dispatch -- routes OpComputeRequest to HVX/HMX kernels
+│   ├── worker_pool.c      : thread pool (up to 6 workers) for parallel kernel execution
+│   ├── vtcm_mgr.cc        : VTCM (on-chip scratchpad) allocator
+│   ├── hmx_mgr.c          : HMX resource acquisition and spin-lock synchronization
+│   ├── mmap_mgr.cc        : caches HAP_mmap fd-to-va mappings
+│   ├── power.c            : DCVS power and clock configuration
+│   ├── op_tests.cc        : on-DSP micro-benchmarks and validation utilities
+│   ├── hvx_ops/           (HVX vector kernels)
+│   │   ├── rms_norm.c     : RMS normalization (f32)
+│   │   ├── precompute_table.c : exp2 lookup table for softmax in flash attention
+│   │   └── mm_benchmark.c : HVX MatMul benchmarks (fp16, fp32, int16, int32)
+│   └── hmx_ops/           (HMX matrix kernels)
+│       ├── mat_mul.c      : MatMul with f16 and quantized weights (Q4_0, Q8_0, IQ4_NL)
+│       ├── flash_attn.c   : flash attention with grouped-query attention (GQA) support
+│       └── flash_attn_sp_hdim.c : flash attention variant (single-parallel head dim)
+│
+└── include/
+    ├── message.h          : message protocol structs (MessageHeader, RequestHeader, OpComputeRequest)
+    ├── op_reg.h           : operation enum (HTP_OPS_*) and parameter structs
+    ├── htp_ops.idl        : FastRPC IDL interface definition (input to QAIC code generator)
+    ├── host/
+    │   ├── session.h      : host session and memory management declarations
+    │   └── op_export.h    : host op wrapper declarations
+    └── htp/
+        ├── ops.h          : all public HTP operation declarations
+        ├── op_executor.h  : execute_op_simple() declaration
+        ├── worker_pool.h  : worker pool API (init, submit, sync tokens, atomics)
+        ├── vtcm_mgr.h     : VTCM allocator API
+        ├── hmx_mgr.h      : HMX manager API (setup, lock/unlock)
+        ├── power.h        : power setup/reset
+        ├── mmap_mgr.h     : mmap cache API
+        ├── utils.h        : utility macros (ceil_div, align_up, etc.)
+        ├── quants.h       : quantization block structs and ggml_type enum
+        ├── dma_utils.h    : DMA descriptor structures and helpers
+        ├── hvx_internal.h : HVX constants (VLEN=128), l2fetch, variable-length stores
+        ├── hvx_math.h     : HVX math intrinsics (exp2, log2 polynomial approximations)
+        ├── hvx_convert.h  : HVX type conversions (fp16/fp32/qf16/wsf)
+        └── hmx_utils.h    : HMX tile constants (32x32) and helpers
+```
