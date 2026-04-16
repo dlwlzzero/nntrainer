@@ -4,6 +4,7 @@
 # Note that this script assumes to be run on the nntrainer root path.
 
 
+PROJECT_ROOT="$(pwd)"
 opencl_arg="-Denable-opencl=true"
 enable_gpu=0
 htp_arg="-Denable-htp=true"
@@ -77,7 +78,7 @@ if [ $? != 0 ]; then
 fi
 
 if [[ $enable_htp -eq 1 ]]; then
-  HTP_LIB_DIR="builddir/nntrainer/tensor/htp_backend"
+  HTP_LIB_DIR="$PROJECT_ROOT/builddir/nntrainer/tensor/htp_backend"
   if [ -f "$HTP_LIB_DIR/libhtp_ops.so" ] && [ -f "$HTP_LIB_DIR/libhtp_ops_skel.so" ]; then
     $ADB_CMD push "$HTP_LIB_DIR/libhtp_ops.so" /data/local/tmp/nntr_android_test
     $ADB_CMD push "$HTP_LIB_DIR/libhtp_ops_skel.so" /data/local/tmp/nntr_android_test
