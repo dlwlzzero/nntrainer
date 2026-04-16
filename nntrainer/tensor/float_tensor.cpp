@@ -29,9 +29,53 @@
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
 #include "htp_interface.h"
 #include "q4_0_utils.h"
+
+#include <mutex>
+#include <unordered_map>
 #endif
 
 namespace nntrainer {
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+namespace {
+// Persistent host-side caches for the HTP matmul path. See the comment on
+// FloatTensor::dotFloat32Float16 for the rationale; in short we keep each
+// FC weight permanently mapped into RPC shared memory and reuse a single
+// scratch buffer for activations + outputs, instead of allocating /
+// memcpy'ing / freeing on every call. Without this every decoded token
+// rebuilds ~1 GB of weight bytes through rpcmem_alloc + fastrpc_mmap +
+// memcpy, which dominates per-token latency on Snapdragon devices.
+
+struct HtpCachedWeight {
+  int fd = -1;
+  void *mapped = nullptr;
+  size_t bytes = 0;
+};
+
+// Keyed on the FP16 weight's underlying data pointer. The pointer is stable
+// for the lifetime of the Tensor it was obtained from, so a cache hit
+// guarantees the bytes already in RPC shared memory match the caller's
+// weight. If the layer ever rebinds storage (LoRA reload, etc.) the
+// pointer changes, a cache miss is taken and the new buffer is registered.
+std::unordered_map<const void *, HtpCachedWeight> g_htp_weight_cache;
+std::mutex g_htp_weight_cache_mu;
+
+// One scratch region per thread for activation + output staging. Sized to
+// the largest (act + out) pair seen so far; never shrunk. Inference is
+// effectively single-threaded for one model, so thread_local avoids any
+// locking on the hot path.
+struct HtpScratchBuf {
+  void *ptr = nullptr;
+  int fd = -1;
+  size_t bytes = 0;
+};
+thread_local HtpScratchBuf g_htp_scratch{};
+
+inline size_t htp_align_up(size_t x, size_t a) {
+  return (x + a - 1) & ~(a - 1);
+}
+} // namespace
+#endif // ENABLE_HTP
 
 FloatTensor::FloatTensor(std::string name_, Tformat fm) :
   TensorBase(name_, fm, Tdatatype::FP32) {}
@@ -858,9 +902,12 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
   const float alpha = 1.0f;
 
 #if defined(ENABLE_FP16) && defined(ENABLE_HTP) && ENABLE_HTP == 1
-  // HTP accelerated path: only for standard (non-transposed) matmul without
-  // accumulation. Converts FP32 weights to FP16 on the fly.
-  // Falls through to CPU for unsupported configurations.
+  // HTP accelerated path for the (FP32 activation) x (FP32 weight) case:
+  // only for standard (non-transposed) matmul without accumulation. Converts
+  // FP32 weights to FP16 on the fly (per-forward transpose + cast). Kept as
+  // legacy fallback for layers that still store FP32 weights; models that
+  // pre-convert weights to FP16 via weight_converter_hmx.py dispatch to
+  // dotFloat32Float16 below and skip this loop entirely.
   if (!trans && !trans_in && beta == 0.0f) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
     if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
@@ -979,47 +1026,108 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   const float alpha = 1.0f;
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  // HTP accelerated path: only for standard (non-transposed) matmul without
-  // accumulation. Falls through to CPU for unsupported configurations.
-  if (!trans && !trans_in && beta == 0.0f) {
+  // HTP accelerated path. Caller must pre-store the FP16 weight in the
+  // HMX 32x32 tile-permuted layout expected by hmx_mat_mul_af32_pwf16_of32
+  // (total bytes = N * K * sizeof(_FP16); tile_idx = j0*(K/32) + i0;
+  //  intra-tile address = (i1 & ~1)*32 + j1*2 + (i1 & 1)). The offline
+  // converter that produces this byte layout lives in
+  // Applications/CausalLM/res/qwen3/qwen3-4b/weight_converter_hmx.py
+  // (permute_weight_to_fp16_tiles); the C reference is at
+  // test/unittest/unittest_htp_kernels.cpp:38-51. The kernel additionally
+  // requires K%32==0 and N%32==0 (128B VLEN alignment); when this does
+  // not hold we fall through to the CPU path.
+  //
+  // Persistent caching: the FP16 weight bytes are copied into RPC shared
+  // memory exactly once (on the first call for a given mdata pointer) and
+  // then reused via the cached fd on every subsequent call (g_htp_weight_
+  // cache, defined at the top of this file). The activation/output
+  // staging area lives in g_htp_scratch, a thread-local buffer that grows
+  // lazily to fit the largest (act + out) pair seen so far. Together this
+  // eliminates ~1 GB of weight memcpy and ~197 rpcmem_alloc/fastrpc_mmap
+  // pairs per decoded token on Qwen3-0.6B.
+  if (!trans && trans_in && beta == 0.0f && (K % 32 == 0) && (N % 32 == 0)) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
-    if (htp.htp_ops_mat_mul_af32_wf16_of32 && htp.alloc_shared_mem_buf &&
+    if (htp.htp_ops_mat_mul_af32_pwf16_of32 && htp.alloc_shared_mem_buf &&
         htp.free_shared_mem_buf && htp.get_global_handle) {
       auto handle = htp.get_global_handle();
       if (handle != 0) {
-        size_t act_size = M * K * sizeof(float);
-        size_t wt_size = K * N * sizeof(_FP16);
-        size_t out_size = M * N * sizeof(float);
+        constexpr size_t kAlign = 128;
+        const size_t act_size = M * K * sizeof(float);
+        const size_t wt_size = N * K * sizeof(_FP16);
+        const size_t out_size = M * N * sizeof(float);
 
-        void *act_buf = nullptr, *wt_buf = nullptr, *out_buf = nullptr;
-        int act_fd = -1, wt_fd = -1, out_fd = -1;
-
-        int err = 0;
-        err |= htp.alloc_shared_mem_buf(&act_buf, &act_fd, act_size);
-        err |= htp.alloc_shared_mem_buf(&wt_buf, &wt_fd, wt_size);
-        err |= htp.alloc_shared_mem_buf(&out_buf, &out_fd, out_size);
-
-        if (err == 0) {
-          memcpy(act_buf, data, act_size);
-          memcpy(wt_buf, mdata, wt_size);
-
-          err = htp.htp_ops_mat_mul_af32_wf16_of32(handle, out_fd, 0, act_fd,
-                                                   0, wt_fd, 0, M, K, N);
-          if (err == 0) {
-            memcpy(rdata, out_buf, out_size);
-            htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-            htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-            htp.free_shared_mem_buf(out_buf, out_fd, out_size);
-            return output;
+        // ---- 1. Weight: look up (or populate) the persistent RPC mapping.
+        //      The bytes are copied into shared memory exactly once per
+        //      distinct mdata pointer and reused on every subsequent call,
+        //      eliminating the per-token weight memcpy entirely.
+        int wt_fd = -1;
+        bool wt_ok = false;
+        {
+          const void *wkey = static_cast<const void *>(mdata);
+          std::lock_guard<std::mutex> lk(g_htp_weight_cache_mu);
+          auto it = g_htp_weight_cache.find(wkey);
+          if (it == g_htp_weight_cache.end()) {
+            void *wbuf = nullptr;
+            int new_fd = -1;
+            if (htp.alloc_shared_mem_buf(&wbuf, &new_fd, wt_size) == 0 &&
+                wbuf) {
+              memcpy(wbuf, mdata, wt_size);
+              it = g_htp_weight_cache
+                     .emplace(wkey,
+                              HtpCachedWeight{new_fd, wbuf, wt_size})
+                     .first;
+              wt_fd = new_fd;
+              wt_ok = true;
+            }
+          } else {
+            wt_fd = it->second.fd;
+            wt_ok = true;
           }
         }
 
-        if (act_buf)
-          htp.free_shared_mem_buf(act_buf, act_fd, act_size);
-        if (wt_buf)
-          htp.free_shared_mem_buf(wt_buf, wt_fd, wt_size);
-        if (out_buf)
-          htp.free_shared_mem_buf(out_buf, out_fd, out_size);
+        if (wt_ok) {
+          // ---- 2. Scratch: ensure the per-thread act+out staging buffer
+          //        is large enough; grow lazily, never shrink.
+          const size_t act_off = 0;
+          const size_t out_off = htp_align_up(act_size, kAlign);
+          const size_t need = htp_align_up(out_off + out_size, kAlign);
+
+          bool scratch_ok = true;
+          if (g_htp_scratch.bytes < need) {
+            if (g_htp_scratch.fd >= 0) {
+              htp.free_shared_mem_buf(g_htp_scratch.ptr, g_htp_scratch.fd,
+                                      g_htp_scratch.bytes);
+              g_htp_scratch.ptr = nullptr;
+              g_htp_scratch.fd = -1;
+              g_htp_scratch.bytes = 0;
+            }
+            void *sbuf = nullptr;
+            int sfd = -1;
+            if (htp.alloc_shared_mem_buf(&sbuf, &sfd, need) == 0 && sbuf) {
+              g_htp_scratch.ptr = sbuf;
+              g_htp_scratch.fd = sfd;
+              g_htp_scratch.bytes = need;
+            } else {
+              scratch_ok = false;
+            }
+          }
+
+          if (scratch_ok) {
+            char *base = static_cast<char *>(g_htp_scratch.ptr);
+            memcpy(base + act_off, data, act_size);
+
+            int err = htp.htp_ops_mat_mul_af32_pwf16_of32(
+              handle, g_htp_scratch.fd, static_cast<int>(out_off),
+              g_htp_scratch.fd, static_cast<int>(act_off), wt_fd, 0, M, K,
+              N);
+            if (err == 0) {
+              memcpy(rdata, base + out_off, out_size);
+              return output;
+            }
+            // Kernel failure: fall through to the CPU path. The scratch
+            // buffer and the weight mapping stay alive for the next call.
+          }
+        }
         // Fall through to CPU path on error
       }
     }

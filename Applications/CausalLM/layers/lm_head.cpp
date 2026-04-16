@@ -31,7 +31,9 @@ enum LmHeadParams {
 };
 
 LmHeadLayer::LmHeadLayer() :
-  LayerImpl(), lmhead_props(nntrainer::props::Unit()) {
+  LayerImpl(),
+  lmhead_props(nntrainer::props::Unit()),
+  is_weight_transposed(false) {
   weight_idx.fill(std::numeric_limits<unsigned>::max());
 }
 
@@ -87,9 +89,18 @@ void LmHeadLayer::finalize(nntrainer::InitLayerContext &context) {
   ///@note LMHead layer's tensor dim is transposed dim of user-defined
   /// dim
   /// so it can reuse embedding layer.
+  /// When weight_dtype == FP16 and format is NCHW, store the weight as
+  /// [1,1,N,K] (instead of [1,1,K,N]) so its raw bytes match the HTP HMX
+  /// matmul kernel contract; the forward path passes trans_in=true to
+  /// preserve mathematical semantics.
+  is_weight_transposed =
+    is_nchw &&
+    context.getWeightDataType() == ml::train::TensorDim::DataType::FP16;
+
   ml::train::TensorDim weight_dim(
-    1, is_nchw ? 1 : unit, is_nchw ? in_dim.width() : 1,
-    is_nchw ? unit : in_dim.channel(),
+    1, is_nchw ? 1 : unit,
+    is_nchw ? (is_weight_transposed ? unit : in_dim.width()) : 1,
+    is_nchw ? (is_weight_transposed ? in_dim.width() : unit) : in_dim.channel(),
     ml::train::TensorDim::TensorType(context.getFormat(),
                                      context.getWeightDataType()),
     is_nchw ? 0b0011 : 0b0101);
@@ -145,7 +156,7 @@ void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     nntrainer::Tensor hidden_step = hidden_.getSharedDataTensor(
       hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
 
-    input_step.dot(weight, hidden_step, false, false);
+    input_step.dot(weight, hidden_step, false, is_weight_transposed);
 
     if (auto &disable_bias =
           std::get<nntrainer::props::DisableBias>(*layer_impl_props);
