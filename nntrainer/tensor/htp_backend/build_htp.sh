@@ -44,14 +44,16 @@ fi
 
 # Configure and build
 echo "Configuring CMake..."
-build_cmake android
+if [ -n "${MESON_BUILD_DIR}" ]; then
+    build_cmake android BUILD_TEST=OFF
+else
+    build_cmake android
+fi
 build_cmake hexagon DSP_ARCH=v75
 
 # Move .so files to build dir
 find android_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I {} mv {} ${BUILD_DIR}/
 find hexagon_* -type d -name ship -exec find {} -type f -print0 \; | xargs -0 -I {} mv {} ${BUILD_DIR}/
-find android_* -maxdepth 1 \( -name "*.c" -o -name "*.h" \) -print0 | xargs -0 -I {} cp {} "${SCRIPT_DIR}/include/host/"
-
 # Remove original build dir
 rm -rf android_*
 rm -rf hexagon_*
