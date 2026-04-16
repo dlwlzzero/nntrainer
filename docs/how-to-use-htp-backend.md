@@ -1,4 +1,4 @@
-# How to Build and Test HTP Backend
+# How to Use HTP Backend
 
 ## Overview
 
