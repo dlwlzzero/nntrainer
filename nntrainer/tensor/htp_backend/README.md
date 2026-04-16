@@ -19,28 +19,28 @@ on the DSP through two paths:
 
 ```
     Android CPU (Host)                             Hexagon DSP
- +------------------------------+               +------------------------------+
- |                              |    FastRPC     |                              |
- |  nntrainer                   |   (direct)     |  libhtp_ops_skel.so          |
- |    |                         |                |                              |
- |    v                         |  htp_ops.idl   |                              |
- |  htp_interface.h             |  (QAIC gen)    |                              |
- |  [dlopen singleton]          |====[stub]=========>[skeleton]                 |
- |    |                         |                |       |                      |
- |    v                         |                |       v                      |
- |  libhtp_ops.so               |                |    commu.c                   |
- |  +------------------------+  |                |       |                      |
- |  | session.c              |  |                |       v                      |
- |  |   (open/close DSP)     |  |                |    op_executor.cc            |
- |  | op_export.c            |  |                |    [dispatch]                |
- |  |   (inject handle)      |  |                |      /       \              |
- |  +------------------------+  |                |     v         v             |
- |                              |  msg channel   |  hvx_ops/  hmx_ops/         |
- |  [OpComputeRequest] -------->==[rpcmem]======>|  (vector)  (matrix)         |
- |                              |                |                              |
- +------------------------------+               +------------------------------+
-                |                                               |
-                +------------ shared rpcmem (DDR) -------------+
+ +------------------------------+                +---------------------+
+ |                              |    FastRPC     |                     |
+ |  nntrainer                   |   (direct)     | libhtp_ops_skel.so  |
+ |    |                         |                |                     |
+ |    v                         |  htp_ops.idl   |                     |
+ |  htp_interface.h             |  (QAIC gen)    |                     |
+ |  [dlopen singleton]          |====[stub]=========>  [skeleton]      |
+ |    |                         |                |         |           |
+ |    v                         |                |         v           |
+ |  libhtp_ops.so               |                |      commu.c        |
+ |  +------------------------+  |                |         |           |
+ |  | session.c              |  |                |         v           |
+ |  |   (open/close DSP)     |  |                |   op_executor.cc    |
+ |  | op_export.c            |  |                |     [dispatch]      |
+ |  |   (inject handle)      |  |                |      /       \      |
+ |  +------------------------+  |                |     v         v     |
+ |                              |  msg channel   |  hvx_ops/  hmx_ops/ |
+ |  [OpComputeRequest] -------->==[rpcmem]======>|  (vector)  (matrix) |
+ |                              |                |                     |
+ +------------------------------+                +---------------------+
+                |                                           |
+                +------------ shared rpcmem (DDR) ----------+
 ```
 
 - **FastRPC direct calls** -- auto-generated from `htp_ops.idl` by the QAIC
