@@ -66,9 +66,36 @@ htp_backend
 
 ## Architecture
 
+### Host-DSP communication
+
 The host application loads `libhtp_ops.so` at runtime via `htp_interface.h`
 (dlopen singleton). The host library communicates with `libhtp_ops_skel.so`
 on the DSP through two paths:
+
+```
+  Android CPU (Host)                          Hexagon DSP
+ +--------------------------+     FastRPC    +----------------------------+
+ |  nntrainer               |    (direct)    |  libhtp_ops_skel.so        |
+ |    |                     |                |                            |
+ |    v                     |  htp_ops.idl   |                            |
+ |  htp_interface.h ------->|  (QAIC gen)    |                            |
+ |  [dlopen singleton]      |=====[stub]========>[skeleton]               |
+ |                          |                |       |                    |
+ |  libhtp_ops.so           |                |       v                   |
+ |  +--------------------+  |                |    commu.c                 |
+ |  | session.c          |  |                |       |                   |
+ |  |  (open/close DSP)  |  |                |       v                   |
+ |  | op_export.c        |  |                |    op_executor.cc          |
+ |  |  (inject handle)   |  |                |    [dispatch]              |
+ |  +--------------------+  |                |     /        \            |
+ |                          |                |    v          v           |
+ |                          |  msg channel   | hvx_ops/   hmx_ops/      |
+ |      [OpComputeRequest]  |====[rpcmem]====>| (vector)   (matrix)      |
+ |                          |                |                            |
+ +--------------------------+                +----------------------------+
+               |                                          |
+               +--------- shared rpcmem (DDR) -----------+
+```
 
 - **FastRPC direct calls** -- auto-generated from `htp_ops.idl` by the QAIC
   code generator. Used for session management and individual op invocations.
@@ -76,10 +103,41 @@ on the DSP through two paths:
   to shared rpcmem, and the DSP-side receiver loop in `commu.c` polls and
   dispatches them. Used for batched or asynchronous operation submission.
 
-On the DSP side, `op_executor.cc` routes each request to the appropriate
-HVX kernel (`hvx_ops/`) or HMX kernel (`hmx_ops/`). The worker pool provides
-up to 6 parallel threads, and VTCM (on-chip scratchpad) is managed by
-`vtcm_mgr.cc` for fast data staging between DDR and the compute units.
+### DSP-side execution
+
+```
+  OpComputeRequest
+        |
+        v
+  op_executor.cc -----> op_reg.h (HTP_OPS_* enum, param structs)
+        |
+        +---------------------+----------------------+
+        |                     |                      |
+        v                     v                      v
+   hvx_ops/              hmx_ops/              hmx_ops/
+   rms_norm.c            mat_mul.c             flash_attn.c
+   (HVX SIMD)            (HMX tiles)           (HMX + HVX)
+        |                     |                      |
+        v                     v                      v
+  +----------------------------------------------------------+
+  |  worker_pool.c  (up to 6 threads)                        |
+  +----------------------------------------------------------+
+        |                     |                      |
+        v                     v                      v
+  +----------------------------------------------------------+
+  |  VTCM (on-chip scratchpad)          vtcm_mgr.cc          |
+  +----------------------------------------------------------+
+        |
+        v
+  +----------------------------------------------------------+
+  |  DDR (shared rpcmem)                mmap_mgr.cc           |
+  +----------------------------------------------------------+
+```
+
+`op_executor.cc` routes each request to the appropriate HVX kernel
+(`hvx_ops/`) or HMX kernel (`hmx_ops/`). The worker pool provides up to
+6 parallel threads, and VTCM is managed by `vtcm_mgr.cc` for fast data
+staging between DDR and the compute units.
 
 ## Basic guidelines for developers
 
