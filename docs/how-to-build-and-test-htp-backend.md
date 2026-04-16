@@ -26,10 +26,18 @@ The build produces two shared libraries:
 ## Build Instructions
 
 Hexagon DSP is only available on Android devices, so the build must target Android.
-(TODO: Add comments about there are two methods.)
+There are three build methods depending on the use case:
+
+| Method | Script | Use case |
+|--------|--------|----------|
+| [Android build (with meson)](#android-build-with-meson) | `package_android.sh` | Application + HTP backend |
+| [Standalone cmake build](#standalone-cmake-build-without-meson) | `build_htp.sh` | HTP kernel development and standalone testing |
+| [Unit test build](#unit-test-build) | `android_test.sh` | Running HTP unit tests |
 
 ### Android build (with meson)
-(TODO: Add comment about this build process will be needed when doing Application + HTP backend)
+
+This method produces both `libhtp_ops.so` and `libhtp_ops_skel.so`.
+Use this when building applications that depend on the HTP backend.
 
 ```bash
 cd nntrainer
@@ -41,12 +49,13 @@ Build output:
 ```
 builddir/nntrainer/tensor/htp_backend/
 ├── libhtp_ops.so        # Host stub library
-├── libhtp_ops_skel.so   # DSP skel library
-└── htp_ops_test         # Test binary (TODO: We need to change this binary created only when doing Standalone cmake build)
+└── libhtp_ops_skel.so   # DSP skel library
 ```
 
 ### Standalone cmake build (without meson)
-(TODO: Add comment about this build process will be needed )
+
+This method builds only the HTP backend and produces the `htp_ops_test` binary
+for on-device testing via `run.sh`.
 
 ```bash
 cd nntrainer/nntrainer/tensor/htp_backend
@@ -62,33 +71,27 @@ nntrainer/nntrainer/tensor/htp_backend/build_htp/
 └── htp_ops_test         # Test binary
 ```
 
-TODO: Maybe we need to split the docs, like build and test examples....
+### Unit test build
 
-### CausalLM application build (TODO: We need to move this section somewhere...)
-
-To build the CausalLM application with HTP support:
-
-```bash
-cd Applications/CausalLM
-./build_android.sh
-```
-
-This will:
-1. Build nntrainer (if not already built via `package_android.sh`)
-2. Auto-detect `libhtp_ops.so` from the nntrainer build output
-3. Copy HTP libraries to `jni/libs/arm64-v8a/`
-4. Build CausalLM executables and libraries with `-DENABLE_HTP=1`
-
-After build, install to device and run:
+To run the HTP backend unit tests located under `test/unittest/`,
+the nntrainer test binaries must first be built and pushed to the device.
+This requires completing the [Android build (with meson)](#android-build-with-meson)
+first, as `libhtp_ops.so` and `libhtp_ops_skel.so` are needed.
 
 ```bash
-./install_android.sh
-adb push res/qwen3/qwen3-4b /data/local/tmp/nntrainer/causallm/models/qwen3-4b/
-adb shell /data/local/tmp/nntrainer/causallm/run_causallm.sh \
-  /data/local/tmp/nntrainer/causallm/models/qwen3-4b
+# 1. Build and push nntrainer test binaries to device
+$ ./tools/android_test.sh
+
+# 2. Push HTP libraries to the test directory on device
+$ adb push /path/to/libhtp_ops.so /data/local/tmp/nntr_android_test
+$ adb push /path/to/libhtp_ops_skel.so /data/local/tmp/nntr_android_test
+
+# 3. Run unittest on device
+$ adb shell
+(adb) $ cd /data/local/tmp/nntr_android_test
+(adb) $ export LD_LIBRARY_PATH=.
+(adb) $ ./<unittest_name>
 ```
-
-
 
 ### DSP architecture setting
 
@@ -125,23 +128,3 @@ cd nntrainer/nntrainer/tensor/htp_backend
   adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
   ```
 
-## Running Unit Tests
-
-Unit tests for the HTP backend are located under `test/unittest/`.
-Before running the tests, `libhtp_ops.so` and `libhtp_ops_skel.so` must
-already be built via the [Android build](#android-build-with-meson) steps above.
-
-```bash
-# 1. Build and push nntrainer test binaries to device
-$ ./tools/android_test.sh
-
-# 2. Push HTP libraries to the test directory on device
-$ adb push /path/to/libhtp_ops.so /data/local/tmp/nntr_android_test
-$ adb push /path/to/libhtp_ops_skel.so /data/local/tmp/nntr_android_test
-
-# 3. Run unittest on device
-$ adb shell
-(adb) $ cd /data/local/tmp/nntr_android_test
-(adb) $ export LD_LIBRARY_PATH=.
-(adb) $ ./<unittest_name>
-```

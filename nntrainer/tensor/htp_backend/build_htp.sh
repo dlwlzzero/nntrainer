@@ -44,7 +44,11 @@ fi
 
 # Configure and build
 echo "Configuring CMake..."
-build_cmake android
+if [ -n "${MESON_BUILD_DIR}" ]; then
+    build_cmake android BUILD_TEST=OFF
+else
+    build_cmake android
+fi
 build_cmake hexagon DSP_ARCH=v75
 
 # Move .so files to build dir

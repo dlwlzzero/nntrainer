@@ -34,30 +34,37 @@ if(${OS_TYPE} MATCHES "HLOS")
     # Build interface files
     build_idl(include/htp_ops.idl htp_ops)
 
-    # HLOS executable
-    add_executable(htp_ops_test
-        ${CMAKE_CURRENT_SOURCE_DIR}/host/test.c
-    )
-    
-    # Add common HLOS-specific linker options
-    set_common_compile_and_link_options(htp_ops_test)
-
-    target_compile_definitions(htp_ops_test PUBLIC VERIFY_PRINT_ERROR)
-    if(${CMAKE_SYSTEM_NAME} MATCHES "UbuntuARM")
-        target_link_options(htp_ops_test PUBLIC -lpthread -ldl)
-    elseif(${CMAKE_SYSTEM_NAME} MATCHES "Android")
-        target_link_options(htp_ops_test PUBLIC -llog -ldl)
-    endif()
-
     # Find the DSP from provided domain value, default is CDSP
     choose_dsprpc(${DSP_TYPE} dsprpc)
     link_custom_library(htp_ops ${dsprpc})
 
-    add_dependencies(htp_ops_test htp_ops)
-    target_link_libraries(htp_ops_test htp_ops)
+    option(BUILD_TEST "Build htp_ops_test executable" ON)
 
-    # Copy binaries from ship to CMAKE_CURRENT_BINARY_DIR folder
-    copy_binaries(htp_ops_test htp_ops)
+    if(BUILD_TEST)
+        # HLOS executable
+        add_executable(htp_ops_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/host/test.c
+        )
+
+        # Add common HLOS-specific linker options
+        set_common_compile_and_link_options(htp_ops_test)
+
+        target_compile_definitions(htp_ops_test PUBLIC VERIFY_PRINT_ERROR)
+        if(${CMAKE_SYSTEM_NAME} MATCHES "UbuntuARM")
+            target_link_options(htp_ops_test PUBLIC -lpthread -ldl)
+        elseif(${CMAKE_SYSTEM_NAME} MATCHES "Android")
+            target_link_options(htp_ops_test PUBLIC -llog -ldl)
+        endif()
+
+        add_dependencies(htp_ops_test htp_ops)
+        target_link_libraries(htp_ops_test htp_ops)
+
+        # Copy binaries from ship to CMAKE_CURRENT_BINARY_DIR folder
+        copy_binaries(htp_ops_test htp_ops)
+    else()
+        # Copy only library binaries (no test executable)
+        copy_binaries(htp_ops)
+    endif()
 
 else()
 
