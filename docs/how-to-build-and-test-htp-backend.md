@@ -22,6 +22,13 @@ The build produces two shared libraries:
   ```bash
   export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
   ```
+- The target device's DSP architecture must be specified via the `DSP_ARCH`
+  option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
+  Android device before running the build.
+  ```
+  # use can choose v73, v75, v79
+  build_cmake hexagon DSP_ARCH=<dsp_ver>
+  ```
 
 ## Build Instructions
 
@@ -38,6 +45,7 @@ There are three build methods depending on the use case:
 
 This method produces both `libhtp_ops.so` and `libhtp_ops_skel.so`.
 Use this when building applications that depend on the HTP backend.
+For a run example, see the [CausalLM README](../Applications/CausalLM/README.md).
 
 ```bash
 cd nntrainer
@@ -71,6 +79,28 @@ nntrainer/nntrainer/tensor/htp_backend/build_htp/
 └── htp_ops_test         # Test binary
 ```
 
+After building, `run.sh` automates pushing the build artifacts to a connected
+Android device and executing the test binary (`htp_ops_test`) compiled from
+`host/test.c`.
+
+```bash
+cd nntrainer/nntrainer/tensor/htp_backend
+
+# Use default target directory (/data/local/tmp/htp_backend)
+./run.sh
+
+# Or specify a custom target directory on the device
+./run.sh /data/local/tmp/my_test_dir
+```
+
+**Requirements:**
+- A Qualcomm Android device must be connected and accessible via `adb`.
+- The `adb_dir` variable at the top of `run.sh` must be set to the actual `adb` path on your system before running the script:
+  ```bash
+  # run.sh
+  adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
+  ```
+
 ### Unit test build
 
 To run the HTP backend unit tests located under `test/unittest/`,
@@ -93,38 +123,4 @@ $ adb shell
 (adb) $ ./<unittest_name>
 ```
 
-### DSP architecture setting
-
-The target device's DSP architecture must be specified via the `DSP_ARCH`
-option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
-Android device before running the build.
-```
-# use can choose v73, v75, v79
-build_cmake hexagon DSP_ARCH=<dsp_ver> 
-```
-
-## Running Standalone Tests on Device
-
-After the [Standalone cmake build](#standalone-cmake-build-without-meson),
-`run.sh` automates pushing the build artifacts to a connected Android device
-and executing the test binary (`htp_ops_test`) compiled from `host/test.c`.
-
-```bash
-cd nntrainer/nntrainer/tensor/htp_backend
-
-# Use default target directory (/data/local/tmp/htp_backend)
-./run.sh
-
-# Or specify a custom target directory on the device
-./run.sh /data/local/tmp/my_test_dir
-```
-
-**Requirements:**
-- A Qualcomm Android device must be connected and accessible via `adb`.
-- The standalone cmake build must be completed first (`./build_htp.sh`).
-- The `adb_dir` variable at the top of `run.sh` must be set to the actual `adb` path on your system before running the script:
-  ```bash
-  # run.sh
-  adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
-  ```
 
