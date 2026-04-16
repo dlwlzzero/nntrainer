@@ -104,19 +104,15 @@ cd nntrainer/nntrainer/tensor/htp_backend
 ### Unit test build
 
 To run the HTP backend unit tests located under `test/unittest/`,
-the nntrainer test binaries must first be built and pushed to the device.
-This requires completing the [Android build (with meson)](#android-build-with-meson)
-first, as `libhtp_ops.so` and `libhtp_ops_skel.so` are needed.
+use `android_test.sh` with the `-Denable-htp=true` option.
+This builds the nntrainer test binaries, and automatically pushes
+`libhtp_ops.so` and `libhtp_ops_skel.so` to the device.
 
 ```bash
-# 1. Build and push nntrainer test binaries to device
-$ ./tools/android_test.sh
+# 1. Build and push test binaries + HTP libraries to device
+$ ./tools/android_test.sh -Denable-htp=true
 
-# 2. Push HTP libraries to the test directory on device
-$ adb push /path/to/libhtp_ops.so /data/local/tmp/nntr_android_test
-$ adb push /path/to/libhtp_ops_skel.so /data/local/tmp/nntr_android_test
-
-# 3. Run unittest on device
+# 2. Run unittest on device
 $ adb shell
 (adb) $ cd /data/local/tmp/nntr_android_test
 (adb) $ export LD_LIBRARY_PATH=.

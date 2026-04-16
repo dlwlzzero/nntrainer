@@ -4,8 +4,10 @@
 # Note that this script assumes to be run on the nntrainer root path.
 
 
-opencl_arg="-Denable-opencl=true"  
+opencl_arg="-Denable-opencl=true"
 enable_gpu=0
+htp_arg="-Denable-htp=true"
+enable_htp=0
 filtered_args=()
 all_args=("$@")
 
@@ -16,6 +18,10 @@ for arg in "$@"; do
 
     if [[ "$arg" == "$opencl_arg" ]]; then
       enable_gpu=1
+    fi
+
+    if [[ "$arg" == "$htp_arg" ]]; then
+      enable_htp=1
     fi
 done
 
@@ -68,6 +74,17 @@ $ADB_CMD push . /data/local/tmp/nntr_android_test
 if [ $? != 0 ]; then
   echo "$0: adb push failed to write to /data/local/tmp/nntr_android_test"
   exit 1
+fi
+
+if [[ $enable_htp -eq 1 ]]; then
+  HTP_LIB_DIR="builddir/nntrainer/tensor/htp_backend"
+  if [ -f "$HTP_LIB_DIR/libhtp_ops.so" ] && [ -f "$HTP_LIB_DIR/libhtp_ops_skel.so" ]; then
+    $ADB_CMD push "$HTP_LIB_DIR/libhtp_ops.so" /data/local/tmp/nntr_android_test
+    $ADB_CMD push "$HTP_LIB_DIR/libhtp_ops_skel.so" /data/local/tmp/nntr_android_test
+  else
+    echo "Error: HTP libraries not found in $HTP_LIB_DIR"
+    exit 1
+  fi
 fi
 
 # To test unittest_layer, unittest_model, etc., golden data is required for the layer.
