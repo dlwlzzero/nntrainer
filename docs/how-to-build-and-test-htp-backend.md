@@ -16,19 +16,22 @@ The build produces two shared libraries:
 ## Prerequisites
 
 - nntrainer basic setup must be completed first. See [Getting Started](getting-started.md).
-- **Hexagon SDK >= v6.0.0.2** with setup complete
 - **CMake >= 3.14.3**
+- **Hexagon SDK >= v6.0.0.2** with setup complete
 - `HEXAGON_SDK_HOME` environment variable pointing to SDK root
+  ```bash
+  export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
+  ```
 
 ## Build Instructions
 
 Hexagon DSP is only available on Android devices, so the build must target Android.
+(TODO: Add comments about there are two methods.)
 
 ### Android build (with meson)
+(TODO: Add comment about this build process will be needed when doing Application + HTP backend)
 
 ```bash
-export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
-
 cd nntrainer
 ./tools/package_android.sh -Dwerror=false -Dmmap-read=false -Denable-htp=true
 ```
@@ -39,10 +42,29 @@ Build output:
 builddir/nntrainer/tensor/htp_backend/
 ├── libhtp_ops.so        # Host stub library
 ├── libhtp_ops_skel.so   # DSP skel library
+└── htp_ops_test         # Test binary (TODO: We need to change this binary created only when doing Standalone cmake build)
+```
+
+### Standalone cmake build (without meson)
+(TODO: Add comment about this build process will be needed )
+
+```bash
+cd nntrainer/nntrainer/tensor/htp_backend
+./build_htp.sh
+```
+
+Build output:
+
+```
+nntrainer/nntrainer/tensor/htp_backend/build_htp/
+├── libhtp_ops.so        # Host stub library
+├── libhtp_ops_skel.so   # DSP skel library
 └── htp_ops_test         # Test binary
 ```
 
-### CausalLM application build
+TODO: Maybe we need to split the docs, like build and test examples....
+
+### CausalLM application build (TODO: We need to move this section somewhere...)
 
 To build the CausalLM application with HTP support:
 
@@ -66,23 +88,7 @@ adb shell /data/local/tmp/nntrainer/causallm/run_causallm.sh \
   /data/local/tmp/nntrainer/causallm/models/qwen3-4b
 ```
 
-### Standalone cmake build (without meson)
 
-```bash
-export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
-
-cd nntrainer/nntrainer/tensor/htp_backend
-./build_htp.sh
-```
-
-Build output:
-
-```
-nntrainer/nntrainer/tensor/htp_backend/build_htp/
-├── libhtp_ops.so        # Host stub library
-├── libhtp_ops_skel.so   # DSP skel library
-└── htp_ops_test         # Test binary
-```
 
 ### DSP architecture setting
 
