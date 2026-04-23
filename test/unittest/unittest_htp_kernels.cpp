@@ -387,10 +387,40 @@ static void run_mat_mul_af32_pwf16_of32_chan_test(const uint32_t M,
     run_mat_mul_af32_pwf16_of32_chan_test(M, K, N);                              \
   }
 
-DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 1024, 1024);
+// Dimensions mirror run_mat_mul_af32_pwf16_of32_test so FastRPC and chan
+// results (MSE, latency) can be compared case-by-case.
+
+// Test square GEMM dimensions (K == N, M > 1)
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 32, 32);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 512, 512);
 DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 1024, 1024);
-DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 512, 2048);
-DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(128, 256, 256);
+
+// Test rectangular GEMM dimensions (K != N, M > 1)
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 256, 512);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 1024, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 256, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 64, 512);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 512, 64);
+
+// Test GEMV case (M = 1, K == N)
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 32, 32);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 512, 512);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 1024, 1024);
+
+// Test GEMV case with rectangular dimensions (M = 1, K != N)
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 256, 512);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 1024, 64);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 64, 1024);
+
+// Test non-power-of-2 M dimensions
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(28, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(68, 256, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(28, 512, 256);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(68, 256, 512);
 
 /**
  * @brief Run a single wf16a32 matmul test with the given dimensions.
