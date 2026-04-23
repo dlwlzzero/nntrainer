@@ -343,6 +343,39 @@ static void run_mat_mul_af32_pwf16_of32_chan_test(const uint32_t M,
 
   EXPECT_IN_RANGE(mse_err, 0.0f, 0.01f);
 
+  // Release DSP-side fd mappings so the next test's allocations do not hit
+  // the rpcmem/fastrpc limit. Without this, matmul's add_buffer() call in
+  // op_executor.cc keeps the fds pinned on the DSP and a subsequent
+  // alloc_shared_mem_buf fails with -1. See host/test.c:199-235.
+  {
+    RequestHeader rel_hdr = {};
+    rel_hdr.state = 0;
+    rel_hdr.type  = REQUEST_TYPE_RPCMEM_MAP;
+
+    RpcmemMapRequest rel_req = {};
+    rel_req.n_puts = 3;
+    rel_req.n_gets = 0;
+
+    size_t rel_size = sizeof(rel_hdr) + sizeof(rel_req) + 3 * sizeof(int);
+    msg->state.d        = 0;
+    msg->n_reqs         = 1;
+    msg->req_offsets[0] = message_header_size(msg);
+    msg->req_offsets[1] = msg->req_offsets[0] + rel_size;
+
+    auto *rp =
+      reinterpret_cast<uint8_t *>(message_header_get_request_ptr(msg, 0));
+    *reinterpret_cast<RequestHeader *>(rp)    = rel_hdr;   rp += sizeof(rel_hdr);
+    *reinterpret_cast<RpcmemMapRequest *>(rp) = rel_req;   rp += sizeof(rel_req);
+    *reinterpret_cast<int *>(rp) = output_fd;              rp += sizeof(int);
+    *reinterpret_cast<int *>(rp) = activation_fd;          rp += sizeof(int);
+    *reinterpret_cast<int *>(rp) = weight_fd;
+
+    msg->state.v[0] = 1;
+    while (msg->state.v[1] != 1) {
+      /* busy-poll for DSP ack */
+    }
+  }
+
   htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
   htp.free_shared_mem_buf(activation_ptr, activation_fd,
                           M * K * sizeof(float));
