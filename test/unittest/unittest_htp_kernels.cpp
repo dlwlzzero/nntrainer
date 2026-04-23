@@ -9,18 +9,66 @@
 
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <gtest/gtest.h>
 
 #if defined(ENABLE_HTP)
 
 #include <fp16.h>
 #include <htp_interface.h>
+#include <message.h>
 #include <nntrainer_test_util.h>
+#include <op_reg.h>
 #include <q4_0_utils.h>
 
 using namespace nntrainer;
 
 #define CDSP_DOMAIN_ID 3
+
+static inline int64_t now_us() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+struct ChanCtx {
+  void  *chan = nullptr;
+  int    chan_fd = -1;
+  size_t size = 0;
+};
+
+/**
+ * @brief Lazily create the single HTP message channel shared by all chan-based
+ *        tests. The DSP side only supports one active channel at a time
+ *        (commu.c: htp_ops_create_channel returns AEE_EALREADY on second call),
+ *        so tests reuse this one. No destroy path: close_dsp_session() in
+ *        main() tears down the DSP-side receiver thread at process exit.
+ */
+static ChanCtx &get_chan_ctx() {
+  static ChanCtx ctx;
+  if (ctx.chan != nullptr)
+    return ctx;
+
+  auto &htp = htp::HtpInterface::instance();
+  if (!htp.alloc_shared_mem_buf || !htp.create_htp_message_channel)
+    return ctx;
+
+  ctx.size = 4096;
+  int err = htp.alloc_shared_mem_buf(&ctx.chan, &ctx.chan_fd, ctx.size);
+  if (err != 0) {
+    ctx.chan = nullptr;
+    return ctx;
+  }
+
+  err = htp.create_htp_message_channel(ctx.chan_fd, (unsigned int)ctx.size);
+  if (err != 0) {
+    htp.free_shared_mem_buf(ctx.chan, ctx.chan_fd, ctx.size);
+    ctx.chan = nullptr;
+    ctx.chan_fd = -1;
+    ctx.size = 0;
+  }
+  return ctx;
+}
 
 /**
  * @brief Permute fp16 weights into the HMX tile layout expected by
@@ -177,6 +225,139 @@ DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(28, 256, 256);
 DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(68, 256, 256);
 DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(28, 512, 256);
 DECLARE_mat_mul_af32_pwf16_of32_test_M_K_N(68, 256, 512);
+
+/**
+ * @brief Run a single w16a32 matmul test over the shared-memory message
+ *        channel (chan) instead of the FastRPC path.
+ *
+ * Functionally equivalent to run_mat_mul_af32_pwf16_of32_test, but the DSP
+ * is invoked by writing an OpComputeRequest + MatMulParams into the chan
+ * buffer and polling the state flag — no FastRPC stub/skel roundtrip. The
+ * DSP dispatches the same hmx_mat_mul_af32_pwf16_of32 kernel via
+ * op_executor.cc:84 (HTP_OPS_MAT_MUL_PERMUTED_W16A32), so results match
+ * the RPC path bit-for-bit and the same MSE tolerance applies.
+ *
+ * Elapsed chan round-trip time is printed for comparison against the RPC
+ * variant.
+ */
+static void run_mat_mul_af32_pwf16_of32_chan_test(const uint32_t M,
+                                                  const uint32_t K,
+                                                  const uint32_t N) {
+  auto &htp = htp::HtpInterface::instance();
+
+  ASSERT_NE(htp.create_htp_message_channel, nullptr) << "HTP library not loaded";
+  ASSERT_NE(htp.alloc_shared_mem_buf, nullptr) << "HTP library not loaded";
+
+  ChanCtx &cctx = get_chan_ctx();
+  if (cctx.chan == nullptr) {
+    GTEST_SKIP() << "Could not create HTP message channel";
+  }
+  auto *msg = reinterpret_cast<MessageHeader *>(cctx.chan);
+
+  std::vector<float> activation =
+    generate_random_vector<float, false>(M * K, -0.1f, 0.1f);
+  std::vector<float> weight =
+    generate_random_vector<float, false>(N * K, -0.1f, 0.1f);
+
+  std::vector<float> ref_dst(M * N, 0.0f);
+  for (uint32_t i = 0; i < M; ++i) {
+    for (uint32_t j = 0; j < N; ++j) {
+      float sum = 0.0f;
+      for (uint32_t l = 0; l < K; ++l) {
+        float a = activation[i * K + l];
+        float w = compute_fp16_to_fp32(compute_fp32_to_fp16(weight[l * N + j]));
+        sum += a * w;
+      }
+      ref_dst[i * N + j] = sum;
+    }
+  }
+
+  float    *output_ptr = nullptr;
+  float    *activation_ptr = nullptr;
+  uint16_t *weight_ptr = nullptr;
+  int       output_fd, activation_fd, weight_fd;
+
+  int err = htp.alloc_shared_mem_buf((void **)&output_ptr, &output_fd,
+                                     M * N * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate output buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&activation_ptr, &activation_fd,
+                                 M * K * sizeof(float));
+  ASSERT_EQ(err, 0) << "Failed to allocate activation buffer";
+
+  err = htp.alloc_shared_mem_buf((void **)&weight_ptr, &weight_fd,
+                                 K * N * sizeof(uint16_t));
+  ASSERT_EQ(err, 0) << "Failed to allocate weight buffer";
+
+  memcpy(activation_ptr, activation.data(), M * K * sizeof(float));
+  memset(weight_ptr, 0, K * N * sizeof(uint16_t));
+  permute_weight_to_fp16_tiles(weight.data(), weight_ptr, K, N);
+
+  RequestHeader req_hdr = {};
+  req_hdr.state = 0;
+  req_hdr.type  = REQUEST_TYPE_OP_COMPUTE;
+
+  OpComputeRequest cr = {};
+  cr.op = HTP_OPS_MAT_MUL_PERMUTED_W16A32;
+
+  MatMulParams params = {};
+  params.output.fd         = output_fd;
+  params.output.offset     = 0;
+  params.activation.fd     = activation_fd;
+  params.activation.offset = 0;
+  params.weight.fd         = weight_fd;
+  params.weight.offset     = 0;
+  params.m = (int32_t)M;
+  params.k = (int32_t)K;
+  params.n = (int32_t)N;
+
+  size_t req_size = sizeof(req_hdr) + sizeof(cr) + sizeof(params);
+  msg->state.d        = 0;
+  msg->n_reqs         = 1;
+  msg->req_offsets[0] = message_header_size(msg);
+  msg->req_offsets[1] = msg->req_offsets[0] + req_size;
+
+  auto *p = reinterpret_cast<uint8_t *>(message_header_get_request_ptr(msg, 0));
+  *reinterpret_cast<RequestHeader *>(p)    = req_hdr;    p += sizeof(req_hdr);
+  *reinterpret_cast<OpComputeRequest *>(p) = cr;         p += sizeof(cr);
+  *reinterpret_cast<MatMulParams *>(p)     = params;
+
+  int64_t t0 = now_us();
+  msg->state.v[0] = 1;
+  while (msg->state.v[1] != 1) {
+    /* busy-poll: chan convention (see host/test.c:174) */
+  }
+  int64_t elapsed_us = now_us() - t0;
+
+  int dsp_err = message_header_get_request_ptr(msg, 0)->state;
+  ASSERT_EQ(dsp_err, 0) << "chan matmul returned err 0x" << std::hex << dsp_err;
+
+  std::vector<float> hmx_dst(M * N);
+  memcpy(hmx_dst.data(), output_ptr, M * N * sizeof(float));
+
+  float mse_err = mse<float>(hmx_dst.data(), ref_dst.data(), M * N);
+  std::cout << "W16A32 GEMM (chan): " << M << " x " << K << " x " << N
+            << std::endl;
+  std::cout << " - MSE (vs mixed-precision ref): " << mse_err << std::endl;
+  std::cout << " - chan round-trip: " << elapsed_us << " us" << std::endl;
+
+  EXPECT_IN_RANGE(mse_err, 0.0f, 0.01f);
+
+  htp.free_shared_mem_buf(output_ptr, output_fd, M * N * sizeof(float));
+  htp.free_shared_mem_buf(activation_ptr, activation_fd,
+                          M * K * sizeof(float));
+  htp.free_shared_mem_buf(weight_ptr, weight_fd, K * N * sizeof(uint16_t));
+}
+
+#define DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(M, K, N)                 \
+  TEST(nntrainer_htp_kernels, mat_mul_af32_pwf16_of32_chan_##M##_##K##_##N) {    \
+    run_mat_mul_af32_pwf16_of32_chan_test(M, K, N);                              \
+  }
+
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 1024, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(32, 1024, 1024);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(1, 512, 2048);
+DECLARE_mat_mul_af32_pwf16_of32_chan_test_M_K_N(128, 256, 256);
 
 /**
  * @brief Run a single wf16a32 matmul test with the given dimensions.
