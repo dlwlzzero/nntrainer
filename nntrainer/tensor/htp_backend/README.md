@@ -99,6 +99,60 @@ staging between DDR and the compute units.
 4. For build and test workflows, see
    [How to Use HTP Backend](../../../docs/how-to-use-htp-backend.md).
 
+## Unit tests
+
+Unit tests for the HTP backend live outside this directory, under
+[`test/unittest/htp/`](../../../test/unittest/htp/). The tests run on a
+device with a working cDSP (they call `open_dsp_session()` in `main()`)
+and are gated by the `enable-htp` meson option.
+
+The suite is split into one binary per op family so each can be built
+and run independently:
+
+```
+test/unittest/htp/
+├── unittest_htp_common.{h,cpp}   shared helpers + DSP session main()
+│                                 - permute_weight_to_fp16_tiles
+│                                 - Q4_0 quantize / dequantize / repack
+│                                 - ChanCtx + get_chan_ctx() lazy singleton
+│                                 - GTEST_API_ int main() that opens and
+│                                   closes the DSP session once per binary
+│
+├── unittest_htp_mat_mul.cpp      matmul variants (both transports):
+│                                 - pwf16 RPC   (FastRPC, permuted fp16 wgt)
+│                                 - pwf16 chan  (message channel, same kernel)
+│                                 - wf16  RPC   (FastRPC, row-major fp16 wgt)
+│                                 - pwqk0 RPC   (FastRPC, Q4_0 quant in x4x2)
+│
+├── unittest_htp_rms_norm.cpp     rms_norm_f32 (FastRPC)
+├── unittest_htp_quantizer.cpp    Q4_0x4 -> x4x2 repacker (ARM-side utility)
+└── meson.build                   builds the 3 binaries above
+```
+
+The chan path tests (`*_chan_*` TEST names in `unittest_htp_mat_mul`)
+issue `OpComputeRequest` + `MatMulParams` through the shared-memory
+message channel instead of a FastRPC call, exercising the same DSP
+kernel (`hmx_mat_mul_af32_pwf16_of32` via
+`HTP_OPS_MAT_MUL_PERMUTED_W16A32` in `op_executor.cc`). MSE must match
+the RPC counterpart; the chan variant additionally prints round-trip
+latency for A/B comparison against FastRPC overhead. Because the DSP
+side allows only one active message channel at a time, `get_chan_ctx()`
+in the common helper creates a single channel on first use and reuses
+it across all chan tests.
+
+Test case counts per binary (dimension set is deliberately a
+representative subset -- small/medium/large square, GEMV, K>N / K<N
+rectangular, non-power-of-2 M -- rather than an exhaustive sweep):
+
+| Binary                   | Tests | Notes                               |
+| ------------------------ | ----: | ----------------------------------- |
+| `unittest_htp_mat_mul`   |    28 | 7 cases x 4 variants                |
+| `unittest_htp_rms_norm`  |     5 | small / large / batched / odd / eps |
+| `unittest_htp_quantizer` |     2 | typical + large prefill shape       |
+
+For invocation (meson + Android NDK flows), see
+[How to Use HTP Backend](../../../docs/how-to-use-htp-backend.md).
+
 ## Directory structure
 
 ```
