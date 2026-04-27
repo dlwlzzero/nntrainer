@@ -193,39 +193,29 @@ else
     log_warning "libomp.so not found (skipping)"
 fi
 
-log_info "  [6/7] libcausallm_api.so (CausalLM API library)..."
+log_info "  [6/6] libcausallm_api.so (CausalLM API library)..."
 if [ -f "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" ]; then
     adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" "$INSTALL_DIR/" 2>&1 | tail -1
 else
     log_warning "libcausallm_api.so not found (Optional, skipping)"
 fi
 
-log_info "  [7/8] libhtp_ops.so (HTP host-side DSP operations library)..."
-HTP_LIB_DIR=""
-# Check multiple possible locations for libhtp_ops.so
-for htp_dir in \
+log_info "  [7/7] libsdkl.so (HexKL SDKL host-side library for HTP)..."
+SDKL_FOUND=""
+for sdkl_dir in \
     "$SCRIPT_DIR/jni/libs/arm64-v8a" \
     "$SCRIPT_DIR/lib" \
     "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a" \
-    "$NNTRAINER_ROOT/builddir/nntrainer/tensor/htp_backend" \
-    "$NNTRAINER_ROOT/nntrainer/tensor/htp_backend/build_htp"; do
-    if [ -f "$htp_dir/libhtp_ops.so" ]; then
-        adb push "$htp_dir/libhtp_ops.so" "$INSTALL_DIR/" 2>&1 | tail -1
-        HTP_LIB_DIR="$htp_dir"
-        log_success "libhtp_ops.so pushed from $htp_dir"
+    "$NNTRAINER_ROOT/builddir/android_build_result/lib"; do
+    if [ -f "$sdkl_dir/libsdkl.so" ]; then
+        adb push "$sdkl_dir/libsdkl.so" "$INSTALL_DIR/" 2>&1 | tail -1
+        SDKL_FOUND="$sdkl_dir"
+        log_success "libsdkl.so pushed from $sdkl_dir"
         break
     fi
 done
-if [ -z "$HTP_LIB_DIR" ]; then
-    log_warning "libhtp_ops.so not found (HTP acceleration disabled, CPU fallback will be used)"
-fi
-
-log_info "  [8/8] libhtp_ops_skel.so (HTP DSP-side skel library)..."
-if [ -n "$HTP_LIB_DIR" ] && [ -f "$HTP_LIB_DIR/libhtp_ops_skel.so" ]; then
-    adb push "$HTP_LIB_DIR/libhtp_ops_skel.so" "$INSTALL_DIR/" 2>&1 | tail -1
-    log_success "libhtp_ops_skel.so pushed"
-else
-    log_warning "libhtp_ops_skel.so not found (skipping)"
+if [ -z "$SDKL_FOUND" ]; then
+    log_warning "libsdkl.so not found (HTP acceleration disabled, CPU fallback will be used)"
 fi
 
 log_success "All libraries pushed"
@@ -285,8 +275,7 @@ log_info "  - libnntrainer.so"
 log_info "  - libccapi-nntrainer.so"
 log_info "  - libc++_shared.so"
 log_info "  - libomp.so (if available)"
-log_info "  - libhtp_ops.so (if available, HTP host-side library)"
-log_info "  - libhtp_ops_skel.so (if available, HTP DSP-side skel library)"
+log_info "  - libsdkl.so (if available, HexKL SDKL host-side library for HTP)"
 log_header "How to run"
 log_info "To run CausalLM on the device:"
 log_info "  1. Push your model files to: $MODEL_DIR/"

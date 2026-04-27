@@ -2,48 +2,64 @@
 
 ## Overview
 
-The HTP (Hexagon Tensor Processor) backend offloads tensor operations
-to Qualcomm's Hexagon DSP
-using HMX and HVX hardware accelerators.
-
-The build produces two shared libraries:
+The HTP (Hexagon Tensor Processor) backend offloads matrix multiplication
+operations to Qualcomm's Hexagon DSP via the official HexKL SDKL CPU Macro
+API. It uses pre-built libraries from the Hexagon SDK's `hexkl_addon`:
 
 | Library | Runs on | Description |
 |---------|---------|-------------|
-| `libhtp_ops.so` | Host (Android CPU) | FastRPC stub + session management |
-| `libhtp_ops_skel.so` | Hexagon DSP | HMX/HVX compute kernels |
+| `libsdkl.so` | Host (Android CPU) | SDKL CPU Macro API (FastRPC + session internally) |
+| `libhexkl_skel.so` | Hexagon DSP | Pre-built HMX/HVX compute kernels |
+
+No custom DSP code is required — both libraries are provided by the
+Qualcomm HexKL addon.
 
 ## Prerequisites
 
 - nntrainer basic setup must be completed first. See [Getting Started](getting-started.md).
-- **CMake >= 3.14.3**
-- **Hexagon SDK >= v6.0.0.2** with setup complete
+- **Hexagon SDK >= v6.3.0** with setup complete
+- The HexKL addon must be present at `${HEXAGON_SDK_HOME}/addons/hexkl_addon/`
 - `HEXAGON_SDK_HOME` environment variable pointing to SDK root
   ```bash
   export HEXAGON_SDK_HOME=/path/to/hexagon/sdk
   ```
-- The target device's DSP architecture must be specified via the `DSP_ARCH`
-  option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
-  Android device before running the build.
-  ```
-  # use can choose v73, v75, v79
-  build_cmake hexagon DSP_ARCH=<dsp_ver>
-  ```
+- `libhexkl_skel.so` must be deployed to the target device's DSP library
+  search path (e.g., `/vendor/lib/rfsa/adsp/`).
+
+## HexKL SDKL API Overview
+
+The HTP backend uses the SDKL CPU Macro API — the highest-level API in
+the HexKL addon. SDKL handles FastRPC communication, shared memory
+management, and DSP dispatch internally.
+
+Key functions used by nntrainer:
+
+| Function | Description |
+|----------|-------------|
+| `sdkl_npu_initialize` | Open a DSP session (called once at startup) |
+| `sdkl_npu_finalize` | Close the DSP session |
+| `sdkl_npu_alloc` / `sdkl_npu_free` | Allocate/free DSP-shared memory (for weights) |
+| `sdkl_cpu_rm_to_wh_f16_inplace` | Convert FP16 row-major weight to WH layout |
+| `sdkl_npu_mm_f32f16_f32` | FP32 activation × FP16 weight → FP32 output |
+
+The SDKL tier was chosen over the lower-level Macro and Micro APIs
+because it is the only tier that directly supports FP32×FP16→FP32
+mixed-precision matmul, and it eliminates the need for custom DSP
+skel code. For details on the API tiers, see the HexKL addon examples
+under `${HEXAGON_SDK_HOME}/addons/hexkl_addon/examples/`.
 
 ## Build Instructions
 
 Hexagon DSP is only available on Android devices, so the build must target Android.
-There are three build methods depending on the use case:
 
 | Method | Script | Use case |
 |--------|--------|----------|
 | [Android build (with meson)](#android-build-with-meson) | `package_android.sh` | Application + HTP backend |
-| [Standalone cmake build](#standalone-cmake-build-without-meson) | `build_htp.sh` | HTP kernel development and standalone testing |
 | [Unit test build](#unit-test-build) | `android_test.sh` | Running HTP unit tests |
 
 ### Android build (with meson)
 
-This method produces both `libhtp_ops.so` and `libhtp_ops_skel.so`.
+This method installs the pre-built `libsdkl.so` from the HexKL addon.
 Use this when building applications that depend on the HTP backend.
 For a run example, see the [CausalLM README](../Applications/CausalLM/README.md).
 
@@ -55,68 +71,45 @@ cd nntrainer
 Build output:
 
 ```
-builddir/nntrainer/tensor/htp_backend/
-├── libhtp_ops.so        # Host stub library
-└── libhtp_ops_skel.so   # DSP skel library
+builddir/
+└── <install_dir>/lib/
+    └── libsdkl.so        # Installed from hexkl_addon (pre-built)
 ```
 
-### Standalone cmake build (without meson)
-
-This method builds only the HTP backend and produces the `htp_ops_test` binary
-for on-device testing via `run.sh`.
-
-```bash
-cd nntrainer/nntrainer/tensor/htp_backend
-./build_htp.sh
+Note: `libhexkl_skel.so` (the DSP-side library) must be pushed to
+the device separately. It is located at:
 ```
-
-Build output:
-
+${HEXAGON_SDK_HOME}/addons/hexkl_addon/lib/hexagon_<ver>/libhexkl_skel.so
 ```
-nntrainer/nntrainer/tensor/htp_backend/build_htp/
-├── libhtp_ops.so        # Host stub library
-├── libhtp_ops_skel.so   # DSP skel library
-└── htp_ops_test         # Test binary
-```
-
-After building, `run.sh` automates pushing the build artifacts to a connected
-Android device and executing the test binary (`htp_ops_test`) compiled from
-`host/test.c`.
-
-```bash
-cd nntrainer/nntrainer/tensor/htp_backend
-
-# Use default target directory (/data/local/tmp/htp_backend)
-./run.sh
-
-# Or specify a custom target directory on the device
-./run.sh /data/local/tmp/my_test_dir
-```
-
-**Requirements:**
-- A Qualcomm Android device must be connected and accessible via `adb`.
-- The `adb_dir` variable at the top of `run.sh` must be set to the actual `adb` path on your system before running the script:
-  ```bash
-  # run.sh
-  adb_dir="/usr/lib/android-sdk/platform-tools/adb"  # modify this to match your adb path
-  ```
 
 ### Unit test build
 
 To run the HTP backend unit tests located under `test/unittest/`,
 use `android_test.sh` with the `-Denable-htp=true` option.
-This builds the nntrainer test binaries, and automatically pushes
-`libhtp_ops.so` and `libhtp_ops_skel.so` to the device.
+This builds the nntrainer test binaries and automatically pushes
+`libsdkl.so` to the device.
 
 ```bash
-# 1. Build and push test binaries + HTP libraries to device
+# 1. Build and push test binaries + SDKL library to device
 $ ./tools/android_test.sh -Denable-htp=true
 
-# 2. Run unittest on device
+# 2. Push libhexkl_skel.so to device DSP library path
+$ adb push ${HEXAGON_SDK_HOME}/addons/hexkl_addon/lib/hexagon_<ver>/libhexkl_skel.so \
+    /vendor/lib/rfsa/adsp/
+
+# 3. Run unittest on device
 $ adb shell
 (adb) $ cd /data/local/tmp/nntr_android_test
 (adb) $ export LD_LIBRARY_PATH=.
 (adb) $ ./<unittest_name>
 ```
 
+## Directory Structure
 
+```
+nntrainer/tensor/htp_backend/
+├── include/
+│   └── sdkl_interface.h    # Runtime dlopen interface to libsdkl.so
+├── meson.build              # Build configuration
+└── README.md                # Backend overview
+```
