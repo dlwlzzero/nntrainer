@@ -846,23 +846,48 @@ endif
 
 include $(BUILD_EXECUTABLE)
 
-# unittest_htp_kernels
-include $(CLEAR_VARS)
-
-LOCAL_MODULE := unittest_htp_kernels
-LOCAL_CFLAGS := -I$(GTEST_PATH)/include -I../include -pthread -fexceptions -fopenmp -static-openmp -DMIN_CPP_VERSION=201703L -DNNTR_NUM_THREADS=1 -D__LOGGING__=1 -DENABLE_TEST=1 -DREDUCE_TOLERANCE=1 $(ARM_MARCH_FLAGS) -O3 -frtti -DENABLE_FP16=1 -DENABLE_HTP=1
-LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
-LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
-
-LOCAL_SRC_FILES := \
-    ../unittest/unittest_htp_kernels.cpp
-
-LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) \
+# unittest_htp (mat_mul / rms_norm / quantizer)
+HTP_TEST_CFLAGS := -I$(GTEST_PATH)/include -I../include -pthread -fexceptions -fopenmp -static-openmp -DMIN_CPP_VERSION=201703L -DNNTR_NUM_THREADS=1 -D__LOGGING__=1 -DENABLE_TEST=1 -DREDUCE_TOLERANCE=1 $(ARM_MARCH_FLAGS) -O3 -frtti -DENABLE_FP16=1 -DENABLE_HTP=1
+HTP_TEST_C_INCLUDES := $(NNTRAINER_INCLUDES) \
     $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend \
     $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include \
     $(NNTRAINER_ROOT)/nntrainer/tensor/htp_backend/include/host
 
+include $(CLEAR_VARS)
+LOCAL_MODULE := unittest_htp_mat_mul
+LOCAL_CFLAGS := $(HTP_TEST_CFLAGS)
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+LOCAL_SRC_FILES := \
+    ../unittest/htp/unittest_htp_mat_mul.cpp \
+    ../unittest/htp/unittest_htp_common.cpp
+LOCAL_C_INCLUDES += $(HTP_TEST_C_INCLUDES)
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := googletest_main test_util
+include $(BUILD_EXECUTABLE)
 
+include $(CLEAR_VARS)
+LOCAL_MODULE := unittest_htp_rms_norm
+LOCAL_CFLAGS := $(HTP_TEST_CFLAGS)
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+LOCAL_SRC_FILES := \
+    ../unittest/htp/unittest_htp_rms_norm.cpp \
+    ../unittest/htp/unittest_htp_common.cpp
+LOCAL_C_INCLUDES += $(HTP_TEST_C_INCLUDES)
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main test_util
+include $(BUILD_EXECUTABLE)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := unittest_htp_quantizer
+LOCAL_CFLAGS := $(HTP_TEST_CFLAGS)
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+LOCAL_SRC_FILES := \
+    ../unittest/htp/unittest_htp_quantizer.cpp \
+    ../unittest/htp/unittest_htp_common.cpp
+LOCAL_C_INCLUDES += $(HTP_TEST_C_INCLUDES)
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main test_util
 include $(BUILD_EXECUTABLE)

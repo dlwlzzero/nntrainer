@@ -91,9 +91,9 @@ if get_option('enable-opencl')
   test_target += [['unittest_attention_kernels_cl', []]]
 endif
 
-if get_option('enable-htp')
-  test_target += [['unittest_htp_kernels', []]]
-endif
+# HTP unit tests live in test/unittest/htp/ and are registered there via
+# subdir('htp') below so the subdirectory can own its own executable()
+# definitions, matching the compiler/ and layers/ pattern.
 
 if get_option('enable-fp16')
   test_target += [['unittest_nntrainer_tensor_fp16', []]]
@@ -130,6 +130,9 @@ subdir('compiler')
 subdir('layers')
 subdir('datasets')
 subdir('models')
+if get_option('enable-htp')
+  subdir('htp')
+endif
 if get_option('enable-tflite-interpreter')
   subdir('integration_tests')
 endif
