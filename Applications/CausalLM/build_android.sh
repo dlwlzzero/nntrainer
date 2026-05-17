@@ -4,6 +4,24 @@
 # This script builds libcausallm_core.so and nntrainer_causallm executable
 set -e
 
+# Parse options
+USE_BUILD_CACHE=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --cache)
+            USE_BUILD_CACHE=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--cache]"
+            echo "  --cache  Reuse existing nntrainer builddir if available"
+            exit 1
+            ;;
+    esac
+done
+
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -82,21 +100,23 @@ export NNTRAINER_ROOT
 
 log_header "Build CausalLM Android Application"
 log_info "NNTRAINER_ROOT: $NNTRAINER_ROOT"
+log_info "Build cache: $([ "$USE_BUILD_CACHE" -eq 1 ] && echo 'enabled' || echo 'disabled (default)')"
 log_info "ANDROID_NDK: $ANDROID_NDK"
 log_info "Working directory: $(pwd)"
 
 # Step 1: Build nntrainer for Android if not already built
 log_step "1/4" "Build nntrainer for Android"
 
-if [ ! -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrainer.so" ]; then
+if [ "$USE_BUILD_CACHE" -eq 1 ] && [ -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrainer.so" ]; then
+    log_info "Build cache enabled: reusing existing nntrainer builddir (skipping)"
+else
     log_info "Building nntrainer for Android..."
     cd "$NNTRAINER_ROOT"
     if [ -d "$NNTRAINER_ROOT/builddir" ]; then
+        log_info "Removing existing builddir..."
         rm -rf builddir
     fi
     ./tools/package_android.sh
-else
-    log_info "nntrainer for Android already built (skipping)"
 fi
 
 # Check if build was successful
@@ -105,30 +125,6 @@ if [ ! -f "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a/libnntrai
     exit 1
 fi
 log_success "nntrainer ready"
-
-# Auto-detect HTP support: check if libsdkl.so was installed
-ENABLE_HTP=0
-HTP_SEARCH_DIRS=(
-    "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a"
-    "$NNTRAINER_ROOT/builddir/android_build_result/lib"
-)
-for htp_dir in "${HTP_SEARCH_DIRS[@]}"; do
-    if [ -f "$htp_dir/libsdkl.so" ]; then
-        ENABLE_HTP=1
-        HTP_LIB_DIR="$htp_dir"
-        break
-    fi
-done
-
-if [ "$ENABLE_HTP" = "1" ]; then
-    log_info "HTP (Hexagon Tensor Processor) support: ENABLED (found libsdkl.so)"
-    LIBS_DIR="$SCRIPT_DIR/jni/libs/arm64-v8a"
-    mkdir -p "$LIBS_DIR"
-    cp "$HTP_LIB_DIR/libsdkl.so" "$LIBS_DIR/"
-    log_success "libsdkl.so copied from $HTP_LIB_DIR"
-else
-    log_info "HTP support: disabled (libsdkl.so not found in build output)"
-fi
 
 # Step 2: Build tokenizer library if not present
 log_step "2/4" "Build Tokenizer Library"
@@ -177,11 +173,8 @@ cd "$SCRIPT_DIR/jni"
 rm -rf libs obj
 
 log_info "Building with ndk-build (builds causallm_core, nntrainer_causallm, nntr_quantize)..."
-NDK_HTP_FLAG=""
-if [ "$ENABLE_HTP" = "1" ]; then
-    NDK_HTP_FLAG="ENABLE_HTP=1"
-fi
-if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk $NDK_HTP_FLAG causallm_core nntrainer_causallm nntr_quantize -j $(nproc); then
+# We explicitly set paths to ensure outputs are predictable
+if ndk-build NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk causallm_core nntrainer_causallm  nntr_quantize -j $(nproc); then
     log_success "Build completed successfully"
 else
     log_error "Build failed"

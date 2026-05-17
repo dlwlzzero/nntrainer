@@ -21,20 +21,27 @@
 #include <vector>
 
 #include "causal_lm.h"
+#include "chat_template.h"
 #include "gemma3_causallm.h"
+#if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
+#endif
 #include "gptoss_causallm.h"
 #include "json.hpp"
 #include "model_config_internal.h"
 #include "qwen2_causallm.h"
+#if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
+#endif
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include <factory.h>
 #include <fstream>
 #include <sys/stat.h>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -46,6 +53,7 @@ static bool g_use_chat_template = false;
 static bool g_verbose = false;
 static std::string g_last_output = "";
 static double g_initialization_duration_ms = 0.0;
+static causallm::ChatTemplate g_chat_template;
 
 static std::map<std::string, std::string> g_model_path_map = {
   {"QWEN3-0.6B", "qwen3-0.6b"},
@@ -95,23 +103,27 @@ static void register_models() {
         return std::make_unique<causallm::Qwen3SlimMoECausalLM>(
           cfg, generation_cfg, nntr_cfg);
       });
+#if !defined(_WIN32)
     causallm::Factory::Instance().registerModel(
       "Qwen3CachedSlimMoeForCausalLM",
       [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
           cfg, generation_cfg, nntr_cfg);
       });
+#endif
     causallm::Factory::Instance().registerModel(
       "GptOssForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::GptOssForCausalLM>(
           cfg, generation_cfg, nntr_cfg);
       });
+#if !defined(_WIN32)
     causallm::Factory::Instance().registerModel(
       "GptOssCachedSlimCausalLM",
       [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
           cfg, generation_cfg, nntr_cfg);
       });
+#endif
     causallm::Factory::Instance().registerModel(
       "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
@@ -134,6 +146,12 @@ static const char *get_model_name_from_type(ModelType type) {
 
 static std::string apply_chat_template(const std::string &architecture,
                                        const std::string &input) {
+  // Use dynamic chat template from tokenizer_config.json if available
+  if (g_chat_template.isAvailable()) {
+    return g_chat_template.apply(input);
+  }
+
+  // Fallback: hardcoded per-architecture templates
   if (architecture == "LlamaForCausalLM") {
     // Llama 2/3 chat format: [INST] {prompt} [/INST]
     return "[INST] " + input + " [/INST]";
@@ -144,8 +162,6 @@ static std::string apply_chat_template(const std::string &architecture,
              architecture == "Qwen3CachedSlimMoeForCausalLM") {
     // Qwen chat format
     // <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
-    // Note: assuming model handles tokenizer specific special tokens or we
-    // might need to handle them raw if tokenizer enabled
     return "<|im_start|>user\n" + input + "<|im_end|>\n<|im_start|>assistant\n";
   } else if (architecture == "Gemma3ForCausalLM") {
     // Gemma chat format:
@@ -468,6 +484,26 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       }
     }
 
+    // Load chat template from tokenizer_config.json if available
+    std::string tc_path = model_dir_path + "/tokenizer_config.json";
+    if (check_file_exists(tc_path)) {
+      g_chat_template = causallm::ChatTemplate::fromFile(tc_path);
+      if (g_chat_template.isAvailable()) {
+        std::cout << "[Info] Chat template loaded from tokenizer_config.json"
+                  << std::endl;
+      } else {
+        std::cerr
+          << "[Warning] tokenizer_config.json found but chat template could "
+             "not be loaded. Falling back to hardcoded templates."
+          << std::endl;
+      }
+    } else {
+      g_chat_template = causallm::ChatTemplate();
+      std::cerr << "[Warning] tokenizer_config.json not found in "
+                << model_dir_path << ". Using hardcoded chat templates."
+                << std::endl;
+    }
+
     // Construct weight file path
     std::string weight_file_name;
     if (nntr_cfg.contains("model_file_name")) {
@@ -537,13 +573,8 @@ ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
       input = apply_chat_template(g_architecture, input);
     }
 
-// We assume single batch request for this API
-#if defined(_WIN32)
-    g_model->run(std::wstring(input.begin(), input.end()), false, L"", L"",
-                 g_verbose);
-#else
+    // We assume single batch request for this API.
     g_model->run(input, false, "", "", g_verbose);
-#endif
 
     auto causal_lm_model = dynamic_cast<causallm::CausalLM *>(g_model.get());
     g_last_output = ""; // Reset last output
@@ -577,7 +608,14 @@ ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
       if (!causal_lm_model->hasRun()) {
         return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
       }
-      *metrics = causal_lm_model->getPerformanceMetrics();
+      auto internal_metrics = causal_lm_model->getPerformanceMetrics();
+      metrics->prefill_tokens = internal_metrics.prefill_tokens;
+      metrics->prefill_duration_ms = internal_metrics.prefill_duration_ms;
+      metrics->generation_tokens = internal_metrics.generation_tokens;
+      metrics->generation_duration_ms = internal_metrics.generation_duration_ms;
+      metrics->total_duration_ms = internal_metrics.total_duration_ms;
+      metrics->peak_memory_kb = internal_metrics.peak_memory_kb;
+
       // Overwrite init duration with the one measured in loadModel API
       metrics->initialization_duration_ms = g_initialization_duration_ms;
     } else {

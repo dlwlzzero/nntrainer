@@ -30,29 +30,33 @@
 #include <factory.h>
 
 #include "causal_lm.h"
+#include "chat_template.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
+#if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
+#endif
 #include "gptoss_causallm.h"
+#if !defined(_WIN32) && !defined(__ANDROID__)
+#include "multilingual_tinybert_16mb.h"
+#endif
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
+#if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
+#endif
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include <models/gemma3/function.h>
+#if !defined(_WIN32)
 #include <sys/resource.h>
-
-#if defined(ENABLE_HTP) && ENABLE_HTP == 1
-#include <sdkl_interface.h>
-#ifndef CDSP_DOMAIN_ID
-#define CDSP_DOMAIN_ID 3
-#endif
 #endif
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <thread>
 
 using json = nlohmann::json;
@@ -61,13 +65,20 @@ std::atomic<size_t> peak_rss_kb{0};
 std::atomic<bool> tracking_enabled{true};
 
 void printMemoryUsage() {
+#if defined(_WIN32)
+  std::cout << "Max Resident Set Size: unavailable on Windows" << std::endl;
+#else
   struct rusage usage;
   getrusage(RUSAGE_SELF, &usage);
   std::cout << "Max Resident Set Size: " << usage.ru_maxrss << " KB"
             << std::endl;
+#endif
 }
 
 size_t read_vm_rss_kb() {
+#if defined(_WIN32)
+  return 0;
+#else
   std::ifstream status("/proc/self/status");
   std::string line;
   while (std::getline(status, line)) {
@@ -78,9 +89,13 @@ size_t read_vm_rss_kb() {
     }
   }
   return 0;
+#endif
 }
 
 size_t read_private_rss_kb() {
+#if defined(_WIN32)
+  return 0;
+#else
   std::ifstream smaps("/proc/self/smaps_rollup");
   std::string line;
   size_t total = 0;
@@ -92,6 +107,7 @@ size_t read_private_rss_kb() {
     }
   }
   return total;
+#endif
 }
 
 void start_peak_tracker() {
@@ -127,6 +143,8 @@ std::string resolve_architecture(std::string model_type,
       return "EmbeddingGemma";
     } else if (architecture == "Qwen2Model") {
       return "Qwen2Embedding";
+    } else if (architecture == "BertForMaskedLM") {
+      return "MultilingualTinyBert";
     } else {
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
@@ -139,22 +157,6 @@ std::string resolve_architecture(std::string model_type,
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
-
-#if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  auto &sdkl = nntrainer::sdkl::SdklInterface::instance();
-  if (sdkl.is_available()) {
-    int err = sdkl.ensure_initialized(CDSP_DOMAIN_ID);
-    if (err != 0) {
-      std::cerr << "HTP: SDKL initialization failed (error=" << err << ")"
-                << std::endl;
-      return EXIT_FAILURE;
-    }
-    std::cout << "HTP: SDKL initialized successfully" << std::endl;
-  } else {
-    std::cerr << "HTP: libsdkl.so not loaded, falling back to CPU"
-              << std::endl;
-  }
-#endif
 
   /** Register all runnable causallm models to factory */
   causallm::Factory::Instance().registerModel(
@@ -188,12 +190,14 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::Qwen3SlimMoECausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#if !defined(_WIN32)
   causallm::Factory::Instance().registerModel(
     "Qwen3CachedSlimMoeForCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   causallm::Factory::Instance().registerModel(
     "Qwen3Embedding", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Qwen3Embedding>(cfg, generation_cfg,
@@ -204,12 +208,14 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::GptOssForCausalLM>(cfg, generation_cfg,
                                                            nntr_cfg);
     });
+#if !defined(_WIN32)
   causallm::Factory::Instance().registerModel(
     "GptOssCachedSlimCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   causallm::Factory::Instance().registerModel(
     "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
@@ -220,6 +226,13 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
+#if !defined(_WIN32) && !defined(__ANDROID__)
+  causallm::Factory::Instance().registerModel(
+    "MultilingualTinyBert", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::MultilingualTinyBert>(
+        cfg, generation_cfg, nntr_cfg);
+    });
+#endif
 
   // Validate arguments
   if (argc < 2) {
@@ -266,9 +279,34 @@ int main(int argc, char *argv[]) {
       architecture = resolve_architecture(model_type, architecture);
     }
 
+    // Load chat template from tokenizer_config.json (if available)
+    causallm::ChatTemplate chat_tmpl;
+    std::string tokenizer_config_path = model_path + "/tokenizer_config.json";
+    if (std::filesystem::exists(tokenizer_config_path)) {
+      chat_tmpl = causallm::ChatTemplate::fromFile(tokenizer_config_path);
+      if (chat_tmpl.isAvailable()) {
+        std::cout << "[Info] Chat template loaded from tokenizer_config.json"
+                  << std::endl;
+      } else {
+        std::cerr
+          << "[Warning] tokenizer_config.json found but chat template could "
+             "not be loaded. Chat formatting will not be applied to raw input."
+          << std::endl;
+      }
+    } else {
+      std::cerr
+        << "[Warning] tokenizer_config.json not found in " << model_path
+        << ". Chat template will not be available for raw input formatting."
+        << std::endl;
+    }
+
     // Determine input text
     if (argc >= 3) {
       input_text = argv[2];
+      // Apply chat template to raw user input if available
+      if (chat_tmpl.isAvailable()) {
+        input_text = chat_tmpl.apply(input_text);
+      }
     } else {
       if (nntr_cfg.contains("chat_input")) {
         if (architecture == "Gemma3ForCausalLM") {
@@ -321,22 +359,8 @@ int main(int argc, char *argv[]) {
 
   } catch (const std::exception &e) {
     std::cerr << "\n[!] FATAL ERROR: " << e.what() << "\n";
-#if defined(ENABLE_HTP) && ENABLE_HTP == 1
-    if (sdkl.npu_finalize && sdkl.initialized) {
-      sdkl.npu_finalize(sdkl.domain);
-      sdkl.initialized = false;
-    }
-#endif
     return EXIT_FAILURE;
   }
-
-#if defined(ENABLE_HTP) && ENABLE_HTP == 1
-  if (sdkl.npu_finalize && sdkl.initialized) {
-    sdkl.npu_finalize(sdkl.domain);
-    sdkl.initialized = false;
-    std::cout << "HTP: SDKL finalized" << std::endl;
-  }
-#endif
 
   return EXIT_SUCCESS;
 }

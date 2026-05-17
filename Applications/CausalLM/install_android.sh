@@ -9,7 +9,6 @@ MODEL_DIR="$INSTALL_DIR/models"
 
 # Set SCRIPT_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NNTRAINER_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Color codes
 RED='\033[0;31m'
@@ -174,48 +173,23 @@ log_success "nntr_quantize pushed"
 
 # Push shared libraries
 log_info "Pushing shared libraries..."
-log_info "  [1/6] libcausallm_core.so (CausalLM Core library)..."
+log_info "  [1/5] libcausallm_core.so (CausalLM Core library)..."
 adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_core.so" "$INSTALL_DIR/" 2>&1 | tail -1
 
-log_info "  [2/6] libnntrainer.so (nntrainer library)..."
+log_info "  [2/5] libnntrainer.so (nntrainer library)..."
 adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libnntrainer.so" "$INSTALL_DIR/" 2>&1 | tail -1
 
-log_info "  [3/6] libccapi-nntrainer.so (nntrainer C/C API)..."
+log_info "  [3/5] libccapi-nntrainer.so (nntrainer C/C API)..."
 adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libccapi-nntrainer.so" "$INSTALL_DIR/" 2>&1 | tail -1
 
-log_info "  [4/6] libc++_shared.so (C++ runtime)..."
+log_info "  [4/5] libc++_shared.so (C++ runtime)..."
 adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libc++_shared.so" "$INSTALL_DIR/" 2>&1 | tail -1
 
-log_info "  [5/6] libomp.so (OpenMP runtime)..."
-if [ -f "$SCRIPT_DIR/jni/libs/arm64-v8a/libomp.so" ]; then
-    adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libomp.so" "$INSTALL_DIR/" 2>&1 | tail -1
-else
-    log_warning "libomp.so not found (skipping)"
-fi
-
-log_info "  [6/6] libcausallm_api.so (CausalLM API library)..."
+log_info "  [5/5] libcausallm_api.so (CausalLM API library)..."
 if [ -f "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" ]; then
     adb push "$SCRIPT_DIR/jni/libs/arm64-v8a/libcausallm_api.so" "$INSTALL_DIR/" 2>&1 | tail -1
 else
     log_warning "libcausallm_api.so not found (Optional, skipping)"
-fi
-
-log_info "  [7/7] libsdkl.so (HexKL SDKL host-side library for HTP)..."
-SDKL_FOUND=""
-for sdkl_dir in \
-    "$SCRIPT_DIR/jni/libs/arm64-v8a" \
-    "$SCRIPT_DIR/lib" \
-    "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a" \
-    "$NNTRAINER_ROOT/builddir/android_build_result/lib"; do
-    if [ -f "$sdkl_dir/libsdkl.so" ]; then
-        adb push "$sdkl_dir/libsdkl.so" "$INSTALL_DIR/" 2>&1 | tail -1
-        SDKL_FOUND="$sdkl_dir"
-        log_success "libsdkl.so pushed from $sdkl_dir"
-        break
-    fi
-done
-if [ -z "$SDKL_FOUND" ]; then
-    log_warning "libsdkl.so not found (HTP acceleration disabled, CPU fallback will be used)"
 fi
 
 log_success "All libraries pushed"
@@ -225,7 +199,7 @@ log_info "Creating run script on device..."
 adb shell "cat > $INSTALL_DIR/run_causallm.sh << 'EOF'
 #!/system/bin/sh
 export LD_LIBRARY_PATH=$INSTALL_DIR:\$LD_LIBRARY_PATH
-export OMP_NUM_THREADS=4
+export NNTR_NUM_THREADS=4
 cd $INSTALL_DIR
 ./nntrainer_causallm \$@
 EOF
@@ -247,7 +221,7 @@ if [ -f "$SCRIPT_DIR/jni/libs/arm64-v8a/test_api" ]; then
     adb shell "cat > $INSTALL_DIR/run_test_api.sh << 'EOF'
 #!/system/bin/sh
 export LD_LIBRARY_PATH=$INSTALL_DIR:\$LD_LIBRARY_PATH
-export OMP_NUM_THREADS=4
+export NNTR_NUM_THREADS=4
 cd $INSTALL_DIR
 ./test_api \$@
 EOF
@@ -274,8 +248,6 @@ fi
 log_info "  - libnntrainer.so"
 log_info "  - libccapi-nntrainer.so"
 log_info "  - libc++_shared.so"
-log_info "  - libomp.so (if available)"
-log_info "  - libsdkl.so (if available, HexKL SDKL host-side library for HTP)"
 log_header "How to run"
 log_info "To run CausalLM on the device:"
 log_info "  1. Push your model files to: $MODEL_DIR/"
