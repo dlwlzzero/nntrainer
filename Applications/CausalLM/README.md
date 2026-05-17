@@ -211,6 +211,30 @@ The following scripts are provided in `Applications/CausalLM/` to handle the bui
     ```bash
     adb shell /data/local/tmp/nntrainer/causallm/run_test_api.sh [model_name] [prompt]
     ```
+
+#### HTP (Hexagon Tensor Processor) Acceleration
+
+The Android build can optionally offload fully-connected matmul to the
+Qualcomm HTP via the HexKL SDKL backend (see
+`nntrainer/tensor/htp_backend/README.md`).
+
+- **Auto-detection**: `build_android.sh` checks the nntrainer Android build
+  output for `libsdkl.so`. If found, it builds with `ENABLE_HTP=1` (passed to
+  `ndk-build`, which defines `-DENABLE_HTP=1` and adds the
+  `htp_backend/include` path) and copies `libsdkl.so` into
+  `jni/libs/arm64-v8a/`. If not found, the build proceeds CPU-only and the
+  HTP code paths are fully `#if`-guarded out.
+- **At runtime**, `nntrainer_causallm` initializes the SDKL backend at
+  startup and finalizes it on exit. If `libsdkl.so` is absent on the device
+  it logs a warning and falls back to CPU.
+- **Model config**: select the HTP-friendly weight dtype through
+  `fc_layer_dtype` in the model's `nntr_config*.json` (e.g.
+  `res/qwen3/qwen3-4b/nntr_config_hmx.json`); it is applied as the
+  `weight_dtype` of the attention and FFN fully-connected layers.
+
+No extra steps are required for a CPU-only build — HTP support activates
+automatically when `libsdkl.so` is present.
+
 ## Quantizing Models
 
 NNTrainer provides a quantization utility (`nntr_quantize`) that converts FP32 CausalLM model weights to lower-precision data types, reducing model size for efficient on-device inference.

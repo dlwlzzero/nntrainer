@@ -59,6 +59,13 @@
 #include <filesystem>
 #include <thread>
 
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+#include <sdkl_interface.h>
+#ifndef CDSP_DOMAIN_ID
+#define CDSP_DOMAIN_ID 3
+#endif
+#endif
+
 using json = nlohmann::json;
 
 std::atomic<size_t> peak_rss_kb{0};
@@ -157,6 +164,22 @@ std::string resolve_architecture(std::string model_type,
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  auto &sdkl = nntrainer::sdkl::SdklInterface::instance();
+  if (sdkl.is_available()) {
+    int err = sdkl.ensure_initialized(CDSP_DOMAIN_ID);
+    if (err != 0) {
+      std::cerr << "HTP: SDKL initialization failed (error=" << err << ")"
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    std::cout << "HTP: SDKL initialized successfully" << std::endl;
+  } else {
+    std::cerr << "HTP: libsdkl.so not loaded, falling back to CPU"
+              << std::endl;
+  }
+#endif
 
   /** Register all runnable causallm models to factory */
   causallm::Factory::Instance().registerModel(
@@ -359,8 +382,22 @@ int main(int argc, char *argv[]) {
 
   } catch (const std::exception &e) {
     std::cerr << "\n[!] FATAL ERROR: " << e.what() << "\n";
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+    if (sdkl.npu_finalize && sdkl.initialized) {
+      sdkl.npu_finalize(sdkl.domain);
+      sdkl.initialized = false;
+    }
+#endif
     return EXIT_FAILURE;
   }
+
+#if defined(ENABLE_HTP) && ENABLE_HTP == 1
+  if (sdkl.npu_finalize && sdkl.initialized) {
+    sdkl.npu_finalize(sdkl.domain);
+    sdkl.initialized = false;
+    std::cout << "HTP: SDKL finalized" << std::endl;
+  }
+#endif
 
   return EXIT_SUCCESS;
 }

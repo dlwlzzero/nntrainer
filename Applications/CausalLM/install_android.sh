@@ -9,6 +9,7 @@ MODEL_DIR="$INSTALL_DIR/models"
 
 # Set SCRIPT_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NNTRAINER_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Color codes
 RED='\033[0;31m'
@@ -192,6 +193,24 @@ else
     log_warning "libcausallm_api.so not found (Optional, skipping)"
 fi
 
+log_info "  libsdkl.so (HexKL SDKL host-side library for HTP)..."
+SDKL_FOUND=""
+for sdkl_dir in \
+    "$SCRIPT_DIR/jni/libs/arm64-v8a" \
+    "$SCRIPT_DIR/lib" \
+    "$NNTRAINER_ROOT/builddir/android_build_result/lib/arm64-v8a" \
+    "$NNTRAINER_ROOT/builddir/android_build_result/lib"; do
+    if [ -f "$sdkl_dir/libsdkl.so" ]; then
+        adb push "$sdkl_dir/libsdkl.so" "$INSTALL_DIR/" 2>&1 | tail -1
+        SDKL_FOUND="$sdkl_dir"
+        log_success "libsdkl.so pushed from $sdkl_dir"
+        break
+    fi
+done
+if [ -z "$SDKL_FOUND" ]; then
+    log_warning "libsdkl.so not found (HTP acceleration disabled, CPU fallback will be used)"
+fi
+
 log_success "All libraries pushed"
 
 # Create run script on device
@@ -248,6 +267,7 @@ fi
 log_info "  - libnntrainer.so"
 log_info "  - libccapi-nntrainer.so"
 log_info "  - libc++_shared.so"
+log_info "  - libsdkl.so (if available, HexKL SDKL host-side library for HTP)"
 log_header "How to run"
 log_info "To run CausalLM on the device:"
 log_info "  1. Push your model files to: $MODEL_DIR/"
