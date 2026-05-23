@@ -2249,46 +2249,42 @@ void transform_int4_osv32_isv2_to_q4_0x8(size_t N, size_t K,
   });
 }
 
-
 // ---------------------------------------------------------------------------
 // causal_depthwise_conv1d_k3 - fp32 prefill.
 // Computes y_t = w0*x_t + w1*x_{t-1} + w2*x_{t-2} (+ bias) over H.
 // TILE=32 (4 x AVX2 vectors) unrolled inner loop.
 // ---------------------------------------------------------------------------
-void causal_depthwise_conv1d_k3(const float *input,
-                                 const float *packed_weight,
-                                 const float *bias,
-                                 float *output,
-                                 unsigned int B,
-                                 unsigned int H,
-                                 unsigned int W) {
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H,
+                                unsigned int W) {
   const float *w0 = packed_weight;
   const float *w1 = packed_weight + W;
   const float *w2 = packed_weight + 2 * W;
 
-  constexpr unsigned int VEC  = 8;
+  constexpr unsigned int VEC = 8;
   constexpr unsigned int TILE = 32; // 4 x VEC
 
   for (unsigned int b = 0; b < B; ++b) {
-    const float *x_base = input  + static_cast<size_t>(b) * H * W;
-    float       *y_base = output + static_cast<size_t>(b) * H * W;
+    const float *x_base = input + static_cast<size_t>(b) * H * W;
+    float *y_base = output + static_cast<size_t>(b) * H * W;
 
     unsigned int c = 0;
 
     // ---- 4-wide unrolled tile (TILE = 32) --------------------------------
     for (; c + TILE <= W; c += TILE) {
-      const __m256 vw0_0 = _mm256_loadu_ps(w0 + c +  0);
-      const __m256 vw0_1 = _mm256_loadu_ps(w0 + c +  8);
+      const __m256 vw0_0 = _mm256_loadu_ps(w0 + c + 0);
+      const __m256 vw0_1 = _mm256_loadu_ps(w0 + c + 8);
       const __m256 vw0_2 = _mm256_loadu_ps(w0 + c + 16);
       const __m256 vw0_3 = _mm256_loadu_ps(w0 + c + 24);
 
-      const __m256 vw1_0 = _mm256_loadu_ps(w1 + c +  0);
-      const __m256 vw1_1 = _mm256_loadu_ps(w1 + c +  8);
+      const __m256 vw1_0 = _mm256_loadu_ps(w1 + c + 0);
+      const __m256 vw1_1 = _mm256_loadu_ps(w1 + c + 8);
       const __m256 vw1_2 = _mm256_loadu_ps(w1 + c + 16);
       const __m256 vw1_3 = _mm256_loadu_ps(w1 + c + 24);
 
-      const __m256 vw2_0 = _mm256_loadu_ps(w2 + c +  0);
-      const __m256 vw2_1 = _mm256_loadu_ps(w2 + c +  8);
+      const __m256 vw2_0 = _mm256_loadu_ps(w2 + c + 0);
+      const __m256 vw2_1 = _mm256_loadu_ps(w2 + c + 8);
       const __m256 vw2_2 = _mm256_loadu_ps(w2 + c + 16);
       const __m256 vw2_3 = _mm256_loadu_ps(w2 + c + 24);
 
@@ -2299,10 +2295,10 @@ void causal_depthwise_conv1d_k3(const float *input,
 
       for (unsigned int t = 0; t < H; ++t) {
         const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
-        float       *y_ptr = y_base + static_cast<size_t>(t) * W + c;
+        float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
 
-        const __m256 cur0 = _mm256_loadu_ps(x_ptr +  0);
-        const __m256 cur1 = _mm256_loadu_ps(x_ptr +  8);
+        const __m256 cur0 = _mm256_loadu_ps(x_ptr + 0);
+        const __m256 cur1 = _mm256_loadu_ps(x_ptr + 8);
         const __m256 cur2 = _mm256_loadu_ps(x_ptr + 16);
         const __m256 cur3 = _mm256_loadu_ps(x_ptr + 24);
 
@@ -2333,21 +2329,25 @@ void causal_depthwise_conv1d_k3(const float *input,
         acc3 = _mm256_add_ps(acc3, _mm256_mul_ps(prev2_3, vw2_3));
 #endif
         if (bias) {
-          acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(bias + c +  0));
-          acc1 = _mm256_add_ps(acc1, _mm256_loadu_ps(bias + c +  8));
+          acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(bias + c + 0));
+          acc1 = _mm256_add_ps(acc1, _mm256_loadu_ps(bias + c + 8));
           acc2 = _mm256_add_ps(acc2, _mm256_loadu_ps(bias + c + 16));
           acc3 = _mm256_add_ps(acc3, _mm256_loadu_ps(bias + c + 24));
         }
 
-        _mm256_storeu_ps(y_ptr +  0, acc0);
-        _mm256_storeu_ps(y_ptr +  8, acc1);
+        _mm256_storeu_ps(y_ptr + 0, acc0);
+        _mm256_storeu_ps(y_ptr + 8, acc1);
         _mm256_storeu_ps(y_ptr + 16, acc2);
         _mm256_storeu_ps(y_ptr + 24, acc3);
 
-        prev2_0 = prev1_0; prev1_0 = cur0;
-        prev2_1 = prev1_1; prev1_1 = cur1;
-        prev2_2 = prev1_2; prev1_2 = cur2;
-        prev2_3 = prev1_3; prev1_3 = cur3;
+        prev2_0 = prev1_0;
+        prev1_0 = cur0;
+        prev2_1 = prev1_1;
+        prev1_1 = cur1;
+        prev2_2 = prev1_2;
+        prev1_2 = cur2;
+        prev2_3 = prev1_3;
+        prev1_3 = cur3;
       }
     }
 
@@ -2361,7 +2361,7 @@ void causal_depthwise_conv1d_k3(const float *input,
 
       for (unsigned int t = 0; t < H; ++t) {
         const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
-        float       *y_ptr = y_base + static_cast<size_t>(t) * W + c;
+        float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
 
         const __m256 cur = _mm256_loadu_ps(x_ptr);
         __m256 acc = _mm256_mul_ps(cur, vw0v);
@@ -2386,7 +2386,8 @@ void causal_depthwise_conv1d_k3(const float *input,
       for (unsigned int t = 0; t < H; ++t) {
         float cur = x_base[static_cast<size_t>(t) * W + c];
         float acc = w0[c] * cur + w1[c] * prev1 + w2[c] * prev2;
-        if (bias) acc += bias[c];
+        if (bias)
+          acc += bias[c];
         y_base[static_cast<size_t>(t) * W + c] = acc;
         prev2 = prev1;
         prev1 = cur;
@@ -2402,50 +2403,48 @@ void causal_depthwise_conv1d_k3(const float *input,
 // TILE=32 (4 x AVX2 vectors) unrolled, matching the prefill kernel style.
 // ---------------------------------------------------------------------------
 void causal_depthwise_conv1d_k3_decode(const float *x_cur,
-                                       const float *packed_weight,
-                                       float *state,
-                                       float *y_cur,
-                                       unsigned int W) {
+                                       const float *packed_weight, float *state,
+                                       float *y_cur, unsigned int W) {
   const float *w0 = packed_weight;
   const float *w1 = packed_weight + W;
   const float *w2 = packed_weight + 2 * W;
-  const float *s0 = state;          // x_{t-2}
-  const float *s1 = state + W;      // x_{t-1}
+  const float *s0 = state;     // x_{t-2}
+  const float *s1 = state + W; // x_{t-1}
 
-  constexpr unsigned int VEC  = 8;
+  constexpr unsigned int VEC = 8;
   constexpr unsigned int TILE = 32;
 
   unsigned int c = 0;
 
   // ---- 4-wide unrolled tile (TILE = 32) ------------------------------------
   for (; c + TILE <= W; c += TILE) {
-    const __m256 vw0_0 = _mm256_loadu_ps(w0 + c +  0);
-    const __m256 vw0_1 = _mm256_loadu_ps(w0 + c +  8);
+    const __m256 vw0_0 = _mm256_loadu_ps(w0 + c + 0);
+    const __m256 vw0_1 = _mm256_loadu_ps(w0 + c + 8);
     const __m256 vw0_2 = _mm256_loadu_ps(w0 + c + 16);
     const __m256 vw0_3 = _mm256_loadu_ps(w0 + c + 24);
 
-    const __m256 vw1_0 = _mm256_loadu_ps(w1 + c +  0);
-    const __m256 vw1_1 = _mm256_loadu_ps(w1 + c +  8);
+    const __m256 vw1_0 = _mm256_loadu_ps(w1 + c + 0);
+    const __m256 vw1_1 = _mm256_loadu_ps(w1 + c + 8);
     const __m256 vw1_2 = _mm256_loadu_ps(w1 + c + 16);
     const __m256 vw1_3 = _mm256_loadu_ps(w1 + c + 24);
 
-    const __m256 vw2_0 = _mm256_loadu_ps(w2 + c +  0);
-    const __m256 vw2_1 = _mm256_loadu_ps(w2 + c +  8);
+    const __m256 vw2_0 = _mm256_loadu_ps(w2 + c + 0);
+    const __m256 vw2_1 = _mm256_loadu_ps(w2 + c + 8);
     const __m256 vw2_2 = _mm256_loadu_ps(w2 + c + 16);
     const __m256 vw2_3 = _mm256_loadu_ps(w2 + c + 24);
 
-    const __m256 vx0 = _mm256_loadu_ps(x_cur + c +  0);
-    const __m256 vx1 = _mm256_loadu_ps(x_cur + c +  8);
+    const __m256 vx0 = _mm256_loadu_ps(x_cur + c + 0);
+    const __m256 vx1 = _mm256_loadu_ps(x_cur + c + 8);
     const __m256 vx2 = _mm256_loadu_ps(x_cur + c + 16);
     const __m256 vx3 = _mm256_loadu_ps(x_cur + c + 24);
 
-    const __m256 vs1_0 = _mm256_loadu_ps(s1 + c +  0);
-    const __m256 vs1_1 = _mm256_loadu_ps(s1 + c +  8);
+    const __m256 vs1_0 = _mm256_loadu_ps(s1 + c + 0);
+    const __m256 vs1_1 = _mm256_loadu_ps(s1 + c + 8);
     const __m256 vs1_2 = _mm256_loadu_ps(s1 + c + 16);
     const __m256 vs1_3 = _mm256_loadu_ps(s1 + c + 24);
 
-    const __m256 vs0_0 = _mm256_loadu_ps(s0 + c +  0);
-    const __m256 vs0_1 = _mm256_loadu_ps(s0 + c +  8);
+    const __m256 vs0_0 = _mm256_loadu_ps(s0 + c + 0);
+    const __m256 vs0_1 = _mm256_loadu_ps(s0 + c + 8);
     const __m256 vs0_2 = _mm256_loadu_ps(s0 + c + 16);
     const __m256 vs0_3 = _mm256_loadu_ps(s0 + c + 24);
 
@@ -2475,19 +2474,19 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     acc2 = _mm256_add_ps(acc2, _mm256_mul_ps(vw2_2, vs0_2));
     acc3 = _mm256_add_ps(acc3, _mm256_mul_ps(vw2_3, vs0_3));
 #endif
-    _mm256_storeu_ps(y_cur + c +  0, acc0);
-    _mm256_storeu_ps(y_cur + c +  8, acc1);
+    _mm256_storeu_ps(y_cur + c + 0, acc0);
+    _mm256_storeu_ps(y_cur + c + 8, acc1);
     _mm256_storeu_ps(y_cur + c + 16, acc2);
     _mm256_storeu_ps(y_cur + c + 24, acc3);
 
     // state update: s0 <- s1, s1 <- x_cur
-    _mm256_storeu_ps(state +     c +  0, vs1_0);
-    _mm256_storeu_ps(state +     c +  8, vs1_1);
-    _mm256_storeu_ps(state +     c + 16, vs1_2);
-    _mm256_storeu_ps(state +     c + 24, vs1_3);
+    _mm256_storeu_ps(state + c + 0, vs1_0);
+    _mm256_storeu_ps(state + c + 8, vs1_1);
+    _mm256_storeu_ps(state + c + 16, vs1_2);
+    _mm256_storeu_ps(state + c + 24, vs1_3);
 
-    _mm256_storeu_ps(state + W + c +  0, vx0);
-    _mm256_storeu_ps(state + W + c +  8, vx1);
+    _mm256_storeu_ps(state + W + c + 0, vx0);
+    _mm256_storeu_ps(state + W + c + 8, vx1);
     _mm256_storeu_ps(state + W + c + 16, vx2);
     _mm256_storeu_ps(state + W + c + 24, vx3);
   }
@@ -2497,7 +2496,7 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     const __m256 vw0v = _mm256_loadu_ps(w0 + c);
     const __m256 vw1v = _mm256_loadu_ps(w1 + c);
     const __m256 vw2v = _mm256_loadu_ps(w2 + c);
-    const __m256 vxv  = _mm256_loadu_ps(x_cur + c);
+    const __m256 vxv = _mm256_loadu_ps(x_cur + c);
     const __m256 vs1v = _mm256_loadu_ps(s1 + c);
     const __m256 vs0v = _mm256_loadu_ps(s0 + c);
 
@@ -2512,15 +2511,15 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     _mm256_storeu_ps(y_cur + c, acc);
 
     // state update
-    _mm256_storeu_ps(state +     c, vs1v);
+    _mm256_storeu_ps(state + c, vs1v);
     _mm256_storeu_ps(state + W + c, vxv);
   }
 
   // ---- scalar tail ---------------------------------------------------------
   for (; c < W; ++c) {
     y_cur[c] = w0[c] * x_cur[c] + w1[c] * s1[c] + w2[c] * s0[c];
-    state[c]     = s1[c];      // s0 <- s1
-    state[W + c] = x_cur[c];  // s1 <- x_cur
+    state[c] = s1[c];        // s0 <- s1
+    state[W + c] = x_cur[c]; // s1 <- x_cur
   }
 }
 
