@@ -71,10 +71,9 @@ void CausalConv1DLayer::finalize(nntrainer::InitLayerContext &context) {
   nntrainer::TensorDim state_dim(
     {B, 1, KERNEL_SIZE - 1, W},
     {context.getFormat(), ml::train::TensorDim::DataType::FP32});
-  tensor_idx[conv_state] =
-    context.requestTensor(state_dim, "conv_state",
-                          nntrainer::Initializer::ZEROS, false,
-                          nntrainer::TensorLifespan::MAX_LIFESPAN);
+  tensor_idx[conv_state] = context.requestTensor(
+    state_dim, "conv_state", nntrainer::Initializer::ZEROS, false,
+    nntrainer::TensorLifespan::MAX_LIFESPAN);
 
   // Output has same shape as input
   context.setOutputDimensions({in_dim});
@@ -96,17 +95,17 @@ void CausalConv1DLayer::incremental_forwarding(
   NNTR_THROW_IF(to == 0 || to <= from, std::invalid_argument)
     << "[CausalConv1DLayer] invalid range: from=" << from << ", to=" << to;
 
-  nntrainer::Tensor &input   = context.getInput(SINGLE_INOUT_IDX);
-  nntrainer::Tensor &output  = context.getOutput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &input = context.getInput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &output = context.getOutput(SINGLE_INOUT_IDX);
   nntrainer::Tensor &w_tensor = context.getWeight(weight_idx[weight]);
-  nntrainer::Tensor &state    = context.getTensor(tensor_idx[conv_state]);
+  nntrainer::Tensor &state = context.getTensor(tensor_idx[conv_state]);
 
   const unsigned int B = input.batch();
   const unsigned int H = input.height(); // full sequence length (INIT_SEQ_LEN)
   const unsigned int W = input.width();  // feature dimension
 
-  const float *w_ptr   = w_tensor.getData<float>();
-  float       *state_data = state.getData<float>(); // [B, 1, KERNEL_SIZE-1, W]
+  const float *w_ptr = w_tensor.getData<float>();
+  float *state_data = state.getData<float>(); // [B, 1, KERNEL_SIZE-1, W]
 
   if (to - from == 1) {
     // ----------------------------------------------------------------
@@ -115,9 +114,9 @@ void CausalConv1DLayer::incremental_forwarding(
     // slice (not at offset `from`).
     // ----------------------------------------------------------------
     for (unsigned int b = 0; b < B; ++b) {
-      const float *x_cur = input.getData<float>()  + b * H * W;
-      float       *y_cur = output.getData<float>()  + b * H * W;
-      float       *s     = state_data + b * (KERNEL_SIZE - 1) * W;
+      const float *x_cur = input.getData<float>() + b * H * W;
+      float *y_cur = output.getData<float>() + b * H * W;
+      float *s = state_data + b * (KERNEL_SIZE - 1) * W;
 
       // y = w0*x + w1*s1 + w2*s0; state updated in-place by kernel
       nntrainer::causal_depthwise_conv1d_k3_decode(x_cur, w_ptr, s, y_cur, W);
@@ -128,8 +127,8 @@ void CausalConv1DLayer::incremental_forwarding(
     // Prefill path: process all positions [0, to).
     // ----------------------------------------------------------------
     for (unsigned int b = 0; b < B; ++b) {
-      const float *x = input.getData<float>()  + b * H * W;
-      float       *y = output.getData<float>()  + b * H * W;
+      const float *x = input.getData<float>() + b * H * W;
+      float *y = output.getData<float>() + b * H * W;
 
       nntrainer::causal_depthwise_conv1d_k3(x, w_ptr, nullptr, y, 1, to, W);
 
@@ -141,7 +140,7 @@ void CausalConv1DLayer::incremental_forwarding(
       else
         std::memset(s, 0, W * sizeof(float));
 
-      std::memcpy(s + W, x + (to - 1) * W, W * sizeof(float));  // x_{to-1}
+      std::memcpy(s + W, x + (to - 1) * W, W * sizeof(float)); // x_{to-1}
     }
   }
 }
@@ -162,9 +161,8 @@ void CausalConv1DLayer::updateTensorsByInputDimensions(
   // No dynamic updates needed
 }
 
-void CausalConv1DLayer::exportTo(
-  nntrainer::Exporter &exporter,
-  const ml::train::ExportMethods &method) const {
+void CausalConv1DLayer::exportTo(nntrainer::Exporter &exporter,
+                                 const ml::train::ExportMethods &method) const {
   LayerImpl::exportTo(exporter, method);
 }
 

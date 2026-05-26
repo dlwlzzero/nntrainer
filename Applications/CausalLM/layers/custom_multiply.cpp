@@ -123,15 +123,16 @@ void CustomMultiplyLayer::incremental_forwarding(
 
 void CustomMultiplyLayer::calcDerivative(nntrainer::RunLayerContext &context) {
   // For element-wise multiply: d(in0) = d(out) * in1, d(in1) = d(out) * in0
-  context.getOutgoingDerivative(INPUT_IDX_0).copy(
-    context.getIncomingDerivative(OUT_IDX).multiply(context.getInput(INPUT_IDX_1)));
+  context.getOutgoingDerivative(INPUT_IDX_0)
+    .copy(context.getIncomingDerivative(OUT_IDX).multiply(
+      context.getInput(INPUT_IDX_1)));
 
-  context.getOutgoingDerivative(INPUT_IDX_1).copy(
-    context.getIncomingDerivative(OUT_IDX).multiply(context.getInput(INPUT_IDX_0)));
+  context.getOutgoingDerivative(INPUT_IDX_1)
+    .copy(context.getIncomingDerivative(OUT_IDX).multiply(
+      context.getInput(INPUT_IDX_0)));
 }
 
-void CustomMultiplyLayer::setProperty(
-  const std::vector<std::string> &values) {
+void CustomMultiplyLayer::setProperty(const std::vector<std::string> &values) {
   auto remain_props = loadProperties(values, multiply_props);
   NNTR_THROW_IF(!remain_props.empty(), std::invalid_argument)
     << "[CustomMultiplyLayer] Unknown Layer Properties count "
@@ -149,8 +150,7 @@ void destroy_custom_multiply_layer(nntrainer::Layer *layer) { delete layer; }
 
 extern "C" {
 nntrainer::LayerPluggable ml_train_layer_pluggable{
-  create_custom_multiply_layer,
-  destroy_custom_multiply_layer};
+  create_custom_multiply_layer, destroy_custom_multiply_layer};
 }
 
 #endif

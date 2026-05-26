@@ -19,30 +19,29 @@
 
 #include <iostream>
 
+#include <causal_conv1d_layer.h>
+#include <custom_multiply.h>
 #include <embedding_layer.h>
 #include <mha_core.h>
-#include <rms_norm.h>
 #include <reshaped_rms_norm.h>
+#include <rms_norm.h>
 #include <swiglu.h>
 #include <tie_word_embedding.h>
-#include <custom_multiply.h>
-#include <causal_conv1d_layer.h>
 
 using ml::train::Tensor;
 
 namespace causallm {
 
-Lfm2CausalLM::Lfm2CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg)
-  : Transformer(cfg, generation_cfg, nntr_cfg, ModelType::CAUSALLM),
-    CausalLM(cfg, generation_cfg, nntr_cfg),
-    Lfm2Transformer(cfg, generation_cfg, nntr_cfg) {
+Lfm2CausalLM::Lfm2CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg) :
+  Transformer(cfg, generation_cfg, nntr_cfg, ModelType::CAUSALLM),
+  CausalLM(cfg, generation_cfg, nntr_cfg),
+  Lfm2Transformer(cfg, generation_cfg, nntr_cfg) {
   setupParameters(cfg, generation_cfg, nntr_cfg);
 }
 
-Tensor
-Lfm2Transformer::createAttention(const int layer_id, int seq_len, int n_heads,
-                         int head_dim, Tensor query,
-                         Tensor key, Tensor value) {
+Tensor Lfm2Transformer::createAttention(const int layer_id, int seq_len,
+                                        int n_heads, int head_dim, Tensor query,
+                                        Tensor key, Tensor value) {
 
   // Q layer
   LayerHandle wq(createLayer(
@@ -115,31 +114,33 @@ void Lfm2Transformer::registerCustomLayers() {
   auto app_context =
     static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
   try {
-    app_context->registerFactory(nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
-    app_context->registerFactory(nntrainer::createLayer<causallm::CustomMultiplyLayer>);
-    app_context->registerFactory(nntrainer::createLayer<causallm::CausalConv1DLayer>);
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::CustomMultiplyLayer>);
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::CausalConv1DLayer>);
   } catch (std::invalid_argument &e) {
-    std::cerr << "failed to register factory, reason: " << e.what() << std::endl;
+    std::cerr << "failed to register factory, reason: " << e.what()
+              << std::endl;
   }
 }
 
 std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
 
   // Create input tensor
-  LayerHandle input_layer = createLayer("input", {
-    withKey("name", "input0"),
-    withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))
-  });
+  LayerHandle input_layer = createLayer(
+    "input", {withKey("name", "input0"),
+              withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))});
   Tensor input = input_layer(Tensor());
 
   // Embedding layer
-  const std::string embedding_type = TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
-  LayerHandle embedding(createLayer(embedding_type, {
-    withKey("name", "embedding0"),
-    withKey("weight_dtype", EMBEDDING_DTYPE),
-    withKey("in_dim", NUM_VOCAB),
-    withKey("out_dim", DIM)
-  }));
+  const std::string embedding_type =
+    TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
+  LayerHandle embedding(createLayer(
+    embedding_type,
+    {withKey("name", "embedding0"), withKey("weight_dtype", EMBEDDING_DTYPE),
+     withKey("in_dim", NUM_VOCAB), withKey("out_dim", DIM)}));
   Tensor x = embedding(input);
 
   // Hybrid transformer blocks
@@ -150,17 +151,15 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
     } else if (layer_type == "conv") {
       x = createConvBlock(i, x);
     } else {
-      throw std::invalid_argument("Unsupported LFM2 layer type: " +
-                                  layer_type);
+      throw std::invalid_argument("Unsupported LFM2 layer type: " + layer_type);
     }
   }
 
   // Final normalization
-  LayerHandle output_norm(createLayer("rms_norm", {
-    withKey("name", "output_norm"),
-    withKey("epsilon", std::to_string(NORM_EPS)),
-    withKey("packed", "false")
-  }));
+  LayerHandle output_norm(
+    createLayer("rms_norm", {withKey("name", "output_norm"),
+                             withKey("epsilon", std::to_string(NORM_EPS)),
+                             withKey("packed", "false")}));
   Tensor norm_out = output_norm(x);
 
   // LM head
@@ -183,34 +182,29 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
   return {input, output};
 }
 
-Tensor
-Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
+Tensor Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
 
   auto prefix = "layer" + std::to_string(layer_id);
 
   // Pre-conv normalization
   // Input/output: [B, 1, T, DIM]
-  LayerHandle conv_norm(createLayer("rms_norm", {
-    withKey("name", prefix + "_conv_norm"),
-    withKey("epsilon", std::to_string(NORM_EPS)),
-    withKey("packed", "false")
-  }));
+  LayerHandle conv_norm(
+    createLayer("rms_norm", {withKey("name", prefix + "_conv_norm"),
+                             withKey("epsilon", std::to_string(NORM_EPS)),
+                             withKey("packed", "false")}));
   Tensor normed = conv_norm(input);
 
   // Expand features: [B, 1, T, DIM] → [B, 1, T, 3*CONV_DIM]
-  LayerHandle conv_in_proj(createLayer("fully_connected", {
-    withKey("name", prefix + "_conv_in_proj"),
-    withKey("unit", 3 * CONV_DIM),
-    withKey("disable_bias", "true")
-  }));
+  LayerHandle conv_in_proj(
+    createLayer("fully_connected", {withKey("name", prefix + "_conv_in_proj"),
+                                    withKey("unit", 3 * CONV_DIM),
+                                    withKey("disable_bias", "true")}));
   Tensor proj_out = conv_in_proj(normed);
 
   // Split along width (axis=3): [B,1,T,3*CONV_DIM] → 3 × [B,1,T,CONV_DIM]
-  LayerHandle chunk_layer(createLayer("split", {
-    withKey("name", prefix + "_conv_chunk"),
-    withKey("axis", 3),
-    withKey("split_number", 3)
-  }));
+  LayerHandle chunk_layer(
+    createLayer("split", {withKey("name", prefix + "_conv_chunk"),
+                          withKey("axis", 3), withKey("split_number", 3)}));
   Tensor chunks = chunk_layer(proj_out);
 
   Tensor chunk_0 = chunks.output(0); // gate_a  [B,1,T,CONV_DIM]
@@ -218,43 +212,40 @@ Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
   Tensor chunk_2 = chunks.output(2); // gate_c  [B,1,T,CONV_DIM]
 
   // Gating before conv: gate_a ⊙ gate_c
-  LayerHandle gate_mul(createLayer("custom_multiply", {
-    withKey("name", prefix + "_conv_mul_pre"),
-    withKey("inplace", "true")
-  }));
+  LayerHandle gate_mul(
+    createLayer("custom_multiply", {withKey("name", prefix + "_conv_mul_pre"),
+                                    withKey("inplace", "true")}));
   Tensor gated = gate_mul({chunk_0, chunk_2});
 
   // Causal depthwise conv1d with state cache.
   // Input/output: [B, 1, T, CONV_DIM]
   // Weight: [1, 1, 3, CONV_DIM] FP32  (kernel-first layout)
-  LayerHandle causal_conv(createLayer("causal_conv1d", {
-    withKey("name", prefix + "_conv_conv"),
-    withKey("weight_dtype", "FP32"),
-  }));
+  LayerHandle causal_conv(
+    createLayer("causal_conv1d", {
+                                   withKey("name", prefix + "_conv_conv"),
+                                   withKey("weight_dtype", "FP32"),
+                                 }));
   Tensor conv_out = causal_conv(gated);
 
   // Gating after conv: gate_b ⊙ conv_out
-  LayerHandle out_mul(createLayer("custom_multiply", {
-    withKey("name", prefix + "_conv_mul_post"),
-    withKey("inplace", "true")
-  }));
+  LayerHandle out_mul(
+    createLayer("custom_multiply", {withKey("name", prefix + "_conv_mul_post"),
+                                    withKey("inplace", "true")}));
   Tensor gated_out = out_mul({chunk_1, conv_out});
-  LayerHandle conv_out_proj(createLayer("fully_connected", {
-    withKey("name", prefix + "_conv_out_proj"),
-    withKey("unit", DIM),
-    withKey("disable_bias", "true")
-  }));
+  LayerHandle conv_out_proj(
+    createLayer("fully_connected",
+                {withKey("name", prefix + "_conv_out_proj"),
+                 withKey("unit", DIM), withKey("disable_bias", "true")}));
   Tensor proj_back = conv_out_proj(gated_out);
 
   // Conv residual connection
   Tensor residual = input.add(proj_back);
 
   // Pre-FFN normalization
-  LayerHandle ffn_norm(createLayer("rms_norm", {
-    withKey("name", prefix + "_ffn_norm"),
-    withKey("epsilon", std::to_string(NORM_EPS)),
-    withKey("packed", "false")
-  }));
+  LayerHandle ffn_norm(
+    createLayer("rms_norm", {withKey("name", prefix + "_ffn_norm"),
+                             withKey("epsilon", std::to_string(NORM_EPS)),
+                             withKey("packed", "false")}));
   Tensor ffn_normed = ffn_norm(residual);
 
   // Feed forward
@@ -267,25 +258,25 @@ Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
 }
 
 void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
-                                        json &nntr_cfg) {
+                                   json &nntr_cfg) {
 
   try {
-    unsigned int ff_dim = cfg["block_ff_dim"].get<unsigned int>();  // 10240
+    unsigned int ff_dim = cfg["block_ff_dim"].get<unsigned int>(); // 10240
 
     if (cfg.contains("block_auto_adjust_ff_dim") &&
         cfg["block_auto_adjust_ff_dim"].get<bool>()) {
-      ff_dim = static_cast<unsigned int>((2.0f * ff_dim) / 3.0f);   // 6826
+      ff_dim = static_cast<unsigned int>((2.0f * ff_dim) / 3.0f); // 6826
     }
 
     float mult = cfg.contains("block_ffn_dim_multiplier")
-                  ? cfg["block_ffn_dim_multiplier"].get<float>()
-                  : 1.0f;
+                   ? cfg["block_ffn_dim_multiplier"].get<float>()
+                   : 1.0f;
     ff_dim = static_cast<unsigned int>(ff_dim * mult);
 
     unsigned int multiple_of = cfg.contains("block_multiple_of")
-                                ? cfg["block_multiple_of"].get<unsigned int>()
-                                : 1;
-    ff_dim = multiple_of * ((ff_dim + multiple_of - 1) / multiple_of);  // 6912
+                                 ? cfg["block_multiple_of"].get<unsigned int>()
+                                 : 1;
+    ff_dim = multiple_of * ((ff_dim + multiple_of - 1) / multiple_of); // 6912
 
     INTERMEDIATE_SIZE = ff_dim;
 
@@ -295,9 +286,8 @@ void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
                  : NORM_EPS;
 
     // conv-specific parameters
-    CONV_DIM = cfg.contains("conv_dim")
-                 ? cfg["conv_dim"].get<unsigned int>()
-                 : DIM;
+    CONV_DIM =
+      cfg.contains("conv_dim") ? cfg["conv_dim"].get<unsigned int>() : DIM;
 
     CONV_DIM_OUT = cfg.contains("conv_dim_out")
                      ? cfg["conv_dim_out"].get<unsigned int>()
@@ -307,12 +297,12 @@ void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
                      ? cfg["conv_L_cache"].get<unsigned int>()
                      : 0;
 
-    CONV_BIAS = cfg.contains("conv_bias")
-                  ? cfg["conv_bias"].get<bool>()
-                  : false;
+    CONV_BIAS =
+      cfg.contains("conv_bias") ? cfg["conv_bias"].get<bool>() : false;
 
     if (!cfg.contains("layer_types")) {
-      throw std::invalid_argument("Lfm2CausalLM requires layer_types in config");
+      throw std::invalid_argument(
+        "Lfm2CausalLM requires layer_types in config");
     }
 
     layer_types_ = cfg["layer_types"].get<std::vector<std::string>>();
@@ -331,8 +321,8 @@ void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
 
     TIE_WORD_EMBEDDINGS = false;
   } catch (const std::exception &e) {
-    throw std::runtime_error(std::string("Lfm2CausalLM: config parsing error: ") +
-                             e.what());
+    throw std::runtime_error(
+      std::string("Lfm2CausalLM: config parsing error: ") + e.what());
   }
 }
 

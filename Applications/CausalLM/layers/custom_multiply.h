@@ -22,10 +22,10 @@
 #define WIN_EXPORT
 #endif
 
+#include <common_properties.h>
 #include <layer_context.h>
 #include <layer_devel.h>
 #include <node_exporter.h>
-#include <common_properties.h>
 
 namespace causallm {
 
@@ -53,7 +53,9 @@ public:
 
   WIN_EXPORT void calcDerivative(nntrainer::RunLayerContext &context) override;
 
-  WIN_EXPORT bool supportBackwarding() const override { return support_backwarding; }
+  WIN_EXPORT bool supportBackwarding() const override {
+    return support_backwarding;
+  }
 
   WIN_EXPORT void
   exportTo(nntrainer::Exporter &exporter,
@@ -72,9 +74,10 @@ public:
   nntrainer::InPlaceDirection getInPlaceDirection() override {
     if (!supportInPlace())
       return nntrainer::InPlaceDirection::NONE;
-    if (std::get<nntrainer::props::InPlaceDirectionProp>(multiply_props).empty() ||
-        (std::get<nntrainer::props::InPlaceDirectionProp>(multiply_props).get() ==
-         "left")) {
+    if (std::get<nntrainer::props::InPlaceDirectionProp>(multiply_props)
+          .empty() ||
+        (std::get<nntrainer::props::InPlaceDirectionProp>(multiply_props)
+           .get() == "left")) {
       return nntrainer::InPlaceDirection::LEFT;
     } else {
       return nntrainer::InPlaceDirection::RIGHT;

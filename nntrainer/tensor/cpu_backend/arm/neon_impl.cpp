@@ -2168,14 +2168,10 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
  * kept in vector/scalar registers per channel block, so the causal left padding
  * for t=0 and t=1 naturally starts from zero.
  */
-void causal_depthwise_conv1d_k3(
-  const float * input,
-  const float * packed_weight,
-  const float * bias,
-  float * output,
-  unsigned int B,
-  unsigned int H,
-  unsigned int W) {
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H,
+                                unsigned int W) {
 
   const float *w0 = packed_weight;
   const float *w1 = packed_weight + 1 * W;
@@ -2301,7 +2297,7 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     const float32x4_t vw0 = vld1q_f32(w0 + c);
     const float32x4_t vw1 = vld1q_f32(w1 + c);
     const float32x4_t vw2 = vld1q_f32(w2 + c);
-    const float32x4_t vx  = vld1q_f32(x_cur + c);
+    const float32x4_t vx = vld1q_f32(x_cur + c);
     const float32x4_t vs1 = vld1q_f32(s1 + c);
     const float32x4_t vs0 = vld1q_f32(s0 + c);
 
@@ -2311,12 +2307,12 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     vst1q_f32(y_cur + c, vy);
 
     // Update state: s0 <- s1, s1 <- x_cur
-    vst1q_f32(state + c,     vs1);
+    vst1q_f32(state + c, vs1);
     vst1q_f32(state + W + c, vx);
   }
   for (; c < W; ++c) {
     y_cur[c] = w0[c] * x_cur[c] + w1[c] * s1[c] + w2[c] * s0[c];
-    state[c]     = s1[c];
+    state[c] = s1[c];
     state[W + c] = x_cur[c];
   }
 }

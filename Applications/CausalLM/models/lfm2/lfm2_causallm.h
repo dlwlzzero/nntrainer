@@ -26,12 +26,11 @@ namespace causallm {
  */
 class Lfm2Transformer : virtual public Transformer {
 public:
-  Lfm2Transformer(json &cfg, json &generation_cfg, json &nntr_cfg)
-    : Transformer(cfg, generation_cfg, nntr_cfg) {}
+  Lfm2Transformer(json &cfg, json &generation_cfg, json &nntr_cfg) :
+    Transformer(cfg, generation_cfg, nntr_cfg) {}
 
-  Tensor createAttention(const int layer_id, int seq_len,
-                         int n_heads, int head_dim,
-                         Tensor query, Tensor key,
+  Tensor createAttention(const int layer_id, int seq_len, int n_heads,
+                         int head_dim, Tensor query, Tensor key,
                          Tensor value) override;
 
   void registerCustomLayers() override;
@@ -49,8 +48,7 @@ public:
   std::pair<Tensor, Tensor> constructModel() override;
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;
-  Tensor createConvBlock(const int layer_id,
-                         Tensor input);
+  Tensor createConvBlock(const int layer_id, Tensor input);
   void registerCustomLayers() override;
 
   /**

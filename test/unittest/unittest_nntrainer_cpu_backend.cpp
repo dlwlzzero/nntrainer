@@ -189,11 +189,9 @@ static std::vector<float> make_causal_conv_bias(unsigned int W) {
   return bias;
 }
 
-static std::vector<float>
-reference_causal_depthwise_conv1d_k3(const std::vector<float> &input,
-                                     const std::vector<float> &weight,
-                                     const float *bias, unsigned int B,
-                                     unsigned int H, unsigned int W) {
+static std::vector<float> reference_causal_depthwise_conv1d_k3(
+  const std::vector<float> &input, const std::vector<float> &weight,
+  const float *bias, unsigned int B, unsigned int H, unsigned int W) {
   std::vector<float> output(B * H * W, 0.0f);
   const float *w0 = weight.data();
   const float *w1 = weight.data() + W;
@@ -233,8 +231,8 @@ TEST(nntrainer_cpu_backend_standalone,
   const std::vector<float> input = make_causal_conv_input(B, H, W);
   const std::vector<float> weight = make_causal_conv_weight(W);
   const std::vector<float> bias = make_causal_conv_bias(W);
-  const std::vector<float> expected = reference_causal_depthwise_conv1d_k3(
-    input, weight, bias.data(), B, H, W);
+  const std::vector<float> expected =
+    reference_causal_depthwise_conv1d_k3(input, weight, bias.data(), B, H, W);
 
   std::vector<float> output(expected.size(), 0.0f);
   nntrainer::causal_depthwise_conv1d_k3(input.data(), weight.data(),
@@ -267,8 +265,8 @@ TEST(nntrainer_cpu_backend_standalone,
 
   for (unsigned int t = 0; t < H; ++t) {
     const float *x_cur = input.data() + static_cast<size_t>(t) * W;
-    nntrainer::causal_depthwise_conv1d_k3_decode(
-      x_cur, weight.data(), state.data(), y_cur.data(), W);
+    nntrainer::causal_depthwise_conv1d_k3_decode(x_cur, weight.data(),
+                                                 state.data(), y_cur.data(), W);
 
     const float *prefill_y = prefill_output.data() + static_cast<size_t>(t) * W;
     const float *expected_y = expected.data() + static_cast<size_t>(t) * W;

@@ -819,11 +819,9 @@ void softmax_row(T *qk_out, size_t start_row, size_t end_row, size_t num_heads,
  * uses packed_weight [w0 | w1 | w2] and computes the causal recurrence over H:
  * y_t = w0*x_t + w1*x_{t-1} + w2*x_{t-2} (+ bias).
  */
-void causal_depthwise_conv1d_k3(const float *input,
-                                const float *packed_weight,
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
                                 const float *bias, float *output,
-                                unsigned int B, unsigned int H,
-                                unsigned int W);
+                                unsigned int B, unsigned int H, unsigned int W);
 
 /**
  * @brief NEON fp32 single-token decode for causal depthwise Conv1D.

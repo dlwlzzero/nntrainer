@@ -59,8 +59,8 @@ public:
    *  - Decode   (to - from == 1): O(1) single-token using cached state.
    */
   void incremental_forwarding(nntrainer::RunLayerContext &context,
-                               unsigned int from, unsigned int to,
-                               bool training) override;
+                              unsigned int from, unsigned int to,
+                              bool training) override;
 
   void calcDerivative(nntrainer::RunLayerContext &context) override;
   void calcGradient(nntrainer::RunLayerContext &context) override;
