@@ -34,13 +34,14 @@
 #include <complex>
 
 #include <acti_func.h>
-#include <bs_thread_pool_manager.hpp>
 #include <common_properties.h>
 #include <cpu_backend.h>
 #include <layer_impl.h>
 #include <limits.h>
 #include <util_simd.h>
 
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace causallm {
@@ -296,6 +297,18 @@ public:
     nntrainer::RunLayerContext &context,
     std::vector<nntrainer::TensorDim> input_dimensions) override;
 
+  /**
+   * @brief Set the cache index for external cache mode.
+   *        Must be called before forwarding() when use_external_cache is true.
+   * @param[in] idx current write position in the KV cache
+   */
+  WIN_EXPORT void setCacheIndex(unsigned int idx) { cache_index = idx; }
+
+  /**
+   * @brief Get the current cache index
+   */
+  WIN_EXPORT unsigned int getCacheIndex() const { return cache_index; }
+
   inline static const std::string type = "mha_core";
 
 private:
@@ -316,6 +329,15 @@ private:
 
   float epsilon;            /** to avoid overflow */
   unsigned int cache_index; /** idx of kv cache */
+
+  /**
+   * @brief Whether to use externally provided cache tensors
+   *        (true when num_inputs >= 5, i.e., Q, K, V + cache_key + cache_value)
+   *        In external mode mha_core does not allocate its own cache tensors,
+   *        and reads cache slots from input[3] (cache_key) and input[4]
+   *        (cache_value) which are bound by the host via setExternalTensors.
+   */
+  bool use_external_cache = false;
 
   /** intermal info */
   size_t num_heads_Q;
@@ -365,8 +387,23 @@ private:
   float scale = 1.0f;
   unsigned int original_max_position_embeddings = 4096;
 
+  /** set by incremental_forwarding, used by forwarding */
+  unsigned int incremental_step_size = 0;
+
   /****************** ROTARY EMBEDDING *****************/
   /** static variable - they are all expected to be initialized once */
+  /**
+   * @brief Rotary frequency cache for FP32 and optional FP16 lookup tables
+   */
+  struct RopeFreqCache {
+    std::vector<std::vector<float>> cos;
+    std::vector<std::vector<float>> sin;
+#ifdef ENABLE_FP16
+    std::vector<std::vector<_FP16>> cos_fp16;
+    std::vector<std::vector<_FP16>> sin_fp16;
+#endif
+  };
+  inline static std::unordered_map<std::string, RopeFreqCache> rope_freq_cache;
   inline static std::vector<std::vector<float>> *freqs_cos = {};
   inline static std::vector<std::vector<float>> *freqs_sin = {};
   inline static std::vector<float> thetas;
@@ -401,11 +438,12 @@ private:
    * @param[out] out output tensor
    * @param[in] dim hidden dim size
    * @param[in] from sequence order
-   * @param[in] convert_only - conversion only
+   * @param[in] apply_rope true to apply rotary embedding, false to only store
+   *                       the tensor into the cache dtype
    */
   void apply_rotary_emb_tensor_v2(nntrainer::Tensor &in, nntrainer::Tensor &out,
                                   unsigned int dim, unsigned int from,
-                                  bool convert_only = false);
+                                  bool apply_rope = true);
 
   template <typename BType>
   void compute(const float *A, const BType *B, float *output, int num_rows,
@@ -415,15 +453,13 @@ private:
   void compute_kcaches(nntrainer::Tensor &in, nntrainer::Tensor &cache,
                        nntrainer::Tensor &out, unsigned int from,
                        size_t sequence_len, unsigned int num_heads,
-                       unsigned int group_size, unsigned int head_dim,
-                       BS::thread_pool<> &pool);
+                       unsigned int group_size, unsigned int head_dim);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
-                        unsigned int from, BS::thread_pool<> &pool);
+                        unsigned int from);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
-                        unsigned int from, BS::thread_pool<> &pool,
-                        nntrainer::Tensor &sink_step);
+                        unsigned int from, nntrainer::Tensor &sink_step);
 
   void compute_vcaches(nntrainer::Tensor &in, nntrainer::Tensor &vcache,
                        nntrainer::Tensor &out, unsigned int from,
@@ -434,8 +470,7 @@ private:
                                      nntrainer::Tensor &vcache,
                                      nntrainer::Tensor &output, int from,
                                      int num_cache_head, int gqa_size,
-                                     int head_dim, int to,
-                                     BS::thread_pool<> &pool);
+                                     int head_dim, int to);
 
   /************** END OF  ROTARY EMBEDDING *************/
 

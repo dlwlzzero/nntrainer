@@ -17,6 +17,26 @@
 #include <ostream>
 #include <transformer.h>
 #include <unordered_map>
+#ifdef __ANDROID__
+#include <android/log.h>
+#ifndef LOG_TAG
+#define LOG_TAG "QuickAI"
+#endif
+#ifndef LOGD
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+#ifndef LOGE
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#endif
+#else
+#include <cstdio>
+#ifndef LOGD
+#define LOGD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#endif
+#ifndef LOGE
+#define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
+#endif
 
 namespace causallm {
 
@@ -34,6 +54,7 @@ public:
   }
 
   void registerModel(const std::string &key, Creator creator) {
+    LOGD("[DEBUG] key in Model Factory %s, %p", key.c_str(), (void *)&creator);
     creators[key] = creator;
   }
 
@@ -42,8 +63,11 @@ public:
                                       json &nntr_cfg) const {
     auto it = creators.find(key);
     if (it != creators.end()) {
+      LOGD("[DEBUG] key in Model Factory %s found : %p", key.c_str(),
+           (void *)&(it->second));
       return (it->second)(cfg, generation_cfg, nntr_cfg);
     }
+    LOGD("[DEBUG] key in Model Factory %s Not found", key.c_str());
     return nullptr;
   }
 

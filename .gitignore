@@ -21,7 +21,24 @@ Applications/**/data
 cifar-100-binary*
 Applications/**/*.bin
 Applications/**/res/*
+!Applications/CausalLM/res/deberta_v2/
+Applications/CausalLM/res/deberta_v2/*
+!Applications/CausalLM/res/deberta_v2/weight_converter.py
+!Applications/CausalLM/res/lfm2_vl/
+Applications/CausalLM/res/lfm2_vl/*
+!Applications/CausalLM/res/lfm2_vl/README.md
+!Applications/CausalLM/res/lfm2_vl/*.py
 Applications/**/tokenizers-cpp-build/*
+
+# QuickAI ships tiny source-level Android resource files (strings, themes,
+# network_security_config) that must be tracked in git, so negate the
+# blanket Applications/**/res/* rule just for that project.
+!Applications/QuickAI/LauncherApp/src/main/res
+!Applications/QuickAI/LauncherApp/src/main/res/**
+!Applications/QuickAI/clientapp/src/main/res
+!Applications/QuickAI/clientapp/src/main/res/**
+!Applications/QuickAI/SampleTestAPP/src/main/res
+!Applications/QuickAI/SampleTestAPP/src/main/res/**
 
 # CTag
 /tags
@@ -72,3 +89,5 @@ ctre-unicode.hpp
 encoder.hpp
 json.hpp
 subprojects/.wraplock
+
+*.dex

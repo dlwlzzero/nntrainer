@@ -32,13 +32,7 @@ Name::Name() : nntrainer::Property<std::string>() {}
 Name::Name(const std::string &value) { set(value); }
 
 void Name::set(const std::string &value) {
-  auto to_lower = [](const std::string &str) {
-    std::string ret = str;
-    std::transform(ret.begin(), ret.end(), ret.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return ret;
-  };
-  nntrainer::Property<std::string>::set(to_lower(value));
+  nntrainer::Property<std::string>::set(value);
 }
 
 bool Name::isValid(const std::string &v) const {

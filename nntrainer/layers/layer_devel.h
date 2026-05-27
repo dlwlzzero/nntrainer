@@ -29,6 +29,7 @@
 
 #include <base_properties.h>
 #include <common.h>
+#include <cpu_backend.h>
 #include <layer_context.h>
 #include <tensor_dim.h>
 
@@ -350,11 +351,13 @@ public:
    * @param mode Execution mode
    * @param trainable is there trainable weight
    * @param dtype data type to save this layer
+   * @param target_isa target ISA (Instruction Set Architecture) format for
+   * quantization (DEFAULT/X86/ARM)
    */
-  virtual void
-  save(std::ofstream &file, RunLayerContext &run_context, bool opt_var,
-       ml::train::ExecutionMode mode, bool trainable,
-       TensorDim::DataType dtype = TensorDim::DataType::NONE) const {
+  virtual void save(std::ofstream &file, RunLayerContext &run_context,
+                    bool opt_var, ml::train::ExecutionMode mode, bool trainable,
+                    TensorDim::DataType dtype = TensorDim::DataType::NONE,
+                    ml::train::ISA target_isa = ml::train::ISA::DEFAULT) const {
 
     if (opt_var) {
       for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
@@ -405,7 +408,7 @@ public:
                 quantize_q4_0(weight_t.getData<float>(), tmp.data(), N, K,
                               nullptr);
                 repack_q4_0(quant_weight.getData<uint8_t>(), tmp.data(),
-                            quant_weight.size(), N, K);
+                            quant_weight.size(), N, K, target_isa);
                 quant_weight.save(file);
               }
             } else {
@@ -414,6 +417,28 @@ public:
             }
           }
         }
+      }
+    }
+  }
+
+  /**
+   * @brief     save layer Weight & Bias data from file
+   * @param file output file stream
+   * @param run_context run context for the layer
+   * @param opt_var boolean variable whether saving optimizer variables
+   * @param mode Execution mode
+   * @param trainable is there trainable weight
+   * @param definedWeightDataTey current data type of the layer
+   */
+  virtual void
+  save_quantization_info(std::ofstream &file, RunLayerContext &run_context,
+                         bool opt_var, ml::train::ExecutionMode mode,
+                         bool trainable,
+                         TensorDim::DataType definedWeightDataType) const {
+    // @note shared weights are only be saved at the first access
+    for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
+      if (run_context.isGradientFirstAccess(i)) {
+        run_context.getWeight(i).save_quantization_info(file);
       }
     }
   }
@@ -482,7 +507,8 @@ public:
   virtual void read(ReadSource src, RunLayerContext &run_context, bool opt_var,
                     ml::train::ExecutionMode mode, bool trainable,
                     TensorDim::DataType defineWeightDataType, bool fsu,
-                    size_t start_offset = 0, bool read_from_offset = false) {
+                    size_t start_offset = 0, bool read_from_offset = false,
+                    int file_fd = -1) {
     if (fsu) {
       for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
         if (run_context.getWeight(i).getDataType() ==
@@ -505,7 +531,11 @@ public:
         for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
           /// @note shared weights are only be read at the first acecss
           if (run_context.isGradientFirstAccess(i)) {
-            run_context.getWeight(i).read(src, start_offset, read_from_offset);
+            // file_fd is forwarded so virtual weights (e.g. SlimMoE expert
+            // tensors) can capture a long-lived fd for later mmap-on-demand
+            // in activate(); non-virtual weights ignore it.
+            run_context.getWeight(i).read(src, start_offset, read_from_offset,
+                                          file_fd);
             if (run_context.isMixedPrecision(i) && trainable &&
                 !run_context.getWeightFP32(i).empty()) {
               run_context.getWeightFP32(i).copyData(run_context.getWeight(i));
@@ -513,6 +543,16 @@ public:
           }
         }
       }
+    }
+  }
+
+  virtual void
+  read_quantization_info(std::ifstream &file, RunLayerContext &run_context,
+                         bool opt_var, ml::train::ExecutionMode mode,
+                         bool trainable,
+                         TensorDim::DataType defineWeightDataType) {
+    for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
+      run_context.getWeight(i).read_quantization_info(file);
     }
   }
 

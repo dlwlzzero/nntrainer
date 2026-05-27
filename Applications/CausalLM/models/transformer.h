@@ -26,8 +26,8 @@
 #pragma once
 #ifdef _WIN32
 #define WIN_EXPORT __declspec(dllexport)
-#define WSTR std::wstring
-#define WCHAR_P wchar_t *
+#define WSTR std::string
+#define WCHAR_P std::string &
 #else
 #define WIN_EXPORT
 #define WSTR std::string
@@ -38,6 +38,8 @@
 #include <map>
 #include <model.h>
 #include <random>
+#include <tensor_api.h>
+#include <utility>
 
 #include <limits.h>
 
@@ -47,13 +49,25 @@
 #include <tokenizers_c.h>
 #include <tokenizers_cpp.h>
 
+// Forward declaration for BaseStreamer (used by setStreamer)
+extern "C" {
+struct BaseStreamer;
+}
+
 namespace causallm {
 
+// Forward declaration for XGrammar (grammar-constrained generation)
+class XGrammar;
+
 /*** ALIAS ****/
-using LayerHandle = std::shared_ptr<ml::train::Layer>;
+using LayerHandle = ml::train::LayerHandle;
+using Tensor = ml::train::Tensor;
 using ModelHandle = std::unique_ptr<ml::train::Model>;
 
 using json = nlohmann::json;
+
+// Memory pointer and its size
+typedef std::pair<void *, size_t> multimodal_pointer;
 
 /**
  * @brief Model Type Enum
@@ -77,6 +91,13 @@ public:
               ModelType model_type = ModelType::MODEL);
 
   /**
+   * @brief Empty constructor for Transformer.
+   * @brief Child Class Needs to implement all features of the original
+   * Transformer constructor
+   */
+  Transformer() {}
+
+  /**
    * @brief Destroy the Transformer object
    */
   virtual ~Transformer() {}
@@ -87,6 +108,14 @@ public:
   virtual void initialize();
 
   /**
+   * @brief Initialize and Construct the Transformer model with native library
+   * directory
+   * @param native_lib_dir Native library directory path (from Android
+   * ApplicationInfo.nativeLibraryDir)
+   */
+  virtual void initialize(const std::string &native_lib_dir);
+
+  /**
    * @brief Load the model weights from a file
    */
   virtual void load_weight(const std::string &weight_path);
@@ -95,31 +124,92 @@ public:
    * @brief Save the weight to a file
    */
   virtual void save_weight(const std::string &weight_path);
-
   /**
    * @brief Save the weight to a file with type conversion
    * @param weight_path Path to save the weight file
    * @param dtype Global target data type for all layers (NONE = keep original)
    * @param layer_dtype_map Per-layer data type overrides (layer_name -> dtype)
+   * @param target_isa Target ISA for quantization (default: DEFAULT)
    */
   virtual void
   save_weight(const std::string &weight_path,
               ml::train::TensorDim::DataType dtype,
               const std::map<std::string, ml::train::TensorDim::DataType>
-                &layer_dtype_map = {});
+                &layer_dtype_map = {},
+              ml::train::ISA target_isa = ml::train::ISA::DEFAULT);
+
+  tokenizers::Tokenizer *getTokenizer() { return tokenizer.get(); }
+
+  /**
+   * @brief Get vocabulary size
+   */
+  unsigned int getVocabSize() const { return NUM_VOCAB; }
 
   /**
    * @brief run the Transformer model
    */
   virtual void run(const WSTR prompt, bool do_sample = false,
-                   const WSTR system_prompt = "", const WSTR tail_prompt = "",
-                   bool log_output = true);
+                   const WSTR system_prompt = WSTR(),
+                   const WSTR tail_prompt = WSTR(), bool log_output = true);
 
   /**
-   * @brief Get PerformanceMetrics
+   * @brief run the Transformer model, but with multimodal input and arbitrary
+   * output
    */
-  PerformanceMetrics getPerformanceMetrics() const {
+  virtual multimodal_pointer
+  run_image(const WSTR prompt, multimodal_pointer image, int image_height,
+            int image_width, bool do_sample = false,
+            const WSTR system_prompt = "", const WSTR tail_prompt = "",
+            bool log_output = true);
+
+  /**
+   * @brief Get TransformerPerformanceMetrics
+   */
+  TransformerPerformanceMetrics getPerformanceMetrics() const {
     return performance_metrics;
+  }
+
+  /**
+   * @brief get the status of run
+   */
+  bool hasRun() const { return has_run_; }
+
+  /**
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token
+   *        output during the next call to run().
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void setStreamer(::BaseStreamer *streamer) { (void)streamer; }
+
+  /**
+   * @brief Get the generated output text.
+   *        Default implementation returns empty string - subclasses can
+   * override.
+   */
+  virtual std::string getOutput(int batch_idx = 0) const {
+    (void)batch_idx;
+    return "";
+  }
+
+  /**
+   * @brief Request cancellation of the current run().
+   *        Thread-safe: can be called from any thread.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void requestStop() { /* no-op by default */
+  }
+
+  /**
+   * @brief Attach an XGrammar instance for grammar-constrained generation.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void setXGrammar(XGrammar *grammar) { (void)grammar; }
+
+  /**
+   * @brief Reset the XGrammar matcher state after generation.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void resetXGrammar() { /* no-op by default */
   }
 
 protected:
@@ -130,34 +220,64 @@ protected:
 
   /**
    * @brief Construct Model
+   * @return {input_tensor, output_tensor} pair representing the symbolic
+   *         tensor graph. Derived classes can extend by taking the output
+   *         and feeding additional layers before returning.
    */
-  virtual void constructModel();
+  virtual std::pair<Tensor, Tensor> constructModel();
 
   /**
-   * @brief create Attention Layer
+   * @brief Create one Transformer decoder block (norm + attention + residual +
+   *        norm + ffn + residual)
+   * @param layer_id index of the decoder block
+   * @param input    symbolic input tensor for this block
+   * @return symbolic output tensor of the block
    */
-  virtual std::vector<LayerHandle>
-  createTransformerDecoderBlock(const int layer_id, std::string input_name);
+  virtual Tensor createTransformerDecoderBlock(const int layer_id,
+                                               Tensor input);
 
   /**
-   * @brief create Attention Layer
+   * @brief Create the attention sub-graph (Q/K/V projections + mha_core +
+   *        output projection)
+   * @return symbolic output tensor of the attention sub-graph
    */
-  virtual std::vector<LayerHandle>
-  createAttention(const int layer_id, int seq_len, int n_heads, int head_dim,
-                  std::string query_name, std::string key_name,
-                  std::string value_name);
+  virtual Tensor createAttention(const int layer_id, int seq_len, int n_heads,
+                                 int head_dim, Tensor query, Tensor key,
+                                 Tensor value);
 
   /**
-   * @brief create Feed Forward Layer
+   * @brief Create the feed-forward sub-graph
+   * @return symbolic output tensor of the FFN sub-graph
    */
-  virtual std::vector<LayerHandle> createMlp(const int layer_id, int dim,
-                                             int hidden_dim,
-                                             std::string input_name);
+  virtual Tensor createMlp(const int layer_id, int dim, int hidden_dim,
+                           Tensor input);
+
+  /**
+   * @brief Create the per-layer external KV-cache placeholder Tensors that
+   *        feed mha_core's input slots 3 and 4. The actual storage is owned
+   *        by the host (e.g. KVCacheManager) and is bound at runtime via
+   *        Model::setExternalTensors using the names
+   *          "cache_k_l<layer_id>" and "cache_v_l<layer_id>".
+   * @param layer_id  attention layer index
+   * @param n_heads   total query heads (used together with GQA_SIZE to derive
+   *                  the KV head count)
+   * @return {cache_k, cache_v} symbolic placeholder tensors
+   */
+  std::pair<Tensor, Tensor> createKVCachePlaceholders(const int layer_id,
+                                                      int n_heads);
 
   /**
    * @brief register CustomLayers
    */
   virtual void registerCustomLayers();
+
+  /**
+   * @brief Get model format from weight file extension.
+   * @param weight_path Path to the weight file.
+   * @return Model format for the given file extension.
+   */
+  virtual ml::train::ModelFormat
+  formatFromExtension(const std::string &weight_path);
 
   /**
    * @brief register Outputs
@@ -199,7 +319,13 @@ protected:
   bool IS_CAUSAL = true;
 
   // Performance metrics
-  PerformanceMetrics performance_metrics;
+  TransformerPerformanceMetrics performance_metrics;
+
+  bool has_run_ = false;
+
+  /** Native library directory for loading shared libraries (e.g., QNN context)
+   */
+  std::string native_lib_dir_;
 };
 /**
  * Loads JSON data from a file with detailed error handling

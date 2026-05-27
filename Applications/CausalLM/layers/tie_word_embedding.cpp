@@ -18,8 +18,11 @@
 #include <node_exporter.h>
 #include <tensor.h>
 #include <tensor_dim.h>
+#include <thread_manager.h>
 #include <tie_word_embedding.h>
 #include <util_func.h>
+
+#include <vector>
 
 namespace causallm {
 
@@ -40,6 +43,10 @@ TieWordEmbedding::TieWordEmbedding() :
 }
 
 void TieWordEmbedding::finalize(nntrainer::InitLayerContext &context) {
+  if (!std::get<nntrainer::props::SkipPrefill>(*layer_impl_props).empty())
+    skip_prefill =
+      std::get<nntrainer::props::SkipPrefill>(*layer_impl_props).get();
+
   mode_ = std::get<nntrainer::props::Unit>(tieword_embedding_props).empty()
             ? mode::embedding
             : mode::lm_head;
@@ -59,10 +66,6 @@ void TieWordEmbedding::finalize_embedding(
     context.getInputDimensions()[SINGLE_INOUT_IDX];
   NNTR_THROW_IF(input_dim.channel() != 1, std::invalid_argument)
     << "Embedding layer takes only one for channel size";
-
-  NNTR_THROW_IF(input_dim.getDataType() != nntrainer::TensorDim::DataType::FP32,
-                std::invalid_argument)
-    << "Embedding layer takes only FP32 input data";
 
   auto &weight_regularizer =
     std::get<nntrainer::props::WeightRegularizer>(*layer_impl_props);
@@ -197,7 +200,6 @@ void TieWordEmbedding::incremental_forwarding_embedding(
     std::get<nntrainer::props::Scale>(tieword_embedding_props).empty()
       ? 1.0f
       : std::get<nntrainer::props::Scale>(tieword_embedding_props).get();
-  unsigned int _from = from;
 
   nntrainer::Tensor &weight =
     context.getWeight(weight_idx[TieWordEmbeddingParams::weight]);
@@ -207,7 +209,8 @@ void TieWordEmbedding::incremental_forwarding_embedding(
   nntrainer::TensorDim out_tensor_dim =
     nntrainer::TensorDim({1, 1, 1, out_dim}, hidden_.getTensorType());
 
-  if (!(weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K ||
+  if (!(weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0 ||
+        weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K ||
         weight.getDataType() == nntrainer::TensorDim::DataType::FP32))
     throw std::invalid_argument(
       "Tieword embedding is not supported yet for the data type");
@@ -221,8 +224,8 @@ void TieWordEmbedding::incremental_forwarding_embedding(
     nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
     int iter = to - from;
 
-#pragma omp parallel for
-    for (int i = 0; i < iter; ++i) {
+    auto &tm = nntrainer::ThreadManager::Global();
+    tm.parallel_for(0, static_cast<size_t>(iter), [&](size_t i) {
       unsigned int embed_idx = static_cast<unsigned int>(in_data[i]);
       if (embed_idx >= in_dim) {
         throw std::invalid_argument("input word index is greater than in_dim");
@@ -240,6 +243,13 @@ void TieWordEmbedding::incremental_forwarding_embedding(
           (void *)((char *)weight.getData<uint8_t>() +
                    (210 * num_blocks_per_row) * embed_idx),
           out_tensor.getData(), out_dim);
+      } else if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0) {
+        ///@note this should be replaced with quantizer operation
+        int num_blocks_per_row = (weight.width() + 32 - 1) / 32;
+        nntrainer::dequantize_row_q4_0(
+          (void *)((char *)weight.getData<uint8_t>() +
+                   (18 * num_blocks_per_row) * embed_idx),
+          out_tensor.getData(), out_dim);
       } else {
         out_tensor.copyData(cur_weight);
       }
@@ -247,7 +257,7 @@ void TieWordEmbedding::incremental_forwarding_embedding(
       if (scale != 1.0f) {
         out_tensor.multiply_i(scale);
       }
-    }
+    });
 
 #ifdef DEBUG
     std::cout << context.getName() << " : "
@@ -260,6 +270,10 @@ void TieWordEmbedding::incremental_forwarding_embedding(
 void TieWordEmbedding::incremental_forwarding_lmhead(
   nntrainer::RunLayerContext &context, unsigned int from, unsigned int to,
   bool training) {
+  bool is_prefill = !from;
+  if (skip_prefill && is_prefill)
+    return;
+
   nntrainer::Tensor weight =
     context.getWeight(weight_idx[TieWordEmbeddingParams::weight]);
 
@@ -292,7 +306,43 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
                   std::invalid_argument)
       << "weight type is not supported for custom tie word embedding layer";
 
-    input_step.dot(weight, hidden_step, false, true);
+    if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0) {
+      ///@note Q4_0 tensor dot does not support trans_in=true for the
+      /// embedding-shaped tied weight, so compute each vocab row explicitly.
+      const unsigned int hidden_size = input_step.width();
+      const unsigned int vocab_size = weight.height();
+      NNTR_THROW_IF(weight.width() != hidden_size ||
+                      hidden_step.width() != vocab_size,
+                    std::invalid_argument)
+        << "Q4_0 tie word embedding lmhead has mismatched dimensions";
+
+      const unsigned int num_blocks_per_row = (hidden_size + 32 - 1) / 32;
+      const size_t row_size = sizeof(uint16_t) + 16;
+      const size_t row_stride = row_size * num_blocks_per_row;
+      const uint8_t *weight_data = weight.getData<uint8_t>();
+      const float *input_data = input_step.getData<float>();
+      float *logits = hidden_step.getData<float>();
+
+      auto &tm = nntrainer::ThreadManager::Global();
+      const unsigned int compute_thread_num = tm.getComputeThreadCount();
+      const unsigned int thread_num =
+        compute_thread_num == 0 ? 1 : compute_thread_num;
+      tm.parallel_for(0, static_cast<size_t>(thread_num), [=](size_t t) {
+        const unsigned int start = (t * vocab_size) / thread_num;
+        const unsigned int end = ((t + 1) * vocab_size) / thread_num;
+        std::vector<float> dequant_row(hidden_size);
+
+        for (unsigned int row = start; row < end; ++row) {
+          nntrainer::dequantize_row_q4_0(
+            static_cast<const void *>(weight_data + row_stride * row),
+            dequant_row.data(), hidden_size);
+          logits[row] =
+            nntrainer::sdot(hidden_size, input_data, 1, dequant_row.data(), 1);
+        }
+      });
+    } else {
+      input_step.dot(weight, hidden_step, false, true);
+    }
 
     if (auto &disable_bias =
           std::get<nntrainer::props::DisableBias>(*layer_impl_props);
@@ -361,14 +411,14 @@ void TieWordEmbedding::read(
   nntrainer::ReadSource src, nntrainer::RunLayerContext &context, bool opt_var,
   ml::train::ExecutionMode mode, bool trainable,
   nntrainer::TensorDim::DataType definedWeightDataType, bool fsu,
-  size_t start_offset, bool read_from_offset) {
+  size_t start_offset, bool read_from_offset, int file_fd) {
 
   // Only read when mode is embedding
   if (mode_ == mode::embedding) {
     for (unsigned int i = 0; i < context.getNumWeights(); ++i) {
       /// @note shared weights are only be read at the first acecss
       if (context.isGradientFirstAccess(i)) {
-        context.getWeight(i).read(src, start_offset, read_from_offset);
+        context.getWeight(i).read(src, start_offset, read_from_offset, file_fd);
         if (context.isMixedPrecision(i) && trainable &&
             !context.getWeightFP32(i).empty()) {
           context.getWeightFP32(i).copyData(context.getWeight(i));
@@ -382,7 +432,8 @@ void TieWordEmbedding::save(std::ofstream &file,
                             nntrainer::RunLayerContext &run_context,
                             bool opt_var, ml::train::ExecutionMode mode,
                             bool trainable,
-                            nntrainer::TensorDim::DataType dtype) const {
+                            nntrainer::TensorDim::DataType dtype,
+                            ml::train::ISA target_isa) const {
   // Only read when mode is embedding
   if (mode_ == mode::embedding) {
     // @note shared weights are only be saved at the first access
@@ -403,14 +454,28 @@ void TieWordEmbedding::save(std::ofstream &file,
           unsigned int K = dim.height();
           unsigned int N = dim.width();
 
-          if (dtype == nntrainer::TensorDim::DataType::Q6_K) {
+          if (dtype == nntrainer::TensorDim::DataType::Q4_0) {
+            if (K == 1) {
+              weight.save(file);
+            } else {
+              NNTR_THROW_IF(N % 32 != 0, std::invalid_argument)
+                << "Q4_0 embedding quantization requires width to be "
+                   "divisible by 32, but got width="
+                << N;
+              nntrainer::Tensor quant_weight(dim.batch(), dim.channel(), K, N,
+                                             {nntrainer::Tformat::NCHW, dtype});
+              nntrainer::quantize_q4_0(weight.getData<float>(),
+                                       quant_weight.getData<uint8_t>(), K, N,
+                                       nullptr);
+              quant_weight.save(file);
+            }
+          } else if (dtype == nntrainer::TensorDim::DataType::Q6_K) {
             //////////////////////////////////////////////////////////////////
             ///@note Please note that Embedding layer doesn't need to be
             /// transposed!
             //////////////////////////////////////////////////////////////////
             nntrainer::Tensor quant_weight(dim.batch(), dim.channel(), K, N,
                                            {nntrainer::Tformat::NCHW, dtype});
-
             nntrainer::quantize_q6_K(weight.getData<float>(),
                                      quant_weight.getData<uint8_t>(), K, N,
                                      nullptr);

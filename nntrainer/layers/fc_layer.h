@@ -127,6 +127,7 @@ private:
                                   dtype so that the raw bytes already match
                                   the HTP HMX matmul kernel contract
                                   (see weight_converter_hmx.py). */
+  bool skip_prefill = false;
 };
 } // namespace nntrainer
 

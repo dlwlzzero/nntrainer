@@ -18,6 +18,7 @@ nntrainer_headers = [
    meson.current_source_dir() / 'nntrainer_error.h',
    meson.current_source_dir() / 'app_context.h',
    meson.current_source_dir() / 'context.h',
+   meson.current_source_dir() / 'context_data.h',
    meson.current_source_dir() / 'engine.h',
    meson.current_source_dir() / 'mem_allocator.h',
 ]
@@ -28,7 +29,6 @@ nntrainer_base_deps=[
   libdl_dep,
   libm_dep,
   ml_api_common_dep,
-  openmp_dep,
   ruy_dep,
   thread_dep,
 ]
@@ -60,8 +60,17 @@ if get_option('enable-opencl')
   nntrainer_inc_abs += meson.source_root() / 'subprojects' / 'CLBlast' / 'include'
 endif
 
+if get_option('enable-npu')
+  nntrainer_elements += 'qnn'
+  # Note: qnn subdir is NOT processed here with the other elements.
+  # libqnn_context.so depends on nntrainer_dep, which is declared later.
+  # The qnn subdir is processed after nntrainer_dep is available (see below).
+endif
+
 foreach elem : nntrainer_elements
-  subdir(elem)
+  if elem != 'qnn'
+    subdir(elem)
+  endif
   nntrainer_inc += include_directories(elem)
   nntrainer_inc_abs += meson.current_source_dir() / elem
 endforeach
@@ -73,11 +82,20 @@ nntrainer_common_sources = [
   'mem_allocator.cpp'
 ]
 
+# QNN context is built as a separate plugin .so (libqnn_context.so)
+# and loaded dynamically by Engine. See qnn/jni/meson.build for the
+# shared_library target. The header is still needed for type definitions.
+if get_option('enable-npu')
+  nntrainer_headers += meson.current_source_dir() / 'qnn_context.h'
+endif
+
 nntrainer_inc_abs += meson.source_root() / 'subprojects' / 'ruy'
 
 if get_option('enable-opencl')
   nntrainer_headers += meson.current_source_dir() / 'cl_context.h'
+  nntrainer_headers += meson.current_source_dir() / 'cl_svm_allocator.h'
   nntrainer_common_sources += 'cl_context.cpp'
+  nntrainer_common_sources += 'cl_svm_allocator.cpp'
 endif
 
 foreach s : nntrainer_common_sources
@@ -132,6 +150,20 @@ else
     include_directories: nntrainer_inc
   )
 endif
+
+# Build QNN context plugin after nntrainer_dep is available.
+# libqnn_context.so links against libnntrainer, so it must be built after it.
+#
+# DISABLED: Quick.AI supplies its own QNN backend from the root project's
+# qnn/ tree (origin design); libqnn_context.so is produced there and loaded
+# dynamically by Engine via registerContext("libqnn_context.so"). The
+# upstream-merged nntrainer-internal qnn/ backend (which requires an external
+# -Dqnn-sdk-root) is intentionally not built to avoid a duplicate QNN backend.
+# ENABLE_NPU stays defined so RpcMemAllocator (mem_allocator.cpp, dlopen-based)
+# and the Engine dynamic-load path remain active.
+# if get_option('enable-npu')
+#   subdir('qnn')
+# endif
 
 # Install headers
 install_headers(nntrainer_headers,

@@ -41,9 +41,9 @@ void EmbeddingPoolingLayer::finalize(nntrainer::InitLayerContext &context) {
     std::get<props::WordEmbeddingDimension>(pooling_props);
 
   if (input_dim.width() != word_embed_dim) {
-    ml_logw(
-      "Input dimension width (%d) does not match word_embedding_dimension (%d)",
-      input_dim.width(), word_embed_dim);
+    ml_logw("Input dimension width (%zu) does not match "
+            "word_embedding_dimension (%u)",
+            input_dim.width(), word_embed_dim);
   }
 
   // Output dimension for Pooling is [batch, 1, 1, word_embed_dim]
@@ -53,7 +53,6 @@ void EmbeddingPoolingLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions({output_dim});
 
   bool mode_cls = std::get<props::PoolingModeClsToken>(pooling_props);
-  bool mode_mean = std::get<props::PoolingModeMeanTokens>(pooling_props);
   bool mode_max = std::get<props::PoolingModeMaxTokens>(pooling_props);
   bool mode_mean_sqrt =
     std::get<props::PoolingModeMeanSqrtLenTokens>(pooling_props);

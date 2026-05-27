@@ -8,7 +8,7 @@ It supports *inference* mode (text generation) on various devices, including And
 - **Standalone Application (`nntr_causallm`)**: A command-line tool to load models and generate text.
 - **C API (Optional)**: A lightweight C interface (`libcausallm_api.so`) for integrating LLM capabilities into other applications (e.g., Android JNI, iOS, or other C/C++ apps).
 - **Core Library**: The core implementation is separated into `libcausallm_core.so` for modularity.
-- **Supported Backends**: CPU (OpenMP), with GPU/NPU support planned.
+- **Supported Backends**: CPU, with GPU/NPU support planned.
 
 ## Supported models
 
@@ -28,6 +28,76 @@ The API allows loading models, running inference, and retrieving performance met
 
 For detailed documentation, please refer to [API Documentation](api/README.md).
 
+## Chat Template
+
+CausalLM supports automatic chat template formatting by reading the `chat_template` field from HuggingFace's `tokenizer_config.json`. This eliminates the need for hardcoded per-model chat formatting.
+
+### How It Works
+
+Most HuggingFace models include a `tokenizer_config.json` with a `chat_template` field (Jinja2 format) that defines how to format conversations. CausalLM includes a built-in mini Jinja2 renderer that processes these templates at runtime.
+
+When a `tokenizer_config.json` is present in the model directory:
+- **CLI (`nntr_causallm`)**: Raw user input provided as a command-line argument is automatically wrapped with the chat template.
+- **C API**: The `apply_chat_template()` function uses the dynamic template instead of hardcoded formats.
+
+If `tokenizer_config.json` is absent or does not contain a `chat_template` field, a warning is printed and raw input is passed through unchanged.
+
+### Supported Template Features
+
+The built-in Jinja2 renderer supports the following constructs commonly used in HuggingFace chat templates:
+
+| Feature | Example |
+|---------|---------|
+| For loops | `{% for message in messages %}...{% endfor %}` |
+| Conditionals | `{% if %}...{% elif %}...{% else %}...{% endif %}` |
+| Output expressions | `{{ bos_token }}` |
+| Variable assignment | `{% set offset = 1 %}` |
+| Dict/array access | `message['role']`, `messages[0]` |
+| String concatenation | `'<\|im_start\|>' + message['role']` |
+| Comparison operators | `==`, `!=`, `>`, `<`, `>=`, `<=` |
+| Boolean operators | `and`, `or`, `not` |
+| Loop variables | `loop.first`, `loop.last`, `loop.index`, `loop.index0` |
+| Filters | `\| trim`, `\| length`, `\| tojson` |
+| String methods | `.strip()`, `.startswith()`, `.upper()`, `.split()` |
+| Containment test | `'keyword' in message['content']` |
+| Namespace | `namespace()` for cross-scope variable mutation |
+| Whitespace control | `{%- -%}`, `{{- -}}` |
+
+### Required Files
+
+To use chat templates, ensure `tokenizer_config.json` is in your model directory alongside the other config files. This file is included by default when downloading models from HuggingFace.
+
+### Example
+
+```bash
+# With tokenizer_config.json present, raw input is auto-formatted:
+./nntr_causallm /path/to/model "What is machine learning?"
+
+# The input will be automatically wrapped, e.g. for Qwen3:
+# <|im_start|>user
+# What is machine learning?<|im_end|>
+# <|im_start|>assistant
+```
+
+### Multi-turn Conversations (API)
+
+The C API supports multi-turn conversations through `ChatMessage`:
+
+```cpp
+#include "chat_template.h"
+
+causallm::ChatTemplate tmpl = causallm::ChatTemplate::fromFile("tokenizer_config.json");
+
+std::vector<causallm::ChatMessage> messages = {
+  {"system", "You are a helpful assistant."},
+  {"user", "Hello!"},
+  {"assistant", "Hi there!"},
+  {"user", "How are you?"}
+};
+
+std::string formatted = tmpl.apply(messages);
+```
+
 ## How to run
 
 ### 1. Prepare Model Files
@@ -46,14 +116,14 @@ For detailed documentation, please refer to [API Documentation](api/README.md).
 Compile the application with transformer support enabled.
 
 ```bash
-$ meson build -Denable-fp16=true -Dthread-backend=omp -Denable-transformer=true -Domp-num-threads=4
+$ meson build -Denable-fp16=true -Dthread-backend=omp -Denable-transformer=true
 $ ninja -C build
 ```
 
 Run the model:
 
 ```bash
-$ export OMP_THREAD_LIMIT=16 && export OMP_WAIT_POLICY=active && export OMP_PROC_BIND=true && export OMP_PLACES=cores && export OMP_NUM_THREADS=4
+$ export NNTR_NUM_THREADS=4
 $ ./build/Applications/CausalLM/nntr_causallm {your model config folder}
 ```
 
@@ -62,7 +132,60 @@ e.g.,
 $ ./build/Applications/CausalLM/nntr_causallm /tmp/nntrainer/Applications/CausalLM/res/qwen3/qwen3-4b/
 ```
 
-### 3. Android Build & Test
+### 3. Windows Build & Test
+
+Windows CausalLM builds need a `tokenizers_c.lib` that matches the local
+MSVC toolchain. The repository keeps the Linux static library in
+`Applications/CausalLM/lib/`; Windows builds generate the matching library from
+source instead of carrying a checked-in binary.
+
+#### Prerequisites
+
+- Visual Studio Build Tools with the MSVC C++ toolchain
+- Meson and Ninja
+- Rust (`cargo`) from https://rustup.rs/
+
+#### Build tokenizer library
+
+Meson builds the default `tokenizers_c.lib` automatically when it is missing.
+The helper can also be run directly to pre-build or refresh the library:
+
+```powershell
+PS> powershell -ExecutionPolicy Bypass -File Applications\CausalLM\build_tokenizer_windows.ps1 -BuildDir build-causallm-win
+```
+
+The build writes the default Meson input under the build directory:
+
+```text
+build-causallm-win\tokenizers_c_win\target\release\tokenizers_c.lib
+```
+
+For Windows cross builds, Meson passes the matching Rust target triple and the
+library is written under `target\<triple>\release\`.
+
+If you already have a compatible `tokenizers_c.lib`, pass it explicitly during
+Meson setup:
+
+```powershell
+PS> meson setup build-causallm-win -Dplatform=windows -Denable-transformer=true -Dcausallm-tokenizer-lib=C:\path\to\tokenizers_c.lib
+```
+
+When using a DLL import library instead of a static library, make sure the
+matching `tokenizers_c.dll` is available on `PATH` at runtime.
+
+#### Build and run
+
+```powershell
+PS> meson setup build-causallm-win -Dplatform=windows -Denable-transformer=true -Denable-test=false
+PS> ninja -C build-causallm-win nntr_causallm
+PS> $build = Resolve-Path build-causallm-win
+PS> $dllDirs = Get-ChildItem $build -Filter *.dll -Recurse | ForEach-Object { Split-Path -Parent $_.FullName } | Sort-Object -Unique
+PS> $env:PATH = (($dllDirs + @($build, "$build\Applications\CausalLM")) -join ";") + ";" + $env:PATH
+PS> $env:NNTR_NUM_THREADS = "4"
+PS> .\build-causallm-win\Applications\CausalLM\nntr_causallm.exe C:\path\to\model "Hello from Windows"
+```
+
+### 4. Android Build & Test
 
 The Android build process is modularized to support building the core library, API library, and test applications independently.
 
@@ -191,15 +314,18 @@ nntr_quantize <model_path> [options]
 | `--lmhead_dtype <type>` | Target dtype for LM head layer | Same as `embd_dtype` |
 | `--output_bin <name>` | Output `.bin` filename | Auto-generated |
 | `--config <path>` | Use a target `nntr_config.json` for dtype settings | – |
+| `--isa <x86|ARM|DEFAULT>` | Target ISA for quantization | `DEFAULT` |
 
 ### Examples
-
 ```bash
 # Quantize FC layers to Q4_0 (default), embedding stays FP32:
 nntr_quantize /path/to/qwen3-4b
 
 # Quantize FC layers to Q4_0 and embedding to Q6_K:
 nntr_quantize /path/to/qwen3-4b --fc_dtype Q4_0 --embd_dtype Q6_K
+
+# Quantize FC layers to Q4_0 and embedding to Q6_K in ARM format:
+nntr_quantize /path/to/qwen3-4b --fc_dtype Q4_0 --embd_dtype Q6_K --isa ARM
 
 # Quantize to a different output directory:
 nntr_quantize /path/to/qwen3-4b -o /output/qwen3-4b-q4

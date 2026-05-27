@@ -32,6 +32,14 @@ jobs:
 
           echo "::group::The list of changed files"
           for file in `cat ${tmpfile_pre}`; do
+            # Skip vendored / third-party sources. They follow their upstream
+            # coding style and are not subject to nntrainer's doxygen/format rules.
+            case "$file" in
+              Applications/CausalLM/third_party/*|Applications/CausalLM/tokenizers/*)
+                echo "$file is vendored/third-party; skipping static checks."
+                continue
+                ;;
+            esac
             if [[ -f $file ]]; then
               echo "$file"
               echo "$file" >> $tmpfile

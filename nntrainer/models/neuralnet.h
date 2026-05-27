@@ -69,6 +69,7 @@ class DataBuffer;
 using DatasetType = ml::train::DatasetType;
 using DatasetModeType = ml::train::DatasetModeType;
 using RunStats = ml::train::RunStats;
+using IO_TensorType = ml::train::TensorDim::IO_TensorType;
 
 /**
  * @class   NeuralNetwork Class
@@ -104,6 +105,8 @@ public:
    * @retval    loss value
    */
   float getLoss() override;
+
+  size_t getTotalModelBytes() const;
 
   /**
    * @brief returns compilation state of a network
@@ -270,14 +273,15 @@ public:
   /**
    * @copydoc Model::save(const std::string &file_path, ml::train::ModelFormat
    * format, TensorDim::DataType dtype, const std::map<std::string,
-   * TensorDim::DataType> &layer_dtype_map);
+   * TensorDim::DataType> &layer_dtype_map, ml::train::ISA
+   * target_device);
    */
   void
   save(const std::string &file_path,
        ml::train::ModelFormat format = ml::train::ModelFormat::MODEL_FORMAT_BIN,
        TensorDim::DataType dtype = TensorDim::DataType::NONE,
-       const std::map<std::string, TensorDim::DataType> &layer_dtype_map = {})
-    override;
+       const std::map<std::string, TensorDim::DataType> &layer_dtype_map = {},
+       ml::train::ISA target_isa = ml::train::ISA::DEFAULT) override;
 
   /**
    * @copydoc Model::load(const std::string &file_path, ml::train::ModelFormat
@@ -360,6 +364,19 @@ public:
    */
   sharedConstTensors inference(sharedConstTensors X, sharedConstTensors label,
                                bool free_mem = false);
+
+  /**
+   * @brief     Run the inference of the model
+   * @param[in] batch batch size of current input
+   * @param[in] input inputs as a list of each input data
+   * @param[in] label labels as a list of each label data
+   * @retval list of output as IO_TensorType
+   * @note The output memory must not be freed by the caller
+   */
+  std::vector<IO_TensorType> inference(unsigned int batch,
+                                       const std::vector<IO_TensorType> &input,
+                                       const std::vector<IO_TensorType> &label =
+                                         std::vector<IO_TensorType>()) override;
 
   /**
    * @brief     Run the inference of the model
@@ -456,6 +473,13 @@ public:
                        RunLayerContext & /**< rc */, void *user_data)>
       fn,
     void *user_data = nullptr) override;
+
+  /**
+   * @copydoc ml::train::Model::getTensor(const std::string &)
+   */
+  Tensor *getTensor(const std::string &name) override {
+    return model_graph.getTensor(name);
+  }
 
   /**
    * @brief     Run NeuralNetwork train with callback function by user

@@ -21,6 +21,7 @@
 #include <iniparser.h>
 
 #include <app_context.h>
+#include <compute_ops.h>
 #include <layer.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
@@ -241,7 +242,21 @@ std::once_flag global_app_context_init_flag;
 
 void AppContext::initialize() noexcept {
   try {
+    // Ensure the CPU compute-ops table is bound before anything else. Engine
+    // also routes through ensureComputeOps() at startup, but calling it here
+    // guarantees g_compute_ops is available when AppContext runs ahead of
+    // Engine in some tests. ensureComputeOps() is std::call_once-guarded so
+    // multi-threaded init paths cannot race init_backend().
+    ensureComputeOps();
+
     setMemAllocator(std::make_shared<MemAllocator>());
+
+    // Expose the ops table through this context's ContextData so that callers
+    // can reach it via context.getContextData()->getComputeOps() instead of
+    // the global pointer.
+    if (auto cd = getContextData(); cd && g_compute_ops) {
+      cd->setComputeOps(g_compute_ops);
+    }
 
     add_default_object();
     add_extension_object();
@@ -644,15 +659,22 @@ const int AppContext::registerFactory(const FactoryType<T> factory,
 
   const std::lock_guard<std::mutex> lock(factory_mutex);
   if (str_map.find(assigned_key) != str_map.end()) {
-    std::stringstream ss;
-    ss << "cannot register factory with already taken key: " << key;
-    throw std::invalid_argument(ss.str().c_str());
+    // std::stringstream ss;
+    // ss << "cannot register factory with already taken int key: " << int_key;
+    //    return str_map[assigned_key].second;
+    for (const auto &[ik, sk] : int_map) {
+      if (sk == assigned_key)
+        return ik;
+    }
+    return -1;
   }
 
   if (int_key != -1 && int_map.find(int_key) != int_map.end()) {
-    std::stringstream ss;
-    ss << "cannot register factory with already taken int key: " << int_key;
-    throw std::invalid_argument(ss.str().c_str());
+    //    std::stringstream ss;
+    // ss << "cannot register factory with already taken int key: " << int_key;
+    // throw std::invalid_argument(ss.str().c_str());
+    //    return str_map[assigned_key].second;
+    return int_key;
   }
 
   int assigned_int_key = int_key == -1 ? str_map.size() + 1 : int_key;

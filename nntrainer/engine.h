@@ -30,11 +30,34 @@
 #include <mem_allocator.h>
 #include <nntrainer_error.h>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#ifndef LOG_TAG
+#define LOG_TAG "nntrainer_engine"
+#endif
+#ifndef LOGD
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+#else
+#include <cstdio>
+#ifndef LOG_TAG
+#define LOG_TAG "nntrainer_engine"
+#endif
+#ifndef LOGD
+#define LOGD(...)                                                              \
+  fprintf(stderr, "[DEBUG][%s] ", LOG_TAG);                                    \
+  fprintf(stderr, __VA_ARGS__);                                                \
+  fprintf(stderr, "\n")
+#endif
+#endif
+
 #if defined(ENABLE_OPENCL) && ENABLE_OPENCL == 1
 #include <cl_context.h>
 #endif
 
-#include "bs_thread_pool_manager.hpp"
+// QNN context is loaded as a plugin .so (libqnn_context.so)
+// No header dependency needed here.
+
 #include "singleton.h"
 
 namespace nntrainer {
@@ -61,7 +84,9 @@ protected:
 
   void add_default_object();
 
-  void registerContext(std::string name, nntrainer::Context *context) {
+  void registerContext(std::string name, nntrainer::Context *context,
+                       void *library_handle = nullptr,
+                       DestroyContextFunc destroy_func = nullptr) {
     const std::lock_guard<std::mutex> lock(engine_mutex);
     static int registerCount = 0;
 
@@ -69,11 +94,20 @@ protected:
                    [](unsigned char c) { return std::tolower(c); });
 
     if (engines.find(name) != engines.end()) {
-      std::stringstream ss;
-      ss << "Cannot register Context with name : " << name;
-      throw std::invalid_argument(ss.str().c_str());
+      // std::stringstream ss;
+      // ss << "Cannot register Context with name : " << name;
+      // throw std::invalid_argument(ss.str().c_str());
+      return;
     }
     engines.insert(std::make_pair(name, context));
+
+    // if (engines.find(name) != engines.end()) {
+    //     LOGD("%s:%d, engine insert success :this %p, name: %s:%p", __FILE__,
+    //     __LINE__, this, name.c_str(), &engines);
+    // } else {
+    //     LOGD("%s:%d, engine insert faied: name: %s", __FILE__, __LINE__,
+    //     name.c_str());
+    // }
 
     if (registerCount < RegisterContextMax) {
       nntrainerRegisteredContext[registerCount] = context;
@@ -83,18 +117,27 @@ protected:
     auto alloc = context->getMemAllocator();
 
     allocator.insert(std::make_pair(name, alloc));
+
+    // Store library handle and destroy function for plugin contexts
+    if (library_handle) {
+      library_handles[name] = library_handle;
+    }
+    if (destroy_func) {
+      destroy_funcs[name] = destroy_func;
+    }
   }
 
 public:
+  static Engine &Global();
   /**
-   * @brief   Default constructor
+  /->   * @brief   Default constructor
    */
   Engine() = default;
 
   /**
-   * @brief   Default Destructor
+   * @brief   Destructor - releases all contexts
    */
-  ~Engine() = default;
+  ~Engine() { release(); }
 
   /**
    * @brief   Release resources allocated by Engine
@@ -125,13 +168,22 @@ public:
    */
   nntrainer::Context *getRegisteredContext(std::string name) const {
 
+    //    LOGD("%s:%d, name: %s", __FILE__, __LINE__, name.c_str());
+
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char c) { return std::tolower(c); });
+    //    LOGD("%s:%d, name: %s", __FILE__, __LINE__, name.c_str());
 
     if (engines.find(name) == engines.end()) {
+      //      LOGD("%s:%d, engine search failed: size:%d, this %p, name: %s:%p",
+      //      __FILE__, __LINE__, engines.size(), this, name.c_str(), &engines);
+
       throw std::invalid_argument("[Engine] " + name +
                                   " Context is not registered");
     }
+
+    //    LOGD("%s:%d, name: %s", __FILE__, __LINE__, name.c_str());
+
     return engines.at(name);
   }
 
@@ -139,13 +191,6 @@ public:
   getAllocators() {
     return allocator;
   }
-
-  /**
-   *
-   * @brief   Get pointer to thread pool manager, contruct it if needed
-   * @return  Pointer to thread pool manager
-   */
-  ThreadPoolManager *getThreadPoolManager();
 
   /**
    *
@@ -165,7 +210,11 @@ public:
   std::unique_ptr<nntrainer::Layer>
   createLayerObject(const std::string &type,
                     const std::vector<std::string> &properties = {}) const {
+    // LOGD("%s", ct->getName().c_str());
+    //    LOGD("%s", type.c_str());
+
     auto ct = getRegisteredContext(parseComputeEngine(properties));
+
     return ct->createLayerObject(type);
   }
 
@@ -281,13 +330,22 @@ private:
    */
   std::unordered_map<std::string, nntrainer::Context *> engines;
 
+  /**
+   * @brief map for library handles (context name -> library handle)
+   * These handles must be kept alive until contexts are destroyed
+   */
+  std::unordered_map<std::string, void *> library_handles;
+
+  /**
+   * @brief map for destroy functions (context name -> destroy function)
+   * Used to properly destroy contexts created by plugins
+   */
+  std::unordered_map<std::string, DestroyContextFunc> destroy_funcs;
+
   std::unordered_map<std::string, std::shared_ptr<nntrainer::MemAllocator>>
     allocator;
 
   std::string working_path_base;
-
-  std::mutex thread_pool_manager_mutex_ = {};
-  std::unique_ptr<ThreadPoolManager> thread_pool_manager_ = {};
 };
 
 namespace plugin {}

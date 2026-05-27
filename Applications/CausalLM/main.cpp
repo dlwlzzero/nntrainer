@@ -20,8 +20,10 @@
  * @bug		No known bugs except for NYI items
  *
  */
+#include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,19 +32,34 @@
 #include <factory.h>
 
 #include "causal_lm.h"
+#include "chat_template.h"
+#include "deberta_v2.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
+// #include "gemma4_causallm.h"  // disabled: gemma4 excluded pending interface
+// port
+#if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
+#endif
 #include "gptoss_causallm.h"
+#if !defined(_WIN32) && !defined(__ANDROID__)
+#include "multilingual_tinybert_16mb.h"
+#endif
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
+#if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
+#endif
+#include "lfm2_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "timm_vit/timm_vit_transformer.h"
 #include <models/gemma3/function.h>
+#if !defined(_WIN32)
 #include <sys/resource.h>
+#endif
 
 #if defined(ENABLE_HTP) && ENABLE_HTP == 1
 #include <htp_interface.h>
@@ -51,6 +68,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <thread>
 
 using json = nlohmann::json;
@@ -58,14 +76,27 @@ using json = nlohmann::json;
 std::atomic<size_t> peak_rss_kb{0};
 std::atomic<bool> tracking_enabled{true};
 
+/**
+ * @brief Print the maximum resident set size for the current process.
+ */
 void printMemoryUsage() {
+#if defined(_WIN32)
+  std::cout << "Max Resident Set Size: unavailable on Windows" << std::endl;
+#else
   struct rusage usage;
   getrusage(RUSAGE_SELF, &usage);
   std::cout << "Max Resident Set Size: " << usage.ru_maxrss << " KB"
             << std::endl;
+#endif
 }
 
+/**
+ * @brief Read the current process resident set size on Linux.
+ */
 size_t read_vm_rss_kb() {
+#if defined(_WIN32)
+  return 0;
+#else
   std::ifstream status("/proc/self/status");
   std::string line;
   while (std::getline(status, line)) {
@@ -76,9 +107,16 @@ size_t read_vm_rss_kb() {
     }
   }
   return 0;
+#endif
 }
 
+/**
+ * @brief Read private resident memory from smaps_rollup on Linux.
+ */
 size_t read_private_rss_kb() {
+#if defined(_WIN32)
+  return 0;
+#else
   std::ifstream smaps("/proc/self/smaps_rollup");
   std::string line;
   size_t total = 0;
@@ -90,8 +128,12 @@ size_t read_private_rss_kb() {
     }
   }
   return total;
+#endif
 }
 
+/**
+ * @brief Start a background sampler for peak private RSS.
+ */
 void start_peak_tracker() {
   std::thread([] {
     while (tracking_enabled.load()) {
@@ -105,6 +147,9 @@ void start_peak_tracker() {
   }).detach();
 }
 
+/**
+ * @brief Stop the memory sampler and print the observed peak.
+ */
 void stop_and_print_peak() {
   tracking_enabled.store(false);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -112,6 +157,9 @@ void stop_and_print_peak() {
             << std::endl;
 }
 
+/**
+ * @brief Resolve config architecture names to registered model factory names.
+ */
 std::string resolve_architecture(std::string model_type,
                                  const std::string &architecture) {
   std::transform(model_type.begin(), model_type.end(), model_type.begin(),
@@ -125,15 +173,32 @@ std::string resolve_architecture(std::string model_type,
       return "EmbeddingGemma";
     } else if (architecture == "Qwen2Model") {
       return "Qwen2Embedding";
+    } else if (architecture == "BertForMaskedLM") {
+      return "MultilingualTinyBert";
+    } else if (architecture == "TimmViT" ||
+               architecture == "vit_base_patch16_siglip_224") {
+      return "TimmViT";
+    } else if (architecture == "deberta-v2" ||
+               architecture == "DebertaV2Model" ||
+               architecture == "DebertaV2ForMaskedLM") {
+      return "DebertaV2";
     } else {
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
     }
   }
 
+  if (architecture == "TimmViT" ||
+      architecture == "vit_base_patch16_siglip_224") {
+    return "TimmViT";
+  }
+
   return architecture;
 }
 
+/**
+ * @brief Entry point for loading, initializing, and running a CausalLM model.
+ */
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -187,12 +252,14 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::Qwen3SlimMoECausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#if !defined(_WIN32)
   causallm::Factory::Instance().registerModel(
     "Qwen3CachedSlimMoeForCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   causallm::Factory::Instance().registerModel(
     "Qwen3Embedding", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Qwen3Embedding>(cfg, generation_cfg,
@@ -203,21 +270,51 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::GptOssForCausalLM>(cfg, generation_cfg,
                                                            nntr_cfg);
     });
+#if !defined(_WIN32)
   causallm::Factory::Instance().registerModel(
     "GptOssCachedSlimCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   causallm::Factory::Instance().registerModel(
     "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
+  // gemma4 disabled (interface port pending):
+  // causallm::Factory::Instance().registerModel(
+  //   "Gemma4ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+  //     return std::make_unique<causallm::Gemma4CausalLM>(cfg, generation_cfg,
+  //                                                       nntr_cfg);
+  //   });
   causallm::Factory::Instance().registerModel(
     "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "DebertaV2", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::DebertaV2>(cfg, generation_cfg,
+                                                   nntr_cfg);
+    });
+#if !defined(_WIN32) && !defined(__ANDROID__)
+  causallm::Factory::Instance().registerModel(
+    "MultilingualTinyBert", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::MultilingualTinyBert>(
+        cfg, generation_cfg, nntr_cfg);
+    });
+#endif
+  causallm::Factory::Instance().registerModel(
+    "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::TimmViTTransformer>(cfg, generation_cfg,
+                                                            nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "Lfm2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::Lfm2CausalLM>(cfg, generation_cfg,
+                                                      nntr_cfg);
     });
 
   // Validate arguments
@@ -239,8 +336,11 @@ int main(int argc, char *argv[]) {
   try {
     // Load configuration files
     json cfg = causallm::LoadJsonFile(model_path + "/config.json");
-    json generation_cfg =
-      causallm::LoadJsonFile(model_path + "/generation_config.json");
+    json generation_cfg = json::object();
+    std::string generation_config_path = model_path + "/generation_config.json";
+    if (std::filesystem::exists(generation_config_path)) {
+      generation_cfg = causallm::LoadJsonFile(generation_config_path);
+    }
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
 
     if (nntr_cfg.contains("system_prompt")) {
@@ -257,12 +357,30 @@ int main(int argc, char *argv[]) {
     std::cout << weight_file << std::endl;
 
     // Initialize and run model
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
+    std::string architecture;
+    if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
+        !cfg["architectures"].empty()) {
+      architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
+    } else if (cfg.contains("architecture") &&
+               cfg["architecture"].is_string()) {
+      architecture = cfg["architecture"].get<std::string>();
+    } else if (cfg.contains("model_type") && cfg["model_type"].is_string()) {
+      architecture = cfg["model_type"].get<std::string>();
+    } else {
+      throw std::invalid_argument(
+        "config.json must contain 'architectures', 'architecture', or "
+        "'model_type'.");
+    }
 
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
       architecture = resolve_architecture(model_type, architecture);
+    }
+
+    // Load chat template from tokenizer_config.json or jinja (if available)
+    std::optional<causallm::ChatTemplate> chat_template;
+    if (causallm::ChatTemplate::Exists(model_path)) {
+      chat_template.emplace(causallm::ChatTemplate::Load(model_path));
     }
 
     // Determine input text
@@ -270,9 +388,10 @@ int main(int argc, char *argv[]) {
       input_text = argv[2];
     } else {
       if (nntr_cfg.contains("chat_input")) {
-        if (architecture == "Gemma3ForCausalLM") {
-          input_text = causallm::gemma3::apply_function_gemma_template(
-            nntr_cfg["chat_input"]);
+        if (chat_template.has_value()) {
+          input_text = chat_template->apply(nntr_cfg["chat_input"]);
+          system_head_prompt.clear();
+          system_tail_prompt.clear();
         } else {
           std::cerr << "[Warning] 'chat_input' is set but support for model "
                        "architecture '"
@@ -307,7 +426,22 @@ int main(int argc, char *argv[]) {
     model->run(input_text.c_str(), do_sample, system_head_prompt.c_str(),
                system_tail_prompt.c_str());
 #else
-    model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
+    if (architecture.find("Visual") != std::string::npos) {
+      // Temp code for testing multimodal input
+      int my_image_height = 1024;
+      int my_image_width = 1024;
+      int my_image_size = 5 * 512 * 512 * 3 * sizeof(uint16_t);
+      void *my_image = malloc(my_image_size);
+      causallm::multimodal_pointer image =
+        std::make_pair(my_image, my_image_size);
+      auto output =
+        model->run_image(input_text, image, my_image_height, my_image_width,
+                         do_sample, system_head_prompt, system_tail_prompt);
+      free(my_image);
+      std::cout << output.second; // To avoid unused variable warning
+    } else {
+      model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
+    }
 #endif
 #ifdef PROFILE
     stop_and_print_peak();

@@ -19,6 +19,7 @@
 
 #include <app_context.h>
 #include <base_properties.h>
+#include <compute_ops.h>
 #include <context.h>
 #include <dynamic_library_loader.h>
 #include <engine.h>
@@ -42,13 +43,26 @@ void Engine::add_default_object() {
 
   auto &app_context = nntrainer::AppContext::Global();
 
-  init_backend(); // initialize cpu backend
+  // Ensure CPU backend compute-ops table is bound. ensureComputeOps() is
+  // std::call_once-guarded, so this call is safe even if AppContext or
+  // another Context already initialized it.
+  ensureComputeOps();
   registerContext("cpu", &app_context);
 
 #if defined(ENABLE_OPENCL) && ENABLE_OPENCL == 1
   auto &cl_context = nntrainer::ClContext::Global();
 
   registerContext("gpu", &cl_context);
+#endif
+
+#if defined(ENABLE_NPU) && ENABLE_NPU == 1
+  // QNN context is loaded as a plugin .so for decoupling from QNN SDK.
+  // libqnn_context.so exports ml_train_context_pluggable symbol.
+  try {
+    registerContext("libqnn_context.so", "");
+  } catch (std::exception &e) {
+    ml_logw("QNN context plugin not available: %s", e.what());
+  }
 #endif
 }
 
@@ -62,7 +76,57 @@ void Engine::initialize() noexcept {
   }
 };
 
-void Engine::release() { thread_pool_manager_.reset(); }
+Engine &Engine::Global() {
+  static Engine instance;
+  instance.initializeOnce();
+  return instance;
+}
+
+void Engine::release() {
+  LOGD("(JBD: test) %s:%s:%d", __FILE__, __func__, __LINE__);
+  // Guard against double-release (could be called from both atexit and
+  // destructor)
+  if (engines.empty()) {
+    return;
+  }
+
+  // Clean up dynamically allocated contexts (those loaded from plugins)
+  // Note: Static contexts like AppContext::Global() are not deleted here
+  // as they are managed elsewhere
+
+  // Delete all dynamic contexts using their destroy functions
+  // Using destroyfunc ensures proper cleanup as defined by the plugin
+  for (auto &pair : engines) {
+    // Check if this is a dynamically allocated context
+    // by checking if it was loaded from a plugin library
+    bool is_dynamic = true;
+    if (pair.first == "cpu") {
+      is_dynamic = false; // AppContext is a static singleton
+    }
+#if defined(ENABLE_OPENCL) && ENABLE_OPENCL == 1
+    if (pair.first == "gpu") {
+      is_dynamic = false; // ClContext is a static singleton
+    }
+#endif
+    if (is_dynamic && pair.second) {
+      // Use destroyfunc if available, otherwise fall back to delete
+      auto it = destroy_funcs.find(pair.first);
+      if (it != destroy_funcs.end() && it->second) {
+        it->second(pair.second);
+      } else {
+        delete pair.second;
+      }
+    }
+  }
+  engines.clear();
+  allocator.clear();
+  destroy_funcs.clear();
+
+  // Do NOT close library handles - QNNContext destructor already handles
+  // its own library cleanup (dlClose on m_backendLibraryHandle)
+  // Closing library handles here would cause a double-free segfault
+  library_handles.clear();
+}
 
 std::string
 Engine::parseComputeEngine(const std::vector<std::string> &props) const {
@@ -84,7 +148,6 @@ Engine::parseComputeEngine(const std::vector<std::string> &props) const {
 
   return "cpu";
 }
-
 /**
  * @brief Get the Full Path from given string
  * @details path is resolved in the following order
@@ -141,18 +204,44 @@ void Engine::setWorkingDirectory(const std::string &base) {
 
 int Engine::registerContext(const std::string &library_path,
                             const std::string &base_path) {
+
+  LOGD("(JBD: test) %s:%d", __FILE__, __LINE__);
+
   const std::string full_path = getFullPath(library_path, base_path);
 
-  void *handle = DynamicLibraryLoader::loadLibrary(full_path.c_str(),
-                                                   RTLD_LAZY | RTLD_LOCAL);
+  void *handle;
+  LOGD("%s", full_path.c_str());
+  try {
+    handle = DynamicLibraryLoader::loadLibrary(full_path.c_str(),
+                                               RTLD_LAZY | RTLD_LOCAL);
+  } catch (const std::exception &e) {
+    LOGE("[JBD] load_into_handle: Exception: %s", e.what());
+  }
+
+  LOGD("(JBD: test) %s:%d", __FILE__, __LINE__);
+
   const char *error_msg = DynamicLibraryLoader::getLastError();
+
+  LOGD("error msg: %s", error_msg);
 
   NNTR_THROW_IF(handle == nullptr, std::invalid_argument)
     << func_tag << "open plugin failed, reason: " << error_msg;
 
+  LOGD("%p", handle);
+
+  LOGD("%s:%d", __FILE__, __LINE__);
+
+  void *struct__ = DynamicLibraryLoader::loadSymbol(
+    handle,
+    "_ZTv0_n56_N9nntrainer8QNNGraph10forwardingERNS_15RunLayerContextEb");
+
+  LOGD("struct: %p", struct__);
+
   nntrainer::ContextPluggable *pluggable =
     reinterpret_cast<nntrainer::ContextPluggable *>(
       DynamicLibraryLoader::loadSymbol(handle, "ml_train_context_pluggable"));
+
+  LOGD("%s:%d", __FILE__, __LINE__);
 
   error_msg = DynamicLibraryLoader::getLastError();
   auto close_dl = [handle] { DynamicLibraryLoader::freeLibrary(handle); };
@@ -160,26 +249,32 @@ int Engine::registerContext(const std::string &library_path,
                         std::invalid_argument, close_dl)
     << func_tag << "loading symbol failed, reason: " << error_msg;
 
+  LOGD("%s:%d", __FILE__, __LINE__);
+
   auto context = pluggable->createfunc();
+
+  LOGD("%s:%d", __FILE__, __LINE__);
+
   NNTR_THROW_IF_CLEANUP(context == nullptr, std::invalid_argument, close_dl)
     << func_tag << "created pluggable context is null";
   auto type = context->getName();
+
+  LOGD("%s:%d", __FILE__, __LINE__);
+
   NNTR_THROW_IF_CLEANUP(type == "", std::invalid_argument, close_dl)
     << func_tag << "custom layer must specify type name, but it is empty";
 
-  registerContext(type, context);
+  // Pass library handle and destroy function for proper cleanup
+  registerContext(type, context, handle, pluggable->destroyfunc);
+
+  // Register cleanup with atexit to ensure it runs before static destruction
+  // This ensures QNN contexts are cleaned up before the driver state becomes
+  // invalid. Using std::call_once for thread safety.
+  static std::once_flag atexit_flag;
+  std::call_once(atexit_flag,
+                 []() { std::atexit([]() { Engine::Global().release(); }); });
 
   return 0;
-}
-
-ThreadPoolManager *Engine::getThreadPoolManager() {
-  std::lock_guard<std::mutex> lock(thread_pool_manager_mutex_);
-
-  if (!thread_pool_manager_) {
-    thread_pool_manager_ = std::make_unique<ThreadPoolManager>();
-  }
-
-  return thread_pool_manager_.get();
 }
 
 } // namespace nntrainer

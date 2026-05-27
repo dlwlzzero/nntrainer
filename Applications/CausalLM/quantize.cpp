@@ -69,11 +69,17 @@
 #include "causal_lm.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
+// #include "gemma4_causallm.h"  // disabled: gemma4 excluded pending interface
+// port
+#if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
+#endif
 #include "gptoss_causallm.h"
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
+#if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
+#endif
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
@@ -91,6 +97,41 @@ const std::map<std::string, DataType> dtype_str_map = {
   {"FP32", DataType::FP32}, {"FP16", DataType::FP16}, {"Q4_0", DataType::Q4_0},
   {"Q6_K", DataType::Q6_K}, {"Q4_K", DataType::Q4_K}, {"NONE", DataType::NONE},
 };
+
+/**
+ * @brief Map of string ISA names to ISA enum values
+ */
+const std::map<std::string, ml::train::ISA> isa_str_map = {
+  {"DEFAULT", ml::train::ISA::DEFAULT},
+  {"X86", ml::train::ISA::X86},
+  {"ARM", ml::train::ISA::ARM},
+};
+
+/**
+ * @brief Convert string to ISA enum
+ */
+ml::train::ISA strToISA(const std::string &s) {
+  std::string upper = s;
+  std::transform(upper.begin(), upper.end(), upper.begin(),
+                 [](unsigned char c) { return std::toupper(c); });
+  auto it = isa_str_map.find(upper);
+  if (it == isa_str_map.end()) {
+    throw std::invalid_argument("Unsupported ISA: " + s +
+                                ". Supported: DEFAULT, X86, ARM");
+  }
+  return it->second;
+}
+
+/**
+ * @brief Convert ISA enum to string
+ */
+std::string isaToStr(ml::train::ISA isa) {
+  for (const auto &[key, val] : isa_str_map) {
+    if (val == isa)
+      return key;
+  }
+  return "DEFAULT";
+}
 
 /**
  * @brief Convert string to DataType enum
@@ -127,11 +168,21 @@ std::string buildModelTensorType(const std::string &fc_dtype) {
 }
 
 /**
+ * @brief Return lowercase copy of a string
+ */
+std::string toLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return value;
+}
+
+/**
  * @brief Generate a descriptive output bin filename
  */
 std::string generateOutputBinName(const std::string &original_bin,
                                   const std::string &fc_dtype,
-                                  const std::string &embd_dtype) {
+                                  const std::string &embd_dtype,
+                                  const std::string &target_isa) {
   // Extract model name from original (e.g., "nntr_qwen3_4b_fp32.bin" ->
   // "nntr_qwen3_4b")
   std::string base = original_bin;
@@ -169,9 +220,10 @@ std::string generateOutputBinName(const std::string &original_bin,
                    embd_clean.end());
 
   if (embd_clean == fc_clean) {
-    return base + "_" + fc_clean + ".bin";
+    return base + "_" + fc_clean + "_" + target_isa + ".bin";
   }
-  return base + "_" + fc_clean + "_embd" + embd_clean + ".bin";
+  return base + "_" + fc_clean + "_embd" + embd_clean + "_" + target_isa +
+         ".bin";
 }
 
 /**
@@ -195,6 +247,17 @@ std::string resolve_architecture(std::string model_type,
         "Unsupported architecture for embedding model: " + architecture);
   }
   return architecture;
+}
+
+/**
+ * @brief Return the final component of a dotted Python class name
+ */
+std::string getLastComponent(const std::string &type) {
+  const size_t last_dot_pos = type.find_last_of('.');
+  if (last_dot_pos == std::string::npos)
+    return type;
+
+  return type.substr(last_dot_pos + 1);
 }
 
 /**
@@ -233,12 +296,14 @@ void registerAllModels() {
     return std::make_unique<causallm::Qwen3SlimMoECausalLM>(cfg, generation_cfg,
                                                             nntr_cfg);
   });
+#if !defined(_WIN32)
   factory.registerModel(
     "Qwen3CachedSlimMoeForCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   factory.registerModel("Qwen3Embedding",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
                           return std::make_unique<causallm::Qwen3Embedding>(
@@ -249,17 +314,25 @@ void registerAllModels() {
                           return std::make_unique<causallm::GptOssForCausalLM>(
                             cfg, generation_cfg, nntr_cfg);
                         });
+#if !defined(_WIN32)
   factory.registerModel(
     "GptOssCachedSlimCausalLM",
     [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
         cfg, generation_cfg, nntr_cfg);
     });
+#endif
   factory.registerModel("Gemma3ForCausalLM",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
                           return std::make_unique<causallm::Gemma3CausalLM>(
                             cfg, generation_cfg, nntr_cfg);
                         });
+  // gemma4 disabled (interface port pending):
+  // factory.registerModel("Gemma4ForCausalLM",
+  //                       [](json cfg, json generation_cfg, json nntr_cfg) {
+  //                         return std::make_unique<causallm::Gemma4CausalLM>(
+  //                           cfg, generation_cfg, nntr_cfg);
+  //                       });
   factory.registerModel("EmbeddingGemma",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
                           return std::make_unique<causallm::EmbeddingGemma>(
@@ -287,6 +360,10 @@ void printUsage(const char *prog) {
     << "  --embd_dtype <type>   Target dtype for embedding (default: FP32)\n"
     << "  --lmhead_dtype <type> Target dtype for LM head (default: same as "
        "embd_dtype)\n"
+    << "  --isa <arch>          Target instruction set architecture for "
+       "quantized weights\n"
+    << "                        (default: DEFAULT). Options: DEFAULT, X86, "
+       "ARM.\n"
     << "  --output_bin <name>   Output .bin filename (auto-generated if "
        "omitted)\n"
     << "  --config <path>       Use a target nntr_config.json instead of\n"
@@ -296,6 +373,7 @@ void printUsage(const char *prog) {
     << "  --help, -h            Show this help message\n"
     << "\n"
     << "Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K\n"
+    << "Supported ISA options: DEFAULT (current platform), X86, ARM\n"
     << "\n"
     << "Examples:\n"
     << "  # Quantize FC layers to Q4_0 (default):\n"
@@ -303,6 +381,12 @@ void printUsage(const char *prog) {
     << "\n"
     << "  # Quantize FC layers to Q4_0 and embedding to Q6_K:\n"
     << "  " << prog << " /path/to/qwen3-4b --fc_dtype Q4_0 --embd_dtype Q6_K\n"
+    << "\n"
+    << "  # Quantize to ARM format for deployment on ARM devices:\n"
+    << "  " << prog << " /path/to/qwen3-4b --isa ARM\n"
+    << "\n"
+    << "  # Quantize to X86 format for deployment on x86 devices:\n"
+    << "  " << prog << " /path/to/qwen3-4b --isa X86\n"
     << "\n"
     << "  # Quantize to a different output directory:\n"
     << "  " << prog << " /path/to/qwen3-4b -o /output/qwen3-4b-q4\n"
@@ -332,7 +416,7 @@ void printUsage(const char *prog) {
  */
 std::map<std::string, DataType>
 buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
-                   DataType lmhead_dtype, bool tie_word_embeddings) {
+                   DataType lmhead_dtype, bool include_lmhead) {
 
   std::map<std::string, DataType> dtype_map;
 
@@ -340,6 +424,11 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
   if (embd_dtype != DataType::FP32 && embd_dtype != DataType::NONE) {
     dtype_map["embedding0"] = embd_dtype;
   }
+
+  // Gemma4 PLE layers - set to Q4_0 first
+  dtype_map["per_layer_input_embedding"] = fc_dtype;
+  // Gemma4 PLE projection
+  dtype_map["per_layer_input_projection"] = fc_dtype;
 
   // Transformer decoder layers
   for (int i = 0; i < num_layers; ++i) {
@@ -352,19 +441,85 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
       dtype_map[prefix + "_wv"] = fc_dtype;
       dtype_map[prefix + "_attention_out"] = fc_dtype;
 
-      // FFN FC layers
-      dtype_map[prefix + "_ffn_up"] = fc_dtype;
+      // Attention Gates
+      dtype_map[prefix + "_attention_gate_down"] = fc_dtype;
+      dtype_map[prefix + "_attention_gate_up"] = fc_dtype;
+
+      // FFN FC layers - version3
       dtype_map[prefix + "_ffn_gate"] = fc_dtype;
+      dtype_map[prefix + "_ffn_up"] = fc_dtype;
       dtype_map[prefix + "_ffn_down"] = fc_dtype;
+
+      // FFN FC layers - version4
+      dtype_map[prefix + "_ffn_gate_up"] = fc_dtype;
+      dtype_map[prefix + "_ffn_gate_down"] = fc_dtype;
+      dtype_map[prefix + "_ffn_linear_up"] = fc_dtype;
+
+      dtype_map[prefix + "_ffn_output"] = fc_dtype;
+
+      // PLE layers - version4
+      if (embd_dtype != DataType::FP32 && embd_dtype != DataType::NONE) {
+        dtype_map[prefix + "_ple"] = fc_dtype;
+      }
+
+      // PLE - gemma4
+      dtype_map[prefix + "_per_layer_input_gate"] = fc_dtype;
+      dtype_map[prefix + "_per_layer_input_proj"] = fc_dtype;
     }
   }
 
   // LM Head layer
-  if (lmhead_dtype != DataType::FP32 && lmhead_dtype != DataType::NONE) {
+  if (include_lmhead && lmhead_dtype != DataType::FP32 &&
+      lmhead_dtype != DataType::NONE) {
     dtype_map["output_of_causallm"] = lmhead_dtype;
   }
 
   return dtype_map;
+}
+
+/**
+ * @brief Add SentenceTransformer module dtype overrides to the dtype map
+ */
+void addSentenceTransformerLayerDtypes(std::map<std::string, DataType> &map,
+                                       const json &nntr_cfg,
+                                       const std::string &model_path,
+                                       DataType fc_dtype) {
+  if (fc_dtype == DataType::FP32 || fc_dtype == DataType::NONE ||
+      !nntr_cfg.contains("module_config_path")) {
+    return;
+  }
+
+  std::filesystem::path modules_config_path =
+    nntr_cfg["module_config_path"].get<std::string>();
+  if (modules_config_path.is_relative()) {
+    modules_config_path =
+      std::filesystem::path(model_path) / modules_config_path;
+  }
+
+  json modules_json = causallm::LoadJsonFile(modules_config_path.string());
+  auto modules = modules_json.get<std::vector<json>>();
+  for (const auto &module : modules) {
+    if (!module.contains("type"))
+      continue;
+
+    const std::string component =
+      getLastComponent(module["type"].get<std::string>());
+    if (component != "Dense")
+      continue;
+
+    std::string layer_name;
+    if (module.contains("name")) {
+      layer_name = module["name"].get<std::string>();
+    } else if (module.contains("idx")) {
+      layer_name = "sentence_module_" +
+                   std::to_string(module["idx"].get<int>()) + "_" + component;
+    } else {
+      throw std::runtime_error(
+        "Dense SentenceTransformer module has neither name nor idx.");
+    }
+
+    map[layer_name] = fc_dtype;
+  }
 }
 
 } // anonymous namespace
@@ -387,6 +542,7 @@ int main(int argc, char *argv[]) {
   std::string fc_dtype_str = "Q4_0";
   std::string embd_dtype_str = "FP32";
   std::string lmhead_dtype_str = "";
+  std::string isa_str = "DEFAULT";
   std::string output_bin_name = "";
   std::string target_config_path = "";
 
@@ -400,6 +556,8 @@ int main(int argc, char *argv[]) {
       embd_dtype_str = argv[++i];
     } else if (arg == "--lmhead_dtype" && i + 1 < argc) {
       lmhead_dtype_str = argv[++i];
+    } else if (arg == "--isa" && i + 1 < argc) {
+      isa_str = argv[++i];
     } else if (arg == "--output_bin" && i + 1 < argc) {
       output_bin_name = argv[++i];
     } else if (arg == "--config" && i + 1 < argc) {
@@ -446,6 +604,9 @@ int main(int argc, char *argv[]) {
     if (lmhead_dtype_str.empty())
       lmhead_dtype_str = embd_dtype_str;
 
+    // Parse target ISA
+    ml::train::ISA target_isa = strToISA(isa_str);
+
     // Parse target data types
     DataType fc_dtype = strToDataType(fc_dtype_str);
     DataType embd_dtype = strToDataType(embd_dtype_str);
@@ -469,25 +630,26 @@ int main(int argc, char *argv[]) {
     // Determine output bin filename
     std::string original_bin = nntr_cfg["model_file_name"].get<std::string>();
     if (output_bin_name.empty()) {
-      output_bin_name = generateOutputBinName(
-        original_bin, dataTypeToStr(fc_dtype), dataTypeToStr(embd_dtype));
+      output_bin_name =
+        generateOutputBinName(original_bin, dataTypeToStr(fc_dtype),
+                              dataTypeToStr(embd_dtype), isa_str);
     }
 
     std::string src_weight_path = model_path + "/" + original_bin;
     std::string dst_weight_path = output_dir + "/" + output_bin_name;
 
     int num_layers = cfg["num_hidden_layers"].get<int>();
-    bool tie_word_embeddings = cfg["tie_word_embeddings"].get<bool>();
+    std::string architecture =
+      cfg["architectures"].get<std::vector<std::string>>()[0];
 
-    std::cout << "  Architecture: "
-              << cfg["architectures"].get<std::vector<std::string>>()[0]
-              << "\n";
+    std::cout << "  Architecture: " << architecture << "\n";
     std::cout << "  Num layers:   " << num_layers << "\n";
     std::cout << "  Source:       " << src_weight_path << "\n";
     std::cout << "  Target:       " << dst_weight_path << "\n";
     std::cout << "  FC dtype:     " << dataTypeToStr(fc_dtype) << "\n";
     std::cout << "  Embed dtype:  " << dataTypeToStr(embd_dtype) << "\n";
     std::cout << "  LMHead dtype: " << dataTypeToStr(lmhead_dtype) << "\n";
+    std::cout << "  Target ISA:   " << isaToStr(target_isa) << "\n";
     std::cout << "\n";
 
     // =========================================================================
@@ -497,8 +659,6 @@ int main(int argc, char *argv[]) {
 
     registerAllModels();
 
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
       architecture = resolve_architecture(model_type, architecture);
@@ -527,8 +687,16 @@ int main(int argc, char *argv[]) {
     std::cout << "[4/5] Quantizing and saving weights to: " << dst_weight_path
               << "\n";
 
-    auto layer_dtype_map = buildLayerDtypeMap(
-      num_layers, fc_dtype, embd_dtype, lmhead_dtype, tie_word_embeddings);
+    bool include_lmhead = true;
+    if (nntr_cfg.contains("model_type") &&
+        toLower(nntr_cfg["model_type"].get<std::string>()) == "embedding") {
+      include_lmhead = false;
+    }
+
+    auto layer_dtype_map = buildLayerDtypeMap(num_layers, fc_dtype, embd_dtype,
+                                              lmhead_dtype, include_lmhead);
+    addSentenceTransformerLayerDtypes(layer_dtype_map, nntr_cfg, model_path,
+                                      fc_dtype);
 
     std::cout << "  Layer dtype mapping (" << layer_dtype_map.size()
               << " layers targeted):\n";
@@ -536,7 +704,8 @@ int main(int argc, char *argv[]) {
       std::cout << "    " << name << " -> " << dataTypeToStr(dt) << "\n";
     }
 
-    model->save_weight(dst_weight_path, DataType::NONE, layer_dtype_map);
+    model->save_weight(dst_weight_path, DataType::NONE, layer_dtype_map,
+                       target_isa);
 
     // Report file size
     auto src_size = std::filesystem::file_size(src_weight_path);

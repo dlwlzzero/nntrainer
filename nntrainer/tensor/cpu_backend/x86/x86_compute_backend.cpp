@@ -17,6 +17,7 @@
 #ifdef USE_BLAS
 #include <cblas_interface.h>
 #endif
+#include <compute_ops.h>
 #include <fallback_internal.h>
 #include <ggml_interface.h>
 #include <nntrainer_error.h>
@@ -30,8 +31,11 @@ namespace nntrainer {
 
 void init_backend() {
   __ggml_init();
+#ifdef USE_BLAS
   // Do not repeatedly call set_num_threads. It's a global config.
   __openblas_set_num_threads(-1); // -1 = BLAS_NUM_THREADS if defined.
+#endif
+  g_compute_ops = get_cpu_ops();
 }
 
 void scopy_int4_to_float32(const unsigned int N, const uint8_t *X,
@@ -405,8 +409,24 @@ template <> void dequantize_row_q8_K(const void *x, float *y, int64_t k) {
 }
 
 void repack_q4_0(void *dst, void *src, size_t data_size, const unsigned int M,
-                 const unsigned int N) {
-  __ggml_repack_q4_0_to_q4_0_8(dst, src, data_size, M, N);
+                 const unsigned int N, ml::train::ISA target) {
+
+  switch (target) {
+  case ml::train::ISA::X86:
+    // Use x86 format (q4_0x8)
+    __ggml_repack_q4_0_to_q4_0_8(dst, src, data_size, M, N);
+    break;
+  case ml::train::ISA::ARM:
+    // Use ARM format (q4_0x4) for cross-platform quantization
+    __ggml_repack_q4_0_to_q4_0_4(dst, src, data_size, M, N);
+    break;
+  case ml::train::ISA::DEFAULT:
+    // Use x86 format (q4_0x8)
+    __ggml_repack_q4_0_to_q4_0_8(dst, src, data_size, M, N);
+    break;
+  default:
+    break;
+  }
 }
 
 void repack_q4_0_to_q4_0_8(void *dst, void *src, size_t data_size,
@@ -503,4 +523,22 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
     N, K, osv32_weights, osv32_scales, scale_group_size, 8, dst_q4_0x);
 #endif
 }
+
+// Dispatches to the AVX2 causal depthwise Conv1D prefill kernel.
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H,
+                                unsigned int W) {
+  nntrainer::avx2::causal_depthwise_conv1d_k3(input, packed_weight, bias,
+                                              output, B, H, W);
+}
+
+// Dispatches to the AVX2 single-token decode kernel.
+void causal_depthwise_conv1d_k3_decode(const float *x_cur,
+                                       const float *packed_weight, float *state,
+                                       float *y_cur, unsigned int W) {
+  nntrainer::avx2::causal_depthwise_conv1d_k3_decode(x_cur, packed_weight,
+                                                     state, y_cur, W);
+}
+
 } /* namespace nntrainer */

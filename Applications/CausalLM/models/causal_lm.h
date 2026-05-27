@@ -31,15 +31,30 @@
 #pragma once
 #ifdef _WIN32
 #define WIN_EXPORT __declspec(dllexport)
-#define WSTR std::wstring
-#define WCHAR_P wchar_t *
+#define WSTR std::string
+#define WCHAR_P std::string &
 #else
 #define WIN_EXPORT
 #define WSTR std::string
 #define WCHAR_P std::string &
 #endif
 
+#include <atomic>
+#include <kv_cache_manager.h>
 #include <transformer.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+// Forward-declare the C streamer type from api/streamer.h. We keep this
+// a bare forward declaration so causal_lm.h does not pull the API
+// header into the rest of the CausalLM models tree — the full
+// definition is only needed in causal_lm.cpp where the vtable is
+// actually invoked.
+extern "C" {
+struct BaseStreamer;
+}
 
 namespace causallm {
 
@@ -81,9 +96,56 @@ public:
   std::string getOutput(int batch_idx = 0) const;
 
   /**
-   * @brief get the status of run
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token
+   *        output during the next call to run().
+   *
+   * Passing @c nullptr detaches any currently-attached streamer.
+   *
+   * The streamer pointer is NOT owned by this class — the caller is
+   * responsible for keeping the storage alive for the full duration of
+   * the run() call and for detaching before the storage is destroyed.
+   *
+   * The high-level C API `runModelHandleStreaming` in
+   * causal_lm_api.{h,cpp} uses a stack-allocated CallbackStreamer and
+   * an RAII detach guard, which keeps this contract trivially safe.
+   * See AsyncAndStreaming.md §3.3 at the repo root for the full
+   * design.
    */
-  bool hasRun() const { return has_run_; }
+  void setStreamer(::BaseStreamer *streamer) { streamer_ = streamer; }
+
+  /**
+   * @brief Request cancellation of the current run().
+   *
+   * Thread-safe: sets the stop flag atomically, causing the token
+   * generation loop to exit at the next token boundary. Safe to call
+   * from any thread (e.g., from a UI cancel button handler).
+   */
+  void requestStop() override {
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_DEBUG, "CausalLM",
+                        "requestStop: setting stop_requested_ to true");
+#else
+    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true"
+              << std::endl;
+#endif
+    stop_requested_.store(true, std::memory_order_release);
+  }
+
+  /**
+   * @brief Check if stop has been requested.
+   * Thread-safe: can be called from any thread.
+   */
+  bool isStopRequested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Clear the stop request flag.
+   * Thread-safe: can be called from any thread.
+   */
+  void clearStopRequest() {
+    stop_requested_.store(false, std::memory_order_release);
+  }
 
 protected:
   /**
@@ -93,9 +155,10 @@ protected:
                                json &nntr_cfg) override;
 
   /**
-   * @brief Construct Model
+   * @brief Construct Model — extends Transformer's symbolic graph with the
+   *        LM-head and returns the final {input, logits} pair.
    */
-  virtual void constructModel() override;
+  virtual std::pair<Tensor, Tensor> constructModel() override;
 
   /**
    * @brief register Outputs
@@ -147,14 +210,60 @@ protected:
 
   unsigned int SYS_PROMP_LEN;
   std::string PRE_COMPUTED_CACHE_PATH;
-  std::string TAIL_PROMPT;
   bool SAVE_KVCACHE;
   bool USE_KVCACHE;
+  bool SKIP_PREFILL;
   unsigned int global_token_len;
 
-  bool has_run_ = false;
+  /**
+   * @brief Optional streamer that receives each decoded token as it is
+   *        produced during run(). Set via setStreamer(); nullptr means
+   *        "no streaming, behave exactly like the pre-streaming code
+   *        path". See AsyncAndStreaming.md §3.3.
+   */
+  ::BaseStreamer *streamer_ = nullptr;
+
+  /**
+   * @brief Cooperative cancellation flag set by registerOutputs() when
+   *        the attached streamer's put() returns non-zero, or by
+   *        requestStop() from any thread. The token generation loop in
+   *        run() checks this once per iteration and breaks out at the
+   *        next safe boundary.
+   *
+   * Uses std::atomic for thread-safe access from any thread (e.g.,
+   * cancel button handler in UI thread).
+   */
+  std::atomic<bool> stop_requested_{false};
 
   std::mt19937 rng; /**< Random Number Gen */
+
+  /**
+   * @brief Externalized KV cache (host-owned). Allocated by allocateKVCache()
+   *        once the model has been compiled (so we have the layer count,
+   *        head count, etc.) and bound to mha_core's input slots
+   *        cache_k_l<i> / cache_v_l<i> via Model::setExternalTensors.
+   */
+  KVCacheManager kv_cache;
+  bool kv_cache_bound = false; /**< True once KV cache tensors are bound */
+
+  /**
+   * @brief Allocate kv_cache and bind it to all mha_core layers via
+   *        Model::setExternalTensors. Idempotent — safe to call once after
+   *        initialize().
+   */
+  void allocateAndBindKVCache();
+
+  /**
+   * @brief Reset all mha_core layers' cache_index to @p pos and the
+   *        KVCacheManager's tracked write position.
+   */
+  void setKVCachePosition(unsigned int pos);
+
+  /**
+   * @brief Advance all mha_core layers' cache_index by @p step_size and
+   *        update the KVCacheManager's tracked write position.
+   */
+  void advanceKVCachePosition(unsigned int step_size);
 };
 
 } // namespace causallm

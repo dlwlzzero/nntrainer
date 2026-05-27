@@ -92,7 +92,8 @@ void Exporter::saveTflResult(
     props::Name, props::Distribute, props::Trainable,
     std::vector<props::InputConnection>, std::vector<props::InputShape>,
     props::SharedFrom, props::ClipGradByGlobalNorm, props::Packed,
-    props::WeightDtype, props::LossScaleForMixed, props::ComputeEngine> &props,
+    props::WeightDtype, props::InputDtype, props::LossScaleForMixed,
+    props::ComputeEngine, props::InputTensorDataType> &props,
   const LayerNode *self) {
   createIfNull(tf_node);
   tf_node->setLayerNode(*self);
@@ -216,7 +217,8 @@ void Exporter::saveTflResult(
 
 template <>
 void Exporter::saveTflResult(
-  const std::tuple<props::Normalization, props::Standardization> &props,
+  const std::tuple<props::Normalization, props::Standardization,
+                   props::InputTensorDataType, props::TensorDataType> &props,
   const InputLayer *self) {
   createIfNull(tf_node);
   // input layer exports to Transpose operator (NCHW -> NHWC)

@@ -22,13 +22,13 @@
 #include <fp16.h>
 #include <matrix_transpose_neon.h>
 #include <neon_impl.h>
-#include <neon_setting.h>
 #include <nntrainer_error.h>
 #ifdef ARMV7
 #include <armv7_neon.h>
 #endif
 #include "nntr_ggml_impl_common.h"
 #include <fallback_internal.h>
+#include <thread_manager.h>
 #include <util_func.h>
 
 #include "nntr_ggml_impl_common.h"
@@ -2119,44 +2119,201 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
   const size_t bytes_per_row_block_span = column_blocks_count * ROW_BLOCK_SIZE;
   const int column_blocks_cnt = K / QK4_0;
 
-#pragma omp parallel for schedule(dynamic)
-  for (int column_out_block_id = 0; column_out_block_id < column_blocks_cnt;
-       column_out_block_id++) {
-    uint8_t mx8x16[8 * 16];
-    const int column_idx = column_out_block_id * QK4_0;
-    const int scale_offset = (column_idx / scale_group_size) * rows_count_pad;
-    for (size_t row_id = 0; row_id < N; row_id += 8) {
-      const size_t row_in_block_id = row_id / ROW_BLOCK_SIZE;
-      const size_t i_in_block = row_id % ROW_BLOCK_SIZE;
-      const size_t row_block_base =
-        row_in_block_id * bytes_per_row_block_span + i_in_block;
-      const int src_offset =
-        row_block_base + column_out_block_id * 16 * ROW_BLOCK_SIZE;
+  auto &tm = nntrainer::ThreadManager::Global();
+  tm.parallel_for(
+    0, static_cast<size_t>(column_blocks_cnt), [&](size_t column_out_block_id) {
+      uint8_t mx8x16[8 * 16];
+      const int column_idx = column_out_block_id * QK4_0;
+      const int scale_offset = (column_idx / scale_group_size) * rows_count_pad;
+      for (size_t row_id = 0; row_id < N; row_id += 8) {
+        const size_t row_in_block_id = row_id / ROW_BLOCK_SIZE;
+        const size_t i_in_block = row_id % ROW_BLOCK_SIZE;
+        const size_t row_block_base =
+          row_in_block_id * bytes_per_row_block_span + i_in_block;
+        const int src_offset =
+          row_block_base + column_out_block_id * 16 * ROW_BLOCK_SIZE;
 
-      transpose_matrix_16x8(&osv32_weights[src_offset], ROW_BLOCK_SIZE, mx8x16,
-                            16);
-      const size_t row_out_block_id = row_id / NUM_Q4_0_BLOCKS;
-      int dst_offset =
-        (NUM_Q4_0_BLOCKS * sizeof(block_q4_0)) *
-        (column_out_block_id + row_out_block_id * column_blocks_cnt);
+        transpose_matrix_16x8(&osv32_weights[src_offset], ROW_BLOCK_SIZE,
+                              mx8x16, 16);
+        const size_t row_out_block_id = row_id / NUM_Q4_0_BLOCKS;
+        int dst_offset =
+          (NUM_Q4_0_BLOCKS * sizeof(block_q4_0)) *
+          (column_out_block_id + row_out_block_id * column_blocks_cnt);
 
-      block_q4_0x4 *out = (block_q4_0x4 *)(dst_ + dst_offset);
-      const uint16_t *s_ptr = &osv32_scales[scale_offset + row_id];
-      out->d[0] = s_ptr[0];
-      out->d[1] = s_ptr[1];
-      out->d[2] = s_ptr[2];
-      out->d[3] = s_ptr[3];
-      neon_transform_transposed_4rows_to_q4_0x4(mx8x16, out);
+        block_q4_0x4 *out = (block_q4_0x4 *)(dst_ + dst_offset);
+        const uint16_t *s_ptr = &osv32_scales[scale_offset + row_id];
+        out->d[0] = s_ptr[0];
+        out->d[1] = s_ptr[1];
+        out->d[2] = s_ptr[2];
+        out->d[3] = s_ptr[3];
+        neon_transform_transposed_4rows_to_q4_0x4(mx8x16, out);
 
-      dst_offset += (NUM_Q4_0_BLOCKS * sizeof(block_q4_0)) * column_blocks_cnt;
-      out = (block_q4_0x4 *)(dst_ + dst_offset);
+        dst_offset +=
+          (NUM_Q4_0_BLOCKS * sizeof(block_q4_0)) * column_blocks_cnt;
+        out = (block_q4_0x4 *)(dst_ + dst_offset);
 
-      out->d[0] = s_ptr[4];
-      out->d[1] = s_ptr[5];
-      out->d[2] = s_ptr[6];
-      out->d[3] = s_ptr[7];
-      neon_transform_transposed_4rows_to_q4_0x4(&mx8x16[64], out);
+        out->d[0] = s_ptr[4];
+        out->d[1] = s_ptr[5];
+        out->d[2] = s_ptr[6];
+        out->d[3] = s_ptr[7];
+        neon_transform_transposed_4rows_to_q4_0x4(&mx8x16[64], out);
+      }
+    });
+}
+
+/**
+ * @brief NEON fp32 prefill kernel for causal depthwise Conv1D k=3.
+ *
+ * Processes all H timesteps for each batch row. The two previous values are
+ * kept in vector/scalar registers per channel block, so the causal left padding
+ * for t=0 and t=1 naturally starts from zero.
+ */
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H,
+                                unsigned int W) {
+
+  const float *w0 = packed_weight;
+  const float *w1 = packed_weight + 1 * W;
+  const float *w2 = packed_weight + 2 * W;
+
+  for (unsigned int b = 0; b < B; ++b) {
+    const float *x_base = input + static_cast<size_t>(b) * H * W;
+    float *y_base = output + static_cast<size_t>(b) * H * W;
+
+    unsigned int c = 0;
+
+    if (bias) {
+      for (; c + 4 <= W; c += 4) {
+        const float32x4_t vw0 = vld1q_f32(w0 + c);
+        const float32x4_t vw1 = vld1q_f32(w1 + c);
+        const float32x4_t vw2 = vld1q_f32(w2 + c);
+        const float32x4_t vb = vld1q_f32(bias + c);
+
+        float32x4_t prev2 = vdupq_n_f32(0.0f);
+        float32x4_t prev1 = vdupq_n_f32(0.0f);
+
+        for (unsigned int t = 0; t < H; ++t) {
+          const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
+          float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
+
+          const float32x4_t cur = vld1q_f32(x_ptr);
+
+          float32x4_t vy = vmulq_f32(cur, vw0);
+          vy = vfmaq_f32(vy, prev1, vw1);
+          vy = vfmaq_f32(vy, prev2, vw2);
+          vy = vaddq_f32(vy, vb);
+
+          vst1q_f32(y_ptr, vy);
+
+          prev2 = prev1;
+          prev1 = cur;
+        }
+      }
+
+      for (; c < W; ++c) {
+        const float sw0 = w0[c];
+        const float sw1 = w1[c];
+        const float sw2 = w2[c];
+        const float sb = bias[c];
+
+        float prev2 = 0.0f;
+        float prev1 = 0.0f;
+
+        for (unsigned int t = 0; t < H; ++t) {
+          const float cur = x_base[static_cast<size_t>(t) * W + c];
+          const float acc = cur * sw0 + prev1 * sw1 + prev2 * sw2 + sb;
+          y_base[static_cast<size_t>(t) * W + c] = acc;
+
+          prev2 = prev1;
+          prev1 = cur;
+        }
+      }
+    } else {
+      for (; c + 4 <= W; c += 4) {
+        const float32x4_t vw0 = vld1q_f32(w0 + c);
+        const float32x4_t vw1 = vld1q_f32(w1 + c);
+        const float32x4_t vw2 = vld1q_f32(w2 + c);
+
+        float32x4_t prev2 = vdupq_n_f32(0.0f);
+        float32x4_t prev1 = vdupq_n_f32(0.0f);
+
+        for (unsigned int t = 0; t < H; ++t) {
+          const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
+          float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
+
+          const float32x4_t cur = vld1q_f32(x_ptr);
+
+          float32x4_t vy = vmulq_f32(cur, vw0);
+          vy = vfmaq_f32(vy, prev1, vw1);
+          vy = vfmaq_f32(vy, prev2, vw2);
+
+          vst1q_f32(y_ptr, vy);
+
+          prev2 = prev1;
+          prev1 = cur;
+        }
+      }
+
+      for (; c < W; ++c) {
+        const float sw0 = w0[c];
+        const float sw1 = w1[c];
+        const float sw2 = w2[c];
+
+        float prev2 = 0.0f;
+        float prev1 = 0.0f;
+
+        for (unsigned int t = 0; t < H; ++t) {
+          const float cur = x_base[static_cast<size_t>(t) * W + c];
+          const float acc = cur * sw0 + prev1 * sw1 + prev2 * sw2;
+          y_base[static_cast<size_t>(t) * W + c] = acc;
+
+          prev2 = prev1;
+          prev1 = cur;
+        }
+      }
     }
+  }
+}
+
+/**
+ * @brief NEON fp32 single-token decode for causal depthwise Conv1D k=3.
+ *
+ * state[0..W-1] contains x_{t-2} and state[W..2W-1] contains x_{t-1}. The
+ * function writes y_cur and advances the rolling state to [x_{t-1} | x_t].
+ */
+void causal_depthwise_conv1d_k3_decode(const float *x_cur,
+                                       const float *packed_weight, float *state,
+                                       float *y_cur, unsigned int W) {
+  const float *w0 = packed_weight;
+  const float *w1 = packed_weight + W;
+  const float *w2 = packed_weight + 2 * W;
+  // state layout: state[0..W-1]=x_{t-2}, state[W..2W-1]=x_{t-1}
+  const float *s0 = state;
+  const float *s1 = state + W;
+
+  unsigned int c = 0;
+  for (; c + 4 <= W; c += 4) {
+    const float32x4_t vw0 = vld1q_f32(w0 + c);
+    const float32x4_t vw1 = vld1q_f32(w1 + c);
+    const float32x4_t vw2 = vld1q_f32(w2 + c);
+    const float32x4_t vx = vld1q_f32(x_cur + c);
+    const float32x4_t vs1 = vld1q_f32(s1 + c);
+    const float32x4_t vs0 = vld1q_f32(s0 + c);
+
+    float32x4_t vy = vmulq_f32(vw0, vx);
+    vy = vfmaq_f32(vy, vw1, vs1);
+    vy = vfmaq_f32(vy, vw2, vs0);
+    vst1q_f32(y_cur + c, vy);
+
+    // Update state: s0 <- s1, s1 <- x_cur
+    vst1q_f32(state + c, vs1);
+    vst1q_f32(state + W + c, vx);
+  }
+  for (; c < W; ++c) {
+    y_cur[c] = w0[c] * x_cur[c] + w1[c] * s1[c] + w2[c] * s0[c];
+    state[c] = s1[c];
+    state[W + c] = x_cur[c];
   }
 }
 

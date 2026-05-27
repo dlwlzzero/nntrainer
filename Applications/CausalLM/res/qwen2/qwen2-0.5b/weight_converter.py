@@ -37,12 +37,12 @@ def save_qwen2_for_nntrainer(params, n_layers, dtype, file):
                 save_weight(params[f"{layer_name}self_attn.{proj}.bias"])
 
     def save_feed_forward(layer_name):
-        """Save feed forward layer weights"""  
-        save_weight(params[f"{layer_name}post_attention_layernorm.weight"])   
+        """Save feed forward layer weights"""
+        save_weight(params[f"{layer_name}post_attention_layernorm.weight"])
 
-        # Save MLP projections using helper  
-        for proj in ["up_proj", "gate_proj", "down_proj"]:  
-            save_projection(layer_name, f"mlp.{proj}")  
+        # Save MLP projections using helper
+        for proj in ["gate_proj", "up_proj", "down_proj"]:
+            save_projection(layer_name, f"mlp.{proj}")
 
     # Save embedding layer  
     save_weight(params["model.embed_tokens.weight"])  

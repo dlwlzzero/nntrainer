@@ -133,14 +133,21 @@ public:
 
   /**
    * @brief     Constructor of Manager
+   *
+   * @param allocator backend allocator from the engine's Context
+   *        (CPU / SVM / RPC). Forwarded into both the weight and the
+   *        tensor pools so all dynamically requested memory comes
+   *        from the same source. Default = host CPU memory.
    */
   Manager(bool enable_fsu_, const std::string &fsu_path = "",
           unsigned int lookahead = 0, const std::string tensor_format_ = "NCHW",
           const std::string tensor_dtype_ = "FP32-FP32",
-          ExecutionMode exec_mode_ = ExecutionMode::TRAIN) :
-    weight_pool(enable_fsu_, fsu_path, "weight_pool", exec_mode_),
+          ExecutionMode exec_mode_ = ExecutionMode::TRAIN,
+          std::shared_ptr<MemAllocator> allocator =
+            std::make_shared<MemAllocator>()) :
+    weight_pool(enable_fsu_, fsu_path, "weight_pool", exec_mode_, allocator),
     tensor_pool(enable_fsu_ && (exec_mode_ == ExecutionMode::TRAIN), fsu_path,
-                "tensor_pool", exec_mode_),
+                "tensor_pool", exec_mode_, allocator),
     enable_fsu(enable_fsu_),
     enable_optimizations(true),
     fsu_lookahead(lookahead),
@@ -309,6 +316,27 @@ public:
    * @return true if tensors allocated, else false
    */
   bool isAllocated() const { return tensor_pool.isAllocated(); }
+
+  /**
+   * @brief Choose the backend allocator used by the weight and tensor pools.
+   *
+   * @param weight_backend allocator name for the weight pool (e.g. "cpu",
+   *                       "npu"). Empty string keeps the current default.
+   * @param tensor_backend allocator name for the activation/scratch pool.
+   *                       Empty string keeps the current default.
+   *
+   * Must be called before allocateTensors()/allocateWeights(). With this
+   * hook the same Manager instance can route weights and activations to
+   * different backends (e.g. weights on NPU shared memory, activations
+   * on CPU page-aligned memory).
+   */
+  void setComputeBackend(const std::string &weight_backend,
+                         const std::string &tensor_backend) {
+    if (!weight_backend.empty())
+      weight_pool.setAllocator(weight_backend);
+    if (!tensor_backend.empty())
+      tensor_pool.setAllocator(tensor_backend);
+  }
 
   /**
    * @brief Set the batch size for the inputs/outputs of the layers

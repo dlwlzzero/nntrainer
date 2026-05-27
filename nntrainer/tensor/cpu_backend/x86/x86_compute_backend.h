@@ -15,6 +15,7 @@
 #define __x86_COMPUTE_BACKEND_H__
 #ifdef __cplusplus
 
+#include <common.h>
 #include <cstdint>
 #include <limits.h>
 #include <limits>
@@ -478,10 +479,7 @@ void nntr_gemm_qai8dxp_qsi4cxp_packed(
   bool transB = true, T lower_bound = std::numeric_limits<T>::lowest(),
   T upper_bound = std::numeric_limits<T>::max());
 #endif
-/**
- * @brief Initialization of ggml backend
- */
-void init_backend();
+// init_backend() is declared in compute_ops.h (canonical location).
 
 /**
  * @copydoc unpack_q4_0x8_transpose16 in cpu_backend.h
@@ -1095,16 +1093,24 @@ template <typename T = float>
 void quantize_row_q8_K(const T *src, void *dst, int64_t k);
 
 /**
- * @brief repack q40 to q40x8
+ * @brief repack q40 to q40x8 or q40x4 depending on target ISA
+ *
+ * @details This function enables cross-platform quantization by allowing
+ * specification of target ISA format regardless of current platform.
+ * For example, quantizing on x86 but saving in ARM format.
  *
  * @param dst output repacked q40x8
  * @param src input q40
  * @param data_size total weight size
  * @param M number of rows
  * @param N number of columns
+ * @param target target ISA format (DEFAULT uses current backend, X86 forces
+ * x86 format, ARM forces ARM format)
  */
+
 void repack_q4_0(void *dst, void *src, size_t data_size, const unsigned int M,
-                 const unsigned int N);
+                 const unsigned int N,
+                 ml::train::ISA target = ml::train::ISA::DEFAULT);
 
 /**
  * @brief repack q4K to q4Kx8
@@ -1331,6 +1337,43 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                        const uint16_t *osv32_scales,
                                        size_t scale_group_size,
                                        void *dst_q4_0x);
+
+/**
+ * @brief Causal depthwise Conv1D prefill for kernel size 3.
+ *
+ * Computes output[b, t, c] = w0[c] * x[b, t, c] +
+ *                            w1[c] * x[b, t - 1, c] +
+ *                            w2[c] * x[b, t - 2, c] + bias[c].
+ * Missing causal history for t < 2 is treated as zero.
+ *
+ * @param input input tensor in contiguous [B, H, W] order
+ * @param packed_weight packed weights [w0 | w1 | w2], each W floats
+ * @param bias optional bias, W floats, can be nullptr
+ * @param output output tensor in contiguous [B, H, W] order
+ * @param B batch size
+ * @param H sequence length
+ * @param W feature width / channel count
+ */
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H, unsigned int W);
+
+/**
+ * @brief Single-token decode step for causal depthwise Conv1D kernel size 3.
+ *
+ * Uses state[0..W-1] as x_{t-2} and state[W..2W-1] as x_{t-1},
+ * computes y_cur = w0*x_cur + w1*x_{t-1} + w2*x_{t-2}, then updates
+ * the state in-place to [x_{t-1} | x_t].
+ *
+ * @param x_cur current token features, W floats
+ * @param packed_weight packed weights [w0 | w1 | w2], each W floats
+ * @param state rolling causal state, 2 * W floats, updated in-place
+ * @param y_cur output for the current token, W floats
+ * @param W feature width / channel count
+ */
+void causal_depthwise_conv1d_k3_decode(const float *x_cur,
+                                       const float *packed_weight, float *state,
+                                       float *y_cur, unsigned int W);
 
 } /* namespace nntrainer */
 #endif /* __cplusplus */

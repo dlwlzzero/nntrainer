@@ -24,6 +24,8 @@ jobs:
           step-summary: true
           format-review: true
           tidy-checks: '-*' # disable clang-tidy checks.
+          # Vendored / third-party sources keep their upstream formatting.
+          ignore: '.github|Applications/CausalLM/third_party|Applications/CausalLM/tokenizers'
 
       - name: failing fast
         if: steps.linter.outputs.clang-format-checks-failed > 0

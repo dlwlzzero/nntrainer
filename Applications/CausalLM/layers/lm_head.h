@@ -123,6 +123,7 @@ private:
   std::tuple<nntrainer::props::Unit> lmhead_props;
   std::array<unsigned int, 2> weight_idx; /**< indices of the weights */
   bool is_weight_transposed; /**< weight stored as [1,1,N,K] for HTP FP16 */
+  bool skip_prefill = false;
 };
 } // namespace causallm
 
