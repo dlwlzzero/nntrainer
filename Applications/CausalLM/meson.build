@@ -186,6 +186,17 @@ e_quantize = executable('nntr_quantize',
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
 )
 
+safetensors_info_src = [
+    meson.current_source_dir() / 'safetensors_info.cpp',
+]
+
+e_safetensors_info = executable('nntr_safetensors_info',
+    safetensors_info_src,
+    include_directories: causallm_inc,
+    dependencies: [nntrainer_dep],
+)
+
+
 # KVCacheManager unit tests
 if get_option('enable-test')
   causallm_unittest_inc = include_directories(
