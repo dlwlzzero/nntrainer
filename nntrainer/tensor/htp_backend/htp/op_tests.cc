@@ -50,9 +50,7 @@ namespace internal {
 void test_int16_fp16_conversion() {
 #if __HVX_ARCH__ < 73
   FARF(ALWAYS, "HVX native h <-> hf conversion not supported");
-  return;
-#endif
-
+#else
   static __fp16  input[64];
   static int16_t output[64];
 
@@ -66,6 +64,7 @@ void test_int16_fp16_conversion() {
   for (int i = 0; i < 64; ++i) {
     FARF(ALWAYS, "%s: x=%g y=%d", __func__, (float) input[i], output[i]);
   }
+#endif
 }
 
 void test_fp16_exp2() {

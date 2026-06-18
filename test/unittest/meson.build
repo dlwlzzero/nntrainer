@@ -151,3 +151,9 @@ subdir('models')
 if get_option('enable-tflite-interpreter')
   subdir('integration_tests')
 endif
+
+# HTP unit tests live in test/unittest/htp/ and are registered there via
+# subdir('htp') below so the subdirectory can own its own executable() rules.
+if get_option('enable-htp')
+  subdir('htp')
+endif
