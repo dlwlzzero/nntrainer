@@ -662,12 +662,12 @@ void from_string(const std::string &value, std::vector<T> &property) {
 struct TensorDataTypeInfo {
   using Enum = nntrainer::TensorDim::DataType;
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::BCQ,    Enum::QINT4, Enum::QINT8, Enum::QINT16,
-    Enum::FP16,   Enum::FP32,  Enum::UINT4, Enum::UINT8,
-    Enum::UINT16, Enum::Q4_K,  Enum::Q6_K,  Enum::Q4_0};
+    Enum::BCQ,  Enum::QINT4, Enum::QINT8,    Enum::QINT16, Enum::FP16,
+    Enum::FP32, Enum::UINT4, Enum::UINT8,    Enum::UINT16, Enum::Q4_K,
+    Enum::Q6_K, Enum::Q4_0,  Enum::Q4_0_X4X2};
   static constexpr const char *EnumStr[] = {
-    "BCQ",   "QINT4", "QINT8",  "QINT16", "FP16", "FP32",
-    "UINT4", "UINT8", "UINT16", "Q4_K",   "Q6_K", "Q4_0"};
+    "BCQ",   "QINT4",  "QINT8", "QINT16", "FP16", "FP32",     "UINT4",
+    "UINT8", "UINT16", "Q4_K",  "Q6_K",   "Q4_0", "Q4_0_X4X2"};
 };
 
 /**
@@ -705,6 +705,17 @@ struct TensorTypeInfo {
 };
 
 namespace props {
+
+/**
+ * @brief Input Data Type Enumeration Information
+ *  This property is differentiated with TensorDataType in that it doesn't have
+ *  default value
+ */
+class InputTensorDataType final : public EnumProperty<TensorDataTypeInfo> {
+public:
+  using prop_tag = enum_class_prop_tag;
+  static constexpr const char *key = "input_dtype";
+};
 
 /**
  * @brief Weight Data Type Enumeration Information

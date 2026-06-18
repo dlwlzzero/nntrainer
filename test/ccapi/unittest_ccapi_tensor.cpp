@@ -1036,8 +1036,8 @@ TEST(nntrainer_ccapi_graph, picogpt_style_inference_p) {
   std::memcpy(wpe_input_data, &wpe_token, sizeof(unsigned int));
 
   std::vector<float *> output_bufs;
-  EXPECT_NO_THROW(output_bufs =
-                    model->inference(1, {wte_input_data, wpe_input_data}));
+  EXPECT_NO_THROW(output_bufs = model->inference(
+                    1, std::vector<float *>{wte_input_data, wpe_input_data}));
   EXPECT_FALSE(output_bufs.empty());
 }
 
@@ -1480,7 +1480,8 @@ TEST(nntrainer_ccapi_graph, causallm_style_multi_input_p) {
   // --- Run inference with dummy data ---
   std::vector<float> input_data(SEQ_LEN, 1.0f);
   std::vector<float *> output_bufs;
-  EXPECT_NO_THROW(output_bufs = model->inference(1, {input_data.data()}));
+  EXPECT_NO_THROW(output_bufs = model->inference(
+                    1, std::vector<float *>{input_data.data()}));
   EXPECT_FALSE(output_bufs.empty());
   EXPECT_NE(output_bufs[0], nullptr);
 }

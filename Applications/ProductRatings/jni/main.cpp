@@ -266,8 +266,8 @@ int main(int argc, char *argv[]) {
         auto input_tensor = ml::train::Tensor::fromData(
           {1, 1, 1, feature_size}, o.data(), "inference_input");
 
-        auto results =
-          model->inference(1, {input_tensor.mutable_data<float>()}, {});
+        auto results = model->inference(
+          1, std::vector<float *>{input_tensor.mutable_data<float>()}, {});
 
         // Wrap output and apply step function
         auto output = ml::train::Tensor::fromData({1, 1, 1, 1}, results[0],

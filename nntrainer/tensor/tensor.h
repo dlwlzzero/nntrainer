@@ -1649,6 +1649,8 @@ public:
    */
   void save(std::ostream &file);
 
+  void save_quantization_info(std::ostream &file);
+
   /**
    * @brief     Read the Tensor from file
    * @param[in] file input file stream
@@ -1668,6 +1670,8 @@ public:
    */
   void read(ReadSource src, size_t start_offset = 0,
             bool read_from_offset = false, int file_fd = -1);
+
+  void read_quantization_info(std::ifstream &file);
 
   /**
    * @brief     return argument index which value is max by batch

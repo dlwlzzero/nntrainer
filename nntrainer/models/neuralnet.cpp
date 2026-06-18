@@ -90,6 +90,7 @@ Tensor mapExternalTensor(float *buf, const TensorDim &dim) {
   case TensorDim::DataType::Q4_K:
   case TensorDim::DataType::Q6_K:
   case TensorDim::DataType::Q4_0:
+  case TensorDim::DataType::Q4_0_X4X2:
     return Tensor::Map<uint8_t>(reinterpret_cast<uint8_t *>(buf), bytes, dim,
                                 0);
   case TensorDim::DataType::UINT32:
@@ -940,7 +941,8 @@ void NeuralNetwork::load(const std::string &file_path,
       if (tensor_data_type != TensorDim::DataType::FP32 &&
           tensor_data_type != TensorDim::DataType::FP16 &&
           tensor_data_type != TensorDim::DataType::Q6_K &&
-          tensor_data_type != TensorDim::DataType::Q4_0) {
+          tensor_data_type != TensorDim::DataType::Q4_0 &&
+          tensor_data_type != TensorDim::DataType::Q4_0_X4X2) {
         // for tensor with qparam
         size += sizeof(uint16_t);
       }
@@ -1310,6 +1312,31 @@ float NeuralNetwork::getLoss() {
 
 void NeuralNetwork::setLoss(float l) { loss = l; }
 
+size_t NeuralNetwork::getTotalModelBytes() const {
+  size_t total_bytes = 0;
+
+  for (auto iter = model_graph.cbegin(); iter != model_graph.cend(); iter++) {
+    auto weights = (*iter)->getRunContext().getWeights();
+    for (auto weight : weights) {
+      size_t size = weight->getVariable().getMemoryBytes();
+      auto tensor_data_type = weight->getDim().getDataType();
+
+      // Add qparam size for quantized tensors that use qparams
+      if (tensor_data_type != TensorDim::DataType::FP32 &&
+          tensor_data_type != TensorDim::DataType::FP16 &&
+          tensor_data_type != TensorDim::DataType::Q6_K &&
+          tensor_data_type != TensorDim::DataType::Q4_0 &&
+          tensor_data_type != TensorDim::DataType::Q4_0_X4X2) {
+        size += sizeof(uint16_t);
+      }
+
+      total_bytes += size;
+    }
+  }
+
+  return total_bytes;
+}
+
 NeuralNetwork &NeuralNetwork::copy(NeuralNetwork &from) {
   if (this != &from) {
     model_props = from.model_props;
@@ -1424,6 +1451,87 @@ sharedConstTensors NeuralNetwork::inference(sharedConstTensors X,
   model_graph.setInputsLabels({}, {});
 
   return out;
+}
+
+std::vector<IO_TensorType>
+NeuralNetwork::inference(unsigned int batch_size,
+                         const std::vector<IO_TensorType> &input,
+                         const std::vector<IO_TensorType> &label) {
+  sharedConstTensors input_tensors, output_tensors;
+  auto in_dim = getInputDimension();
+
+  input_tensors.reserve(input.size());
+  for (unsigned int idx = 0; idx < in_dim.size(); idx++) {
+    in_dim[idx].batch(batch_size);
+    std::visit(
+      [&input_tensors, &in_dim, idx](auto &&input_ptr) {
+        input_tensors.emplace_back(MAKE_SHARED_TENSOR(
+          Tensor::Map(input_ptr, in_dim[idx].getDataLen() * sizeof(*input_ptr),
+                      in_dim[idx], 0)));
+      },
+      input[idx]);
+  }
+
+  if (!label.empty()) {
+    sharedConstTensors label_tensors;
+    auto label_dim = getOutputDimension();
+    label_tensors.reserve(label.size());
+    for (unsigned int idx = 0; idx < label_dim.size(); idx++) {
+      label_dim[idx].batch(batch_size);
+      std::visit(
+        [&label_tensors, &label_dim, idx](auto &&label_ptr) {
+          label_tensors.emplace_back(MAKE_SHARED_TENSOR(Tensor::Map(
+            label_ptr, label_dim[idx].getDataLen() * sizeof(*label_ptr),
+            label_dim[idx], 0)));
+        },
+        label[idx]);
+    }
+    output_tensors = inference(input_tensors, label_tensors, false);
+  } else {
+    output_tensors = inference(input_tensors, false);
+  }
+
+  std::vector<IO_TensorType> output;
+  output.reserve(output_tensors.size());
+
+  for (auto &out : output_tensors) {
+    auto out_t = *out.get();
+    switch (out_t.getDataType()) {
+    case ml::train::TensorDim::DataType::QINT4:
+    case ml::train::TensorDim::DataType::QINT8:
+      output.push_back(out_t.getData<int8_t>());
+      break;
+    case ml::train::TensorDim::DataType::QINT16:
+      output.push_back(out_t.getData<int16_t>());
+      break;
+    case ml::train::TensorDim::DataType::BCQ:
+      output.push_back(out_t.getData<uint32_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT4:
+    case ml::train::TensorDim::DataType::UINT8:
+      output.push_back(out_t.getData<uint8_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT16:
+      output.push_back(out_t.getData<uint16_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT32:
+      output.push_back(out_t.getData<uint32_t>());
+      break;
+    case ml::train::TensorDim::DataType::FP32:
+      output.push_back(out_t.getData());
+      break;
+#ifdef ENABLE_FP16
+    case ml::train::TensorDim::DataType::FP16:
+      output.push_back(out_t.getData<_FP16>());
+      break;
+#endif
+    default:
+      output.push_back(out_t.getData());
+      break;
+    }
+  }
+
+  return output;
 }
 
 std::vector<float *>

@@ -17,9 +17,10 @@
 #ifdef __cplusplus
 
 #include <array>
-#include <iosfwd>
-
 #include <bitset>
+#include <cstdint>
+#include <iosfwd>
+#include <variant>
 #include <vector>
 
 #ifdef ENABLE_FP16
@@ -39,6 +40,14 @@ namespace train {
  */
 class TensorDim {
 public:
+#ifdef ENABLE_FP16
+  using IO_TensorType = std::variant<float *, uint32_t *, uint16_t *, uint8_t *,
+                                     int16_t *, int8_t *, _FP16 *>;
+#else
+  using IO_TensorType = std::variant<float *, uint32_t *, uint16_t *, uint8_t *,
+                                     int16_t *, int8_t *>;
+#endif
+
   static constexpr const size_t MAXDIM = 4;
 
   /**
@@ -53,20 +62,21 @@ public:
    * FP16 & FP32
    */
   enum class DataType {
-    QINT4,  /** quantized int 4*/
-    QINT8,  /** quantized int 8*/
-    QINT16, /** quantized int 16*/
-    BCQ,    /** binary-code-based quantized*/
-    Q4_K,   /** Q4_K quantized*/
-    Q6_K,   /** q6 k quantized */
-    Q4_0,   /** Q4_0 k quantized */
-    UINT4,  /** quantized unsigned int 4*/
-    UINT8,  /** unsigned int 8 bit */
-    UINT16, /** unsigned int 16 bit */
-    UINT32, /** unsigned int 32 bit */
-    FP16,   /** half precision */
-    FP32,   /** single precision */
-    NONE,   /** not specified */
+    QINT4,     /** quantized int 4*/
+    QINT8,     /** quantized int 8*/
+    QINT16,    /** quantized int 16*/
+    BCQ,       /** binary-code-based quantized*/
+    Q4_K,      /** Q4_K quantized*/
+    Q6_K,      /** q6 k quantized */
+    Q4_0,      /** Q4_0 k quantized */
+    UINT4,     /** quantized unsigned int 4*/
+    UINT8,     /** unsigned int 8 bit */
+    UINT16,    /** unsigned int 16 bit */
+    UINT32,    /** unsigned int 32 bit */
+    FP16,      /** half precision */
+    FP32,      /** single precision */
+    Q4_0_X4X2, /** Q4_0 stored in DSP-native x4x2 row-strided layout */
+    NONE,      /** not specified */
   };
 
   /**

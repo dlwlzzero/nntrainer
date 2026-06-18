@@ -31,6 +31,7 @@
 #include <common.h>
 #include <cpu_backend.h>
 #include <layer_context.h>
+#include <q4_0_x4x2_save.h>
 #include <tensor_dim.h>
 
 namespace ml::train {
@@ -411,12 +412,67 @@ public:
                             quant_weight.size(), N, K, target_isa);
                 quant_weight.save(file);
               }
+            } else if (dtype == TensorDim::DataType::Q4_0_X4X2) {
+              NNTR_THROW_IF(weight.getDataType() != TensorDim::DataType::FP32,
+                            std::runtime_error)
+                << "Save with quantization only supports for FP32 weight.";
+              TensorDim dim = weight.getDim();
+              unsigned int K = dim.height();
+              unsigned int N = dim.width();
+
+              // Bias-like tensors (height == 1) are not block-quantized.
+              if (K == 1) {
+                weight.save(file);
+              } else {
+                // x4x2 eligibility (all-or-nothing for the model). qwen3-0.6b
+                // satisfies this for every FC tensor; ineligible dims fail
+                // loudly so the whole-model x4x2 contract is never violated.
+                NNTR_THROW_IF(K % 256 != 0 || N % 4 != 0 || N % 32 != 0,
+                              std::invalid_argument)
+                  << "Q4_0_X4X2 requires K%256==0 && N%4==0 && N%32==0, but "
+                     "got "
+                     "height(K)="
+                  << K << ", width(N)=" << N
+                  << ". This FC tensor is not x4x2-eligible.";
+
+                Tensor weight_t = weight.transpose("0:2:1");
+                Tensor quant_weight(dim.batch(), dim.channel(), K, N,
+                                    {Tformat::NCHW, dtype});
+                // Quantize FP32 -> plain Q4_0 -> x4x2 bytes via the shim (keeps
+                // q4_0_utils.h's global block_q4_0 out of this header).
+                quantizeAndRepackQ4_0X4x2(weight_t.getData<float>(),
+                                          quant_weight.getData<uint8_t>(), N,
+                                          K);
+                quant_weight.save(file);
+              }
             } else {
               NNTR_THROW_IF(true, std::runtime_error)
                 << "This dtype is not supported in save with quantization";
             }
           }
         }
+      }
+    }
+  }
+
+  /**
+   * @brief     save layer Weight & Bias data from file
+   * @param file output file stream
+   * @param run_context run context for the layer
+   * @param opt_var boolean variable whether saving optimizer variables
+   * @param mode Execution mode
+   * @param trainable is there trainable weight
+   * @param definedWeightDataType current data type of the layer
+   */
+  virtual void
+  save_quantization_info(std::ofstream &file, RunLayerContext &run_context,
+                         bool opt_var, ml::train::ExecutionMode mode,
+                         bool trainable,
+                         TensorDim::DataType definedWeightDataType) const {
+    // @note shared weights are only be saved at the first access
+    for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
+      if (run_context.isGradientFirstAccess(i)) {
+        run_context.getWeight(i).save_quantization_info(file);
       }
     }
   }
@@ -521,6 +577,16 @@ public:
           }
         }
       }
+    }
+  }
+
+  virtual void
+  read_quantization_info(std::ifstream &file, RunLayerContext &run_context,
+                         bool opt_var, ml::train::ExecutionMode mode,
+                         bool trainable,
+                         TensorDim::DataType defineWeightDataType) {
+    for (unsigned int i = 0; i < run_context.getNumWeights(); ++i) {
+      run_context.getWeight(i).read_quantization_info(file);
     }
   }
 
