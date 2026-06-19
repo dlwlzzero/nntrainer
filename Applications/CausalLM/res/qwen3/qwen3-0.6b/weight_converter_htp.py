@@ -55,6 +55,9 @@ if _SCRIPT_DIR not in sys.path:
 
 from q4_0_x4x2_quant import quantize_and_repack_q4_0_x4x2, x4x2_row_stride
 
+# Module-level flag to suppress per-tensor logging during synthetic self-test.
+_QUIET = False
+
 
 def save_qwen3_for_nntrainer_htp(params, n_layers, file, tie_word_embeddings=True):
     """Convert and save weights in Q4_0 x4x2 format for the HTP DSP backend.
@@ -78,6 +81,8 @@ def save_qwen3_for_nntrainer_htp(params, n_layers, file, tie_word_embeddings=Tru
             weight = weight.detach().cpu().numpy()
         arr = np.ascontiguousarray(np.asarray(weight, dtype=np.float32))
         file.write(arr.tobytes())
+        if not _QUIET:
+            print(f"  [fp32] {weight.shape} -> {arr.nbytes} bytes")
 
     def save_linear_x4x2(weight, key_hint=""):
         """Write a Linear weight as Q4_0 x4x2 bytes, with FP32 fallback.
@@ -101,15 +106,16 @@ def save_qwen3_for_nntrainer_htp(params, n_layers, file, tie_word_embeddings=Tru
         N, K = w.shape  # HF: [out=N, in=K] — fed as-is to x4x2 quantizer.
         try:
             packed = quantize_and_repack_q4_0_x4x2(np.ascontiguousarray(w))
-            file.write(packed)
             expected = N * x4x2_row_stride(K)
             assert len(packed) == expected, (
                 f"x4x2 byte count mismatch for {key_hint}: "
                 f"got {len(packed)}, expected {expected}"
             )
-            print(
-                f"  [x4x2] {key_hint or '?'}: N={N}, K={K} -> {len(packed)} bytes"
-            )
+            file.write(packed)
+            if not _QUIET:
+                print(
+                    f"  [x4x2] {key_hint or '?'}: N={N}, K={K} -> {len(packed)} bytes"
+                )
         except ValueError as exc:
             print(
                 f"  [warn] {key_hint or '?'}: shape [{N},{K}] not x4x2-aligned "
@@ -154,7 +160,8 @@ def save_qwen3_for_nntrainer_htp(params, n_layers, file, tie_word_embeddings=Tru
             # Qwen3 per-head QK norms (FP32, consumed by RMSNorm kernel).
             proj_norm_name = f"{layer_name}self_attn.{proj[0]}_norm.weight"
             if proj_norm_name in params:
-                print(f"  [fp32] {proj_norm_name}")
+                if not _QUIET:
+                    print(f"  [fp32] {proj_norm_name}")
                 save_fp32(params[proj_norm_name])
 
     def save_feed_forward(layer_name):
@@ -200,6 +207,8 @@ def _run_synthetic_test():
          with tied embeddings and with q_norm/k_norm present.
     """
     import io
+    global _QUIET
+    _QUIET = True
 
     rng = np.random.default_rng(42)
 
@@ -284,6 +293,7 @@ def _run_synthetic_test():
     assert total == expected_bytes, (
         f"Synthetic test FAILED: wrote {total} bytes, expected {expected_bytes}"
     )
+    _QUIET = False
     print(
         f"[synthetic-test] PASS: 1-layer model, "
         f"{total} bytes == {expected_bytes} expected"
