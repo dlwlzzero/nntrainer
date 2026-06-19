@@ -34,7 +34,7 @@ HTP 백엔드를 단말(디바이스)에서 테스트할 때마다 그 결과를
 
 - **일시(date/time):** YYYY-MM-DD HH:MM:SS KST   ← 필수
 - **단말:** Galaxy S25 Ultra (SM-S938), Snapdragon 8 Elite (SM8750), Hexagon V79, arm64-v8a
-- **DSP_ARCH:** v79
+- **DSP_ARCH:** v75 (build target; HW는 V79, SDK 6.0.0.2 최대 v75)
 - **Hexagon SDK:** 6.0.0.2 (/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.0.0.2)
 - **브랜치 / 커밋:** htp_libs_integration @ <git rev-parse --short HEAD>
 - **빌드 옵션:** -Denable-htp=true -Dmmap-read=false ...
