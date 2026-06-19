@@ -26,9 +26,15 @@ The build produces two shared libraries:
   option inside `build_htp.sh`. Set it to `v73` or `v75` depending on the
   Android device before running the build.
   ```
-  # use can choose v73, v75, v79
+  # Hexagon SDK 6.0.0.2 supports up to v75 (v68/v69/v73/v75).
+  # choose one of: v68, v69, v73, v75
   build_cmake hexagon DSP_ARCH=<dsp_ver>
   ```
+  > **Note:** Hexagon SDK 6.0.0.2 only ships toolchain libraries up to `v75`,
+  > so `v79` is not a valid `DSP_ARCH`. Newer hardware such as the Hexagon
+  > **V79** in the Galaxy S25 Ultra (Snapdragon 8 Elite) runs a `v75` skel
+  > via Hexagon backward compatibility — build with `DSP_ARCH=v75` and it is
+  > verified to work on V79 hardware.
 
 ## Build Instructions
 
