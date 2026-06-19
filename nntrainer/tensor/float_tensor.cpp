@@ -29,6 +29,7 @@
 #include "htp_interface.h"
 #include "q4_0_utils.h"
 
+#include <climits>
 #include <mutex>
 #include <unordered_map>
 #endif
@@ -72,6 +73,16 @@ thread_local HtpScratchBuf g_htp_scratch{};
 
 inline size_t htp_align_up(size_t x, size_t a) {
   return (x + a - 1) & ~(a - 1);
+}
+
+// The DSP matmul kernels take their shared-memory byte offsets as 32-bit ints
+// (see htp_interface.h). For a very large prefill matmul the output region's
+// byte offset (~M*K*sizeof(float)) can exceed INT_MAX and would silently
+// truncate when narrowed to int, making the kernel read/write the wrong
+// address and corrupt the result. Callers gate every HTP dispatch on this and
+// fall back to the CPU path when an offset does not fit.
+inline bool htp_offset_fits_int(size_t off) {
+  return off <= static_cast<size_t>(INT_MAX);
 }
 } // namespace
 #endif // ENABLE_HTP
@@ -928,7 +939,10 @@ Tensor &FloatTensor::dotFloat(Tensor const &input, Tensor &output, bool trans,
 
         int err = htp.alloc_shared_mem_buf(&io_buf, &io_fd, total_size);
 
-        if (err == 0) {
+        // out_offset is the largest offset here (act_offset < wt_offset <
+        // out_offset); if it fits in int so do the others. Skip HTP and use
+        // the CPU path when it would truncate.
+        if (err == 0 && htp_offset_fits_int(out_offset)) {
           char *base = static_cast<char *>(io_buf);
           memcpy(base + act_offset, data, act_size);
 
@@ -1112,7 +1126,9 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
             }
           }
 
-          if (scratch_ok) {
+          // act_off is 0; out_off is the only offset that can grow. Skip HTP
+          // (use CPU) when it would truncate on narrowing to the kernel's int.
+          if (scratch_ok && htp_offset_fits_int(out_off)) {
             char *base = static_cast<char *>(g_htp_scratch.ptr);
             memcpy(base + act_off, data, act_size);
 
@@ -1334,7 +1350,9 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
               }
             }
 
-            if (scratch_ok) {
+            // act_off is 0; out_off is the only offset that can grow. Skip HTP
+            // (use CPU) when it would truncate on narrowing to the kernel's int.
+            if (scratch_ok && htp_offset_fits_int(out_off)) {
               char *base = static_cast<char *>(g_htp_scratch.ptr);
               memcpy(base + act_off, data, act_size);
 
