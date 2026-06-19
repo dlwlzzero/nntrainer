@@ -5,7 +5,7 @@
 
     "fc_layer_dtype" : "FP16",
     "embedding_dtype" : "FP32",
-    "lmhead_dtype" : "FP16",
+    "lmhead_dtype" : "FP32",
 
     "lora_rank" : 0,
     "lora_alpha" : 0,

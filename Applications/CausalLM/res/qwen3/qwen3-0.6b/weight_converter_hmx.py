@@ -105,8 +105,16 @@ def _self_test_permute():
 _self_test_permute()
 
 
-def save_qwen3_for_nntrainer_hmx(params, n_layers, file):
-    """Convert and save weights in HMX-ready format for the HTP backend."""
+def save_qwen3_for_nntrainer_hmx(params, n_layers, file, tie_word_embeddings=True):
+    """Convert and save weights in HMX-ready format for the HTP backend.
+
+    When tie_word_embeddings is True (Qwen3-0.6B default), lm_head shares the
+    embed_tokens weight at runtime (causal_lm.cpp wires the tied lm_head with
+    shared_from=embedding0), so NO separate lm_head weight is written. Writing
+    one would only append trailing bytes the offset-based loader never reads,
+    and it would force lmhead_dtype to differ from the (FP32) embedding it
+    shares, tripping the requestOrExtend dimension check on embedding0:Embedding.
+    """
 
     def save_fp32(weight):
         np.array(weight, dtype=np.float32).tofile(file)
@@ -179,9 +187,15 @@ def save_qwen3_for_nntrainer_hmx(params, n_layers, file):
         save_attention(layer_prefix)
         save_feed_forward(layer_prefix)
 
-    # Final RMSNorm (FP32) and lm_head Linear (FP16, no permute).
+    # Final RMSNorm (FP32).
     save_fp32(params["model.norm.weight"])
-    save_linear_fp16(params["lm_head.weight"])
+
+    # lm_head Linear (tile-permuted FP16) — only when NOT tied. For a tied
+    # model the runtime reuses embed_tokens (no separate lm_head weight read),
+    # so writing one is both wrong (dtype clash with the FP32 embedding) and
+    # wasteful (unread trailing bytes).
+    if not tie_word_embeddings:
+        save_linear_fp16(params["lm_head.weight"])
 
 
 if __name__ == "__main__":
@@ -203,7 +217,13 @@ if __name__ == "__main__":
     )
     model.eval()
 
+    tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
+    print(f"tie_word_embeddings: {tie_word_embeddings}")
+
     with open(output_name, "wb") as f_model:
         save_qwen3_for_nntrainer_hmx(
-            model.state_dict(), config.num_hidden_layers, f_model
+            model.state_dict(),
+            config.num_hidden_layers,
+            f_model,
+            tie_word_embeddings=tie_word_embeddings,
         )
