@@ -1060,7 +1060,9 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   // lazily to fit the largest (act + out) pair seen so far. Together this
   // eliminates ~1 GB of weight memcpy and ~197 rpcmem_alloc/fastrpc_mmap
   // pairs per decoded token on Qwen3-0.6B.
-  if (!trans && trans_in && beta == 0.0f && (K % 32 == 0) && (N % 32 == 0)) {
+  // pwf16 weight는 [K,N]로 전치되어 타일-퍼뮤트 저장되므로 런타임 전치 불필요.
+  // 동작 중인 pwqk0 가드(:1237)와 동일하게 trans_in을 검사하지 않는다.
+  if (!trans && beta == 0.0f && (K % 32 == 0) && (N % 32 == 0)) {
     auto &htp = nntrainer::htp::HtpInterface::instance();
     if (htp.htp_ops_mat_mul_af32_pwf16_of32 && htp.alloc_shared_mem_buf &&
         htp.free_shared_mem_buf && htp.get_global_handle) {
