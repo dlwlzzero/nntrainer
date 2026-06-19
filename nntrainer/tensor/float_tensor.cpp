@@ -1046,7 +1046,7 @@ Tensor &FloatTensor::dotFloat32Float16(Tensor const &input, Tensor &output,
   // (total bytes = N * K * sizeof(_FP16); tile_idx = j0*(K/32) + i0;
   //  intra-tile address = (i1 & ~1)*32 + j1*2 + (i1 & 1)). The offline
   // converter that produces this byte layout lives in
-  // Applications/CausalLM/res/qwen3/qwen3-4b/weight_converter_hmx.py
+  // Applications/CausalLM/res/qwen3/qwen3-0.6b/weight_converter_hmx.py
   // (permute_weight_to_fp16_tiles); the C reference is at
   // test/unittest/unittest_htp_kernels.cpp:38-51. The kernel additionally
   // requires K%32==0 and N%32==0 (128B VLEN alignment); when this does
