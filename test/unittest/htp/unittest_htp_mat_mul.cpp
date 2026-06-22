@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <random>
 #include <gtest/gtest.h>
 
 #if defined(ENABLE_HTP)
@@ -476,6 +477,127 @@ DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(1, 1024, 1024);
 DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(32, 1024, 256);
 DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(32, 256, 1024);
 DECLARE_mat_mul_af32_pwqk0_of32_test_M_K_N(28, 256, 256);
+
+/* ============================================================
+ * mat_mul_q4x2_nibble_latency
+ *
+ * Synthesizes x4x2 bytes from random nibbles + FP16 scales (no real
+ * quantization) so the CPU reference is exact (q-8)*scale. Divergence
+ * is only FP16 mul/acc rounding. Prints MSE and 20-iter avg latency.
+ * ============================================================
+ */
+static void run_mat_mul_q4x2_nibble_latency_test(uint32_t M, uint32_t K,
+                                                 uint32_t N) {
+  auto &htp = htp::HtpInterface::instance();
+  ASSERT_NE(htp.htp_ops_mat_mul_af32_pwqk0_of32, nullptr)
+    << "HTP library not loaded";
+  auto handle = htp.get_global_handle();
+  ASSERT_NE(handle, (uint64_t)0) << "DSP session not opened";
+
+  ASSERT_EQ(K % 256, 0u) << "K must be multiple of 256";
+  ASSERT_EQ(N % 32, 0u)  << "N must be multiple of 32";
+
+  const int    groups_per_row = (int)(K / 32);
+  const int    quants_per_row = (int)(K / 2);
+  const int    n_superblocks  = (int)(K / 256);
+  const size_t row_stride     = (size_t)quants_per_row + (size_t)n_superblocks * 16;
+  const size_t wt_size        = N * row_stride;
+
+  std::vector<float>   act(M * K);
+  std::vector<float>   wref(N * K, 0.0f);
+  std::vector<uint8_t> wt(wt_size, 0);
+  std::vector<float>   ref_out(M * N, 0.0f);
+
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<float> act_dist(-1.0f, 1.0f);
+  std::uniform_int_distribution<int>    nibble_dist(0, 15);
+  std::uniform_real_distribution<float> scale_dist(0.01f, 0.1f);
+
+  for (auto &v : act)
+    v = act_dist(rng);
+
+  for (uint32_t r = 0; r < N; ++r) {
+    uint8_t  *row   = wt.data() + r * row_stride;
+    uint8_t  *qbase = row;
+    uint16_t *sbase = reinterpret_cast<uint16_t *>(row + quants_per_row);
+
+    for (int g = 0; g < groups_per_row; ++g) {
+      int sb  = g / 8,  gsb = g % 8;
+      int sub = gsb / 4, gis = gsb % 4;
+      int q_off = sb * 128 + sub * 64 + gis * 16;
+
+      float    sf  = scale_dist(rng);
+      uint16_t sfp = compute_fp32_to_fp16(sf);
+      sbase[sb * 8 + gsb] = sfp;
+      float actual = compute_fp16_to_fp32(sfp);
+
+      for (int j = 0; j < 16; ++j) {
+        int q_lo = nibble_dist(rng), q_hi = nibble_dist(rng);
+        qbase[q_off + j] = (uint8_t)(q_lo | (q_hi << 4));
+        wref[r * K + g * 32 + j]      = (q_lo - 8) * actual;
+        wref[r * K + g * 32 + j + 16] = (q_hi - 8) * actual;
+      }
+    }
+  }
+
+  for (uint32_t i = 0; i < M; ++i)
+    for (uint32_t j = 0; j < N; ++j) {
+      float acc = 0.0f;
+      for (uint32_t l = 0; l < K; ++l)
+        acc += act[i * K + l] * wref[j * K + l];
+      ref_out[i * N + j] = acc;
+    }
+
+  float   *out_ptr = nullptr, *act_ptr = nullptr;
+  uint8_t *wt_ptr  = nullptr;
+  int      out_fd, act_fd, wt_fd;
+  ASSERT_EQ(htp.alloc_shared_mem_buf((void **)&out_ptr, &out_fd, M * N * sizeof(float)), 0);
+  ASSERT_EQ(htp.alloc_shared_mem_buf((void **)&act_ptr, &act_fd, M * K * sizeof(float)), 0);
+  ASSERT_EQ(htp.alloc_shared_mem_buf((void **)&wt_ptr,  &wt_fd,  wt_size), 0);
+
+  memcpy(act_ptr, act.data(), M * K * sizeof(float));
+  memcpy(wt_ptr,  wt.data(),  wt_size);
+
+  // warmup
+  htp.htp_ops_mat_mul_af32_pwqk0_of32(handle, out_fd, 0, act_fd, 0,
+                                       wt_fd, 0, M, K, N, /*wgt=*/2);
+
+  const int N_ITER = 20;
+  int64_t t0 = htp_now_us();
+  for (int i = 0; i < N_ITER; ++i)
+    htp.htp_ops_mat_mul_af32_pwqk0_of32(handle, out_fd, 0, act_fd, 0,
+                                         wt_fd, 0, M, K, N, /*wgt=*/2);
+  int64_t elapsed_us = htp_now_us() - t0;
+
+  std::vector<float> dsp_out(M * N);
+  memcpy(dsp_out.data(), out_ptr, M * N * sizeof(float));
+
+  float mse_err = mse<float>(dsp_out.data(), ref_out.data(), M * N);
+
+  std::cout << "Q4_0 x4x2 vector " << M << "x" << K << "x" << N
+            << "  MSE=" << mse_err
+            << "  avg_latency=" << (elapsed_us / N_ITER) << "us" << std::endl;
+
+  EXPECT_IN_RANGE(mse_err, 0.0f, 0.5f);
+
+  htp.free_shared_mem_buf(out_ptr, out_fd, M * N * sizeof(float));
+  htp.free_shared_mem_buf(act_ptr, act_fd, M * K * sizeof(float));
+  htp.free_shared_mem_buf(wt_ptr,  wt_fd,  wt_size);
+}
+
+#define DECLARE_mat_mul_q4x2_nibble_latency_test(M, K, N)                     \
+  TEST(nntrainer_htp_mat_mul, mat_mul_q4x2_nibble_latency_##M##_##K##_##N) { \
+    run_mat_mul_q4x2_nibble_latency_test(M, K, N);                            \
+  }
+
+// Qwen3-0.6B representative shapes (hidden=1024, intermediate=3072)
+DECLARE_mat_mul_q4x2_nibble_latency_test(1,   1024, 1024);   // decode: attn proj
+DECLARE_mat_mul_q4x2_nibble_latency_test(1,   1024, 3072);   // decode: FFN up/gate
+DECLARE_mat_mul_q4x2_nibble_latency_test(1,   3072, 1024);   // decode: FFN down
+DECLARE_mat_mul_q4x2_nibble_latency_test(32,  1024, 1024);   // batch: attn proj
+DECLARE_mat_mul_q4x2_nibble_latency_test(32,  1024, 3072);   // batch: FFN up/gate
+DECLARE_mat_mul_q4x2_nibble_latency_test(32,  3072, 1024);   // batch: FFN down
+DECLARE_mat_mul_q4x2_nibble_latency_test(256, 1024, 3072);   // prefill: FFN up/gate
 
 #else
 
