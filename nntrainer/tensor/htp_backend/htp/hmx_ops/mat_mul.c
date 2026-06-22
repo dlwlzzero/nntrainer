@@ -716,7 +716,10 @@ void dequantize_common_weight_chunk_qk_0_to_fp16_hvx(__fp16 *vtcm_dst, const voi
 static inline HVX_Vector dequantize_x4x2_group_q4_0(const uint8_t *quants,
                                                      const __fp16 *scale,
                                                      HVX_Vector vlut_cvt) {
-  HVX_Vector vq = vmemu(quants);  // reads 128B; only first 16 used
+  // vmemu reads 128B; only the first 16 quant bytes are meaningful.
+  // Safe because row_stride >> 128 for all shapes reaching this function
+  // (min row_stride = K/2 + n_superblocks*16 >= 128 for K>=256).
+  HVX_Vector vq = vmemu(quants);
 
   HVX_Vector v_qs_lo = vq;
   HVX_Vector v_qs_hi = Q6_Vub_vlsr_VubR(vq, 4);
@@ -766,7 +769,7 @@ static void dequantize_x4x2_weight_to_fp16_tiles_task_scalar(
     __fp16 *tile = vtcm_dst + t * HMX_FP16_TILE_N_ELMS;
 
     // Q8_0 레이아웃: super-block 32바이트 = scale(2B) + quant(30B), group=30 elems
-    // (기존 786-810줄 코드 그대로 유지)
+    // Q8_0: 32-element groups, int8 quants * FP16 scale.
     int abs_group_idx = (k_offset / 32) + kt;
     int sb_idx        = abs_group_idx / 8;
     int grp_in_sb     = abs_group_idx % 8;
