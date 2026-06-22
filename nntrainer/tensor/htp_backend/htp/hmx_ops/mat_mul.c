@@ -710,6 +710,28 @@ void dequantize_common_weight_chunk_qk_0_to_fp16_hvx(__fp16 *vtcm_dst, const voi
 
 // ==================== x4x2 dequantization kernels ====================
 
+// One x4x2 Q4_0/IQ4_NL group: 16 nibble-packed bytes + one FP16 scale
+// -> 32 FP16 values in k_local order (lanes 0..31).
+// Takes scale separately because x4x2 stores scales in a separate row region.
+static inline HVX_Vector dequantize_x4x2_group_q4_0(const uint8_t *quants,
+                                                     const __fp16 *scale,
+                                                     HVX_Vector vlut_cvt) {
+  HVX_Vector vq = vmemu(quants);  // reads 128B; only first 16 used
+
+  HVX_Vector v_qs_lo = vq;
+  HVX_Vector v_qs_hi = Q6_Vub_vlsr_VubR(vq, 4);
+
+  HVX_Vector v_lo_rot = Q6_V_vror_VR(v_qs_lo, 16);
+  HVX_Vector v_quants = Q6_V_vlalign_VVR(v_qs_hi, v_lo_rot, 16);
+
+  HVX_VectorPair vp       = Q6_Wh_vlut16_VbVhR_nomatch(v_quants, vlut_cvt, 0);
+  HVX_Vector     v_grp_hf = Q6_V_lo_W(Q6_W_vshuff_VVR(Q6_V_hi_W(vp), Q6_V_lo_W(vp), -2));
+
+  HVX_Vector v_scale = Q6_Vh_vsplat_R(fp16_to_bits((__fp16 *)scale));
+  v_grp_hf = Q6_Vhf_equals_Vqf16(Q6_Vqf16_vmpy_VhfVhf(v_grp_hf, v_scale));
+  return v_grp_hf;
+}
+
 // Dequantize x4x2 weight data into HMX FP16 tile layout.
 // Processes tiles [start_tile, end_tile).
 //
@@ -729,84 +751,101 @@ void dequantize_common_weight_chunk_qk_0_to_fp16_hvx(__fp16 *vtcm_dst, const voi
 // k_block:  number of K elements to process in this call
 // k_offset: starting K index within the full row (0 when processing full K)
 // full_k:   total K dimension of the weight matrix (needed for scale offset calculation)
-static void dequantize_x4x2_weight_to_fp16_tiles_task(__fp16 *restrict vtcm_dst, const uint8_t *restrict vtcm_src,
-                                                      int n_cols, int k_block, int k_offset, int full_k,
-                                                      size_t row_stride, enum ggml_type weight_type,
-                                                      int start_tile, int end_tile) {
+static void dequantize_x4x2_weight_to_fp16_tiles_task_scalar(
+    __fp16 *restrict vtcm_dst, const uint8_t *restrict vtcm_src,
+    int n_cols, int k_block, int k_offset, int full_k,
+    size_t row_stride, int start_tile, int end_tile) {
+  // Q8_0 전용. Q4_0/IQ4_NL은 _vector로 처리.
   const int n_k_tiles = k_block / HMX_FP16_TILE_N_COLS;
   // Quant region size of the FULL row (before scale blocks)
-  const int full_qrow_size = (weight_type == GGML_TYPE_Q8_0) ? full_k : (full_k / 2);
+  const int full_qrow_size = full_k;
 
   for (int t = start_tile; t < end_tile; ++t) {
-    int ct = t / n_k_tiles;  // N-dimension tile index
-    int kt = t % n_k_tiles;  // K-dimension tile index
+    int     ct   = t / n_k_tiles;
+    int     kt   = t % n_k_tiles;
+    __fp16 *tile = vtcm_dst + t * HMX_FP16_TILE_N_ELMS;
+
+    // Q8_0 레이아웃: super-block 32바이트 = scale(2B) + quant(30B), group=30 elems
+    // (기존 786-810줄 코드 그대로 유지)
+    int abs_group_idx = (k_offset / 32) + kt;
+    int sb_idx        = abs_group_idx / 8;
+    int grp_in_sb     = abs_group_idx % 8;
+
+    int q_off = sb_idx * QK_Q8_0x4x2 + grp_in_sb * 32;
+    int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+
+    for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
+      int row = ct * HMX_FP16_TILE_N_COLS + n_local;
+
+      if (row >= n_cols) {
+        for (int kl = 0; kl < 32; ++kl) {
+          tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = (__fp16) 0;
+        }
+        continue;
+      }
+
+      const uint8_t *row_data = vtcm_src + row * row_stride;
+      const int8_t  *qs       = (const int8_t *) (row_data + q_off);
+      __fp16         scale    = *((const __fp16 *) (row_data + s_off));
+      float          scale_f  = (float) scale;
+
+      for (int kl = 0; kl < 32; ++kl) {
+        __fp16 v = (__fp16) ((float) qs[kl] * scale_f);
+        tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = v;
+      }
+    }
+  }
+}
+
+// HVX-vectorized x4x2 dequant for Q4_0/IQ4_NL.
+// Same Crouton tile layout as the scalar reference.
+static void dequantize_x4x2_weight_to_fp16_tiles_task_vector(
+    __fp16 *restrict vtcm_dst, const uint8_t *restrict vtcm_src,
+    int n_cols, int k_block, int k_offset, int full_k,
+    size_t row_stride, enum ggml_type weight_type,
+    int start_tile, int end_tile) {
+  const int n_k_tiles      = k_block / HMX_FP16_TILE_N_COLS;
+  const int full_qrow_size = full_k / 2;
+
+  const HVX_Vector     vlut_cvt        = (weight_type == GGML_TYPE_IQ4_NL)
+                                           ? vmem(iq4_nl_to_fp16_lut)
+                                           : vmem(q4_0_to_fp16_lut);
+  const HVX_Vector     v_offsets_base  = vmem(common_layout_vscatter_offsets_base);
+  const HVX_VectorPred q_32_elems_mask = Q6_Q_vsetq_R(32 * sizeof(__fp16));
+  const HVX_Vector     v_zero          = Q6_V_vzero();
+
+  for (int t = start_tile; t < end_tile; ++t) {
+    int ct = t / n_k_tiles;
+    int kt = t % n_k_tiles;
 
     __fp16 *tile = vtcm_dst + t * HMX_FP16_TILE_N_ELMS;
 
-    // Absolute group index within the full row (accounting for k_offset)
     int abs_group_idx = (k_offset / 32) + kt;
     int sb_idx        = abs_group_idx / 8;
     int grp_in_sb     = abs_group_idx % 8;
     int sub_blk       = grp_in_sb / 4;
     int grp_in_sub    = grp_in_sb % 4;
 
-    if (weight_type == GGML_TYPE_Q4_0 || weight_type == GGML_TYPE_IQ4_NL) {
-      // Byte offsets within the FULL row
-      int q_off = sb_idx * 128 + sub_blk * 64 + grp_in_sub * 16;
-      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
+    int q_off = sb_idx * 128 + sub_blk * 64 + grp_in_sub * 16;
+    int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE
+                + grp_in_sb * (int)sizeof(__fp16);
 
-      for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
-        int row = ct * HMX_FP16_TILE_N_COLS + n_local;
+    for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
+      int        row     = ct * HMX_FP16_TILE_N_COLS + n_local;
+      HVX_Vector v_grp_hf;
 
-        if (row >= n_cols) {
-          // Zero-fill remaining tile rows
-          for (int kl = 0; kl < 32; ++kl) {
-            tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = (__fp16) 0;
-          }
-          continue;
-        }
-
+      if (row >= n_cols) {
+        v_grp_hf = v_zero;
+      } else {
         const uint8_t *row_data = vtcm_src + row * row_stride;
-        const uint8_t *qs       = row_data + q_off;
-        __fp16         scale    = *((const __fp16 *) (row_data + s_off));
-        float          scale_f  = (float) scale;
-
-        for (int j = 0; j < 16; ++j) {
-          int q_lo = qs[j] & 0x0F;
-          int q_hi = (qs[j] >> 4) & 0x0F;
-
-          __fp16 v_lo = (__fp16) ((float) (q_lo - 8) * scale_f);
-          __fp16 v_hi = (__fp16) ((float) (q_hi - 8) * scale_f);
-
-          // k_local = j for lo nibble (elements 0..15), j+16 for hi nibble (elements 16..31)
-          tile[(j & ~1) * 32 + n_local * 2 + (j & 1)]             = v_lo;
-          tile[((j + 16) & ~1) * 32 + n_local * 2 + ((j + 16) & 1)] = v_hi;
-        }
+        const __fp16  *scale    = (const __fp16 *)(row_data + s_off);
+        v_grp_hf = dequantize_x4x2_group_q4_0(row_data + q_off, scale, vlut_cvt);
       }
-    } else if (weight_type == GGML_TYPE_Q8_0) {
-      int q_off = sb_idx * QK_Q8_0x4x2 + grp_in_sb * 32;
-      int s_off = full_qrow_size + sb_idx * HMX_X4X2_DBLK_SIZE + grp_in_sb * (int) sizeof(__fp16);
 
-      for (int n_local = 0; n_local < HMX_FP16_TILE_N_COLS; ++n_local) {
-        int row = ct * HMX_FP16_TILE_N_COLS + n_local;
-
-        if (row >= n_cols) {
-          for (int kl = 0; kl < 32; ++kl) {
-            tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = (__fp16) 0;
-          }
-          continue;
-        }
-
-        const uint8_t *row_data = vtcm_src + row * row_stride;
-        const int8_t  *qs       = (const int8_t *) (row_data + q_off);
-        __fp16         scale    = *((const __fp16 *) (row_data + s_off));
-        float          scale_f  = (float) scale;
-
-        for (int kl = 0; kl < 32; ++kl) {
-          __fp16 v = (__fp16) ((float) qs[kl] * scale_f);
-          tile[(kl & ~1) * 32 + n_local * 2 + (kl & 1)] = v;
-        }
-      }
+      HVX_Vector v_offsets = Q6_Vw_vadd_VwVw(v_offsets_base,
+                                              Q6_V_vsplat_R(n_local * 4));
+      Q6_vscatter_QRMVwV(q_32_elems_mask, (size_t)tile,
+                         HMX_FP16_TILE_SIZE - 1, v_offsets, v_grp_hf);
     }
   }
 }
@@ -837,9 +876,17 @@ static void dequantize_x4x2_worker_loop(void *data, int _worker_index) {
     int start_tile = task_id * state->n_chunks_per_task;
     int end_tile   = smin(start_tile + state->n_chunks_per_task, state->n_tot_chunks);
 
-    dequantize_x4x2_weight_to_fp16_tiles_task(state->dst, state->src, state->n_cols, state->k_block,
-                                               state->k_offset, state->full_k, state->row_stride,
-                                               state->weight_type, start_tile, end_tile);
+    if (state->weight_type == GGML_TYPE_Q8_0) {
+      dequantize_x4x2_weight_to_fp16_tiles_task_scalar(
+        state->dst, state->src, state->n_cols, state->k_block,
+        state->k_offset, state->full_k, state->row_stride,
+        start_tile, end_tile);
+    } else {
+      dequantize_x4x2_weight_to_fp16_tiles_task_vector(
+        state->dst, state->src, state->n_cols, state->k_block,
+        state->k_offset, state->full_k, state->row_stride,
+        state->weight_type, start_tile, end_tile);
+    }
   }
 
   worker_pool_synctoken_jobdone(&(state->sync_ctx));
@@ -1690,7 +1737,8 @@ int mat_mul_af32_pwqk0_of32_stationary(float *restrict out, const float *restric
     }
   }
 
-  FARF(ALWAYS, "t_a: %lld us, t_b: %lld us, t_c: %lld us", HAP_perf_qtimer_count_to_us(t_a),
+  (void)t_a; (void)t_b; (void)t_c;
+  FARF(HIGH,   "t_a: %lld us, t_b: %lld us, t_c: %lld us", HAP_perf_qtimer_count_to_us(t_a),
        HAP_perf_qtimer_count_to_us(t_b), HAP_perf_qtimer_count_to_us(t_c));
 
   worker_pool_deinit(&fetch_task_worker_pool_ctx);
