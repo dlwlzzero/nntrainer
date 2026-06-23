@@ -15,11 +15,14 @@
 | Run | 백엔드 | 가중치 형식 | prefill (ms) | prefill TPS | gen (ms) | gen TPS | peak RSS (KB) | e2e (ms) |
 |-----|--------|------------|--------------|-------------|----------|---------|---------------|----------|
 | **R1** | **HTP (DSP)** | **pwf16** (HMX 타일 FP16) | 2,081 | **492.1** | 51,122 | **10.02** | 1,932,396 | 54,494 |
-| **R2** | **HTP (DSP)** | **Q4_0_X4X2** (DSP-native) | 12,151 | 84.3 | 108,702 | 0.29 | 1,383,412 | 121,738 |
+| **R2** | **HTP (DSP)** | **Q4_0_X4X2** (scalar dequant) | 12,151 | 84.3 | 108,702 | 0.29 ⚠️ | 1,383,412 | 121,738 |
 | **R3** | **CPU** | **plain FP16** | 10,014 | 102.3 | 121,607 | 4.21 | 1,938,780 | 132,832 |
 | **R4** | **CPU** | **plain Q4_0** | 2,497 | **410.1** | 15,381 | **33.29** | 1,364,288 | 18,740 |
+| **R5** | **HTP (DSP)** | **Q4_0_X4X2** (HVX vector dequant) | 2,264 | **452.3** | 5,302 | **6.04** | 1,383,556 | 7,614 |
 
-> R2 gen은 512 토큰 기준으로 환산하면 약 29분 소요 예상(0.29 TPS × 512 ≈ 1764s); 실측은 32 토큰만 생성.
+> R2 gen ⚠️: `fastrpc_mmap failed err=1` 반복 발생으로 decode throughput 오염; 32 토큰만 생성(~108초). R2 prefill도 mmap 오류로 오염 추정.
+> R5 gen: 32 토큰, mmap 오류 없음. run1(452.3 TPS / 6.04 TPS) vs run2(439.7 TPS / 5.77 TPS), 변동 ~3%.
+> R5 커밋: `510bed98` (HVX vector `dequantize_x4x2_group_q4_0`, 2026-06-22), 측정일: 2026-06-23.
 
 ---
 
@@ -64,27 +67,30 @@
 ### prefill (1024 tokens)
 
 ```
-R1  HTP pwf16      492 TPS  ████████████████████████████████████  (1×)
-R4  CPU Q4_0       410 TPS  ████████████████████████████████      (0.83×)
-R3  CPU FP16       102 TPS  ████████                               (0.21×)
-R2  HTP Q4_0_X4X2  84 TPS  ██████                                 (0.17×)
+R1  HTP pwf16            492 TPS  ████████████████████████████████████  (1×)
+R5  HTP Q4_0_X4X2 HVX   452 TPS  █████████████████████████████████     (0.92×)
+R4  CPU Q4_0             410 TPS  ████████████████████████████████      (0.83×)
+R3  CPU FP16             102 TPS  ████████                               (0.21×)
+R2  HTP Q4_0_X4X2 scal   84 TPS  ██████ ⚠️mmap오류                    (0.17×)
 ```
 
-- HTP pwf16(R1)가 1024-row 배치에서 CPU Q4_0(R4)를 ~1.2× 앞섬
-- HTP Q4_0_X4X2(R2)는 CPU보다 느림: pwqk0 커널 오버헤드가 hmx 대비 큼
+- R5(HVX dequant) 452 TPS: R2(scalar dequant) 대비 ~5.4× 향상, R1(pwf16) 대비 0.92×
+- R5는 CPU Q4_0(R4, 410 TPS)도 앞섬: HTP Q4_0_X4X2 경로가 1024-tok에서 CPU를 첫 역전
+- R2 prefill은 fastrpc_mmap 오류로 오염; 실제 scalar 기준선은 longprompt 측정값(~115 TPS @ 1024 tok) 참조
 
 ### generation (decode, M=1)
 
 ```
-R4  CPU Q4_0       33.3 TPS  ███████████████████████████████████  (1×)
-R1  HTP pwf16      10.0 TPS  ██████████                           (0.30×)
-R3  CPU FP16        4.2 TPS  ████                                 (0.13×)
-R2  HTP Q4_0_X4X2  0.29 TPS █                                    (0.009×)
+R4  CPU Q4_0             33.3 TPS  ███████████████████████████████████  (1×)
+R1  HTP pwf16            10.0 TPS  ██████████                           (0.30×)
+R5  HTP Q4_0_X4X2 HVX    6.0 TPS  ██████                               (0.18×)
+R3  CPU FP16              4.2 TPS  ████                                 (0.13×)
+R2  HTP Q4_0_X4X2 scal   0.29 TPS █ ⚠️mmap오류                       (0.009×)
 ```
 
-- CPU Q4_0(R4)가 decode에서 압도적 1위 (HTP pwf16 대비 3.3×)
-- HTP pwf16(R1)는 decode 10 TPS로 실용 가능하나 CPU Q4_0에 뒤짐
-- R2 decode는 fastrpc_mmap err=1 반복으로 사실상 비실용
+- R5 gen 6.0 TPS: R2(0.29 TPS, mmap 오류) 대비 ~20× 향상, scalar 비오염 기준(longprompt ~0.29 TPS) 대비도 ~20×
+- R4 CPU Q4_0(33 TPS)가 여전히 decode 1위; R1 HTP pwf16(10 TPS)보다 R5가 느림
+- R5 decode 6 TPS: 실용 가능 수준으로 개선 (R2의 "decode 비실용" 판정 번복)
 
 ### 메모리 (peak RSS)
 
@@ -104,14 +110,16 @@ R2  HTP Q4_0_X4X2  0.29 TPS █                                    (0.009×)
 
 | 목적 | 권장 경로 | 이유 |
 |------|-----------|------|
-| 최고 prefill 속도(1024 tok) | **HTP pwf16 (R1)** | 492 TPS, HMX 배치 이점 |
+| 최고 prefill 속도(1024 tok) | **HTP pwf16 (R1)** | 492 TPS, HMX 배치 이점 (R5와 격차 8%) |
+| 최저 메모리 + prefill HTP급 | **HTP Q4_0_X4X2 HVX (R5)** | 452 TPS, peak RSS 1.35 GB (vs pwf16 1.88 GB) |
 | 최고 decode throughput | **CPU Q4_0 (R4)** | 33 TPS, 메모리 절감 + 스레드 활용 |
+| HTP 단독 배포(decode 포함) | **HTP pwf16 (R1)** | 10 TPS; R5도 6 TPS로 실용 가능해짐 |
 | 최저 메모리 + 빠른 decode | **CPU Q4_0 (R4)** | 1.33 GB peak, e2e 18.7s |
-| HTP 단독 배포(decode 고려) | **HTP pwf16 (R1)** | 10 TPS는 실용 가능; Q4_0_X4X2는 decode 비실용 |
 
-> **핵심 시사점:** Qwen3-0.6B 스케일에서 on-device 최적 단일 경로는 **CPU Q4_0**이다.
-> HTP pwf16은 long-prefill에서만 CPU Q4_0 대비 우위를 가지며, decode에서는 뒤진다.
-> HTP Q4_0_X4X2는 현재 fastrpc_mmap 문제로 decode 비실용; prefill-only 파이프라인에서만 검토 가능.
+> **R5 추가 후 핵심 시사점 업데이트:**
+> HVX vector dequant(`510bed98`)로 Q4_0_X4X2 경로의 prefill이 **CPU Q4_0을 역전(452 vs 410 TPS)**했다.
+> decode도 0.29→6.0 TPS로 20× 개선되어 실용 가능 수준이 됐다(CPU 대비 ~0.18×, HTP pwf16 대비 ~0.6×).
+> 메모리(1.35 GB)를 제약으로 하는 배포에서는 **HTP Q4_0_X4X2 HVX**가 pwf16과 동등한 prefill을 훨씬 적은 메모리로 제공하는 유효한 선택지가 됐다.
 
 ---
 

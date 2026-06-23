@@ -1303,11 +1303,14 @@ Tensor &FloatTensor::dotQnK(Tensor const &input, Tensor &output, bool trans,
               char *base = static_cast<char *>(g_htp_scratch.ptr);
               memcpy(base + act_off, data, act_size);
 
-              // weight_type = 2 (GGML_TYPE_Q4_0)
+              // Only Tdatatype::Q4_0_X4X2 reaches this branch today.
+              // When IQ4_NL weights are stored as x4x2, branch on getDataType()
+              // here and pass GGML_TYPE_IQ4_NL (=20) instead.
+              const int kGgmlWeightType = 2;  // GGML_TYPE_Q4_0
               int err = htp.htp_ops_mat_mul_af32_pwqk0_of32(
                 handle, g_htp_scratch.fd, static_cast<int>(out_off),
                 g_htp_scratch.fd, static_cast<int>(act_off), wt_fd, 0, M, K, N,
-                2);
+                kGgmlWeightType);
               if (err == 0) {
                 memcpy(rdata, base + out_off, out_size);
                 break;
