@@ -50,9 +50,10 @@ public:
   void incremental_forwarding(RunLayerContext &context, unsigned int from,
                               unsigned int to, bool training) override {
     if (from) {
-      // Normalize to 0-based while preserving step size for multi-token prefill
-      to = to - from;
+      NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
       from = 0;
+      to = 1;
     }
 
     Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
@@ -115,9 +116,10 @@ public:
   void incremental_forwarding(RunLayerContext &context, unsigned int from,
                               unsigned int to, bool training) override {
     if (from) {
-      // Normalize to 0-based while preserving step size for multi-token prefill
-      to = to - from;
+      NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
       from = 0;
+      to = 1;
     }
 
     Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);

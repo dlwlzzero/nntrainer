@@ -44,9 +44,10 @@ void MultiOutLayer::incremental_forwarding(RunLayerContext &context,
                                            bool training) {
   if (!context.getInPlace()) {
     if (from) {
-      // Normalize to 0-based while preserving step size for multi-token prefill
-      to = to - from;
+      NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
       from = 0;
+      to = 1;
     }
 
     const Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);

@@ -69,7 +69,6 @@
 #include <tensor_dim.h>
 
 #include "causal_lm.h"
-#include "deberta_v2.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
 #include "gemma4_causallm.h"
@@ -77,9 +76,6 @@
 #include "gptoss_cached_slim_causallm.h"
 #endif
 #include "gptoss_causallm.h"
-#if !defined(_WIN32) && !defined(__ANDROID__)
-#include "multilingual_tinybert_16mb.h"
-#endif
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
 #if !defined(_WIN32)
@@ -240,12 +236,6 @@ std::string resolve_architecture(std::string model_type,
                  [](unsigned char c) { return std::tolower(c); });
 
   if (model_type == "embedding") {
-    // Already-resolved nntrainer class names — pass through
-    if (architecture == "Qwen3Embedding" || architecture == "Qwen2Embedding" ||
-        architecture == "EmbeddingGemma" ||
-        architecture == "MultilingualTinyBert" || architecture == "DebertaV2")
-      return architecture;
-
     if (architecture == "Qwen3ForCausalLM")
       return "Qwen3Embedding";
     else if (architecture == "Gemma3ForCausalLM" ||
@@ -253,10 +243,6 @@ std::string resolve_architecture(std::string model_type,
       return "EmbeddingGemma";
     else if (architecture == "Qwen2Model")
       return "Qwen2Embedding";
-    else if (architecture == "BertForMaskedLM")
-      return "MultilingualTinyBert";
-    else if (architecture == "DebertaV2ForMaskedLM")
-      return "DebertaV2";
     else
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
@@ -357,17 +343,6 @@ void registerAllModels() {
                           return std::make_unique<causallm::EmbeddingGemma>(
                             cfg, generation_cfg, nntr_cfg);
                         });
-  factory.registerModel("DebertaV2", [](json cfg, json generation_cfg,
-                                        json nntr_cfg) {
-    return std::make_unique<causallm::DebertaV2>(cfg, generation_cfg, nntr_cfg);
-  });
-#if !defined(_WIN32) && !defined(__ANDROID__)
-  factory.registerModel(
-    "MultilingualTinyBert", [](json cfg, json generation_cfg, json nntr_cfg) {
-      return std::make_unique<causallm::MultilingualTinyBert>(
-        cfg, generation_cfg, nntr_cfg);
-    });
-#endif
 }
 
 /**
@@ -486,19 +461,12 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
       dtype_map[prefix + "_ffn_gate_down"] = fc_dtype;
       dtype_map[prefix + "_ffn_linear_up"] = fc_dtype;
 
-      // FFN FC layers - version3 (Qwen/Gemma LLMs)
+      // FFN FC layers - version3
       dtype_map[prefix + "_ffn_gate"] = fc_dtype;
       dtype_map[prefix + "_ffn_up"] = fc_dtype;
       dtype_map[prefix + "_ffn_down"] = fc_dtype;
 
       dtype_map[prefix + "_ffn_output"] = fc_dtype;
-
-      // FFN FC layers - BERT (BertTransformer)
-      dtype_map[prefix + "_ffn_fc1"] = fc_dtype;
-
-      // FFN FC layers - DeBERTa V2
-      dtype_map[prefix + "_intermediate"] = fc_dtype;
-      dtype_map[prefix + "_output_dense"] = fc_dtype;
 
       // for PLE
       dtype_map[prefix + "_per_layer_input_gate"] = fc_dtype;
@@ -725,24 +693,6 @@ int main(int argc, char *argv[]) {
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
       architecture = resolve_architecture(model_type, architecture);
-    }
-
-    // Resolve paths in nntr_cfg against the model directory.
-    // Relative paths are anchored to model_path (existing behaviour).
-    // Absolute paths that don't exist in the current environment (e.g. a path
-    // baked in on the build host but running on an Android device) fall back to
-    // the bare filename resolved against model_path, so the file is found as
-    // long as it lives next to nntr_config.json.
-    for (const char *key : {"module_config_path", "tokenizer_file"}) {
-      if (!nntr_cfg.contains(key))
-        continue;
-      std::filesystem::path p = nntr_cfg[key].get<std::string>();
-      if (p.is_relative()) {
-        nntr_cfg[key] = (std::filesystem::path(model_path) / p).string();
-      } else if (!std::filesystem::exists(p)) {
-        nntr_cfg[key] =
-          (std::filesystem::path(model_path) / p.filename()).string();
-      }
     }
 
     auto model = causallm::Factory::Instance().create(architecture, cfg,

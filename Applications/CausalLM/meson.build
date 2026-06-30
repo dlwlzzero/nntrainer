@@ -226,26 +226,6 @@ if get_option('enable-test')
     suite: 'unittests'
   )
 
-  # Extract causallm_reference fixture binaries from packaging/
-  causallm_fixture_tars = [
-    meson.source_root() / 'packaging' / 'causallm_reference_generation.tar.gz',
-    meson.source_root() / 'packaging' / 'causallm_reference_embedding.tar.gz',
-  ]
-  # The tarballs already contain a top-level `causallm_reference/` directory, so
-  # extract into models/ (NOT models/causallm_reference/, which would double the
-  # path to models/causallm_reference/causallm_reference/ and leave the fixtures
-  # where the tests cannot find them — causing every differential test to skip).
-  causallm_fixture_dest = meson.source_root() / 'test' / 'unittest' / 'models'
-  foreach fixture_tar : causallm_fixture_tars
-    if build_machine.system() == 'windows'
-      run_command([prog_win_cmd, '/C', 'tar', 'xzf',
-                   fixture_tar.replace('/', '\\'),
-                   '-C', causallm_fixture_dest.replace('/', '\\')], check: false)
-    else
-      run_command(['tar', 'xzf', fixture_tar, '-C', causallm_fixture_dest], check: false)
-    endif
-  endforeach
-
   # Ubuntu native builds use platform=none.
   model_unittest_platforms = ['none', 'windows', 'android']
   platform = get_option('platform')
@@ -260,24 +240,8 @@ if get_option('enable-test')
       [
         meson.source_root() / 'test' / 'unittest' / 'models' / 'causallm_test_utils.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gemma3.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gemma3_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gemma4.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gemma4_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_moe.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_moe_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_slim_moe.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_cached_slim_moe.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gpt_oss.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gpt_oss_cached_slim.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2_reference.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_embedding_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2_embedding_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_embedding_gemma_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_tinybert_reference.cpp',
-        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_deberta_v2_reference.cpp',
       ],
       dependencies: [
         nntrainer_dep,
@@ -294,8 +258,7 @@ if get_option('enable-test')
     test('unittest_causallm_models', unittest_causallm_models,
       args: '--gtest_output=xml:@0@/@1@.xml'.format(meson.build_root(), 'unittest_causallm_models'),
       timeout: 60,
-      suite: 'unittests',
-      env: {'NNTR_QUANTIZE_BIN': e_quantize.full_path()}
+      suite: 'unittests'
     )
   endif
 endif

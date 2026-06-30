@@ -28,7 +28,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <iterator>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -42,7 +41,6 @@
 
 #include <causal_lm.h>
 #include <llm_util.hpp>
-#include <utf8_stream_util.h>
 
 namespace causallm {
 
@@ -235,7 +233,9 @@ void CausalLM::registerOutputs(
       if (std::find(puncts.begin(), puncts.end(), decoded_str.back()) !=
           puncts.end()) {
         // last symbol is a punctuation, hold on
-      } else if (utf8stream::shouldHold(decoded_str, pending_ids_.size())) {
+      } else if (decoded_str.size() >= 3 &&
+                 decoded_str.compare(decoded_str.size() - 3, 3, "") == 0) {
+        // ends with an incomplete token, hold on
       } else {
         if (log_output) {
           std::cout << decoded_str;
@@ -291,10 +291,25 @@ std::vector<unsigned int> CausalLM::generate(float *logits, bool do_sample,
         std::distance(logits, std::max_element(logits, logits + NUM_VOCAB));
       outputs.push_back(argmax_idx);
     } else {
-      // apply temperature & top-k & top-p and sample with original logits
-      // unchanged
-      unsigned int sampled_idx =
-        applyTKP(logits, NUM_VOCAB, TEMPERATURE, TOP_K, TOP_P, rng);
+      // apply temperature & top-k & top-p to logits
+      float max_logits = applyTKP(logits, NUM_VOCAB, TEMPERATURE, TOP_K, TOP_P);
+      // transform logits to softmax
+      float sum_exp_logits = 0;
+      for (unsigned int i = 0; i < NUM_VOCAB; i++) {
+        float exp_x = exp(logits[i] - max_logits);
+        sum_exp_logits += exp_x;
+        logits[i] = exp_x;
+      }
+
+      for (unsigned int i = 0; i < NUM_VOCAB; ++i) {
+        logits[i] /= sum_exp_logits;
+      }
+
+      // sample from final logits
+      std::discrete_distribution<int> dist(logits, logits + NUM_VOCAB);
+      unsigned int sampled_idx = dist(rng);
+
+      // add sampled word
       outputs.push_back(sampled_idx);
     }
 
