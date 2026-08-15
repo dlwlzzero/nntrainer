@@ -1,0 +1,27 @@
+//============================================================================
+// SPDX-License-Identifier: Apache-2.0
+//
+// FastRPC interface for the nntrainer Hexagon HVX backend.
+//
+// Design rules:
+//  - Large buffers cross once at init() as dma-buf fds, persistently mapped
+//    on the DSP (HAP_mmap). weights is ALSO passed as an in-sequence so the
+//    FastRPC driver performs the one-time cache flush; the DSP keeps only
+//    the fd mapping.
+//  - forward() carries only token_ids/logits (driver-managed coherency)
+//    plus scalars. One RPC per chunk/token.
+//============================================================================
+
+#include "AEEStdDef.idl"
+#include "remote.idl"
+
+interface nntr_htp : remote_handle64 {
+   AEEResult init(in sequence<uint8> oplist,
+                  in sequence<uint8> weights,
+                  in int32 weights_fd,
+                  in int32 kv_fd,  in uint32 kv_size,
+                  in int32 act_fd, in uint32 act_size,
+                  rout uint32 dsp_abi_version);
+   AEEResult forward(in sequence<int32> token_ids, in uint32 pos,
+                     rout sequence<float> logits);
+};
