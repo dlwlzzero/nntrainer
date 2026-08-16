@@ -46,10 +46,27 @@ HexagonRunner::~HexagonRunner() {
     nntr_htp_close(handle_);
 }
 
+// A raw fd number is meaningless to the DSP until the host registers it with
+// the FastRPC driver for the domain; FASTRPC_MAP_FD_DELAYED defers the actual
+// mapping to the DSP-side HAP_mmap call in nntr_htp_init.
+static int map_on_dsp(const RpcmemBuffer &buf) {
+  int err = fastrpc_mmap(CDSP_DOMAIN_ID, buf.fd(), buf.data(), 0, buf.size(),
+                         FASTRPC_MAP_FD_DELAYED);
+  return err == AEE_EALREADY ? 0 : err; /* re-init passes the same fds */
+}
+
 int HexagonRunner::init(const void *oplist, uint32_t oplist_size,
                         const RpcmemBuffer &weights, const RpcmemBuffer &kv,
                         const RpcmemBuffer &act) {
   uint32_t dsp_abi_version = 0;
+  for (const RpcmemBuffer *buf : {&weights, &kv, &act}) {
+    int err = map_on_dsp(*buf);
+    if (err != AEE_SUCCESS) {
+      fprintf(stderr, "hexagon: fastrpc_mmap failed (0x%x, fd=%d)\n", err,
+              buf->fd());
+      return err;
+    }
+  }
   int err = nntr_htp_init(
     handle_, (const uint8_t *)oplist, (int)oplist_size,
     (const uint8_t *)weights.data(), (int)weights.size(), weights.fd(),
