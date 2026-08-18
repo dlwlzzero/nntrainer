@@ -62,3 +62,30 @@ void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
     }
   }
 }
+
+void ref_rope_table_fill(__fp16 *table, uint32_t max_seq, float theta) {
+  for (uint32_t p = 0; p < max_seq; ++p) {
+    __fp16 *row = table + (size_t)p * 128;
+    for (uint32_t i = 0; i < 64; ++i) {
+      float inv_freq = powf(theta, -2.0f * (float)i / 128.0f);
+      row[i] = (__fp16)cosf((float)p * inv_freq);
+      row[64 + i] = (__fp16)sinf((float)p * inv_freq);
+    }
+  }
+}
+
+void ref_rope(__fp16 *x, const __fp16 *table, uint32_t m, uint32_t heads,
+              uint32_t pos) {
+  for (uint32_t t = 0; t < m; ++t) {
+    const __fp16 *row = table + (size_t)(pos + t) * 128;
+    for (uint32_t h = 0; h < heads; ++h) {
+      __fp16 *xh = x + ((size_t)t * heads + h) * 128;
+      for (uint32_t i = 0; i < 64; ++i) {
+        float x0 = (float)xh[i], x1 = (float)xh[64 + i];
+        float cs = (float)row[i], sn = (float)row[64 + i];
+        xh[i] = (__fp16)(x0 * cs - x1 * sn);
+        xh[64 + i] = (__fp16)(x1 * cs + x0 * sn);
+      }
+    }
+  }
+}
