@@ -15,14 +15,14 @@ mkdir -p "$OUT"
 SRCS=("$SIM_DIR"/*.c)
 # htp 소스는 Task 진행에 따라 자동 포함 (ops/, hvx/, worker_pool, htp_graph)
 for f in "$HTP_DIR"/worker_pool.c "$HTP_DIR"/htp_graph.c \
-         "$HTP_DIR"/ops/*.c "$HTP_DIR"/hvx/*.c; do
+         "$HTP_DIR"/ops/*.c "$HTP_DIR"/hvx/*.c "$HTP_DIR"/dma/*.c; do
   [ -e "$f" ] && SRCS+=("$f")
 done
 
 "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
     -m"$HEX_ARCH" -mhvx -mhvx-length=128B -G0 -O2 -g -fPIC -shared \
     -Wall -Werror -Wno-unused-function \
-    -I "$HTP_DIR" -I "$HTP_DIR/ops" -I "$HTP_DIR/hvx" -I "$SIM_DIR" \
+    -I "$HTP_DIR" -I "$HTP_DIR/ops" -I "$HTP_DIR/hvx" -I "$HTP_DIR/hex" -I "$HTP_DIR/dma" -I "$SIM_DIR" \
     -I "$HEXAGON_SDK_ROOT/rtos/qurt/compute${HEX_ARCH}/include/qurt" \
     -I "$HEXAGON_SDK_ROOT/rtos/qurt/compute${HEX_ARCH}/include/posix" \
     -isystem "$HEXAGON_SDK_ROOT/incs" \
