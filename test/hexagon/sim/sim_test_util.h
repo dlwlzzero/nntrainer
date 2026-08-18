@@ -23,15 +23,26 @@ static inline int cmp_f(const char *tag, const float *ref, const float *got,
                         uint32_t n, float rtol, float atol) {
   float worst = 0.f;
   uint32_t wi = 0;
+  float max_abs = 0.f, max_rel = 0.f;
   for (uint32_t i = 0; i < n; ++i) {
     float d = fabsf(ref[i] - got[i]), t = atol + rtol * fabsf(ref[i]);
     if (d - t > worst) {
       worst = d - t;
       wi = i;
     }
+    if (d > max_abs)
+      max_abs = d;
+    if (fabsf(ref[i]) > 0.f) {
+      float rel = d / fabsf(ref[i]);
+      if (rel > max_rel)
+        max_rel = rel;
+    }
   }
+  printf("SIM_TEST %s STAT max_abs=%g max_rel=%g\n", tag, (double)max_abs,
+         (double)max_rel);
   if (worst > 0.f) {
-    printf("SIM_TEST %s FAIL i=%u ref=%f got=%f\n", tag, (unsigned)wi, ref[wi], got[wi]);
+    printf("SIM_TEST %s FAIL i=%u ref=%f got=%f\n", tag, (unsigned)wi, ref[wi],
+           got[wi]);
     return 1;
   }
   return 0;
