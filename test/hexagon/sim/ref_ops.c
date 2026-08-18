@@ -44,3 +44,21 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
   }
   free(xq);
 }
+
+void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
+                 uint32_t n, uint32_t chunk, float eps) {
+  for (uint32_t t = 0; t < m; ++t) {
+    const __fp16 *xrow = x + (size_t)t * n;
+    __fp16 *yrow = y + (size_t)t * n;
+    for (uint32_t c0 = 0; c0 < n; c0 += chunk) {
+      float sumsq = 0.f;
+      for (uint32_t i = 0; i < chunk; ++i) {
+        float v = (float)xrow[c0 + i];
+        sumsq += v * v;
+      }
+      float r = 1.0f / sqrtf(sumsq / (float)chunk + eps);
+      for (uint32_t i = 0; i < chunk; ++i)
+        yrow[c0 + i] = (__fp16)((float)xrow[c0 + i] * r * (float)gamma[i]);
+    }
+  }
+}
