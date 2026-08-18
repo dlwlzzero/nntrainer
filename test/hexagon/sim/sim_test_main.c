@@ -10,12 +10,14 @@
 #include <stdio.h>
 #include <string.h>
 int test_smoke(void);
+int test_pool(void);
 /* Each task adds one extern declaration here and one table entry below. */
 static const struct {
   const char *name;
   int (*fn)(void);
 } tests[] = {
   {"smoke", test_smoke},
+  {"pool", test_pool},
 };
 int main(int argc, char **argv) {
   if (argc < 2) {
