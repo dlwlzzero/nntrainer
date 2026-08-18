@@ -31,7 +31,7 @@ static inline int cmp_f(const char *tag, const float *ref, const float *got,
     }
   }
   if (worst > 0.f) {
-    printf("SIM_TEST %s FAIL i=%u ref=%f got=%f\n", tag, wi, ref[wi], got[wi]);
+    printf("SIM_TEST %s FAIL i=%u ref=%f got=%f\n", tag, (unsigned)wi, ref[wi], got[wi]);
     return 1;
   }
   return 0;
