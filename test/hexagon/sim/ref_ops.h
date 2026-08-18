@@ -29,4 +29,15 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
 void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
                  uint32_t n, uint32_t chunk, float eps);
 
+/* Fills a ROPE cos/sin table: table[p][i] = cos(p*inv_freq_i),
+ * table[p][64+i] = sin(p*inv_freq_i), inv_freq_i = theta^(-2i/128),
+ * for p in [0,max_seq), i in [0,64). Row stride is 128 halves. */
+void ref_rope_table_fill(__fp16 *table, uint32_t max_seq, float theta);
+
+/* Reference for ROPE: x fp16[m][heads*128] in place, table fp16[*][128]
+ * (row = cos[64] || sin[64]). Per token t, head, i<64: x0=x[i], x1=x[i+64]
+ * rotated using the table row at pos+t (rotate-half pair (i, i+64)). */
+void ref_rope(__fp16 *x, const __fp16 *table, uint32_t m, uint32_t heads,
+              uint32_t pos);
+
 #endif /* REF_OPS_H */
