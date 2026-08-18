@@ -40,4 +40,11 @@ void ref_rope_table_fill(__fp16 *table, uint32_t max_seq, float theta);
 void ref_rope(__fp16 *x, const __fp16 *table, uint32_t m, uint32_t heads,
               uint32_t pos);
 
+/* Reference for ADD: y = a + b, fp16[count]. */
+void ref_add(const __fp16 *a, const __fp16 *b, __fp16 *y, uint32_t count);
+
+/* Reference for SILU_MUL: silu(x) = x / (1 + expf(-x)) in fp32,
+ * y = (fp16)(silu(g) * u), fp16[count]. */
+void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count);
+
 #endif /* REF_OPS_H */

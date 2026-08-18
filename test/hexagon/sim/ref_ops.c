@@ -89,3 +89,16 @@ void ref_rope(__fp16 *x, const __fp16 *table, uint32_t m, uint32_t heads,
     }
   }
 }
+
+void ref_add(const __fp16 *a, const __fp16 *b, __fp16 *y, uint32_t count) {
+  for (uint32_t i = 0; i < count; ++i)
+    y[i] = (__fp16)((float)a[i] + (float)b[i]);
+}
+
+void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count) {
+  for (uint32_t i = 0; i < count; ++i) {
+    float gf = (float)g[i];
+    float silu = gf / (1.0f + expf(-gf));
+    y[i] = (__fp16)(silu * (float)u[i]);
+  }
+}

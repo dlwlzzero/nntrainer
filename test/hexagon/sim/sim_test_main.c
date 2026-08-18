@@ -17,6 +17,7 @@ int test_matmul(void);
 int test_matmul_dma(void);
 int test_rmsnorm(void);
 int test_rope(void);
+int test_eltwise(void);
 /* Each task adds one extern declaration here and one table entry below. */
 static const struct {
   const char *name;
@@ -26,6 +27,7 @@ static const struct {
   {"exp", test_exp},         {"quant", test_quant},
   {"matmul", test_matmul},   {"matmul_dma", test_matmul_dma},
   {"rmsnorm", test_rmsnorm}, {"rope", test_rope},
+  {"eltwise", test_eltwise},
 };
 int main(int argc, char **argv) {
   if (argc < 2) {
