@@ -58,6 +58,12 @@ void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
               uint32_t n_layers, uint32_t n_heads, uint32_t n_kv_heads,
               uint32_t hd, uint32_t max_seq, float scale);
 
+/* Reference for MATMUL_LOGITS: x_last fp16[k] (the last token row),
+ * w int8[n][k], sw fp32[n], out fp32[n]. Quantizes x_last with
+ * ref_quant_row (same formula as the kernel = bit-exact), then dots. */
+void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
+                       float *out, uint32_t k, uint32_t n);
+
 /* Reference for EMBED: tokens int32[m], w int8[vocab][k], scale fp32[vocab],
  * y fp16[m][k]. y[t][i] = (fp16)(w[tokens[t]][i] * scale[tokens[t]]). */
 void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,

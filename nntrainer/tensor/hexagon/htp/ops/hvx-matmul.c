@@ -7,6 +7,8 @@
  *		path (used when c->vtcm != NULL); both produce bit-identical
  *		fp16 output since the streaming path only moves the same
  *		bytes through VTCM before the identical dot/scale math.
+ *		Also MATMUL_LOGITS: quantizes only the last token row and
+ *		emits fp32 logits through the same DDR dot/scale path.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -32,16 +34,21 @@ struct mm_job {
 
 /* Task 6 compute: dot + scale + store for output columns [n0, n1), using
  * whatever xq/xrow the caller hands in (DDR pointers, or VTCM copies -
- * same bytes either way, so the result is bit-identical). */
+ * same bytes either way, so the result is bit-identical). y_is_f32 selects
+ * the store type: fp16 for W8A8, fp32 for MATMUL_LOGITS. */
 static void mm_compute_range(const int8_t *w, uint32_t w_base, const float *sw,
-                             const int8_t *xq, const float *xq_scale, __fp16 *y,
-                             uint32_t m, uint32_t k, uint32_t n, uint32_t n0,
-                             uint32_t n1) {
+                             const int8_t *xq, const float *xq_scale, void *y,
+                             bool y_is_f32, uint32_t m, uint32_t k, uint32_t n,
+                             uint32_t n0, uint32_t n1) {
   for (uint32_t jn = n0; jn < n1; ++jn) {
     const int8_t *wrow = w + (size_t)(jn - w_base) * k;
     for (uint32_t t = 0; t < m; ++t) {
       int32_t acc = hvx_dot_i8(wrow, xq + (size_t)t * k, k);
-      y[(size_t)t * n + jn] = (__fp16)((float)acc * sw[jn] * xq_scale[t]);
+      float v = (float)acc * sw[jn] * xq_scale[t];
+      if (y_is_f32)
+        ((float *)y)[(size_t)t * n + jn] = v;
+      else
+        ((__fp16 *)y)[(size_t)t * n + jn] = (__fp16)v;
     }
   }
 }
@@ -108,7 +115,8 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
     dma_queue_pop(q); /* wait for this chunk's DMA (kicked one iteration ago) */
 
     mm_compute_range((const int8_t *)buf[ci & 1], n0 + row0, sw, xq_local,
-                     c->xq_scale, y, m, k, n, n0 + row0, n0 + row0 + rows);
+                     c->xq_scale, y, false, m, k, n, n0 + row0,
+                     n0 + row0 + rows);
   }
 
   dma_queue_free(q);
@@ -132,7 +140,24 @@ static void mm_worker(void *arg, int wid, int nw) {
   if (c->vtcm && mm_worker_vtcm(c, w, sw, y, j->m, k, n, n0, n1, wid, nw))
     return;
 
-  mm_compute_range(w, 0, sw, c->xq, c->xq_scale, y, j->m, k, n, n0, n1);
+  mm_compute_range(w, 0, sw, c->xq, c->xq_scale, y, false, j->m, k, n, n0, n1);
+}
+
+/* MATMUL_LOGITS worker: m=1, fp32 output, DDR direct-read only (a single
+ * activation row makes VTCM streaming pointless). Same N-slab split and the
+ * same mm_compute_range/hvx_dot_i8 path as the W8A8 DDR case. */
+static void mm_logits_worker(void *arg, int wid, int nw) {
+  struct mm_job *j = arg;
+  struct htp_exec_ctx *c = j->c;
+  const struct nntr_htp_op_desc *d = j->d;
+  const uint32_t k = d->k, n = d->n;
+  const int8_t *w = (const int8_t *)htp_ref_ptr(c, d->in1);
+  const float *sw = (const float *)htp_ref_ptr(c, d->in2);
+  float *y = (float *)htp_ref_ptr(c, d->out);
+  uint32_t n0 = (uint32_t)(((uint64_t)n * wid) / nw);
+  uint32_t n1 = (uint32_t)(((uint64_t)n * (wid + 1)) / nw);
+
+  mm_compute_range(w, 0, sw, c->xq, c->xq_scale, y, true, 1, k, n, n0, n1);
 }
 
 void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
@@ -144,4 +169,17 @@ void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
       htp_quant_row_fp16(x + (size_t)t * k, c->xq + (size_t)t * k, k);
   struct mm_job j = {c, d, m};
   wp_run(c->pool, mm_worker, &j);
+}
+
+void hvx_op_matmul_logits(struct htp_exec_ctx *c,
+                          const struct nntr_htp_op_desc *d) {
+  const uint32_t k = d->k;
+  /* in0 is the full X fp16[n_tokens][k]; only the last token row feeds the
+   * logits. The desc carries m=1, so the row offset comes from the runtime
+   * chunk size c->n_tokens, not from htp_m(). */
+  const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
+  const __fp16 *x_last = x + (size_t)(c->n_tokens - 1) * k;
+  c->xq_scale[0] = htp_quant_row_fp16(x_last, c->xq, k);
+  struct mm_job j = {c, d, 1};
+  wp_run(c->pool, mm_logits_worker, &j);
 }
