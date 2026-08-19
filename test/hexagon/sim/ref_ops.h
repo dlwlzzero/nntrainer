@@ -69,4 +69,14 @@ void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
 void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
                __fp16 *y, uint32_t m, uint32_t k);
 
+/* Scalar reference graph executor: interprets the same op-list bytes as
+ * htp_graph_forward over caller-provided copies of the weights/kv/act
+ * buffers, dispatching each op to the ref_* function above. Activations
+ * round-trip through fp16 at every op boundary (the ref_* signatures are
+ * already fp16 in/out). No validation: pass an op-list that
+ * htp_graph_init already accepted. */
+void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
+                       uint8_t *act, const int32_t *tokens, uint32_t n_tokens,
+                       uint32_t pos, float *logits);
+
 #endif /* REF_OPS_H */

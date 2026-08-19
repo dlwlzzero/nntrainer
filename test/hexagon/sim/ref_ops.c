@@ -11,6 +11,9 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include "nntr_htp_common.h"
 
 float ref_quant_row(const __fp16 *x, int8_t *q, uint32_t k) {
   float amax = 0.f;
@@ -174,5 +177,87 @@ void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
     __fp16 *yrow = y + (size_t)t * k;
     for (uint32_t i = 0; i < k; ++i)
       yrow[i] = (__fp16)((float)wrow[i] * scale[row]);
+  }
+}
+
+void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
+                       uint8_t *act, const int32_t *tokens, uint32_t n_tokens,
+                       uint32_t pos, float *logits) {
+  struct nntr_htp_oplist_header h;
+  const struct nntr_htp_op_desc *ops;
+  uint8_t *bufs[NNTR_HTP_BUF_COUNT];
+
+  memcpy(&h, oplist, sizeof(h));
+  ops = (const struct nntr_htp_op_desc *)(const void *)(oplist + sizeof(h));
+  bufs[NNTR_HTP_BUF_WEIGHTS] = weights;
+  bufs[NNTR_HTP_BUF_KV] = kv;
+  bufs[NNTR_HTP_BUF_ACT] = act;
+  bufs[NNTR_HTP_BUF_TOKENS] = (uint8_t *)(uintptr_t)tokens;
+  bufs[NNTR_HTP_BUF_LOGITS] = (uint8_t *)logits;
+
+  for (uint32_t i = 0; i < h.n_ops; ++i) {
+    const struct nntr_htp_op_desc *d = &ops[i];
+    const uint32_t m = d->m ? d->m : n_tokens;
+    uint8_t *p0 = bufs[d->in0.buf] + d->in0.offset;
+    uint8_t *p1 = bufs[d->in1.buf] + d->in1.offset;
+    uint8_t *p2 = bufs[d->in2.buf] + d->in2.offset;
+    uint8_t *po = bufs[d->out.buf] + d->out.offset;
+    float pf;
+    memcpy(&pf, &d->param0, sizeof(pf));
+
+    switch (d->kind) {
+    case NNTR_HTP_OP_EMBED:
+      ref_embed((const int32_t *)(const void *)p0,
+                (const int8_t *)(const void *)p1,
+                (const float *)(const void *)p2, (__fp16 *)(void *)po, m,
+                d->k);
+      break;
+    case NNTR_HTP_OP_RMSNORM: {
+      const uint32_t chunk =
+        (d->flags & NNTR_HTP_FLAG_PER_HEAD) ? h.head_dim : d->n;
+      ref_rmsnorm((const __fp16 *)(const void *)p0,
+                  (const __fp16 *)(const void *)p1, (__fp16 *)(void *)po, m,
+                  d->n, chunk, pf);
+      break;
+    }
+    case NNTR_HTP_OP_MATMUL_W8A8:
+      ref_matmul_w8a8((const __fp16 *)(const void *)p0,
+                      (const int8_t *)(const void *)p1,
+                      (const float *)(const void *)p2, (__fp16 *)(void *)po,
+                      m, d->k, d->n);
+      break;
+    case NNTR_HTP_OP_ROPE:
+      ref_rope((__fp16 *)(void *)p0, (const __fp16 *)(const void *)p2, m,
+               h.n_heads, pos);
+      ref_rope((__fp16 *)(void *)p1, (const __fp16 *)(const void *)p2, m,
+               h.n_kv_heads, pos);
+      break;
+    case NNTR_HTP_OP_ATTN:
+      ref_attn((const __fp16 *)(const void *)p0,
+               (const __fp16 *)(const void *)p1,
+               (const __fp16 *)(const void *)p2, (__fp16 *)(void *)kv,
+               (__fp16 *)(void *)po, m, pos, d->layer, h.n_layers, h.n_heads,
+               h.n_kv_heads, h.head_dim, h.max_seq, pf);
+      break;
+    case NNTR_HTP_OP_SILU_MUL:
+      ref_silu_mul((const __fp16 *)(const void *)p0,
+                   (const __fp16 *)(const void *)p1, (__fp16 *)(void *)po,
+                   m * d->n);
+      break;
+    case NNTR_HTP_OP_ADD:
+      ref_add((const __fp16 *)(const void *)p0,
+              (const __fp16 *)(const void *)p1, (__fp16 *)(void *)po,
+              m * d->n);
+      break;
+    case NNTR_HTP_OP_MATMUL_LOGITS:
+      ref_matmul_logits((const __fp16 *)(const void *)p0 +
+                          (size_t)(n_tokens - 1u) * d->k,
+                        (const int8_t *)(const void *)p1,
+                        (const float *)(const void *)p2, (float *)(void *)po,
+                        d->k, d->n);
+      break;
+    default:
+      break;
+    }
   }
 }
