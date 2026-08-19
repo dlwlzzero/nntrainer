@@ -19,6 +19,7 @@ int test_rmsnorm(void);
 int test_rope(void);
 int test_eltwise(void);
 int test_embed(void);
+int test_attn(void);
 /* Each task adds one extern declaration here and one table entry below. */
 static const struct {
   const char *name;
@@ -29,6 +30,7 @@ static const struct {
   {"matmul", test_matmul},   {"matmul_dma", test_matmul_dma},
   {"rmsnorm", test_rmsnorm}, {"rope", test_rope},
   {"eltwise", test_eltwise}, {"embed", test_embed},
+  {"attn", test_attn},
 };
 int main(int argc, char **argv) {
   if (argc < 2) {
