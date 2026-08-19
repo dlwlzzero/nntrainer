@@ -103,6 +103,60 @@ void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count) {
   }
 }
 
+void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
+              __fp16 *out, uint32_t m, uint32_t pos, uint32_t layer,
+              uint32_t n_layers, uint32_t n_heads, uint32_t n_kv_heads,
+              uint32_t hd, uint32_t max_seq, float scale) {
+  const size_t v_off = (size_t)n_layers * n_kv_heads * max_seq * hd;
+  const uint32_t group = n_heads / n_kv_heads;
+  float *scores = malloc((size_t)max_seq * sizeof(float));
+
+  for (uint32_t h = 0; h < n_kv_heads; ++h) { /* KV append */
+    __fp16 *kh = kv + ((size_t)layer * n_kv_heads + h) * max_seq * hd;
+    __fp16 *vh = kh + v_off;
+    for (uint32_t t = 0; t < m; ++t) {
+      const size_t src = ((size_t)t * n_kv_heads + h) * hd;
+      const size_t dst = (size_t)(pos + t) * hd;
+      for (uint32_t i = 0; i < hd; ++i) {
+        kh[dst + i] = k[src + i];
+        vh[dst + i] = v[src + i];
+      }
+    }
+  }
+
+  for (uint32_t hq = 0; hq < n_heads; ++hq) {
+    const uint32_t h = hq / group;
+    const __fp16 *kh = kv + ((size_t)layer * n_kv_heads + h) * max_seq * hd;
+    const __fp16 *vh = kh + v_off;
+    for (uint32_t t = 0; t < m; ++t) {
+      const __fp16 *qrow = q + ((size_t)t * n_heads + hq) * hd;
+      const uint32_t len = pos + t + 1; /* causal */
+      float mx = -INFINITY;
+      for (uint32_t p = 0; p < len; ++p) {
+        float s = 0.f;
+        for (uint32_t i = 0; i < hd; ++i)
+          s += (float)qrow[i] * (float)kh[(size_t)p * hd + i];
+        scores[p] = s * scale;
+        if (scores[p] > mx)
+          mx = scores[p];
+      }
+      float sum = 0.f;
+      for (uint32_t p = 0; p < len; ++p) {
+        scores[p] = expf(scores[p] - mx);
+        sum += scores[p];
+      }
+      __fp16 *orow = out + ((size_t)t * n_heads + hq) * hd;
+      for (uint32_t i = 0; i < hd; ++i) {
+        float acc = 0.f;
+        for (uint32_t p = 0; p < len; ++p)
+          acc += scores[p] * (float)vh[(size_t)p * hd + i];
+        orow[i] = (__fp16)(acc / sum);
+      }
+    }
+  }
+  free(scores);
+}
+
 void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
                __fp16 *y, uint32_t m, uint32_t k) {
   for (uint32_t t = 0; t < m; ++t) {

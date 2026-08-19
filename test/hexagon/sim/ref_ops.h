@@ -47,6 +47,17 @@ void ref_add(const __fp16 *a, const __fp16 *b, __fp16 *y, uint32_t count);
  * y = (fp16)(silu(g) * u), fp16[count]. */
 void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count);
 
+/* Reference for ATTN (fp32 scalar, kernel KV layout): q fp16[m][n_heads*hd],
+ * k/v fp16[m][n_kv_heads*hd], out fp16[m][n_heads*hd]. kv is the fp16 KV
+ * cache base: K region [n_layers][n_kv_heads][max_seq][hd] followed by an
+ * identically sized V region. Appends k/v at [layer][h][pos+t], then causal
+ * SDPA (token t attends to positions [0, pos+t]) with GQA mapping
+ * h_kv = h_q / (n_heads/n_kv_heads) and softmax(scale * q.K). */
+void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
+              __fp16 *out, uint32_t m, uint32_t pos, uint32_t layer,
+              uint32_t n_layers, uint32_t n_heads, uint32_t n_kv_heads,
+              uint32_t hd, uint32_t max_seq, float scale);
+
 /* Reference for EMBED: tokens int32[m], w int8[vocab][k], scale fp32[vocab],
  * y fp16[m][k]. y[t][i] = (fp16)(w[tokens[t]][i] * scale[tokens[t]]). */
 void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,

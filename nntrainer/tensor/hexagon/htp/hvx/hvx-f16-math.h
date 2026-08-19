@@ -2,8 +2,8 @@
 /**
  * @file	hvx-f16-math.h
  * @date	18 August 2026
- * @brief	fp16 widening sum-of-squares and scale-multiply HVX helpers,
- *		shared by RMSNORM and its QK-Norm (per-head) mode
+ * @brief	fp16 widening dot / sum-of-squares and scale-multiply HVX
+ *		helpers, shared by RMSNORM (whole-row and QK-Norm) and ATTN
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -16,19 +16,18 @@
 #include "hvx-base.h"
 #include "hvx-types.h"
 
-/* Sum of x_i^2 in fp32, widening via Q6_Wqf32_vmpy_VhfVhf (one Vhf vector
- * is VLEN_FP16=64 halves; the widened product pair holds 32+32 qf32
- * lanes). n must be a multiple of 64 (validator guarantees hidden%64==0
- * and head_dim=128) and x must be 128B aligned. */
-static inline float hvx_sumsq_fp16(const __fp16 *x, uint32_t n) {
-  HVX_Vector v0 = hvx_vmem(x);
-  HVX_VectorPair p0 = Q6_Wqf32_vmpy_VhfVhf(v0, v0);
+/* Dot product sum(a_i * b_i) in fp32, widening via Q6_Wqf32_vmpy_VhfVhf
+ * (one Vhf vector is VLEN_FP16=64 halves; the widened product pair holds
+ * 32+32 qf32 lanes). n must be a multiple of 64 (validator guarantees
+ * hidden%64==0 and head_dim=128) and a/b must be 128B aligned. */
+static inline float hvx_dot_fp16(const __fp16 *a, const __fp16 *b,
+                                 uint32_t n) {
+  HVX_VectorPair p0 = Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(a), hvx_vmem(b));
   HVX_Vector acc_lo = Q6_V_lo_W(p0);
   HVX_Vector acc_hi = Q6_V_hi_W(p0);
 
   for (uint32_t i = VLEN_FP16; i < n; i += VLEN_FP16) {
-    HVX_Vector v = hvx_vmem(x + i);
-    HVX_VectorPair p = Q6_Wqf32_vmpy_VhfVhf(v, v);
+    HVX_VectorPair p = Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(a + i), hvx_vmem(b + i));
     acc_lo = Q6_Vqf32_vadd_Vqf32Vqf32(acc_lo, Q6_V_lo_W(p));
     acc_hi = Q6_Vqf32_vadd_Vqf32Vqf32(acc_hi, Q6_V_hi_W(p));
   }
@@ -42,6 +41,11 @@ static inline float hvx_sumsq_fp16(const __fp16 *x, uint32_t n) {
   for (uint32_t i = 0; i < VLEN_FP32; ++i)
     sum += buf[i];
   return sum;
+}
+
+/* Sum of x_i^2 in fp32: dot of x with itself. Same alignment/n rules. */
+static inline float hvx_sumsq_fp16(const __fp16 *x, uint32_t n) {
+  return hvx_dot_fp16(x, x, n);
 }
 
 /* y_i = (fp16)(x_i * r * g_i): r splatted to hf, two-step qf16 multiply
