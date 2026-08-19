@@ -20,7 +20,7 @@ for f in "$HTP_DIR"/worker_pool.c "$HTP_DIR"/htp_graph.c \
 done
 
 "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
-    -m"$HEX_ARCH" -mhvx -mhvx-length=128B -G0 -O2 -g -fPIC -shared \
+    -m"$HEX_ARCH" -mhvx -mhvx-length=128B -mhvx-ieee-fp -G0 -O2 -g -fPIC -shared \
     -Wall -Werror -Wno-unused-function \
     -I "$HTP_DIR" -I "$HTP_DIR/ops" -I "$HTP_DIR/hvx" -I "$HTP_DIR/hex" -I "$HTP_DIR/dma" -I "$SIM_DIR" \
     -I "$HEXAGON_SDK_ROOT/rtos/qurt/compute${HEX_ARCH}/include/qurt" \

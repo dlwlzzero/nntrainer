@@ -102,3 +102,14 @@ void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count) {
     y[i] = (__fp16)(silu * (float)u[i]);
   }
 }
+
+void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
+               __fp16 *y, uint32_t m, uint32_t k) {
+  for (uint32_t t = 0; t < m; ++t) {
+    uint32_t row = (uint32_t)tokens[t];
+    const int8_t *wrow = w + (size_t)row * k;
+    __fp16 *yrow = y + (size_t)t * k;
+    for (uint32_t i = 0; i < k; ++i)
+      yrow[i] = (__fp16)((float)wrow[i] * scale[row]);
+  }
+}
