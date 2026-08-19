@@ -45,6 +45,15 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
   free(xq);
 }
 
+void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
+                       float *out, uint32_t k, uint32_t n) {
+  int8_t *xq = malloc((size_t)k);
+  float sx = ref_quant_row(x_last, xq, k);
+  for (uint32_t j = 0; j < n; ++j)
+    out[j] = (float)ref_dot_i8(w + (size_t)j * k, xq, k) * sw[j] * sx;
+  free(xq);
+}
+
 void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
                  uint32_t n, uint32_t chunk, float eps) {
   for (uint32_t t = 0; t < m; ++t) {
