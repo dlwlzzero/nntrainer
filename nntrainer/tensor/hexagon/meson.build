@@ -6,6 +6,7 @@ hexagon_host_sources = [
 hexagon_host_headers = [
   'host/rpcmem_allocator.h',
   'host/hexagon_runner.h',
+  'host/graph_lowering.h',
   'htp/nntr_htp_common.h',
 ]
 
