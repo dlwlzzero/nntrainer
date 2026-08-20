@@ -12,8 +12,9 @@ scalar golden references on the hexagon simulator. When `init()`
 receives an op-list with `n_ops == 0`, the executor keeps the
 original deterministic dummy `forward()` pattern used by the
 round-trip test. Nothing in the nntrainer engine calls the backend
-yet — the host-side lowering and engine hookup are planned work; see
-section 6.
+yet — host-side graph lowering and weight packing are now
+implemented (section 6), and the device end-to-end wiring is
+planned work; see section 7.
 
 ---
 
@@ -398,7 +399,174 @@ bit-exact and per-kernel rows above.
 
 ---
 
-## 6. Current status and planned work
+## 6. Graph lowering and weight packing
+
+M3 is host-side, SDK-free C++: it turns a model's shape (layer
+count, head layout, vocab size, ...) into a complete v2 op-list
+execution plan plus a packed WEIGHTS byte image, ready for
+`HexagonRunner` to hand to `init()` (M4). It reads no rpcmem/FastRPC
+headers and runs on plain x86 for testing.
+
+### 6.1 File layout
+
+```
+nntrainer/tensor/hexagon/host/
+├── graph_lowering.h/.cpp     # shared vocabulary + pack_weights()
+Applications/CausalLM/hexagon/
+├── qwen3_lowering.h/.cpp     # lower_qwen3(): the qwen3 recipe
+```
+
+This split is deliberate. `graph_lowering.h/.cpp` carries only
+model-agnostic vocabulary — the `HexModelConfig`/`HexModelWeights`
+structs, the `HexWeightOffsets`/`HexLoweredGraph` result types, the
+`align128()` helper, and `pack_weights()`, which walks whatever
+offsets a lowering produced without knowing qwen3's op sequence.
+`lower_qwen3()`, the recipe that actually knows qwen3 is a 16-op
+decoder layer wrapped in EMBED/RMSNORM/MATMUL_LOGITS, lives under
+`Applications/CausalLM/hexagon/` instead — the backend stays
+model-agnostic, and the app, which already knows its own
+architecture, calls `lower_qwen3()` + `pack_weights()` and hands the
+results to the runner. A second model would add its own
+`*_lowering.{h,cpp}` recipe under its own app directory and reuse
+`graph_lowering.h`/`pack_weights()` unchanged.
+
+### 6.2 API sketch
+
+```cpp
+// nntrainer/tensor/hexagon/host/graph_lowering.h
+struct HexModelConfig {
+  uint32_t n_layers, n_heads, n_kv_heads, head_dim;
+  uint32_t hidden, ffn, vocab, max_seq, max_chunk;
+  float rms_eps, rope_theta;
+};
+
+struct HexLoweredGraph {
+  std::vector<uint8_t> oplist;   // header(64B) + n_ops*64B
+  HexWeightOffsets woff;
+  uint64_t weights_size, kv_size, act_size;
+}
+
+void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
+                   const HexModelWeights &w, uint8_t *dst);
+
+// Applications/CausalLM/hexagon/qwen3_lowering.h
+HexLoweredGraph lower_qwen3(const HexModelConfig &cfg);
+```
+
+`lower_qwen3()` is pure shape computation — it reads no weight data,
+only `cfg` — and returns the WEIGHTS/ACT layout plans plus the
+serialized op-list bytes. `pack_weights()` then takes that
+`HexLoweredGraph`, the same `cfg`, and the model's actual
+`HexModelWeights` (non-owning pointers into whatever the caller
+loaded), and copies/converts every tensor into `dst` at the offsets
+`lower_qwen3()` already computed.
+
+### 6.3 WEIGHTS image layout
+
+A bump-allocator cursor (`Cursor::alloc()` in `qwen3_lowering.cpp`)
+lays out the WEIGHTS buffer in this order, 128B-aligning the start
+of every tensor:
+
+1. `embed` — int8 `[vocab][hidden]`, tied and reused as the
+   `MATMUL_LOGITS` lm_head weight;
+2. `embed_scale` — fp32 `[vocab]`, per-row dequant scale;
+3. `rope_table` — precomputed on the host, `[max_seq][cos64||sin64]`
+   fp16, angle `= p * theta^(-2*i/128)`;
+4. `final_norm` — fp16 `[hidden]`;
+5. per layer: `wq/wq_s`, `wk/wk_s`, `wv/wv_s`, `wo/wo_s`,
+   `gate/gate_s`, `up/up_s`, `down/down_s`, then
+   `attn_norm/ffn_norm/q_norm/k_norm`.
+
+Projection matrices are int8, N-major (`[N][K]`, row = output
+channel) with one fp32 scale per output channel; `pack_weights()`
+copies the int8 blob and its per-output-channel fp32 scales
+byte-exact from the source. Norm gammas and the RoPE table are
+converted to fp16 on the way in.
+
+For the real qwen3-0.6b shape (28 layers, hidden 1024, 16/8 heads,
+head_dim 128, ffn 3072, vocab 151936, max_seq 2048), `weights_size`
+comes out to exactly **598,623,744 bytes** — every extent above is a
+128B multiple at these dimensions, so the image contains no
+alignment padding at all.
+
+### 6.4 ACT buffer layout
+
+The ACT (activation scratch) buffer has nine 128B-aligned slots,
+each sized for `max_chunk` tokens and reused across every layer:
+
+| slot | shape (per token) | role |
+|------|--------------------|------|
+| `x`  | `hidden` fp16 | residual stream |
+| `t`  | `hidden` fp16 | post-norm scratch |
+| `q`  | `n_heads*head_dim` fp16 | query projection |
+| `kb` | `n_kv_heads*head_dim` fp16 | key projection (this layer) |
+| `vb` | `n_kv_heads*head_dim` fp16 | value projection (this layer) |
+| `ao` | `n_heads*head_dim` fp16 | attention output |
+| `h2` | `hidden` fp16 | matmul-out / residual scratch |
+| `g`  | `ffn` fp16 | gate projection |
+| `u`  | `ffn` fp16 | up projection |
+
+Because every layer reuses the same nine slots, `act_size` does not
+scale with `n_layers`. The persistent KV cache is separate from ACT;
+its size is `kv_size = 2 * n_layers * n_kv_heads * max_seq *
+head_dim * 2` bytes (key + value, fp16).
+
+### 6.5 Op sequence
+
+`lower_qwen3()` emits `1 + 16 * n_layers + 2` ops: one `EMBED`, a
+16-op body per decoder layer, then a final `RMSNORM` and
+`MATMUL_LOGITS`. The 16-op layer body, in order:
+
+| # | kind | notes |
+|---|------|-------|
+| 1 | RMSNORM | `x * attn_norm -> t` |
+| 2 | MATMUL_W8A8 | `t * wq -> q` |
+| 3 | MATMUL_W8A8 | `t * wk -> kb` |
+| 4 | MATMUL_W8A8 | `t * wv -> vb` |
+| 5 | RMSNORM | `q * q_norm -> q`, `FLAG_PER_HEAD` |
+| 6 | RMSNORM | `kb * k_norm -> kb`, `FLAG_PER_HEAD` |
+| 7 | ROPE | q, kb in place, via `rope_table` |
+| 8 | ATTN | `q, kb, vb -> ao`, tagged with this layer's index into KV |
+| 9 | MATMUL_W8A8 | `ao * wo -> h2` |
+| 10 | ADD | `x + h2 -> x` (attention residual) |
+| 11 | RMSNORM | `x * ffn_norm -> t` |
+| 12 | MATMUL_W8A8 | `t * gate -> g` |
+| 13 | MATMUL_W8A8 | `t * up -> u` |
+| 14 | SILU_MUL | `g, u -> g` in place |
+| 15 | MATMUL_W8A8 | `g * down -> h2` |
+| 16 | ADD | `x + h2 -> x` (FFN residual) |
+
+The tied embedding means `MATMUL_LOGITS`'s weight/scale tensor refs
+reuse `embed`'s WEIGHTS offsets directly rather than duplicating the
+matrix. For qwen3-0.6b (28 layers) this comes out to 451 ops, which
+`test_lowering.cpp` checks against `nntr_htp_oplist_validate()`.
+
+### 6.6 Testing on x86
+
+`test/hexagon/test_lowering.cpp` is a self-contained (non-gtest)
+check, mirroring `test_oplist_header.c`'s pattern: it validates the
+op-list against `nntr_htp_oplist_validate()`, walks the full op
+sequence and header fields, checks the ACT slots are pairwise
+disjoint, and drives `pack_weights()` against synthetic weights to
+check byte-exact int8/scale copies, fp16 norm/RoPE conversion
+accuracy, tied-embed offset sharing, and full coverage of every
+WEIGHTS extent — for both a tiny synthetic config and the real
+qwen3-0.6b dims. It builds and runs entirely on the host:
+
+```bash
+g++ -std=c++17 -Wall -Werror \
+    -I nntrainer/tensor/hexagon/htp -I nntrainer/tensor/hexagon/host \
+    -o /tmp/test_lowering test/hexagon/test_lowering.cpp \
+    Applications/CausalLM/hexagon/qwen3_lowering.cpp \
+    nntrainer/tensor/hexagon/host/graph_lowering.cpp \
+&& /tmp/test_lowering
+```
+
+A passing run prints `LOWER_TEST PASS`.
+
+---
+
+## 7. Current status and planned work
 
 Implemented:
 
@@ -411,12 +579,24 @@ Implemented:
   simulator golden tests (section 4.5). The `n_ops == 0` dummy
   `forward()` path is kept so the M1 round-trip test still passes
   unchanged.
+* M3 — host-side graph lowering and weight packing (section 6):
+  `lower_qwen3()` builds the v2 op-list and WEIGHTS/ACT layout plans
+  from model dimensions alone ("[htp] Add the qwen3 graph lowering
+  emitting the v2 op-list"), and `pack_weights()` fills a WEIGHTS
+  buffer from the model's source tensors, including the precomputed
+  fp16 RoPE table ("[htp] Pack the DSP weight image with the
+  precomputed RoPE table"). Both are exercised by
+  `test/hexagon/test_lowering.cpp` on x86, with no device or SDK
+  needed.
 
 Planned, in rough order:
 
-* M3 — host-side lowering: building the op-list, quantized weight
-  layouts, and the KV/activation buffer plan from an actual model on
-  the host;
+* M4 — device end-to-end: registering the backend under
+  `engine="htp"`, an adapter from an on-disk weight file to
+  `HexModelWeights` so `pack_weights()` has real source tensors to
+  read, and wiring `HexagonRunner::init()` to call `lower_qwen3()` +
+  `pack_weights()` and hand the results (op-list, WEIGHTS buffer,
+  sizes) to the FastRPC session;
 * engine hookup — a Context/ComputeOps integration per
   `ARCHITECTURE.md`, KV-cache invalidation when a `forward()` fails
   mid-generation, and routing DSP-side errors into the nntrainer
