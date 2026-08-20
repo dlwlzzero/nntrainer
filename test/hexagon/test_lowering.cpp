@@ -3,23 +3,42 @@
  * @file	test_lowering.cpp
  * @date	19 August 2026
  * @brief	x86 self-check for qwen3 graph_lowering: op-list shape,
- *		WEIGHTS/ACT layout, and header fields, against a tiny config
- *		and a qwen3-0.6b-dims smoke test. Not gtest, mirrors the
- *		test_oplist_header.c self-contained main pattern.
+ *		WEIGHTS/ACT layout, header fields, and pack_weights() byte
+ *		packing (int8/scale memcpy, norm fp16 conversion, RoPE
+ *		table), against a tiny config and a qwen3-0.6b-dims smoke
+ *		test. Not gtest, mirrors the test_oplist_header.c
+ *		self-contained main pattern.
+ *
+ * Compile:
+ *   g++ -std=c++17 -Wall -Werror \
+ *       -I nntrainer/tensor/hexagon/htp -I nntrainer/tensor/hexagon/host \
+ *       -o /tmp/test_lowering test/hexagon/test_lowering.cpp \
+ *       Applications/CausalLM/hexagon/qwen3_lowering.cpp \
+ *       nntrainer/tensor/hexagon/host/graph_lowering.cpp \
+ *   && /tmp/test_lowering
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
  */
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 #include "../../Applications/CausalLM/hexagon/qwen3_lowering.h"
+#include "../../nntrainer/tensor/hexagon/host/graph_lowering.h"
 #include "../../nntrainer/tensor/hexagon/htp/nntr_htp_common.h"
+#include "sim/sim_test_util.h"
 
+using nntrainer::hexagon::HexLayerWeights;
 using nntrainer::hexagon::HexLoweredGraph;
 using nntrainer::hexagon::HexModelConfig;
+using nntrainer::hexagon::HexModelWeights;
+using nntrainer::hexagon::HexWeightOffsets;
 using nntrainer::hexagon::lower_qwen3;
+using nntrainer::hexagon::pack_weights;
 
 /** @brief Print the failing check and exit 1. */
 #define FAIL(msg)                                                            \
@@ -230,6 +249,327 @@ uint64_t expected_weights_size(const HexModelConfig &cfg) {
   return cur;
 }
 
+/** @brief Synthetic source weights for pack_weights() packing tests. */
+struct SynthLayer {
+  std::vector<int8_t> wq, wk, wv, wo, gate, up, down;
+  std::vector<float> wq_s, wk_s, wv_s, wo_s, gate_s, up_s, down_s;
+  std::vector<float> attn_norm, ffn_norm, q_norm, k_norm;
+};
+
+/** @brief Full synthetic model: embed + per-layer SynthLayer blocks. */
+struct SynthWeights {
+  std::vector<int8_t> embed;
+  std::vector<float> embed_s;
+  std::vector<float> final_norm;
+  std::vector<SynthLayer> layers;
+};
+
+/** @brief proj int8 pattern: buf[i] = (int8_t)(i*31 + ord*7); ord tags
+ *         a tensor so distinct tensors get distinct byte patterns. */
+void fill_i8(int8_t *buf, uint64_t n, uint32_t ord) {
+  for (uint64_t i = 0; i < n; ++i)
+    buf[i] = static_cast<int8_t>(i * 31u + ord * 7u);
+}
+
+/** @brief Per-row (per-output-channel) scale pattern. */
+void fill_scale(float *buf, uint64_t rows) {
+  for (uint64_t r = 0; r < rows; ++r)
+    buf[r] = 0.001f + 0.0001f * static_cast<float>(r);
+}
+
+/** @brief Norm gamma pattern: LCG-driven fp32 values in [0.5, 1.5). */
+void fill_norm(float *buf, uint64_t n) {
+  for (uint64_t i = 0; i < n; ++i)
+    buf[i] = 1.0f + 0.5f * frand();
+}
+
+/** @brief Build deterministic synthetic weights matching cfg's shapes. */
+SynthWeights make_synth_weights(const HexModelConfig &cfg) {
+  SynthWeights s;
+  const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
+  const uint64_t n_kv =
+    static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+  uint32_t ord = 0;
+
+  s.embed.resize(static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
+  fill_i8(s.embed.data(), s.embed.size(), ord++);
+  s.embed_s.resize(cfg.vocab);
+  fill_scale(s.embed_s.data(), s.embed_s.size());
+  s.final_norm.resize(cfg.hidden);
+  fill_norm(s.final_norm.data(), s.final_norm.size());
+
+  s.layers.resize(cfg.n_layers);
+  for (uint32_t l = 0; l < cfg.n_layers; ++l) {
+    SynthLayer &ly = s.layers[l];
+
+    ly.wq.resize(n_q * cfg.hidden);
+    fill_i8(ly.wq.data(), ly.wq.size(), ord++);
+    ly.wq_s.resize(n_q);
+    fill_scale(ly.wq_s.data(), ly.wq_s.size());
+
+    ly.wk.resize(n_kv * cfg.hidden);
+    fill_i8(ly.wk.data(), ly.wk.size(), ord++);
+    ly.wk_s.resize(n_kv);
+    fill_scale(ly.wk_s.data(), ly.wk_s.size());
+
+    ly.wv.resize(n_kv * cfg.hidden);
+    fill_i8(ly.wv.data(), ly.wv.size(), ord++);
+    ly.wv_s.resize(n_kv);
+    fill_scale(ly.wv_s.data(), ly.wv_s.size());
+
+    ly.wo.resize(static_cast<uint64_t>(cfg.hidden) * n_q);
+    fill_i8(ly.wo.data(), ly.wo.size(), ord++);
+    ly.wo_s.resize(cfg.hidden);
+    fill_scale(ly.wo_s.data(), ly.wo_s.size());
+
+    ly.gate.resize(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    fill_i8(ly.gate.data(), ly.gate.size(), ord++);
+    ly.gate_s.resize(cfg.ffn);
+    fill_scale(ly.gate_s.data(), ly.gate_s.size());
+
+    ly.up.resize(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    fill_i8(ly.up.data(), ly.up.size(), ord++);
+    ly.up_s.resize(cfg.ffn);
+    fill_scale(ly.up_s.data(), ly.up_s.size());
+
+    ly.down.resize(static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
+    fill_i8(ly.down.data(), ly.down.size(), ord++);
+    ly.down_s.resize(cfg.hidden);
+    fill_scale(ly.down_s.data(), ly.down_s.size());
+
+    ly.attn_norm.resize(cfg.hidden);
+    fill_norm(ly.attn_norm.data(), ly.attn_norm.size());
+    ly.ffn_norm.resize(cfg.hidden);
+    fill_norm(ly.ffn_norm.data(), ly.ffn_norm.size());
+    ly.q_norm.resize(cfg.head_dim);
+    fill_norm(ly.q_norm.data(), ly.q_norm.size());
+    ly.k_norm.resize(cfg.head_dim);
+    fill_norm(ly.k_norm.data(), ly.k_norm.size());
+  }
+  return s;
+}
+
+/** @brief Wire SynthWeights storage into non-owning HexModelWeights. */
+HexModelWeights to_model_weights(const SynthWeights &s) {
+  HexModelWeights w{};
+  w.embed = s.embed.data();
+  w.embed_s = s.embed_s.data();
+  w.final_norm = s.final_norm.data();
+  w.layers.resize(s.layers.size());
+  for (size_t l = 0; l < s.layers.size(); ++l) {
+    const SynthLayer &ly = s.layers[l];
+    HexLayerWeights &lw = w.layers[l];
+    lw.wq = ly.wq.data();
+    lw.wq_s = ly.wq_s.data();
+    lw.wk = ly.wk.data();
+    lw.wk_s = ly.wk_s.data();
+    lw.wv = ly.wv.data();
+    lw.wv_s = ly.wv_s.data();
+    lw.wo = ly.wo.data();
+    lw.wo_s = ly.wo_s.data();
+    lw.w_gate = ly.gate.data();
+    lw.w_gate_s = ly.gate_s.data();
+    lw.w_up = ly.up.data();
+    lw.w_up_s = ly.up_s.data();
+    lw.w_down = ly.down.data();
+    lw.w_down_s = ly.down_s.data();
+    lw.attn_norm = ly.attn_norm.data();
+    lw.ffn_norm = ly.ffn_norm.data();
+    lw.q_norm = ly.q_norm.data();
+    lw.k_norm = ly.k_norm.data();
+  }
+  return w;
+}
+
+/** @brief One (offset, size) tensor extent, WEIGHTS layout order. */
+using Extent = std::pair<uint64_t, uint64_t>;
+
+/** @brief Ordered tensor extents (offset,size), mirroring the WEIGHTS
+ *         layout section, for the full-coverage (check 5) sweep. */
+std::vector<Extent> tensor_extents(const HexLoweredGraph &g,
+                                    const HexModelConfig &cfg) {
+  std::vector<Extent> v;
+  const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
+  const uint64_t n_kv =
+    static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+  auto add = [&](uint32_t off, uint64_t size) {
+    v.push_back({off, size});
+  };
+
+  add(g.woff.embed, static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
+  add(g.woff.embed_scale, static_cast<uint64_t>(cfg.vocab) * 4u);
+  add(g.woff.rope_table,
+      static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);
+  add(g.woff.final_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
+
+  for (uint32_t l = 0; l < cfg.n_layers; ++l) {
+    const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
+    add(pl.wq, n_q * cfg.hidden);
+    add(pl.wq_s, n_q * 4u);
+    add(pl.wk, n_kv * cfg.hidden);
+    add(pl.wk_s, n_kv * 4u);
+    add(pl.wv, n_kv * cfg.hidden);
+    add(pl.wv_s, n_kv * 4u);
+    add(pl.wo, static_cast<uint64_t>(cfg.hidden) * n_q);
+    add(pl.wo_s, static_cast<uint64_t>(cfg.hidden) * 4u);
+    add(pl.gate, static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    add(pl.gate_s, static_cast<uint64_t>(cfg.ffn) * 4u);
+    add(pl.up, static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    add(pl.up_s, static_cast<uint64_t>(cfg.ffn) * 4u);
+    add(pl.down, static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
+    add(pl.down_s, static_cast<uint64_t>(cfg.hidden) * 4u);
+    add(pl.attn_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
+    add(pl.ffn_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
+    add(pl.q_norm, static_cast<uint64_t>(cfg.head_dim) * 2u);
+    add(pl.k_norm, static_cast<uint64_t>(cfg.head_dim) * 2u);
+  }
+  return v;
+}
+
+/** @brief True iff every byte in [p, p+n) equals 0xA5. */
+bool all_0xA5(const uint8_t *p, uint64_t n) {
+  for (uint64_t i = 0; i < n; ++i)
+    if (p[i] != 0xA5u)
+      return false;
+  return true;
+}
+
+/** @brief memcmp check 1: byte-exact int8 blob / fp32 scale copy. */
+void check_bytes(const uint8_t *dst, uint32_t off, const void *src,
+                  uint64_t bytes, const char *msg) {
+  CHECK(std::memcmp(dst + off, src, bytes) == 0, msg);
+}
+
+/** @brief Read one fp16 (as raw bits) back from the packed buffer. */
+uint16_t read_u16(const uint8_t *dst, uint32_t off, uint64_t idx) {
+  uint16_t v;
+  std::memcpy(&v, dst + off + idx * 2u, 2);
+  return v;
+}
+
+/** @brief fp16 bits vs fp32 ref within |d| <= 1e-3 + 1e-3*|ref|. */
+bool close_norm(uint16_t bits, float ref) {
+  _Float16 h;
+  std::memcpy(&h, &bits, 2);
+  float got = static_cast<float>(h);
+  float d = std::fabs(got - ref);
+  return d <= 1e-3f + 1e-3f * std::fabs(ref);
+}
+
+/** @brief check 2: a packed fp16 norm vector matches its fp32 source. */
+void check_norm_vec(const uint8_t *dst, uint32_t off, const float *ref,
+                     uint64_t n, const char *msg) {
+  for (uint64_t i = 0; i < n; ++i)
+    CHECK(close_norm(read_u16(dst, off, i), ref[i]), msg);
+}
+
+/** @brief fp16 bits vs fp32 ref within |d| <= 2e-3 + 5e-3*|ref|. */
+bool close_rope(uint16_t bits, float ref) {
+  _Float16 h;
+  std::memcpy(&h, &bits, 2);
+  float got = static_cast<float>(h);
+  float d = std::fabs(got - ref);
+  return d <= 2e-3f + 5e-3f * std::fabs(ref);
+}
+
+/** @brief check 3: RoPE cos/sin fp16 rows against cosf/sinf directly,
+ *         for p in {0, 1, max_seq-1} and i in {0, 1, 63}. */
+void check_rope_table(const uint8_t *dst, const HexLoweredGraph &g,
+                       const HexModelConfig &cfg) {
+  const uint32_t ps[3] = {0u, 1u, cfg.max_seq - 1u};
+  const uint32_t is[3] = {0u, 1u, 63u};
+  for (uint32_t p : ps) {
+    for (uint32_t i : is) {
+      float exponent = -2.0f * static_cast<float>(i) / 128.0f;
+      float angle = static_cast<float>(p) * powf(cfg.rope_theta, exponent);
+      uint64_t row = static_cast<uint64_t>(p) * 128u;
+      uint16_t cos_bits = read_u16(dst, g.woff.rope_table, row + i);
+      uint16_t sin_bits =
+        read_u16(dst, g.woff.rope_table, row + 64u + i);
+      CHECK(close_rope(cos_bits, cosf(angle)), "rope cos mismatch");
+      CHECK(close_rope(sin_bits, sinf(angle)), "rope sin mismatch");
+    }
+  }
+}
+
+/** @brief pack_weights() checks 1-5: memcmp coverage, norm/RoPE
+ *         conversion accuracy, tied-embed size accounting, and
+ *         full-coverage writtenness against an 0xA5 prefill. */
+void check_pack_weights(const HexLoweredGraph &g,
+                         const HexModelConfig &cfg) {
+  SynthWeights synth = make_synth_weights(cfg);
+  HexModelWeights w = to_model_weights(synth);
+
+  std::vector<uint8_t> dst(g.weights_size, 0xA5u);
+  pack_weights(g, cfg, w, dst.data());
+
+  // 1. int8 blobs and fp32 scale arrays: byte-exact vs. source.
+  check_bytes(dst.data(), g.woff.embed, synth.embed.data(),
+              synth.embed.size(), "embed bytes");
+  check_bytes(dst.data(), g.woff.embed_scale, synth.embed_s.data(),
+              synth.embed_s.size() * 4u, "embed_scale bytes");
+  for (uint32_t l = 0; l < cfg.n_layers; ++l) {
+    const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
+    const SynthLayer &ly = synth.layers[l];
+    check_bytes(dst.data(), pl.wq, ly.wq.data(), ly.wq.size(), "wq");
+    check_bytes(dst.data(), pl.wq_s, ly.wq_s.data(),
+                ly.wq_s.size() * 4u, "wq_s");
+    check_bytes(dst.data(), pl.wk, ly.wk.data(), ly.wk.size(), "wk");
+    check_bytes(dst.data(), pl.wk_s, ly.wk_s.data(),
+                ly.wk_s.size() * 4u, "wk_s");
+    check_bytes(dst.data(), pl.wv, ly.wv.data(), ly.wv.size(), "wv");
+    check_bytes(dst.data(), pl.wv_s, ly.wv_s.data(),
+                ly.wv_s.size() * 4u, "wv_s");
+    check_bytes(dst.data(), pl.wo, ly.wo.data(), ly.wo.size(), "wo");
+    check_bytes(dst.data(), pl.wo_s, ly.wo_s.data(),
+                ly.wo_s.size() * 4u, "wo_s");
+    check_bytes(dst.data(), pl.gate, ly.gate.data(), ly.gate.size(),
+                "gate");
+    check_bytes(dst.data(), pl.gate_s, ly.gate_s.data(),
+                ly.gate_s.size() * 4u, "gate_s");
+    check_bytes(dst.data(), pl.up, ly.up.data(), ly.up.size(), "up");
+    check_bytes(dst.data(), pl.up_s, ly.up_s.data(),
+                ly.up_s.size() * 4u, "up_s");
+    check_bytes(dst.data(), pl.down, ly.down.data(), ly.down.size(),
+                "down");
+    check_bytes(dst.data(), pl.down_s, ly.down_s.data(),
+                ly.down_s.size() * 4u, "down_s");
+  }
+
+  // 2. norms: fp16 vs. fp32 source within tolerance.
+  check_norm_vec(dst.data(), g.woff.final_norm, synth.final_norm.data(),
+                 cfg.hidden, "final_norm value");
+  for (uint32_t l = 0; l < cfg.n_layers; ++l) {
+    const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
+    const SynthLayer &ly = synth.layers[l];
+    check_norm_vec(dst.data(), pl.attn_norm, ly.attn_norm.data(),
+                   cfg.hidden, "attn_norm value");
+    check_norm_vec(dst.data(), pl.ffn_norm, ly.ffn_norm.data(),
+                   cfg.hidden, "ffn_norm value");
+    check_norm_vec(dst.data(), pl.q_norm, ly.q_norm.data(),
+                   cfg.head_dim, "q_norm value");
+    check_norm_vec(dst.data(), pl.k_norm, ly.k_norm.data(),
+                   cfg.head_dim, "k_norm value");
+  }
+
+  // 3. RoPE table values.
+  check_rope_table(dst.data(), g, cfg);
+
+  // 4. Tied embed: HexWeightOffsets carries a single 'embed' field (no
+  // separate lm_head offset), and weights_size must equal the sum of
+  // every 128B-aligned tensor extent with embed counted exactly once.
+  CHECK(g.weights_size == expected_weights_size(cfg),
+        "tied embed: weights_size counts embed more than once");
+
+  // 5. Full coverage: every tensor range must have been written (no
+  // longer reads as the untouched 0xA5 prefill pattern). The synthetic
+  // generators never emit an all-0xA5 constant range, so this is safe.
+  std::vector<Extent> ext = tensor_extents(g, cfg);
+  for (const Extent &e : ext)
+    CHECK(!all_0xA5(dst.data() + e.first, e.second),
+          "tensor range still reads as untouched 0xA5 prefill");
+}
+
 } // namespace
 
 int main(void) {
@@ -284,6 +624,10 @@ int main(void) {
 
   CHECK(g.weights_size == expected_weights_size(cfg),
         "tiny weights_size mismatch vs independent layout recompute");
+
+  // 8. pack_weights(): int8/scale byte-exact copy, norm/RoPE fp16
+  // conversion accuracy, tied-embed accounting, full write coverage.
+  check_pack_weights(g, cfg);
 
   // 7. Real-dims smoke: qwen3-0.6b.
   HexModelConfig real{};

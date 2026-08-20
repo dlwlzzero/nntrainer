@@ -1,6 +1,7 @@
 hexagon_host_sources = [
   'host/rpcmem_allocator.cpp',
   'host/hexagon_runner.cpp',
+  'host/graph_lowering.cpp',
 ]
 
 hexagon_host_headers = [
