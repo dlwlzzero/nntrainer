@@ -299,12 +299,65 @@ with M4 (device end-to-end wiring) next.</p>
 
 <section id="code-map">
 <h2>4. Code Map</h2>
-<p class="placeholder">(section pending)</p>
+<p>The added HVX backend code lives under four top-level trees: the qwen3-specific
+lowering application, the hexagon backend module itself (split into host-side and
+DSP-side <code>htp/</code> sources), the test suite, and the build/run tooling. Only
+paths added on this branch are listed.</p>
+<pre>
+Applications/CausalLM/hexagon/     — Qwen3-specific graph lowering (host)
+nntrainer/tensor/hexagon/
+  host/                            — rpcmem allocator, FastRPC session runner, generic lowering helpers
+  htp/                             — DSP-side sources (built into the skel)
+    nntr_htp.idl, nntr_htp_common.h — FastRPC interface + op-list wire format
+    executor.c, htp_graph.[ch]     — op-list graph executor
+    worker_pool.[ch]               — QuRT worker pool, per-op barriers
+    ops/                           — HVX kernels (matmul, rmsnorm, rope, eltwise, embed, attn)
+    hvx/, hex/, dma/               — HVX math/quant primitives, hex utils, DMA queue
+test/hexagon/                      — lowering unit tests, on-device RPC test
+  sim/                             — hexagon-sim kernel tests + fp32 reference ops
+tools/hexagon/                     — skel/sim/host build scripts, device run scripts, log tools
+docs/backend_guide/HEXAGON.md      — full backend guide (build, run, debug)
+</pre>
 </section>
 
 <section id="testing">
 <h2>5. Testing &amp; Tooling</h2>
-<p class="placeholder">(section pending)</p>
+<p>The added tests split into three tiers by what they need in order to run.</p>
+<table>
+<tr><th>Tier</th><th>Files</th><th>What it checks</th><th>How to run</th></tr>
+<tr><td>hexagon-sim</td><td><code>test/hexagon/sim/*.c</code> vs. <code>ref_ops.c</code></td>
+<td>Each HVX kernel's output against a scalar fp32 reference implementation, on the
+Hexagon instruction simulator &mdash; no physical device needed.</td>
+<td><code>tools/hexagon/build_sim_test.sh</code>, then
+<code>tools/hexagon/run_sim_test.sh &lt;name&gt;</code></td></tr>
+<tr><td>host (x86)</td><td><code>test/hexagon/test_lowering.cpp</code>,
+<code>test/hexagon/test_oplist_header.c</code></td>
+<td>The qwen3 op-list lowering (shape, WEIGHTS/ACT layout, <code>pack_weights()</code>
+byte packing) and the shared op-list wire-format header validation, entirely on the
+host with no Hexagon SDK or device.</td>
+<td>plain <code>g++</code>/<code>gcc</code>, e.g. <code>g++ -std=c++17 -I
+nntrainer/tensor/hexagon/htp -I nntrainer/tensor/hexagon/host -o /tmp/test_lowering
+test/hexagon/test_lowering.cpp Applications/CausalLM/hexagon/qwen3_lowering.cpp
+nntrainer/tensor/hexagon/host/graph_lowering.cpp &amp;&amp; /tmp/test_lowering</code></td></tr>
+<tr><td>on-device</td><td><code>test/hexagon/hexagon_rpc_test.cpp</code></td>
+<td>The FastRPC round trip itself &mdash; session open, persistent rpcmem mapping,
+ABI-mismatch rejection &mdash; on a real Snapdragon device.</td>
+<td><code>tools/hexagon/build_host_test.sh</code> (NDK cross-build of the test
+binary), then <code>tools/hexagon/run_device_test.sh [adb-serial]</code> (push + run +
+log capture)</td></tr>
+</table>
+<p>The remaining <code>tools/hexagon/</code> scripts, used to build the DSP skel and
+to inspect the on-device log produced above:</p>
+<ul>
+<li><code>build_skel.sh</code> &mdash; generates the FastRPC stub/skel from
+<code>nntr_htp.idl</code> and cross-builds the DSP skel with hexagon-clang.</li>
+<li><code>check_rpc_log.py</code> &mdash; verdict for a <code>device_test_*.log</code>
+from <code>run_device_test.sh</code>: prints a required-marker checklist and
+<code>forward()</code> latency stats, exiting 0 iff the run passed.</li>
+<li><code>plot_rpc_latency.py</code> &mdash; histogram of <code>forward()</code> RPC
+latency from one or more <code>device_test_*.log</code> files, overlaid for
+run-to-run comparison.</li>
+</ul>
 </section>
 
 <section id="stats">
