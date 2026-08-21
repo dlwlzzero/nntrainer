@@ -191,7 +191,110 @@ already handed off once, at <code>init()</code>, as shared rpcmem allocations.</
 
 <section id="milestones">
 <h2>3. Milestones</h2>
-<p class="placeholder">(section pending)</p>
+
+<h3>M0 &mdash; FastRPC infrastructure</h3>
+<p>The backend started with the graph-level cDSP offload contract: <code>nntr_htp.idl</code>,
+the FastRPC interface where large buffers (weights/kv/act) cross once at <code>init()</code>
+as dma-buf fds for persistent <code>HAP_mmap</code> on the DSP, and <code>forward()</code> carries only
+<code>token_ids</code>/<code>logits</code>, one RPC per call &mdash; and <code>nntr_htp_common.h</code>, the
+plain-C op-list wire header (magic + ABI version) both the NDK and hexagon-clang toolchains
+compile. The DSP side got a dummy executor proving the plumbing (persistent mapping of the
+three dma-buf fds, ABI-mismatch rejection) and <code>tools/hexagon/build_skel.sh</code>
+cross-building the skel with hexagon-clang.</p>
+<p>The host side added <code>rpcmem_allocator</code> (a move-only RAII dma-buf wrapper) and
+<code>hexagon_runner</code>, which owns one <code>remote_handle64</code> session and requests an
+unsigned PD best-effort, the same path ggml-hexagon uses. An on-device round-trip test closed
+the loop, verifying host-written weights are visible through the persistent mapping: measured
+168/258.5/598 us (min/median/max) over 32 forward calls on an 8 Elite device. M0 finished by
+wiring <code>-Denable-hexagon</code> into the meson/NDK build and dropping the legacy HexKL
+<code>htp_backend</code>, whose decode path measured net-harmful (~0.16 TPS).</p>
+<table>
+<tr><th>Component</th><th>Files</th><th>Commit</th></tr>
+<tr><td>FastRPC IDL &amp; shared op-list header</td><td><code>nntrainer/tensor/hexagon/htp/nntr_htp.idl</code>, <code>nntrainer/tensor/hexagon/htp/nntr_htp_common.h</code>, <code>test/hexagon/test_oplist_header.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/ade04c74">ade04c74</a></td></tr>
+<tr><td>Dummy DSP executor &amp; skel cross-build</td><td><code>nntrainer/tensor/hexagon/htp/executor.c</code>, <code>tools/hexagon/build_skel.sh</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/a55c3a14">a55c3a14</a></td></tr>
+<tr><td>Host rpcmem allocator &amp; cDSP session runner</td><td><code>nntrainer/tensor/hexagon/host/rpcmem_allocator.{cpp,h}</code>, <code>nntrainer/tensor/hexagon/host/hexagon_runner.{cpp,h}</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/168dfc7e">168dfc7e</a></td></tr>
+<tr><td>On-device RPC round-trip test &amp; device tooling</td><td><code>test/hexagon/hexagon_rpc_test.cpp</code>, <code>tools/hexagon/build_host_test.sh</code>, <code>tools/hexagon/run_device_test.sh</code>, <code>tools/hexagon/check_rpc_log.py</code>, <code>tools/hexagon/plot_rpc_latency.py</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/91c9fb45">91c9fb45</a></td></tr>
+<tr><td>Build wiring &amp; HexKL backend removal</td><td><code>meson.build</code>, <code>meson_options.txt</code>, <code>jni/Android.mk.in</code>, <code>jni/meson.build</code>, <code>nntrainer/tensor/hexagon/meson.build</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/2c1b167b">2c1b167b</a></td></tr>
+<tr><td>Backend guide (infrastructure)</td><td><code>docs/backend_guide/HEXAGON_HVX.md</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/e6ce33ae">e6ce33ae</a></td></tr>
+</table>
+
+<h3>M1 &mdash; HVX kernels</h3>
+<p>Before any kernel could run, M1 built the hexagon-sim test harness (v75 QuRT sim via
+<code>runelf.pbn</code>) under <code>test/hexagon/sim/</code>, extended the op-list wire format to v2
+with 64-byte op descriptors and named buffer ids for the qwen3 graph, added a QuRT worker pool
+with per-op barrier semantics (correctly decoding <code>qurt_hvx_get_units()</code> as an
+encoding, not a raw count), and imported HVX exp/inverse and DMA-queue primitives from
+ggml-hexagon (MIT-licensed, with a NOTICE entry).</p>
+<p>Seven kernels followed under <code>nntrainer/tensor/hexagon/htp/ops/</code>: W8A8 matmul with
+per-token dynamic int8 quantization and VTCM weight streaming double-buffered through the
+imported DMA queue; RMSNORM with a <code>PER_HEAD</code> mode for qwen3's QK-Norm; ROPE rotating
+q/k rows from a precomputed fp16 cos/sin table instead of computing trig on the DSP; ADD (using
+the normalized IEEE fp16 add rather than qf16, which lost precision on near-cancelling sums) and
+SILU_MUL; EMBED gather-dequant; a fused ATTN kernel combining KV-cache append with causal SDPA
+and GQA head-group sharing; and MATMUL_LOGITS emitting fp32 last-token logits directly. Each
+kernel shipped with a hexagon-sim test compared against a scalar C reference, verified PASS on
+hexagon-sim v75.</p>
+<table>
+<tr><th>Component</th><th>Files</th><th>Commit</th></tr>
+<tr><td>Hexagon-sim test harness</td><td><code>test/hexagon/sim/sim_test_main.c</code>, <code>test/hexagon/sim/sim_test_util.h</code>, <code>test/hexagon/sim/test_smoke.c</code>, <code>tools/hexagon/build_sim_test.sh</code>, <code>tools/hexagon/run_sim_test.sh</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/913095f1">913095f1</a></td></tr>
+<tr><td>Op-list v2 wire format (op descriptors)</td><td><code>nntrainer/tensor/hexagon/htp/nntr_htp_common.h</code>, <code>test/hexagon/test_oplist_header.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/a2800de7">a2800de7</a></td></tr>
+<tr><td>QuRT worker pool with per-op barriers</td><td><code>nntrainer/tensor/hexagon/htp/worker_pool.{c,h}</code>, <code>test/hexagon/sim/test_pool.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/ceb8e26f">ceb8e26f</a></td></tr>
+<tr><td>Imported HVX exp/inverse &amp; dma-queue primitives</td><td><code>nntrainer/tensor/hexagon/htp/hex/</code>, <code>nntrainer/tensor/hexagon/htp/hvx/</code>, <code>nntrainer/tensor/hexagon/htp/dma/dma-queue.{c,h}</code>, <code>NOTICE</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/ae63fd73">ae63fd73</a></td></tr>
+<tr><td>W8A8 matmul kernel with VTCM streaming</td><td><code>nntrainer/tensor/hexagon/htp/hvx/hvx-quant.h</code>, <code>nntrainer/tensor/hexagon/htp/ops/htp_ops.h</code>, <code>nntrainer/tensor/hexagon/htp/ops/hvx-matmul.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/dceead35">dceead35</a></td></tr>
+<tr><td>RMSNORM kernel (incl. per-head QK-Norm)</td><td><code>nntrainer/tensor/hexagon/htp/hvx/hvx-f16-math.h</code>, <code>nntrainer/tensor/hexagon/htp/ops/hvx-rmsnorm.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/bf078b6e">bf078b6e</a></td></tr>
+<tr><td>ROPE kernel from the precomputed table</td><td><code>nntrainer/tensor/hexagon/htp/ops/hvx-rope.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/b868c245">b868c245</a></td></tr>
+<tr><td>ADD &amp; SILU_MUL kernels</td><td><code>nntrainer/tensor/hexagon/htp/ops/hvx-eltwise.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/aa9575ab">aa9575ab</a></td></tr>
+<tr><td>EMBED gather-dequant kernel</td><td><code>nntrainer/tensor/hexagon/htp/ops/hvx-embed.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/53a33f97">53a33f97</a></td></tr>
+<tr><td>Fused ATTN kernel (KV append, causal SDPA, GQA)</td><td><code>nntrainer/tensor/hexagon/htp/ops/hvx-attn.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/3e3fe20c">3e3fe20c</a></td></tr>
+<tr><td>MATMUL_LOGITS kernel (fp32 last-token logits)</td><td><code>nntrainer/tensor/hexagon/htp/ops/hvx-matmul.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/cfaac5b5">cfaac5b5</a></td></tr>
+</table>
+
+<h3>M2 &mdash; Op-list graph executor</h3>
+<p><code>htp_graph_init</code> validates the wire op-list once, sizes the quantization and
+attention scratch from an op scan, and best-effort acquires VTCM with a DDR fallback.
+<code>forward</code> rejects the runtime arguments <code>init</code> cannot see &mdash; zero or
+over-chunk <code>n_tokens</code>, <code>pos</code> overflowing <code>max_seq</code>, a logits
+size mismatch &mdash; then dispatches the ops through the kind table with no per-op checks. A
+golden test hand-lowers a synthetic 2-layer, 35-op model and runs prefill then decode against a
+scalar reference executor that interprets the same op-list bytes. The executor is wired into the
+FastRPC entry point in <code>executor.c</code>, keeping the M1 dummy round-trip path working
+unmodified for the on-device test.</p>
+<p>The backend guide was renamed from <code>HEXAGON_HVX.md</code> to <code>HEXAGON.md</code> and
+extended to cover the executor, the op kernels, the QuRT worker pool and VTCM, the op-list wire
+format v2, and the simulator golden tests, with a re-measured S25 Ultra RPC baseline (min 231 /
+median 255 / max 284 us over 32 calls).</p>
+<table>
+<tr><th>Component</th><th>Files</th><th>Commit</th></tr>
+<tr><td>Op-list graph executor</td><td><code>nntrainer/tensor/hexagon/htp/htp_graph.c</code>, <code>nntrainer/tensor/hexagon/htp/htp_graph.h</code>, <code>nntrainer/tensor/hexagon/htp/executor.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/51651516">51651516</a></td></tr>
+<tr><td>Golden graph test</td><td><code>test/hexagon/sim/test_graph.c</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/51651516">51651516</a></td></tr>
+<tr><td>Backend guide update (graph executor)</td><td><code>docs/backend_guide/HEXAGON.md</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/fcfaeab0">fcfaeab0</a></td></tr>
+</table>
+
+<h3>M3 &mdash; Qwen3 graph lowering</h3>
+<p>A host-side compiler turns qwen3 dimensions into a complete v2 op-list execution plan.
+<code>Applications/CausalLM/hexagon/qwen3_lowering.cpp</code> lays out a 128-byte-aligned WEIGHTS
+cursor (embed, scales, RoPE table, fp16 norms, per-layer tensors), reusable ACT slots, and emits
+<code>1 + 16*n_layers + 2</code> op descriptors, with the tied embedding shared byte-for-byte
+between EMBED and MATMUL_LOGITS. The model recipe deliberately lives in the application layer so
+the hexagon backend in <code>nntrainer/tensor/hexagon/host/graph_lowering.h</code> stays
+model-agnostic; the runner only consumes the lowered result.
+<code>test/hexagon/test_lowering.cpp</code> checks the emitted plan structurally and smoke-tests
+real qwen3-0.6b dimensions: 451 ops and a 598,623,744-byte weight image by exact recompute.</p>
+<p><code>pack_weights</code> in <code>nntrainer/tensor/hexagon/host/graph_lowering.cpp</code> then
+fills that WEIGHTS image: int8 projection blobs and fp32 per-channel scale arrays are copied
+byte-for-byte at their reserved offsets, norm gammas are converted fp32 to fp16, and the RoPE
+table is generated in place &mdash; row <code>p</code> holds 64 fp16 cosines followed by 64 fp16
+sines of <code>p * theta^(-2i/128)</code>, the DSP-side counterpart the ROPE kernel from M1 reads
+at runtime. The backend guide gained a "Graph lowering and weight packing" section documenting
+the lowering API, the WEIGHTS image layout, and the op sequence, and recorded M3 as implemented
+with M4 (device end-to-end wiring) next.</p>
+<table>
+<tr><th>Component</th><th>Files</th><th>Commit</th></tr>
+<tr><td>Qwen3 op-list lowering</td><td><code>Applications/CausalLM/hexagon/qwen3_lowering.{cpp,h}</code>, <code>nntrainer/tensor/hexagon/host/graph_lowering.h</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/39216839">39216839</a></td></tr>
+<tr><td>Host lowering unit tests</td><td><code>test/hexagon/test_lowering.cpp</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/39216839">39216839</a></td></tr>
+<tr><td>DSP weight image packing &amp; RoPE table</td><td><code>nntrainer/tensor/hexagon/host/graph_lowering.cpp</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/33903336">33903336</a></td></tr>
+<tr><td>Backend guide update (graph lowering)</td><td><code>docs/backend_guide/HEXAGON.md</code></td><td><a class="commit" href="https://github.com/dlwlzzero/nntrainer/commit/a44961ac">a44961ac</a></td></tr>
+</table>
 </section>
 
 <section id="code-map">
