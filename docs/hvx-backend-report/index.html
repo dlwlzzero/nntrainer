@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nntrainer Hexagon HVX Backend — Work Report</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c6370; --accent:#0f6c8c; --line:#d9dee3; --bg:#ffffff; --soft:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+         color:var(--ink); background:var(--bg); line-height:1.6; }
+  header { background:var(--ink); color:#fff; padding:2.5rem 1.5rem; }
+  header h1 { margin:0 0 .3rem; font-size:1.6rem; }
+  header p { margin:0; color:#c8cdd6; }
+  main { max-width: 60rem; margin: 0 auto; padding: 1rem 1.5rem 4rem; }
+  h2 { border-bottom:2px solid var(--accent); padding-bottom:.3rem; margin-top:2.5rem; }
+  h3 { color:var(--accent); margin-top:1.8rem; }
+  table { border-collapse: collapse; width:100%; margin:1rem 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--soft); }
+  code { background:var(--soft); padding:.1rem .3rem; border-radius:3px; font-size:.9em; }
+  pre { background:var(--soft); padding: .8rem 1rem; overflow-x:auto; border:1px solid var(--line); border-radius:4px; }
+  a { color:var(--accent); }
+  nav.toc { background:var(--soft); border:1px solid var(--line); border-radius:4px; padding:.8rem 1.2rem; margin-top:1.5rem; }
+  nav.toc ul { margin:.3rem 0; padding-left:1.2rem; }
+  .commit { font-family: monospace; font-size:.85em; white-space:nowrap; }
+  .placeholder { color:var(--muted); font-style:italic; }
+  figure { margin:1.5rem 0; text-align:center; }
+  figcaption { color:var(--muted); font-size:.9rem; margin-top:.5rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>nntrainer Hexagon HVX Backend</h1>
+  <p>Work report for the <code>hvx_impl</code> branch — Qwen3 inference on the Hexagon cDSP</p>
+</header>
+<main>
+<nav class="toc">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#architecture">2. Architecture</a></li>
+    <li><a href="#milestones">3. Milestones</a></li>
+    <li><a href="#code-map">4. Code Map</a></li>
+    <li><a href="#testing">5. Testing &amp; Tooling</a></li>
+    <li><a href="#stats">6. Stats</a></li>
+  </ul>
+</nav>
+
+<section id="overview">
+<h2>1. Overview</h2>
+<p>This branch adds a Hexagon cDSP backend so that Qwen3 causal-LM inference
+can run on Qualcomm Hexagon's HVX vector units, driven from nntrainer on the
+host Android CPU over FastRPC. The goal is graph-level offload: the DSP
+receives the whole decoder-layer op sequence and keeps every large buffer
+persistently mapped, so decode costs one FastRPC round-trip per generated
+token rather than one round-trip per tensor op.</p>
+<p>An earlier HexKL-based backend existed on this branch and was removed in
+commit <span class="commit">2c1b167b</span> ("Wire enable-hexagon into the
+meson/ndk build, drop the HexKL backend") in favor of a self-built FastRPC
+skeleton with custom HVX kernels — giving full control over the wire format,
+buffer lifetime, and kernel implementations instead of depending on a
+third-party SDK layer.</p>
+<p>The resulting stack works in three stages. On the host, a graph-lowering
+step turns a model's shape into a versioned "op-list" buffer (a fixed-layout
+header plus one descriptor per op) and a packed weight image. That op-list
+buffer and the model's tensors — weights, KV cache, activation scratch — cross
+the FastRPC boundary as shared, zero-copy rpcmem buffers. On the DSP side, a
+graph executor walks the op-list, validating it once and then dispatching each
+op's HVX kernel across a QuRT worker pool (one worker per HVX unit) per
+inference call.</p>
+<p>See <a href="https://github.com/dlwlzzero/nntrainer/blob/hvx_impl/docs/backend_guide/HEXAGON.md">docs/backend_guide/HEXAGON.md</a>
+for build and run instructions, the full architecture writeup, and measured
+results.</p>
+</section>
+
+<section id="architecture">
+<h2>2. Architecture</h2>
+<p class="placeholder">(section pending)</p>
+</section>
+
+<section id="milestones">
+<h2>3. Milestones</h2>
+<p class="placeholder">(section pending)</p>
+</section>
+
+<section id="code-map">
+<h2>4. Code Map</h2>
+<p class="placeholder">(section pending)</p>
+</section>
+
+<section id="testing">
+<h2>5. Testing &amp; Tooling</h2>
+<p class="placeholder">(section pending)</p>
+</section>
+
+<section id="stats">
+<h2>6. Stats</h2>
+<table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Commits on <code>main..hvx_impl</code></td><td>23</td></tr>
+  <tr><td>Files changed</td><td>84</td></tr>
+  <tr><td>Lines added / removed</td><td>+8,118 / −551</td></tr>
+</table>
+<p>Measured with <code>git diff --stat main..hvx_impl</code> on 2026-08-21.</p>
+</section>
+
+</main>
+</body>
+</html>
