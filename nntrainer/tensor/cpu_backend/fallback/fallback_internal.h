@@ -1398,6 +1398,21 @@ void __fallback_dequant_nxk_qs8cx_f32(size_t n, size_t k,
                                       float *rhs_f32);
 
 /**
+ * @brief w8cx quantization of (n,k) RHS matrix in nxk format.
+ * Symmetric per-output-channel int8: scale = absmax/127, q = round(x/scale)
+ * clamped to [-127, 127]. The stored scale is the dequant multiplier.
+ * Dequantization reuses __fallback_dequant_nxk_qs8cx_f32 (same formula).
+ *
+ * @param[in] n N length of the matrix
+ * @param[in] k K length of the matrix
+ * @param[in] rhs_f32 matrix data before quantization
+ * @param[out] rhs_w8cx matrix data in nxk format after quantization
+ * @param[out] rhs_scales_f32 per-channel dequant scales (absmax/127)
+ */
+void __fallback_quant_nxk_w8cx_f32(size_t n, size_t k, const float *rhs_f32,
+                                   int8_t *rhs_w8cx, float *rhs_scales_f32);
+
+/**
  * @brief qa8dx quantization of (m,k) LHS matrix. qa8dx refer to quantized
  * asymmetric 8-bit per-dimension quantization. Note that qparams are embedded
  * at the beginning of the output matrix.

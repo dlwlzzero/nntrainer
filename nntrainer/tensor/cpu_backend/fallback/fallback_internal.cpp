@@ -985,6 +985,29 @@ void __fallback_dequant_nxk_qs8cx_f32(size_t n, size_t k,
   }
 }
 
+void __fallback_quant_nxk_w8cx_f32(size_t n, size_t k, const float *rhs_f32,
+                                   int8_t *rhs_w8cx, float *rhs_scales_f32) {
+  for (size_t n_idx = 0; n_idx < n; ++n_idx) {
+    const float *src_ptr = rhs_f32 + n_idx * k;
+    int8_t *dst_ptr = rhs_w8cx + n_idx * k;
+
+    float amax = 0.0f;
+    for (size_t k_idx = 0; k_idx < k; ++k_idx)
+      amax = std::max(amax, std::fabs(src_ptr[k_idx]));
+
+    const float scale = amax / 127.0f;
+    const float inv_scale = amax > 0.0f ? 127.0f / amax : 0.0f;
+
+    for (size_t k_idx = 0; k_idx < k; ++k_idx) {
+      int32_t v = (int32_t)std::lround(src_ptr[k_idx] * inv_scale);
+      v = std::max(v, (int32_t)-127);
+      v = std::min(v, (int32_t)127);
+      dst_ptr[k_idx] = (int8_t)v;
+    }
+    rhs_scales_f32[n_idx] = scale;
+  }
+}
+
 void __fallback_quant_qa8dx_f32(size_t m, size_t k, const float *lhs_f32,
                                 int8_t *lhs_qa8dx) {
   const size_t dst_stride =

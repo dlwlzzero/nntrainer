@@ -13,10 +13,12 @@
 
 #include "nntrainer_test_util.h"
 #include "util_func.h"
+#include <cmath>
 #include <fstream>
 #include <nntrainer_error.h>
 #include <quantizer.h>
 #include <tensor.h>
+#include <vector>
 
 #include <cpu_backend.h>
 
@@ -493,6 +495,43 @@ TEST(nntrainer_Quantizer, ggml_q4_0_01_p) {
 
   const float eps = 1e-5;
   EXPECT_NEAR(mean_squared_error, 0., eps * K * N);
+}
+
+TEST(nntrainer_Quantizer, quant_w8cx_roundtrip_p) {
+  const size_t N = 4, K = 64;
+  std::vector<float> w(N * K);
+  for (size_t i = 0; i < N * K; ++i)
+    w[i] = 0.01f * (float)((int)(i * 2654435761u % 200) - 100);
+  std::vector<int8_t> q(N * K);
+  std::vector<float> s(N), d(N * K);
+
+  nntrainer::quant_w8cx_f32(N, K, w.data(), q.data(), s.data());
+  nntrainer::dequant_w8cx_f32(N, K, q.data(), s.data(), d.data());
+
+  for (size_t n = 0; n < N; ++n) {
+    float amax = 0.0f;
+    for (size_t k = 0; k < K; ++k)
+      amax = std::max(amax, std::fabs(w[n * K + k]));
+    EXPECT_FLOAT_EQ(s[n], amax / 127.0f);
+    for (size_t k = 0; k < K; ++k) {
+      EXPECT_LE(std::abs((int)q[n * K + k]), 127);
+      EXPECT_NEAR(w[n * K + k], d[n * K + k], s[n] * 0.5f + 1e-8f);
+    }
+  }
+}
+
+TEST(nntrainer_Quantizer, quant_w8cx_zero_row_p) {
+  const size_t N = 2, K = 32;
+  std::vector<float> w(N * K, 0.0f);
+  for (size_t k = 0; k < K; ++k)
+    w[K + k] = 0.5f;
+  std::vector<int8_t> q(N * K, 42);
+  std::vector<float> s(N, -1.0f);
+  nntrainer::quant_w8cx_f32(N, K, w.data(), q.data(), s.data());
+  for (size_t k = 0; k < K; ++k)
+    EXPECT_EQ(q[k], 0);
+  EXPECT_FLOAT_EQ(s[0], 0.0f);
+  EXPECT_EQ(q[K], 127);
 }
 
 int main(int argc, char **argv) {

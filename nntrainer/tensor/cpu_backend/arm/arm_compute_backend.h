@@ -1582,6 +1582,40 @@ void dequantize_row_qs8cx(size_t n_idx, size_t k, void *rhs_native_mtx_qs8cx,
                           void *rhs_scales_f32, void *rhs_native_mtx_f32);
 
 /**
+ * @brief w8cx quantization of rhs matrix in nxk format (weight transposed to
+ * (N, K)). Symmetric absmax/127 per-output-channel int8; the stored scale is
+ * the dequant multiplier. Codes are clamped to [-127, 127].
+ *
+ * @warning You should allocate memory for outputs before use:
+ *  - rhs_native_mtx_w8cx: n * k * sizeof(int8_t)
+ *  - rhs_scales_f32: n * sizeof(float)
+ *
+ * @param[in] n N for (M, K) * (K, N) = (M, N) in noTrans GEMM
+ * @param[in] k K for (M, K) * (K, N) = (M, N) in noTrans GEMM
+ * @param[in] rhs_native_mtx_f32 matrix data before quantization
+ * @param[out] rhs_native_mtx_w8cx quantized matrix data after quantization
+ * @param[out] rhs_scales_f32 per-channel dequant scales
+ */
+void quant_w8cx_f32(size_t n, size_t k, void *rhs_native_mtx_f32,
+                    void *rhs_native_mtx_w8cx, void *rhs_scales_f32);
+
+/**
+ * @brief w8cx dequantization of rhs matrix in nxk format. Inverse of
+ * quant_w8cx_f32: x = q * scale per output channel.
+ *
+ * @warning You should allocate memory for output before use:
+ *  - rhs_native_mtx_f32: n * k * sizeof(float)
+ *
+ * @param[in] n N for (M, K) * (K, N) = (M, N) in noTrans GEMM
+ * @param[in] k K for (M, K) * (K, N) = (M, N) in noTrans GEMM
+ * @param[in] rhs_native_mtx_w8cx quantized matrix data
+ * @param[in] rhs_scales_f32 per-channel dequant scales
+ * @param[out] rhs_native_mtx_f32 dequantized matrix data in float32
+ */
+void dequant_w8cx_f32(size_t n, size_t k, void *rhs_native_mtx_w8cx,
+                      void *rhs_scales_f32, void *rhs_native_mtx_f32);
+
+/**
  * @brief get size of memory to allocate for packed rhs from nxk qs4cxs1s0 to
  * qsi4cxp
  * Note that nxk is the format of quantized rhs, not the shape of rhs
