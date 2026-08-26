@@ -443,6 +443,29 @@ public:
               nntrainer::quant_qs4cx_f32(N, K, weight_t.getData(), data, scale,
                                          true);
               file.write((const char *)data, q_size + scale_size);
+            } else if (dtype == TensorDim::DataType::W8_CX) {
+              NNTR_THROW_IF(weight.getDataType() != TensorDim::DataType::FP32,
+                            std::runtime_error)
+                << "Save with quantization only supports for FP32 weight.";
+              TensorDim dim = weight.getDim();
+              size_t K = dim.height();
+              size_t N = dim.width();
+              if (K == 1) {
+                // bias-like 1D tensors stay FP32
+                weight.save(file);
+              } else {
+                // int8 [N][K] blob followed by N fp32 scales
+                Tensor weight_t = weight.transpose("0:2:1");
+                size_t q_size = N * K;
+                size_t scale_size = N * sizeof(float);
+                std::vector<uint8_t> rhs_q(q_size + scale_size);
+                int8_t *data = reinterpret_cast<int8_t *>(rhs_q.data());
+                float *scale = reinterpret_cast<float *>(rhs_q.data() + q_size);
+                nntrainer::quant_w8cx_f32(N, K, weight_t.getData(), data,
+                                          scale);
+                file.write(reinterpret_cast<const char *>(rhs_q.data()),
+                           q_size + scale_size);
+              }
             } else {
               NNTR_THROW_IF(true, std::runtime_error)
                 << "This dtype is not supported in save with quantization";

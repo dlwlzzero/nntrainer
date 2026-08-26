@@ -10,10 +10,13 @@
  * @bug    No known bugs except for NYI items
  */
 
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -819,6 +822,83 @@ TEST(SaveWithDtypeInference, save_partial_q4_load_inference_compare_p) {
 // =============================================================================
 // Main function
 // =============================================================================
+
+// =============================================================================
+// W8_CX tests: weight (1,1,K,N) is saved as int8 [N][K] followed by N fp32
+// scales (scale = absmax/127), then the bias stays FP32.
+// =============================================================================
+
+static std::vector<uint8_t> readAll(const std::string &path) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  EXPECT_TRUE(f.is_open());
+  std::vector<uint8_t> buf(static_cast<size_t>(f.tellg()));
+  f.seekg(0);
+  f.read(reinterpret_cast<char *>(buf.data()), buf.size());
+  return buf;
+}
+
+/**
+ * @brief W8_CX save writes N*K int8 + N fp32 scales and dequantizes back to the
+ *        FP32 weight within half a quantization step
+ */
+TEST(SaveWithDtypeW8CX, save_w8cx_bytes_match_p) {
+  const size_t K = 64, N = 32;
+  auto nn = createInitializedNN(K, N); // weight (1,1,64,32)
+  std::string fp32_path = "test_w8cx_ref_fp32.bin";
+  std::string w8_path = "test_w8cx_64_32.bin";
+  EXPECT_NO_THROW(
+    nn->save(fp32_path, ModelFormat::MODEL_FORMAT_BIN, DataType::FP32));
+  EXPECT_NO_THROW(
+    nn->save(w8_path, ModelFormat::MODEL_FORMAT_BIN, DataType::W8_CX));
+
+  auto ref = readAll(fp32_path);
+  auto w8 = readAll(w8_path);
+  remove(fp32_path.c_str());
+  remove(w8_path.c_str());
+
+  // FP32: weight K*N*4 + bias N*4 + meta; W8_CX: N*K + N*4 + bias N*4 + meta
+  ASSERT_EQ(ref.size(), K * N * 4 + N * 4 + TRAIN_METADATA_SIZE);
+  ASSERT_EQ(w8.size(), N * K + N * 4 + N * 4 + TRAIN_METADATA_SIZE);
+
+  const float *w_ref = reinterpret_cast<const float *>(ref.data()); // [K][N]
+  const int8_t *q = reinterpret_cast<const int8_t *>(w8.data());    // [N][K]
+  const float *scales = reinterpret_cast<const float *>(w8.data() + N * K);
+  for (size_t n = 0; n < N; ++n) {
+    float amax = 0.0f;
+    for (size_t k = 0; k < K; ++k)
+      amax = std::max(amax, std::fabs(w_ref[k * N + n]));
+    EXPECT_FLOAT_EQ(scales[n], amax / 127.0f);
+    for (size_t k = 0; k < K; ++k) {
+      EXPECT_LE(std::abs((int)q[n * K + k]), 127);
+      EXPECT_NEAR(w_ref[k * N + n], q[n * K + k] * scales[n],
+                  scales[n] * 0.5f + 1e-8f);
+    }
+  }
+  // bias stays FP32 in both files
+  EXPECT_EQ(0,
+            memcmp(ref.data() + K * N * 4, w8.data() + N * K + N * 4, N * 4));
+}
+
+/**
+ * @brief W8_CX save on a non-FP32 weight throws
+ */
+TEST(SaveWithDtypeW8CX, save_w8cx_non_fp32_source_n) {
+  auto nn = std::make_unique<nntrainer::NeuralNetwork>();
+  nn->addLayer(ml::train::layer::Input({"name=input", "input_shape=1:1:32"}));
+  nn->addLayer(ml::train::layer::FullyConnected({"name=dense", "unit=32"}));
+  nn->setOptimizer(ml::train::optimizer::SGD({"learning_rate=0.1"}));
+  nn->setProperty({"loss=mse", "batch_size=1", "model_tensor_type=FP16-FP16"});
+  try {
+    nn->compile();
+    nn->initialize();
+  } catch (...) {
+    GTEST_SKIP() << "FP16 model not supported in this build";
+  }
+  EXPECT_THROW(nn->save("test_w8cx_fp16.bin", ModelFormat::MODEL_FORMAT_BIN,
+                        DataType::W8_CX),
+               std::runtime_error);
+  remove("test_w8cx_fp16.bin");
+}
 
 int main(int argc, char **argv) {
   int result = -1;
