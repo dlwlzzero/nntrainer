@@ -64,6 +64,9 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
                            const float *sw, __fp16 *y, uint32_t m, uint32_t k,
                            uint32_t n, uint32_t n0, uint32_t n1, int wid,
                            int nw) {
+#ifdef HTP_MM_NO_VTCM
+  return false; /* measurement-only: forces the direct DDR read path */
+#endif
   /* Round the per-worker slab size down to a multiple of 128 first, so
    * every worker's slab base (and therefore buf[0]/buf[1]) stays 128B
    * aligned - hvx_dot_i8 does raw HVX_Vector loads and requires it. */
