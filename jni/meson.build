@@ -42,7 +42,7 @@ and_conf.set('MESON_ARM_MARCH', arm_march_flag)
 # link the prebuilts must compile with the same values.
 nntrainer_abi_defines = []
 foreach define : extra_defines
-  if define == '-DENABLE_FP16=1' or define == '-DUSE__FP16=1'
+  if define == '-DENABLE_FP16=1' or define == '-DUSE__FP16=1' or define == '-DENABLE_HEXAGON=1'
     nntrainer_abi_defines += define
   endif
 endforeach

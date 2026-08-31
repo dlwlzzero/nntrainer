@@ -69,8 +69,9 @@ void ref_silu_mul(const __fp16 *g, const __fp16 *u, __fp16 *y, uint32_t count);
  * cache base: K region [n_layers][n_kv_heads][max_seq][hd] followed by an
  * identically sized V region (the kernel stores its K region transposed,
  * [n_layers][n_kv_heads][hd][max_seq]; the buffer is DSP-private). Appends
- * k/v at [layer][h][pos+t], then causal SDPA (token t attends to positions [0, pos+t]) with GQA mapping
- * h_kv = h_q / (n_heads/n_kv_heads) and softmax(scale * q.K). */
+ * k/v at [layer][h][pos+t], then causal SDPA (token t attends to positions
+ * [0, pos+t]) with GQA mapping h_kv = h_q / (n_heads/n_kv_heads) and
+ * softmax(scale * q.K). */
 void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
               __fp16 *out, uint32_t m, uint32_t pos, uint32_t layer,
               uint32_t n_layers, uint32_t n_heads, uint32_t n_kv_heads,
