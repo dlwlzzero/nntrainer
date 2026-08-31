@@ -12,6 +12,18 @@
 
 #include <stdint.h>
 
+/* __fp16 is an ARM/Hexagon spelling. On an x86 host the reference executor
+ * is compiled as C++ and __fp16 becomes a conversion struct with the same
+ * fp16 round trip (see ref_fp16_x86.h). */
+#if defined(__cplusplus) && !defined(__hexagon__) && !defined(__aarch64__) &&  \
+  !defined(__arm__)
+#include "ref_fp16_x86.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Same formula as htp_quant_row_fp16, so results are bit-exact. */
 float ref_quant_row(const __fp16 *x, int8_t *q, uint32_t k);
 

@@ -20,41 +20,6 @@ namespace nntrainer::hexagon {
 
 namespace {
 
-/**
- * @brief Convert an fp32 value to its IEEE fp16 bit pattern (round to
- *        nearest even) with plain integer arithmetic, so the host side
- *        builds on any compiler regardless of _Float16 support.
- */
-inline uint16_t f32_to_f16_bits(float v) {
-  uint32_t x;
-  std::memcpy(&x, &v, 4);
-  const uint32_t sign = (x >> 16) & 0x8000u;
-  const uint32_t exp = (x >> 23) & 0xffu;
-  uint32_t mant = x & 0x7fffffu;
-  if (exp == 0xff) /* inf / nan */
-    return static_cast<uint16_t>(sign | 0x7c00u | (mant ? 0x200u : 0u));
-  int32_t e = static_cast<int32_t>(exp) - 127 + 15;
-  if (e >= 0x1f) /* overflow -> inf */
-    return static_cast<uint16_t>(sign | 0x7c00u);
-  if (e <= 0) { /* subnormal or zero */
-    if (e < -10)
-      return static_cast<uint16_t>(sign);
-    mant |= 0x800000u;
-    const uint32_t shift = static_cast<uint32_t>(14 - e);
-    uint32_t half = mant >> shift;
-    const uint32_t rem = mant & ((1u << shift) - 1u);
-    const uint32_t mid = 1u << (shift - 1);
-    if (rem > mid || (rem == mid && (half & 1u)))
-      ++half;
-    return static_cast<uint16_t>(sign | half);
-  }
-  uint32_t half = (static_cast<uint32_t>(e) << 10) | (mant >> 13);
-  const uint32_t rem = mant & 0x1fffu;
-  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u)))
-    ++half; /* carries into the exponent correctly */
-  return static_cast<uint16_t>(sign | half);
-}
-
 /** @brief Convert n fp32 values to fp16 and write them at dst+off. */
 void write_f16_vec(uint8_t *dst, uint32_t off, const float *src, uint64_t n) {
   uint16_t *out = reinterpret_cast<uint16_t *>(dst + off);

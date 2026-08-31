@@ -15,6 +15,7 @@
 #define __HEXAGON_GRAPH_LOWERING_H__
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace nntrainer::hexagon {
@@ -25,6 +26,41 @@ namespace nntrainer::hexagon {
  *        pack_weights(), which is why it lives here instead of with a
  *        single model's lowering .cpp.
  */
+/**
+ * @brief Convert an fp32 value to its IEEE fp16 bit pattern (round to
+ *        nearest even) with plain integer arithmetic, so the host side
+ *        builds on any compiler regardless of _Float16 support.
+ */
+inline uint16_t f32_to_f16_bits(float v) {
+  uint32_t x;
+  std::memcpy(&x, &v, 4);
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const uint32_t exp = (x >> 23) & 0xffu;
+  uint32_t mant = x & 0x7fffffu;
+  if (exp == 0xff) /* inf / nan */
+    return static_cast<uint16_t>(sign | 0x7c00u | (mant ? 0x200u : 0u));
+  int32_t e = static_cast<int32_t>(exp) - 127 + 15;
+  if (e >= 0x1f) /* overflow -> inf */
+    return static_cast<uint16_t>(sign | 0x7c00u);
+  if (e <= 0) { /* subnormal or zero */
+    if (e < -10)
+      return static_cast<uint16_t>(sign);
+    mant |= 0x800000u;
+    const uint32_t shift = static_cast<uint32_t>(14 - e);
+    uint32_t half = mant >> shift;
+    const uint32_t rem = mant & ((1u << shift) - 1u);
+    const uint32_t mid = 1u << (shift - 1);
+    if (rem > mid || (rem == mid && (half & 1u)))
+      ++half;
+    return static_cast<uint16_t>(sign | half);
+  }
+  uint32_t half = (static_cast<uint32_t>(e) << 10) | (mant >> 13);
+  const uint32_t rem = mant & 0x1fffu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u)))
+    ++half; /* carries into the exponent correctly */
+  return static_cast<uint16_t>(sign | half);
+}
+
 inline uint64_t align128(uint64_t x) {
   return (x + 127ull) & ~static_cast<uint64_t>(127ull);
 }
@@ -92,7 +128,7 @@ struct HexLoweredGraph {
  * @param dst destination buffer, at least g.weights_size bytes.
  */
 void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
-                   const HexModelWeights &w, uint8_t *dst);
+                  const HexModelWeights &w, uint8_t *dst);
 
 } // namespace nntrainer::hexagon
 #endif // __HEXAGON_GRAPH_LOWERING_H__
