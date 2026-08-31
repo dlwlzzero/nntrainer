@@ -175,6 +175,16 @@ public:
                    const WSTR system_prompt = WSTR(),
                    const WSTR tail_prompt = WSTR(), bool log_output = true);
 
+  /**
+   * @brief Teacher-forced perplexity of @p text: exp(mean NLL of token p+1
+   *        given the reference tokens 0..p).
+   * @note Default implementation means "not supported by this model".
+   */
+  virtual double evaluatePerplexity(const std::string &text) {
+    (void)text;
+    throw std::runtime_error("evaluatePerplexity not supported by this model");
+  }
+
   // ── Multimodal composition interface (model-agnostic) ──────────────────
   // Lets a generic composer drive any [vision producer, LLM consumer] pair
   // through base pointers, without knowing the concrete model type.

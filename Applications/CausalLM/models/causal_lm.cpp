@@ -359,6 +359,75 @@ void CausalLM::registerCustomLayers() {
   }
 }
 
+std::vector<float *> CausalLM::buildInferenceInputs(float *input_sample) {
+  std::vector<std::pair<std::string, float *>> cache_inputs;
+  cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
+  for (int i = 0; i < NUM_LAYERS; ++i) {
+    cache_inputs.emplace_back(
+      "cache_k_l" + std::to_string(i),
+      reinterpret_cast<float *>(kv_cache.getKeyCache(i).getData()));
+    cache_inputs.emplace_back(
+      "cache_v_l" + std::to_string(i),
+      reinterpret_cast<float *>(kv_cache.getValueCache(i).getData()));
+  }
+
+  std::sort(
+    cache_inputs.begin(), cache_inputs.end(),
+    [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+  std::vector<float *> inference_inputs;
+  inference_inputs.reserve(1 + cache_inputs.size());
+  inference_inputs.push_back(input_sample);
+  for (const auto &cache_input : cache_inputs)
+    inference_inputs.push_back(cache_input.second);
+  return inference_inputs;
+}
+
+double CausalLM::evaluatePerplexity(const std::string &text) {
+  if (!is_initialized)
+    throw std::runtime_error("CausalLM model is not initialized.");
+  NNTR_THROW_IF(BATCH_SIZE != 1, std::invalid_argument)
+    << "evaluatePerplexity supports batch_size=1 only";
+
+  auto ids = tokenizer->Encode(text);
+  unsigned int n = static_cast<unsigned int>(ids.size());
+  NNTR_THROW_IF(n < 2, std::invalid_argument) << "eval text too short";
+  if (n > MAX_SEQ_LEN) {
+    std::cerr << "[eval] truncating " << (n - MAX_SEQ_LEN) << " tokens\n";
+    n = MAX_SEQ_LEN;
+  }
+
+  allocateAndBindKVCache();
+  setKVCachePosition(0);
+
+  // Same calling convention as the decode loop in run(): one token per step
+  // at input_sample[0], written to absolute KV position p, logits of p.
+  std::vector<float> input_sample(MAX_SEQ_LEN, 0.0f);
+  std::vector<float *> label;
+  std::vector<float *> input = buildInferenceInputs(input_sample.data());
+
+  double nll = 0.0;
+  for (unsigned int p = 0; p + 1 < n; ++p) {
+    input_sample[0] = static_cast<float>(ids[p]); // reference token, forced
+    allocateAndBindKVCache();
+    auto out = model->incremental_inference(BATCH_SIZE, input, label,
+                                            /*init_seq_len=*/1, p, p + 1);
+    const float *logits = out[0];
+    const double maxv = *std::max_element(logits, logits + NUM_VOCAB);
+    double sum = 0.0;
+    for (unsigned int v = 0; v < NUM_VOCAB; ++v)
+      sum += std::exp(static_cast<double>(logits[v]) - maxv);
+    nll -= static_cast<double>(logits[ids[p + 1]]) - maxv - std::log(sum);
+    for (auto o : out)
+      delete[] o;
+    if ((p + 1) % 50 == 0)
+      std::cerr << "[eval] " << (p + 1) << "/" << (n - 1)
+                << " tokens, running ppl "
+                << std::exp(nll / static_cast<double>(p + 1)) << "\n";
+  }
+  return std::exp(nll / static_cast<double>(n - 1));
+}
+
 void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
                    const WSTR tail_prompt, bool log_output) {
 
@@ -485,31 +554,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
    * PREFILL
    */
   std::vector<int64_t> token_ids;
-  input.push_back(input_sample);
-  auto build_inference_inputs = [&]() {
-    std::vector<std::pair<std::string, float *>> cache_inputs;
-    cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
-    for (int i = 0; i < NUM_LAYERS; ++i) {
-      cache_inputs.emplace_back(
-        "cache_k_l" + std::to_string(i),
-        reinterpret_cast<float *>(kv_cache.getKeyCache(i).getData()));
-      cache_inputs.emplace_back(
-        "cache_v_l" + std::to_string(i),
-        reinterpret_cast<float *>(kv_cache.getValueCache(i).getData()));
-    }
-
-    std::sort(
-      cache_inputs.begin(), cache_inputs.end(),
-      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-
-    std::vector<float *> inference_inputs;
-    inference_inputs.reserve(1 + cache_inputs.size());
-    inference_inputs.push_back(input_sample);
-    for (const auto &cache_input : cache_inputs)
-      inference_inputs.push_back(cache_input.second);
-    return inference_inputs;
-  };
-  input = build_inference_inputs();
+  input = buildInferenceInputs(input_sample);
 
   ///@note contains possible bug
   // std::vector<ml::train::TensorDim> input_dims;

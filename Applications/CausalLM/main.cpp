@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -326,7 +327,8 @@ int main(int argc, char *argv[]) {
 
   // Validate arguments
   if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <model_path> [input_prompt]\n"
+    std::cerr << "Usage: " << argv[0]
+              << " <model_path> [input_prompt | --eval <textfile>]\n"
               << "  <model_path>   : Path to model directory\n"
               << "  [input_prompt] : Optional input text (uses sample_input or "
                  "chat_input if omitted)\n";
@@ -430,6 +432,23 @@ int main(int argc, char *argv[]) {
     model->initialize();
     model->load_weight(weight_file);
     model->repack_weight();
+
+    if (argc >= 4 && std::string(argv[2]) == "--eval") {
+      std::ifstream ef(argv[3]);
+      if (!ef.is_open()) {
+        std::cerr << "cannot open eval file: " << argv[3] << std::endl;
+        return EXIT_FAILURE;
+      }
+      std::stringstream ss;
+      ss << ef.rdbuf();
+      auto t0 = std::chrono::steady_clock::now();
+      double ppl = model->evaluatePerplexity(ss.str());
+      auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - t0)
+                  .count();
+      std::cout << "PPL " << ppl << " wall_ms " << ms << std::endl;
+      return EXIT_SUCCESS;
+    }
 
     bool do_sample = generation_cfg.value("do_sample", false);
 

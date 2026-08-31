@@ -92,6 +92,11 @@ public:
            bool log_output = true) override;
 
   /**
+   * @brief Teacher-forced perplexity over @p text (batch_size 1 only).
+   */
+  double evaluatePerplexity(const std::string &text) override;
+
+  /**
    * @brief Get the generated output text
    * @param batch_idx Index of the batch item
    * @return Generated text string
@@ -222,6 +227,12 @@ protected:
    *        initialize().
    */
   virtual void allocateAndBindKVCache();
+
+  /**
+   * @brief Build the incremental_inference input list: @p input_sample
+   *        followed by the bound KV cache buffers in layer-name order.
+   */
+  std::vector<float *> buildInferenceInputs(float *input_sample);
 
   /**
    * @brief Reset all mha_core layers' cache_index to @p pos and the
