@@ -26,16 +26,26 @@ static inline void rope_rotate(__fp16 *x, const __fp16 *row) {
   HVX_Vector cs = hvx_vmem(row);
   HVX_Vector sn = hvx_vmem(row + VLEN_FP16);
 
-  HVX_Vector x0c = Q6_Vqf16_vmpy_VhfVhf(x0, cs);
-  HVX_Vector x1s = Q6_Vqf16_vmpy_VhfVhf(x1, sn);
-  HVX_Vector x1c = Q6_Vqf16_vmpy_VhfVhf(x1, cs);
-  HVX_Vector x0s = Q6_Vqf16_vmpy_VhfVhf(x0, sn);
+  /* Products in qf32 (exact for hf inputs), combine as IEEE sf, narrow to
+   * hf once. The qf16 version (Vqf16_vmpy + Vqf16_vadd, Vhf_equals_Vqf16)
+   * rounds worse than truncation on ~40% of values (v75 sim probe) and
+   * cost ~1% PPL on qwen3-0.6b. */
+  HVX_VectorPair x0c = Q6_Wqf32_vmpy_VhfVhf(x0, cs);
+  HVX_VectorPair x1s = Q6_Wqf32_vmpy_VhfVhf(x1, sn);
+  HVX_VectorPair x1c = Q6_Wqf32_vmpy_VhfVhf(x1, cs);
+  HVX_VectorPair x0s = Q6_Wqf32_vmpy_VhfVhf(x0, sn);
 
-  HVX_Vector out0 = Q6_Vqf16_vsub_Vqf16Vqf16(x0c, x1s);
-  HVX_Vector out1 = Q6_Vqf16_vadd_Vqf16Vqf16(x1c, x0s);
+  HVX_Vector o0l = Q6_Vqf32_vsub_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_lo_W(x0c)),
+                                        Q6_Vsf_equals_Vqf32(Q6_V_lo_W(x1s)));
+  HVX_Vector o0h = Q6_Vqf32_vsub_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_hi_W(x0c)),
+                                        Q6_Vsf_equals_Vqf32(Q6_V_hi_W(x1s)));
+  HVX_Vector o1l = Q6_Vqf32_vadd_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_lo_W(x1c)),
+                                        Q6_Vsf_equals_Vqf32(Q6_V_lo_W(x0s)));
+  HVX_Vector o1h = Q6_Vqf32_vadd_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_hi_W(x1c)),
+                                        Q6_Vsf_equals_Vqf32(Q6_V_hi_W(x0s)));
 
-  hvx_vmem(x) = Q6_Vhf_equals_Vqf16(out0);
-  hvx_vmem(x + VLEN_FP16) = Q6_Vhf_equals_Vqf16(out1);
+  hvx_vmem(x) = Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(o0h, o0l));
+  hvx_vmem(x + VLEN_FP16) = Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(o1h, o1l));
 }
 
 static void rope_worker(void *arg, int wid, int nw) {

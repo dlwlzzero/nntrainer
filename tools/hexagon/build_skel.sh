@@ -6,6 +6,7 @@
 #
 # Prerequisite: source $HEXAGON_SDK_ROOT/setup_sdk_env.source
 # Override target arch: HEX_ARCH=v75 ./tools/hexagon/build_skel.sh
+# Extra compiler flags (appended, so they override): HEX_EXTRA_CFLAGS=-DFOO
 
 set -eu
 
@@ -42,6 +43,7 @@ done
     -isystem "$HEXAGON_SDK_ROOT/incs" \
     -isystem "$HEXAGON_SDK_ROOT/incs/stddef" \
     -isystem "$HEXAGON_SDK_ROOT/ipc/fastrpc/incs" \
+    ${HEX_EXTRA_CFLAGS:-} \
     "${SRCS[@]}" \
     -o "$OUT/skel/libnntr_htp_skel.so"
 

@@ -5,8 +5,8 @@
  * @brief	Fused ATTN kernel: KV-cache append, causal SDPA and GQA.
  *		Workers split by kv head; scores are fp32 in per-worker
  *		scratch, softmax uses the borrowed HVX exp, and the output
- *		is accumulated in qf32 vector pairs (qf16 adds are known to
- *		lose precision under cancellation and are not used).
+ *		is accumulated in IEEE fp32 vector pairs (qf16 adds lose
+ *		precision under cancellation; chained qf32 adds break on v79).
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -80,34 +80,34 @@ static void attn_worker(void *arg, int wid, int nw) {
           sum += scores[p];
         const float inv = 1.0f / sum;
 
-        /* out[t,hq] = sum_p scores[p] * V[h][p], accumulated as two
-         * qf32 vector pairs (V row = 2 hf vectors), initialized from
-         * p=0 (L >= 1 always). qf16 adds are forbidden here. */
-        HVX_Vector pv = hvx_vec_splat_f16((__fp16)scores[0]);
-        HVX_VectorPair w0 = Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(vh), pv);
-        HVX_VectorPair w1 =
-          Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(vh + VLEN_FP16), pv);
-        HVX_Vector a0l = Q6_V_lo_W(w0), a0h = Q6_V_hi_W(w0);
-        HVX_Vector a1l = Q6_V_lo_W(w1), a1h = Q6_V_hi_W(w1);
-        for (uint32_t p = 1; p < L; ++p) {
+        /* out[t,hq] = sum_p scores[p] * V[h][p], accumulated as two IEEE
+         * fp32 vector pairs (V row = 2 hf vectors) through
+         * hvx_vec_mpyacc_f32_f16. Chained qf32 adds are not used: they
+         * produced inf on v79 (see hvx_dot_fp16), and qf16 adds lose
+         * precision under cancellation. */
+        HVX_VectorPair a0 = Q6_W_vcombine_VV(Q6_V_vzero(), Q6_V_vzero());
+        HVX_VectorPair a1 = a0;
+        for (uint32_t p = 0; p < L; ++p) {
           const __fp16 *vrow = vh + (size_t)p * hd;
-          pv = hvx_vec_splat_f16((__fp16)scores[p]);
-          w0 = Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(vrow), pv);
-          w1 = Q6_Wqf32_vmpy_VhfVhf(hvx_vmem(vrow + VLEN_FP16), pv);
-          a0l = Q6_Vqf32_vadd_Vqf32Vqf32(a0l, Q6_V_lo_W(w0));
-          a0h = Q6_Vqf32_vadd_Vqf32Vqf32(a0h, Q6_V_hi_W(w0));
-          a1l = Q6_Vqf32_vadd_Vqf32Vqf32(a1l, Q6_V_lo_W(w1));
-          a1h = Q6_Vqf32_vadd_Vqf32Vqf32(a1h, Q6_V_hi_W(w1));
+          HVX_Vector pv = hvx_vec_splat_f16((__fp16)scores[p]);
+          a0 = hvx_vec_mpyacc_f32_f16(a0, hvx_vmem(vrow), pv);
+          a1 = hvx_vec_mpyacc_f32_f16(a1, hvx_vmem(vrow + VLEN_FP16), pv);
         }
 
-        /* hf convert (inverse of the vmpy interleave), then 1/sum. */
+        /* 1/sum in fp32, then narrow through hvx_vec_f32_to_f16_shuff
+         * (keeps the vmpy lane interleave: even lanes from lo, odd from hi). */
         __fp16 *orow = out + ((size_t)t * n_heads + hq) * hd;
-        HVX_Vector iv = hvx_vec_splat_f16((__fp16)inv);
-        HVX_Vector o0 = Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(a0h, a0l));
-        HVX_Vector o1 = Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(a1h, a1l));
-        hvx_vmem(orow) = Q6_Vhf_equals_Vqf16(Q6_Vqf16_vmpy_VhfVhf(o0, iv));
-        hvx_vmem(orow + VLEN_FP16) =
-          Q6_Vhf_equals_Vqf16(Q6_Vqf16_vmpy_VhfVhf(o1, iv));
+        const HVX_Vector iv = hvx_vec_splat_f32(inv);
+        HVX_Vector s0l =
+          Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(Q6_V_lo_W(a0), iv));
+        HVX_Vector s0h =
+          Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(Q6_V_hi_W(a0), iv));
+        HVX_Vector s1l =
+          Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(Q6_V_lo_W(a1), iv));
+        HVX_Vector s1h =
+          Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(Q6_V_hi_W(a1), iv));
+        hvx_vmem(orow) = hvx_vec_f32_to_f16_shuff(s0l, s0h);
+        hvx_vmem(orow + VLEN_FP16) = hvx_vec_f32_to_f16_shuff(s1l, s1h);
       }
     }
   }
