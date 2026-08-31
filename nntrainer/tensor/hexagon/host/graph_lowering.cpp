@@ -20,17 +20,43 @@ namespace nntrainer::hexagon {
 
 namespace {
 
-/** @brief Convert an fp32 value to its fp16 (_Float16) bit pattern. */
+/**
+ * @brief Convert an fp32 value to its IEEE fp16 bit pattern (round to
+ *        nearest even) with plain integer arithmetic, so the host side
+ *        builds on any compiler regardless of _Float16 support.
+ */
 inline uint16_t f32_to_f16_bits(float v) {
-  _Float16 h = (_Float16)v;
-  uint16_t b;
-  std::memcpy(&b, &h, 2);
-  return b;
+  uint32_t x;
+  std::memcpy(&x, &v, 4);
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const uint32_t exp = (x >> 23) & 0xffu;
+  uint32_t mant = x & 0x7fffffu;
+  if (exp == 0xff) /* inf / nan */
+    return static_cast<uint16_t>(sign | 0x7c00u | (mant ? 0x200u : 0u));
+  int32_t e = static_cast<int32_t>(exp) - 127 + 15;
+  if (e >= 0x1f) /* overflow -> inf */
+    return static_cast<uint16_t>(sign | 0x7c00u);
+  if (e <= 0) { /* subnormal or zero */
+    if (e < -10)
+      return static_cast<uint16_t>(sign);
+    mant |= 0x800000u;
+    const uint32_t shift = static_cast<uint32_t>(14 - e);
+    uint32_t half = mant >> shift;
+    const uint32_t rem = mant & ((1u << shift) - 1u);
+    const uint32_t mid = 1u << (shift - 1);
+    if (rem > mid || (rem == mid && (half & 1u)))
+      ++half;
+    return static_cast<uint16_t>(sign | half);
+  }
+  uint32_t half = (static_cast<uint32_t>(e) << 10) | (mant >> 13);
+  const uint32_t rem = mant & 0x1fffu;
+  if (rem > 0x1000u || (rem == 0x1000u && (half & 1u)))
+    ++half; /* carries into the exponent correctly */
+  return static_cast<uint16_t>(sign | half);
 }
 
 /** @brief Convert n fp32 values to fp16 and write them at dst+off. */
-void write_f16_vec(uint8_t *dst, uint32_t off, const float *src,
-                    uint64_t n) {
+void write_f16_vec(uint8_t *dst, uint32_t off, const float *src, uint64_t n) {
   uint16_t *out = reinterpret_cast<uint16_t *>(dst + off);
   for (uint64_t i = 0; i < n; ++i)
     out[i] = f32_to_f16_bits(src[i]);
@@ -41,7 +67,7 @@ void write_f16_vec(uint8_t *dst, uint32_t off, const float *src,
  *        [cos64||sin64] fp16, angle = p * theta^(-2*i/128).
  */
 void write_rope_table(uint8_t *dst, uint32_t off, uint32_t max_seq,
-                       float theta) {
+                      float theta) {
   uint16_t *out = reinterpret_cast<uint16_t *>(dst + off);
   for (uint32_t p = 0; p < max_seq; ++p) {
     uint16_t *row = out + static_cast<uint64_t>(p) * 128u;
@@ -57,10 +83,9 @@ void write_rope_table(uint8_t *dst, uint32_t off, uint32_t max_seq,
 } // namespace
 
 void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
-                   const HexModelWeights &w, uint8_t *dst) {
+                  const HexModelWeights &w, uint8_t *dst) {
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
-  const uint64_t n_kv =
-    static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+  const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
 
   std::memcpy(dst + g.woff.embed, w.embed,
               static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
@@ -79,18 +104,15 @@ void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
     std::memcpy(dst + pl.wk_s, lw.wk_s, n_kv * 4u);
     std::memcpy(dst + pl.wv, lw.wv, n_kv * cfg.hidden);
     std::memcpy(dst + pl.wv_s, lw.wv_s, n_kv * 4u);
-    std::memcpy(dst + pl.wo, lw.wo,
-                static_cast<uint64_t>(cfg.hidden) * n_q);
-    std::memcpy(dst + pl.wo_s, lw.wo_s,
-                static_cast<uint64_t>(cfg.hidden) * 4u);
+    std::memcpy(dst + pl.wo, lw.wo, static_cast<uint64_t>(cfg.hidden) * n_q);
+    std::memcpy(dst + pl.wo_s, lw.wo_s, static_cast<uint64_t>(cfg.hidden) * 4u);
     std::memcpy(dst + pl.gate, lw.w_gate,
                 static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
     std::memcpy(dst + pl.gate_s, lw.w_gate_s,
                 static_cast<uint64_t>(cfg.ffn) * 4u);
     std::memcpy(dst + pl.up, lw.w_up,
                 static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    std::memcpy(dst + pl.up_s, lw.w_up_s,
-                static_cast<uint64_t>(cfg.ffn) * 4u);
+    std::memcpy(dst + pl.up_s, lw.w_up_s, static_cast<uint64_t>(cfg.ffn) * 4u);
     std::memcpy(dst + pl.down, lw.w_down,
                 static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
     std::memcpy(dst + pl.down_s, lw.w_down_s,
