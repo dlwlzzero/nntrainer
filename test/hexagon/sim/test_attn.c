@@ -26,6 +26,19 @@
 
 static uint32_t align128(uint32_t n) { return (n + 127u) & ~127u; }
 
+/* The kernel caches K transposed ([hd][max_seq] per layer/head), the
+ * reference keeps rows; V is row-major on both sides. */
+static int kv_equal(const uint16_t *got, const uint16_t *ref) {
+  const size_t half = (size_t)N_LAYERS * N_KV_HEADS * MAX_SEQ * HEAD_DIM;
+  for (size_t lh = 0; lh < N_LAYERS * N_KV_HEADS; ++lh)
+    for (uint32_t p = 0; p < MAX_SEQ; ++p)
+      for (uint32_t i = 0; i < HEAD_DIM; ++i)
+        if (got[lh * MAX_SEQ * HEAD_DIM + (size_t)i * MAX_SEQ + p] !=
+            ref[lh * MAX_SEQ * HEAD_DIM + (size_t)p * HEAD_DIM + i])
+          return 0;
+  return !memcmp(got + half, ref + half, half * sizeof(uint16_t));
+}
+
 static int run_step(struct htp_exec_ctx *c, __fp16 *kv_ref, uint32_t kv_halves,
                     uint32_t m, uint32_t pos, float scale, const char *tag) {
   uint32_t off_q = 0;
@@ -81,8 +94,8 @@ static int run_step(struct htp_exec_ctx *c, __fp16 *kv_ref, uint32_t kv_halves,
   int rc = cmp_f(tag, ref_f, got_f, m * N_HEADS * HEAD_DIM, 2e-2f, 5e-3f);
 
   /* Appends are pure fp16 copies on both sides: bit-exact compare. */
-  if (!rc && memcmp(c->buf[NNTR_HTP_BUF_KV], kv_ref,
-                    (size_t)kv_halves * sizeof(__fp16))) {
+  if (!rc && !kv_equal((const uint16_t *)c->buf[NNTR_HTP_BUF_KV],
+                       (const uint16_t *)kv_ref)) {
     printf("SIM_TEST %s FAIL kv cache mismatch\n", tag);
     rc = 1;
   }

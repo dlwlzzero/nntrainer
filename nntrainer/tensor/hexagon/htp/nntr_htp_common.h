@@ -212,6 +212,8 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
       if (2ull * h.n_layers * h.n_kv_heads * h.max_seq * h.head_dim * 2u >
           (uint64_t)buf_size[NNTR_HTP_BUF_KV])
         return 5;
+      if (h.max_seq % 64u) /* K^T rows are streamed 64 positions/vector */
+        return 5;
       break;
     case NNTR_HTP_OP_SILU_MUL:
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
