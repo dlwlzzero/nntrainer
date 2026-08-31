@@ -12,9 +12,10 @@ scalar golden references on the hexagon simulator. When `init()`
 receives an op-list with `n_ops == 0`, the executor keeps the
 original deterministic dummy `forward()` pattern used by the
 round-trip test. Nothing in the nntrainer engine calls the backend
-yet — host-side graph lowering and weight packing are now
-implemented (section 6), and the device end-to-end wiring is
-planned work; see section 7.
+yet — host-side graph lowering and weight packing (section 6) and
+the W8_CX weight pipeline with its accuracy gate (section 7) are
+implemented, and the device end-to-end wiring is planned work; see
+section 8.
 
 ---
 
@@ -566,7 +567,98 @@ A passing run prints `LOWER_TEST PASS`.
 
 ---
 
-## 7. Current status and planned work
+## 7. Host weight pipeline: W8_CX, tools, accuracy gate
+
+The DSP consumes int8 weights with one fp32 scale per output channel
+(section 6.3). On the host this is the `W8_CX` tensor data type
+(`TensorDim::DataType::W8_CX`, model tensor type `W8_CX-FP32`),
+produced once at conversion time by the regular nntrainer
+save-with-quantization path rather than at load time.
+
+### 7.1 Format
+
+Symmetric per-output-channel int8:
+
+```
+scale[n] = max_k |W[n][k]| / 127
+q[n][k]  = clamp(lround(W[n][k] / scale[n]), -127, 127)
+W'[n][k] = q[n][k] * scale[n]              (a zero row gives scale 0, q 0)
+```
+
+On disk a `W8_CX` tensor is the int8 blob `[N][K]` followed by `N`
+fp32 scales — the same trailer-free structure as `QS4CX`, so the
+`.bin` loader and `nntr_config.json` handling are unchanged apart
+from the new type name. The primitives are
+`nntrainer::quant_w8cx_f32(n, k, f32, i8, scales)` and
+`dequant_w8cx_f32(...)` in the cpu backend (fallback implementation,
+shared by x86 and arm).
+
+Which axis is the "output channel" is fixed per layer kind so the
+file matches what `lower_qwen3()` expects without any repacking:
+
+* **FC weights** are stored `K x N` in nntrainer, so the save branch
+  in `layer_devel.h` transposes to `N x K` first and quantizes per
+  output column — this is the `[N][K]` + `[N]` scale layout of every
+  projection in the WEIGHTS image;
+* **the embedding table** (`EmbeddingLayer`, `TieWordEmbedding`) is
+  `[vocab][hidden]` and is quantized per vocab row *without* a
+  transpose, giving `embed [vocab][hidden]` + `embed_scale [vocab]`
+  exactly as section 6.3 lays them out. The tied lm_head reuses the
+  same bytes.
+
+### 7.2 Tools
+
+```bash
+# fp32 nntrainer model dir -> W8_CX .bin + updated nntr_config.json
+nntr_quantize $QWEN3 --fc_dtype W8_CX --embd_dtype W8_CX -o /tmp/qwen3_w8cx
+#   qwen3-0.6b: nntr_qwen3_0.6b_w8cx_DEFAULT.bin = 598,230,528 bytes,
+#   fc_layer_dtype/embedding_dtype/lmhead_dtype = W8_CX,
+#   model_tensor_type = W8_CX-FP32. (safetensors output: not yet for W8_CX)
+
+# HF safetensors -> quant/dequant'ed fp32 safetensors (the accuracy reference)
+nntr_fakequant $QWEN3/model.safetensors /tmp/qwen3_fq/model.safetensors
+#   every 2D F32/BF16 tensor goes through quant_w8cx_f32 + dequant_w8cx_f32
+#   (HF linear weights are already [out][in] = N x K); all tensors are
+#   written as F32 and __metadata__ is kept so transformers can reload it.
+#   qwen3-0.6b: fq_tensors=198 (28 x 7 projections + embed + lm_head).
+
+# teacher-forced perplexity of a text file (batch_size 1)
+nntr_causallm <model_dir> --eval eval.txt      # prints: PPL <v> wall_ms <ms>
+```
+
+`--eval` feeds the reference tokens one per step through the same
+`incremental_inference` convention as the decode loop and sums the
+NLL of token `p+1` from the logits at position `p`; progress is
+printed every 50 tokens on stderr.
+
+### 7.3 Accuracy gate (fp32 vs. W8_CX fake-quant, Qwen3-0.6B)
+
+The gate compares the original fp32 model against the fp32 model
+whose weights were round-tripped through W8_CX (`nntr_fakequant`,
+then `weight_converter.py` into an nntrainer `.bin`). Because the
+DSP path uses byte-identical int8/scale values, this isolates the
+weight-quantization error from everything M4 adds.
+
+| run | text | tokens | PPL fp32 | PPL fake-quant | delta |
+|-----|------|-------:|---------:|---------------:|------:|
+| nntrainer `--eval`, x86 | 340-word passage | 386 | 19.1652 (411,757 ms) | 19.5977 (448,018 ms) | +2.26 % |
+| transformers, same text | same | 386 | 19.1697 | 19.5953 | +2.22 % |
+| transformers, 2048-token windows | *Pride and Prejudice*, first 70k chars | 16,997 | 26.6047 | 26.6472 | **+0.16 %** |
+
+The nntrainer and transformers numbers on the same text agree to
+three decimals, which validates the `--eval` path end to end. The
+386-token sample alone misses the `< 1 %` gate, but that is sample
+noise (its running PPL swings by ~10 % between token 300 and 350);
+on 17k tokens the degradation is 0.16 %, well inside the gate.
+Per-tensor relative RMS error of the round trip is a uniform
+0.8–1.2 % with no outlier channels (row `absmax/rms` median 4.4), so
+no per-layer exception (e.g. keeping the embedding in fp16) is
+needed. Note the x86 fp32 `--eval` runs at roughly 1 token/s;
+for quick checks the transformers proxy is the practical tool.
+
+---
+
+## 8. Current status and planned work
 
 Implemented:
 
@@ -587,14 +679,17 @@ Implemented:
   fp16 RoPE table ("[htp] Pack the DSP weight image with the
   precomputed RoPE table"). Both are exercised by
   `test/hexagon/test_lowering.cpp` on x86, with no device or SDK
-  needed.
+  needed. The host weight pipeline (section 7) completes M3: the
+  `W8_CX` data type and its save branch, `nntr_quantize` W8_CX
+  support, the `nntr_fakequant` QDQ tool, the `--eval` perplexity
+  mode, and the measured accuracy gate (+0.16 % PPL on 17k tokens).
 
 Planned, in rough order:
 
 * M4 — device end-to-end: registering the backend under
-  `engine="htp"`, an adapter from an on-disk weight file to
-  `HexModelWeights` so `pack_weights()` has real source tensors to
-  read, and wiring `HexagonRunner::init()` to call `lower_qwen3()` +
+  `engine="htp"`, an adapter from the W8_CX `.bin` produced by
+  `nntr_quantize` to `HexModelWeights` so `pack_weights()` has real
+  source tensors to read (byte-exact, no requantization), and wiring `HexagonRunner::init()` to call `lower_qwen3()` +
   `pack_weights()` and hand the results (op-list, WEIGHTS buffer,
   sizes) to the FastRPC session;
 * engine hookup — a Context/ComputeOps integration per
