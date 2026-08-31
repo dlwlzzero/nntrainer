@@ -27,6 +27,7 @@ done
     -I "$HEXAGON_SDK_ROOT/rtos/qurt/compute${HEX_ARCH}/include/posix" \
     -isystem "$HEXAGON_SDK_ROOT/incs" \
     -isystem "$HEXAGON_SDK_ROOT/incs/stddef" \
+    ${HEX_EXTRA_CFLAGS:-} \
     "${SRCS[@]}" \
     -o "$OUT/libnntr_sim_test.so"
 echo "built: $OUT/libnntr_sim_test.so ($HEX_ARCH)"

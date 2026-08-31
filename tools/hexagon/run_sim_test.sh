@@ -6,7 +6,8 @@ set -eu
 HEX_ARCH="${HEX_ARCH:-v75}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$REPO/build_hexagon/sim"
-RUNMAIN="$HEXAGON_SDK_ROOT/libs/run_main_on_hexagon/ship/hexagon_toolv87_${HEX_ARCH}/run_main_on_hexagon_sim"
+# run_main_on_hexagon ships per (tools, arch); pick whichever exists for HEX_ARCH
+RUNMAIN="$(ls -d "$HEXAGON_SDK_ROOT"/libs/run_main_on_hexagon/ship/hexagon_toolv*_"${HEX_ARCH}" | tail -1)/run_main_on_hexagon_sim"
 ISS="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/lib/iss"
 cd "$OUT"
 printf '%s\n' \

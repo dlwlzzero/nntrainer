@@ -18,6 +18,17 @@ struct eltwise_job {
   uint32_t m;
 };
 
+static inline HVX_Vector hvx_add_f16_via_f32(HVX_Vector a, HVX_Vector b) {
+  const HVX_Vector one = hvx_vec_splat_f16(1.0f);
+  HVX_VectorPair pa = Q6_Wqf32_vmpy_VhfVhf(a, one);
+  HVX_VectorPair pb = Q6_Wqf32_vmpy_VhfVhf(b, one);
+  HVX_Vector lo = Q6_Vqf32_vadd_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_lo_W(pa)),
+                                       Q6_Vsf_equals_Vqf32(Q6_V_lo_W(pb)));
+  HVX_Vector hi = Q6_Vqf32_vadd_VsfVsf(Q6_Vsf_equals_Vqf32(Q6_V_hi_W(pa)),
+                                       Q6_Vsf_equals_Vqf32(Q6_V_hi_W(pb)));
+  return Q6_Vhf_equals_Wqf32(Q6_W_vcombine_VV(hi, lo));
+}
+
 static void add_worker(void *arg, int wid, int nw) {
   struct eltwise_job *j = arg;
   const struct nntr_htp_op_desc *d = j->d;
@@ -36,13 +47,13 @@ static void add_worker(void *arg, int wid, int nw) {
     for (uint32_t i = 0; i < n; i += VLEN_FP16) {
       HVX_Vector av = hvx_vmem(arow + i);
       HVX_Vector bv = hvx_vmem(brow + i);
-      /* Q6_Vqf16_vadd_VhfVhf produces an unnormalized qf16 result whose
-       * precision is fixed at the larger operand's ulp: for the residual
-       * add, near-cancelling a/-b of similar magnitude (~4-8) quantize the
-       * small true result to 2^-8 steps, failing the 1e-3/1e-4 tolerance.
-       * Q6_Vhf_vadd_VhfVhf is a true IEEE fp16 add (properly normalized
-       * per-lane), so use it directly instead. */
-      hvx_vmem(yrow + i) = Q6_Vhf_vadd_VhfVhf(av, bv);
+      /* Add in fp32 through qf-format ops only: widen both operands with
+       * Wqf32_vmpy_VhfVhf(x, 1.0), add as sf, narrow with Vhf_equals_Wqf32
+       * (same lane interleave both ways). Q6_Vqf16_vadd_VhfVhf quantizes
+       * near-cancelling residual adds to 2^-8 steps, and the IEEE
+       * Q6_Vhf_vadd_VhfVhf returned all zeros on 8 Elite silicon (fine on
+       * the v75/v79 simulators), so neither is used. */
+      hvx_vmem(yrow + i) = hvx_add_f16_via_f32(av, bv);
     }
   }
 }
@@ -55,7 +66,8 @@ void hvx_op_add(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d) {
 /* silu(g) = g / (1 + exp(-g)); y = silu(g) * up. Strip = 64 halves,
  * widened to two 32-lane fp32 vectors (hvx_vec_f16_to_f32) so the vendor
  * exp/inverse register primitives (hvx-exp.h, hvx-inverse.h) can run in
- * fp32, then narrowed back (hvx_vec_f32_to_f16). No scratch buffers. */
+ * fp32, multiplied by up in fp32, then narrowed back (hvx_vec_f32_to_f16).
+ * No scratch buffers. */
 static inline HVX_Vector silu_f32(HVX_Vector g) {
   static const float kMaxExp = 88.7228f;
   const HVX_Vector max_exp = hvx_vec_splat_f32(kMaxExp);
@@ -63,6 +75,13 @@ static inline HVX_Vector silu_f32(HVX_Vector g) {
   const HVX_Vector one = hvx_vec_splat_f32(1.0f);
 
   HVX_Vector neg_g = hvx_vec_neg_f32(g);
+  /* Clamp -g to 80 so exp stays finite (5.5e34): a large negative g (seen
+   * in qwen3 layer 27, |g| > 250) otherwise yields exp -> inf and the
+   * inverse approximation turns 1/(1+inf) into NaN instead of 0. With the
+   * clamp silu(g) underflows to 0, matching the scalar g/(1+expf(-g)). */
+  static const float kMaxArg = 80.0f;
+  const HVX_Vector max_arg = hvx_vec_splat_f32(kMaxArg);
+  neg_g = Q6_V_vmux_QVV(Q6_Q_vcmp_gt_VsfVsf(neg_g, max_arg), max_arg, neg_g);
   HVX_Vector e = hvx_vec_exp_f32_guard(neg_g, max_exp, inf);
   HVX_Vector denom = hvx_vec_add_f32_f32(one, e);
   HVX_Vector inv = hvx_vec_inverse_f32(denom);
@@ -88,13 +107,15 @@ static void silu_mul_worker(void *arg, int wid, int nw) {
       HVX_Vector gv = hvx_vmem(grow + i);
       HVX_Vector uv = hvx_vmem(urow + i);
 
+      /* silu and the product both in fp32; one fp16 rounding at the end
+       * (same contract as the scalar reference). */
       HVX_VectorPair g32 = hvx_vec_f16_to_f32(gv);
-      HVX_Vector s_lo = silu_f32(Q6_V_lo_W(g32));
-      HVX_Vector s_hi = silu_f32(Q6_V_hi_W(g32));
-      HVX_Vector silu_hf = hvx_vec_f32_to_f16(s_lo, s_hi);
-
-      HVX_Vector prod = Q6_Vqf16_vmpy_VhfVhf(silu_hf, uv);
-      hvx_vmem(yrow + i) = Q6_Vhf_equals_Vqf16(prod);
+      HVX_VectorPair u32 = hvx_vec_f16_to_f32(uv);
+      HVX_Vector p_lo = Q6_Vsf_equals_Vqf32(
+        Q6_Vqf32_vmpy_VsfVsf(silu_f32(Q6_V_lo_W(g32)), Q6_V_lo_W(u32)));
+      HVX_Vector p_hi = Q6_Vsf_equals_Vqf32(
+        Q6_Vqf32_vmpy_VsfVsf(silu_f32(Q6_V_hi_W(g32)), Q6_V_hi_W(u32)));
+      hvx_vmem(yrow + i) = hvx_vec_f32_to_f16(p_lo, p_hi);
     }
   }
 }
