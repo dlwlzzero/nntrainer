@@ -8,9 +8,13 @@ negligible even at M=1.
 
 Status: qwen3-0.6b (W8_CX int8 weights) runs end-to-end on an 8 Elite
 cDSP from a packed weight image and matches the x86 reference executor at
-the model level (+0.04 % PPL). Nothing in the nntrainer engine calls the
-backend yet (`engine="htp"` is planned, section 9); the entry points are
-the standalone harnesses in section 5.
+the model level (PPL 19.98 vs 20.27 reference). The CausalLM app runs it
+through `"engine": "htp"` in `nntr_config.json` (section 5.4) at
+13 tok/s decode / 24 tok/s prefill, with CPU fallback verified. That is
+still **slower than the same phone's CPU running the fp32 checkpoint
+(18.7 tok/s decode)**: the W8A8 matmul inner loop is compute-bound
+(section 8.2) and is the next piece of work (section 9). The standalone
+harnesses in section 5.3 remain the measurement/debug entry points.
 
 ---
 
@@ -188,7 +192,10 @@ every layer (so `act_size` does not scale with `n_layers`):
 | `g` / `u` | `ffn` fp16 | gate / up projection |
 
 The KV cache is separate: `kv_size = 2 * n_layers * n_kv_heads * max_seq
-* head_dim * 2` bytes (fp16 key + value).
+* head_dim * 2` bytes (fp16 key + value). Per layer/head, K is stored
+transposed (`[head_dim][max_seq]`) so the score kernel streams 64
+positions per vector; V is `[max_seq][head_dim]`. The validator requires
+`max_seq % 64 == 0`. The layout is DSP-private (never read by the host).
 
 ### 2.3 Op sequence
 
@@ -258,6 +265,7 @@ nntrainer/tensor/hexagon/
 Applications/CausalLM/hexagon/
 ├── qwen3_lowering.{h,cpp}    # lower_qwen3(): the op sequence of section 2.3
 ├── qwen3_w8cx_bin.{h,cpp}    # mmap reader for the W8_CX .bin
+├── hexagon_backend.{h,cpp}   # engine="htp" session: .bin -> rpcmem -> HexagonRunner (section 5.4)
 ├── hex_image.{h,cpp}         # .hexcfg read/write + raw file helpers
 └── hex_pack.cpp              # nntr_hexpack (meson target, host-only)
 
@@ -386,6 +394,72 @@ round-trips. `hexagon_e2e_test` mirrors `hexagon_ref_run`'s modes so
 the two outputs compare 1:1; every line starts with `E2E ` and each step
 reports DSP pcycles and host wall time.
 
+### 5.4 The CausalLM app (`engine="htp"`)
+
+The app never goes through nntrainer's `Engine`/`Context` (the `"htp"`
+`ComputeEngine` string exists but nothing registers a context for it):
+per-layer dispatch would reintroduce the per-op RPC cost the design
+rejects, so the offload is all-or-nothing at the app level.
+
+```json
+{ "engine": "htp", "model_file_name": "nntr_qwen3_0.6b_w8cx_DEFAULT.bin", ... }
+```
+
+`main.cpp` sees `"engine": "htp"` and, for `Qwen3ForCausalLM`, calls
+`CausalLM::initHexagon(weight_file)` **instead of**
+`initialize()/load_weight()/repack_weight()`:
+`HexagonBackend::create()` (`Applications/CausalLM/hexagon/`) reads the
+W8_CX `.bin` with `Qwen3W8cxBin`, lowers with `lower_qwen3`, packs the
+weight image straight into rpcmem (no `.hexw` file), and hands
+WEIGHTS/KV/ACT to `HexagonRunner::init()`. On success the CPU graph is
+never built (no 600 MB of CPU weights); `run()` then routes its three
+`incremental_inference` call sites through one `infer()` helper that
+sends the prompt in `max_chunk` pieces and one token per decode step, and
+the host KV-cache management becomes a no-op (KV lives on the DSP).
+Sampling, streaming, EOS handling and multi-turn positions
+(`global_token_len`) are unchanged.
+
+Fallback is the safety net, not a strategy: any failure at init (no skel,
+`open`/`init`/ABI error, rpcmem, checkpoint shape mismatch) or an
+unsupported option (`batch_size > 1`, system-prompt KV save/load,
+`skip_prefill`, untied `lm_head`) prints a `hexagon: ...` line on stderr
+and the app runs on the CPU exactly as before. A `forward()` failure
+mid-generation ends the run with an exception — there is no CPU graph to
+switch to.
+
+Build: `tools/package_android.sh . -Denable-hexagon=true
+-Dhexagon-sdk-root=...` (the prebuilt now exports `-DENABLE_HEXAGON=1`
+to ndk-build consumers), then `Applications/CausalLM/build_android.sh
+--cache` — without `--cache` the app script wipes `builddir` and rebuilds
+nntrainer with its default options, i.e. without the backend.
+On the device the process needs `ADSP_LIBRARY_PATH`/`DSP_LIBRARY_PATH`
+pointing at the directory holding `libnntr_htp_skel.so`, and a copy of
+the vendor `/vendor/lib64/libcdsprpc.so` next to the binary (the app
+links `libandroid`, so `/vendor/lib64` must **not** be on
+`LD_LIBRARY_PATH` — vendor `libbase` then shadows the system one and the
+executable fails to link).
+
+Measured on the S25 (default prompt, 18-token prefill, 64 generated
+tokens): DSP init (mmap + pack 598 MB + `init`) inside a 6.4 s e2e,
+prefill 23.8 tok/s, generation **13.0 tok/s**, peak RSS 758 MB — the same
+per-token cost as the harness (section 8.2), i.e. no measurable app
+overhead from tokenizer/sampling. Fallback, verified two ways: with the skel removed the app prints
+`hexagon: open failed (0x80000406), CPU fallback`; with an fp32
+checkpoint under `engine="htp"` it prints `hexagon: w8cx bin: size
+2384199680 != expected 598230528, CPU fallback` and then generates on the
+CPU (18-token prefill 52 tok/s, decode **18.7 tok/s**, RSS 3.1 GB). Note
+the W8_CX CPU loader is not on this branch (it lives on `hvx_m3`), so a
+W8_CX checkpoint that falls back stops with `No matching enum for value:
+W8_CX-FP32` — a pre-existing gap, not part of the DSP path.
+
+| path (S25, same prompt) | prefill | decode | RSS |
+|---|---|---|---|
+| DSP, W8_CX (`engine="htp"`) | 23.8 tok/s | 13.0 tok/s | 758 MB |
+| CPU, fp32 (fallback) | 52.0 tok/s | 18.7 tok/s | 3.1 GB |
+
+The DSP path wins on memory (int8 weights, KV on the DSP) and loses on
+speed until the matmul kernel is fixed; see section 9.
+
 ---
 
 ## 6. Debugging a divergence
@@ -463,34 +537,77 @@ Prejudice*, first 70k chars in 8 × 2048-token windows (torch proxy).
 * 1-layer image: device vs reference top-1 8/8, generated ids identical;
   per-op rel-RMS ≤ 1e-4 up to ATTN, bit-exact for EMBED / RMSNORM / W8A8.
 
-### 8.2 Performance (untuned, no HAP_power vote)
+### 8.2 Performance (M5)
 
 `--chunk 128 --steps 64`; medians over decode steps 2–64, host wall time
-around each RPC:
+around each RPC. "M4" is the scalar-score attention kernel, "M5" the
+vectorized one (K cached transposed, 64 positions per vector pair), both
+measured back to back on the same device session.
 
-| input | prefill | Mcycles/tok | decode (n=1) | Mcycles/tok |
+| input | prefill M4 → M5 | Mcycles/tok | decode (n=1) M4 → M5 | Mcycles/tok |
 |---|---|---|---|---|
-| 512 tok | 24.5 s → **20.9 tok/s** | 101 | 102.3 ms → **9.8 tok/s** | 211 |
-| 1024 tok | 62.1 s → **16.5 tok/s** | 128 | 138.6 ms → **7.2 tok/s** | 290 |
-| teacher-forced, 387 steps | — | — | ~85 ms → 11.7 tok/s | ~150 |
+| 512 tok | 24.5 s → 20.5 s (21.1 → **25.2 tok/s**) | 100 → 84 | 102.0 → 89.2 ms (9.8 → **11.2 tok/s**) | 211 → 185 |
+| 1024 tok | 62.5 s → 44.6 s (16.8 → **23.2 tok/s**) | 126 → 91 | 136.5 → 88.6 ms (7.3 → **11.3 tok/s**) | 286 → 185 |
+| teacher-forced, 386 steps | — | — | 78.6 → 77.1 ms (12.7 → 13.0 tok/s) | 159 → 156 |
 
-Prefill chunk time grows with position (128-token chunks at pos 0 / 384 /
-896: 5.1 / 7.2 / 10.8 s) and so does decode: the attention score loop is
-scalar over `hvx_dot_fp16` per (query, position), so ATTN — not weight
-bandwidth (598 MB/token would allow ~60 tok/s) — dominates. The previous
-per-op HexKL path decoded at ~0.16 tok/s.
+* Decode no longer depends on position (89 ms at both 512 and 1024) and the
+  128-token chunk at pos 896 dropped from 10.8 s to 6.5 s: the old score
+  loop did a 64-lane horizontal scalar sum per (query, position); the new
+  one accumulates 64 positions per `mpyacc`. The remaining ~88 ms/token is
+  the weight path (598 MB at ~7 GB/s effective — the ~60 tok/s bandwidth
+  bound is still far).
+* Accuracy on `eval.txt` (386 steps) with the M5 kernel: PPL **19.9787**,
+  top-1 157 (M4 kernel 20.2802 / 154, x86 reference 20.2718 / 155) —
+  within the noise band of section 8.1; generated ids diverge after a
+  handful of tokens as expected for two correct w8a8 implementations.
+* `HAP_power` vote (compute apptype + DCVS_v3 performance mode, TURBO
+  floor, sleep disabled at `init`) was accepted (rc 0) but changed
+  nothing: pcycles/µs stayed at 2.09 G in every run, so the cDSP already
+  runs at its top corner while the harness hammers it. Not kept; revisit
+  when the `engine="htp"` app leaves idle gaps between RPCs.
+* The previous per-op HexKL path decoded at ~0.16 tok/s.
+
+**VTCM/DMA double buffering** (`HTP_MM_NO_VTCM` build forces the direct
+DDR path; 1024-token prefill + 128 decode steps, same session):
+
+| W8A8 weight path | prefill | decode (n=1) | Mcycles/tok |
+|---|---|---|---|
+| VTCM ring, DMA double buffer (default) | 44.8 s (23.2 tok/s) | 90.7 ms (11.0 tok/s) | 91 / 187 |
+| direct DDR reads (`HEX_EXTRA_CFLAGS=-DHTP_MM_NO_VTCM`) | 45.1 s (23.1 tok/s) | 95.1 ms (10.5 tok/s) | 92 / 199 |
+
+Outputs are bit-identical. The overlap buys ~5 % on decode and nothing on
+prefill, so neither is limited by getting weights into the core.
+
+**Prefill chunk sweep** (1024 tokens, default kernels):
+
+| `--chunk` | prefill | Mcycles/tok | ACT bytes |
+|---|---|---|---|
+| 32 | 47.1 s (22.4 tok/s) | 94 | 3.9 MB |
+| 64 | 45.9 s (22.9 tok/s) | 92 | 3.9 MB |
+| 128 (default) | 44.6 s (**23.3 tok/s**) | 90 | 3.9 MB |
+| 256 (`max_chunk=256` image) | 50.3 s (20.9 tok/s) | 101 | 7.9 MB |
+
+`max_chunk=128` stays the default. Prefill costs ~43 ms per token whatever
+the chunk size — about 10 GMAC/s on 0.44 GMAC/token — so the W8A8 matmul
+is compute-bound in its inner loop (`hvx_dot_i8` per (row, token) with a
+horizontal reduction each, the same shape the attention kernel had), not
+bandwidth-bound; that is the next target.
 
 ---
 
 ## 9. Planned work
 
-* **M5 performance**: HVX attention score/V kernel first, then
-  `HAP_power` votes, DMA double-buffering measurement, prefill chunk
-  sweep, VTCM streaming for W8A16 (`ponytail:` note in `hvx-matmul.c`).
-* **`engine="htp"`**: Context/ComputeOps integration per
-  `ARCHITECTURE.md` — `HexagonBackend` reads `Qwen3W8cxBin`, packs into
-  rpcmem directly, invalidates KV when a `forward()` fails
-  mid-generation, and routes DSP errors into the nntrainer logger (host
-  messages currently go to stderr, DSP messages to FARF/logcat).
+* **Performance (first)**: the W8A8 matmul inner loop (section 8.2:
+  prefill is compute-bound at ~10 GMAC/s, decode reads weights at
+  ~7 GB/s; the CPU fp32 path is 1.4× faster at decode today) — batch rows
+  per weight load and drop the per-dot horizontal reduction, the same
+  restructuring the attention kernel got in M5; then VTCM streaming for
+  W8A16 (`ponytail:` note in `hvx-matmul.c`) and K^T reuse across query
+  rows in prefill attention (`ponytail:` note in `hvx-attn.c`).
+* **`engine="htp"` follow-ups**: route host-side `hexagon:` messages
+  into the nntrainer logger instead of stderr; system-prompt KV
+  save/load on the DSP (today it forces the CPU path); a second lowered
+  architecture would move the `Qwen3ForCausalLM` gate in `main.cpp` into
+  a per-model lowering table.
 * **v79-native skel**: find why the IEEE/qf32-chain paths misbehave
   (section 7) so `HEX_ARCH=v79` can be the default again.
