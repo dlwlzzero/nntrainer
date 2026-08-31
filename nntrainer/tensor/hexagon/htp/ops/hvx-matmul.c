@@ -9,6 +9,9 @@
  *		bytes through VTCM before the identical dot/scale math.
  *		Also MATMUL_LOGITS: quantizes only the last token row and
  *		emits fp32 logits through the same DDR dot/scale path.
+ *		MATMUL_W8A16 keeps the activation in fp16 (no per-token int8
+ *		quantization) and accumulates in qf32; used for down_proj,
+ *		whose SwiGLU input is too outlier-heavy for per-token int8.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -18,6 +21,7 @@
 
 #include "dma-queue.h"
 #include "htp_ops.h"
+#include "hvx-f16-math.h"
 #include "hvx-quant.h"
 
 /* Ring depth for the per-worker DMA queue: only ever one chunk in flight
@@ -158,6 +162,53 @@ static void mm_logits_worker(void *arg, int wid, int nw) {
   uint32_t n1 = (uint32_t)(((uint64_t)n * (wid + 1)) / nw);
 
   mm_compute_range(w, 0, sw, c->xq, c->xq_scale, y, true, 1, k, n, n0, n1);
+}
+
+/* fp16 x . int8 w dot in fp32: each 128B of w is sign-extended to two
+ * int16 vectors, converted to hf (exact for |w| <= 127) and multiply-
+ * accumulated with the matching 64-half x vectors in IEEE sf (see
+ * hvx_dot_fp16 for why not qf32). k%128==0, w/x 128B aligned (validator +
+ * lowering guarantee both). */
+static inline float hvx_dot_fp16_i8(const __fp16 *x, const int8_t *w,
+                                    uint32_t k) {
+  HVX_VectorPair acc = Q6_W_vcombine_VV(Q6_V_vzero(), Q6_V_vzero());
+  for (uint32_t i = 0; i < k; i += 128u) {
+    HVX_VectorPair wh = Q6_Wh_vunpack_Vb(hvx_vmem(w + i));
+    acc = hvx_vec_mpyacc_f32_f16(acc, hvx_vmem(x + i),
+                                 Q6_Vhf_equals_Vh(Q6_V_lo_W(wh)));
+    acc = hvx_vec_mpyacc_f32_f16(acc, hvx_vmem(x + i + 64u),
+                                 Q6_Vhf_equals_Vh(Q6_V_hi_W(wh)));
+  }
+  return hvx_sum_sf_pair(acc);
+}
+
+/* MATMUL_W8A16 worker: same N-slab split, DDR direct read.
+ * ponytail: no VTCM/DMA streaming for this kind yet - add by generalizing
+ * mm_worker_vtcm if the M5 measurements show down_proj prefill needs it. */
+static void mm_w8a16_worker(void *arg, int wid, int nw) {
+  struct mm_job *j = arg;
+  struct htp_exec_ctx *c = j->c;
+  const struct nntr_htp_op_desc *d = j->d;
+  const uint32_t k = d->k, n = d->n, m = j->m;
+  const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
+  const int8_t *w = (const int8_t *)htp_ref_ptr(c, d->in1);
+  const float *sw = (const float *)htp_ref_ptr(c, d->in2);
+  __fp16 *y = (__fp16 *)htp_ref_ptr(c, d->out);
+  uint32_t n0 = (uint32_t)(((uint64_t)n * wid) / nw);
+  uint32_t n1 = (uint32_t)(((uint64_t)n * (wid + 1)) / nw);
+
+  for (uint32_t jn = n0; jn < n1; ++jn) {
+    const int8_t *wrow = w + (size_t)jn * k;
+    for (uint32_t t = 0; t < m; ++t)
+      y[(size_t)t * n + jn] =
+        (__fp16)(hvx_dot_fp16_i8(x + (size_t)t * k, wrow, k) * sw[jn]);
+  }
+}
+
+void hvx_op_matmul_w8a16(struct htp_exec_ctx *c,
+                         const struct nntr_htp_op_desc *d) {
+  struct mm_job j = {c, d, htp_m(c, d)};
+  wp_run(c->pool, mm_w8a16_worker, &j);
 }
 
 void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,

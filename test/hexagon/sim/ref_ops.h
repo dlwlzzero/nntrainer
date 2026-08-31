@@ -23,6 +23,11 @@ int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k);
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 
+/* Reference for MATMUL_W8A16: like W8A8 but x stays fp16 (no per-token
+ * quantization), fp32 accumulation, y = (fp16)(dot * sw[n]). */
+void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
+                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
+
 /* Reference for RMSNORM: x/gamma/y fp16[m][n] (gamma repeats every `chunk`
  * elements, chunk == n for whole-row or head_dim for PER_HEAD QK-Norm).
  * Per row, per chunk: r = 1/sqrt(mean(x^2) + eps), y_i = x_i * r * gamma. */
@@ -78,5 +83,16 @@ void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
 void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
                        uint8_t *act, const int32_t *tokens, uint32_t n_tokens,
                        uint32_t pos, float *logits);
+
+/* Same, but runs only ops [0, n_ops_limit) (n_ops_limit >= n_ops runs the
+ * whole list). Used to dump intermediate activations. */
+void ref_graph_forward_upto(const uint8_t *oplist, uint8_t *weights,
+                            uint8_t *kv, uint8_t *act, const int32_t *tokens,
+                            uint32_t n_tokens, uint32_t pos, float *logits,
+                            uint32_t n_ops_limit);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* REF_OPS_H */

@@ -2,7 +2,8 @@
 /**
  * @file	test_matmul.c
  * @date	18 August 2026
- * @brief	Hexagon-sim test for the MATMUL_W8A8 kernel (DDR direct-read path)
+ * @brief	Hexagon-sim test for the MATMUL_W8A8 and MATMUL_W8A16 kernels
+ *		(DDR direct-read path)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -17,7 +18,7 @@
 
 static uint32_t align128(uint32_t n) { return (n + 127u) & ~127u; }
 
-static int run_case(uint32_t m, uint32_t k, uint32_t n) {
+static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
   uint32_t off_x = 0;
   uint32_t off_w = align128(off_x + m * k * (uint32_t)sizeof(__fp16));
   uint32_t off_sw = align128(off_w + n * k);
@@ -47,7 +48,7 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n) {
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
-  d.kind = NNTR_HTP_OP_MATMUL_W8A8;
+  d.kind = a16 ? NNTR_HTP_OP_MATMUL_W8A16 : NNTR_HTP_OP_MATMUL_W8A8;
   d.m = m;
   d.k = k;
   d.n = n;
@@ -60,10 +61,14 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n) {
   d.out.buf = NNTR_HTP_BUF_ACT;
   d.out.offset = off_y;
 
-  hvx_op_matmul_w8a8(&c, &d);
-
   __fp16 *y_ref = malloc((size_t)m * n * sizeof(__fp16));
-  ref_matmul_w8a8(x, w, sw, y_ref, m, k, n);
+  if (a16) {
+    hvx_op_matmul_w8a16(&c, &d);
+    ref_matmul_w8a16(x, w, sw, y_ref, m, k, n);
+  } else {
+    hvx_op_matmul_w8a8(&c, &d);
+    ref_matmul_w8a8(x, w, sw, y_ref, m, k, n);
+  }
 
   float *ref_f = malloc((size_t)m * n * sizeof(float));
   float *got_f = malloc((size_t)m * n * sizeof(float));
@@ -73,7 +78,8 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n) {
   }
 
   char tag[32];
-  snprintf(tag, sizeof(tag), "matmul_m%u", (unsigned)m);
+  snprintf(tag, sizeof(tag), "matmul_%s_m%u", a16 ? "w8a16" : "w8a8",
+           (unsigned)m);
   int rc = cmp_f(tag, ref_f, got_f, m * n, 2e-3f, 1e-3f);
 
   free(ref_f);
@@ -87,9 +93,13 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n) {
 }
 
 int test_matmul(void) {
-  if (run_case(1, 1024, 256))
+  if (run_case(1, 1024, 256, 0))
     return 1;
-  if (run_case(8, 1024, 256))
+  if (run_case(8, 1024, 256, 0))
+    return 1;
+  if (run_case(1, 3072, 256, 1))
+    return 1;
+  if (run_case(8, 3072, 256, 1))
     return 1;
 
   printf("SIM_TEST matmul PASS\n");

@@ -37,7 +37,7 @@ int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k) {
 
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n) {
-  int8_t *xq = malloc((size_t)k);
+  int8_t *xq = (int8_t *)malloc((size_t)k);
   for (uint32_t t = 0; t < m; ++t) {
     float sx = ref_quant_row(x + (size_t)t * k, xq, k);
     for (uint32_t j = 0; j < n; ++j) {
@@ -48,9 +48,21 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
   free(xq);
 }
 
+void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
+                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n) {
+  for (uint32_t t = 0; t < m; ++t) {
+    for (uint32_t j = 0; j < n; ++j) {
+      float acc = 0.f;
+      for (uint32_t i = 0; i < k; ++i)
+        acc += (float)x[(size_t)t * k + i] * (float)w[(size_t)j * k + i];
+      y[(size_t)t * n + j] = (__fp16)(acc * sw[j]);
+    }
+  }
+}
+
 void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
                        float *out, uint32_t k, uint32_t n) {
-  int8_t *xq = malloc((size_t)k);
+  int8_t *xq = (int8_t *)malloc((size_t)k);
   float sx = ref_quant_row(x_last, xq, k);
   for (uint32_t j = 0; j < n; ++j)
     out[j] = (float)ref_dot_i8(w + (size_t)j * k, xq, k) * sw[j] * sx;
@@ -121,7 +133,7 @@ void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
               uint32_t hd, uint32_t max_seq, float scale) {
   const size_t v_off = (size_t)n_layers * n_kv_heads * max_seq * hd;
   const uint32_t group = n_heads / n_kv_heads;
-  float *scores = malloc((size_t)max_seq * sizeof(float));
+  float *scores = (float *)malloc((size_t)max_seq * sizeof(float));
 
   for (uint32_t h = 0; h < n_kv_heads; ++h) { /* KV append */
     __fp16 *kh = kv + ((size_t)layer * n_kv_heads + h) * max_seq * hd;
@@ -180,9 +192,10 @@ void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
   }
 }
 
-void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
-                       uint8_t *act, const int32_t *tokens, uint32_t n_tokens,
-                       uint32_t pos, float *logits) {
+void ref_graph_forward_upto(const uint8_t *oplist, uint8_t *weights,
+                            uint8_t *kv, uint8_t *act, const int32_t *tokens,
+                            uint32_t n_tokens, uint32_t pos, float *logits,
+                            uint32_t n_ops_limit) {
   struct nntr_htp_oplist_header h;
   const struct nntr_htp_op_desc *ops;
   uint8_t *bufs[NNTR_HTP_BUF_COUNT];
@@ -195,7 +208,8 @@ void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
   bufs[NNTR_HTP_BUF_TOKENS] = (uint8_t *)(uintptr_t)tokens;
   bufs[NNTR_HTP_BUF_LOGITS] = (uint8_t *)logits;
 
-  for (uint32_t i = 0; i < h.n_ops; ++i) {
+  const uint32_t n_run = h.n_ops < n_ops_limit ? h.n_ops : n_ops_limit;
+  for (uint32_t i = 0; i < n_run; ++i) {
     const struct nntr_htp_op_desc *d = &ops[i];
     const uint32_t m = d->m ? d->m : n_tokens;
     uint8_t *p0 = bufs[d->in0.buf] + d->in0.offset;
@@ -209,8 +223,7 @@ void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
     case NNTR_HTP_OP_EMBED:
       ref_embed((const int32_t *)(const void *)p0,
                 (const int8_t *)(const void *)p1,
-                (const float *)(const void *)p2, (__fp16 *)(void *)po, m,
-                d->k);
+                (const float *)(const void *)p2, (__fp16 *)(void *)po, m, d->k);
       break;
     case NNTR_HTP_OP_RMSNORM: {
       const uint32_t chunk =
@@ -221,10 +234,14 @@ void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
       break;
     }
     case NNTR_HTP_OP_MATMUL_W8A8:
-      ref_matmul_w8a8((const __fp16 *)(const void *)p0,
-                      (const int8_t *)(const void *)p1,
-                      (const float *)(const void *)p2, (__fp16 *)(void *)po,
-                      m, d->k, d->n);
+      ref_matmul_w8a8(
+        (const __fp16 *)(const void *)p0, (const int8_t *)(const void *)p1,
+        (const float *)(const void *)p2, (__fp16 *)(void *)po, m, d->k, d->n);
+      break;
+    case NNTR_HTP_OP_MATMUL_W8A16:
+      ref_matmul_w8a16(
+        (const __fp16 *)(const void *)p0, (const int8_t *)(const void *)p1,
+        (const float *)(const void *)p2, (__fp16 *)(void *)po, m, d->k, d->n);
       break;
     case NNTR_HTP_OP_ROPE:
       ref_rope((__fp16 *)(void *)p0, (const __fp16 *)(const void *)p2, m,
@@ -246,18 +263,23 @@ void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
       break;
     case NNTR_HTP_OP_ADD:
       ref_add((const __fp16 *)(const void *)p0,
-              (const __fp16 *)(const void *)p1, (__fp16 *)(void *)po,
-              m * d->n);
+              (const __fp16 *)(const void *)p1, (__fp16 *)(void *)po, m * d->n);
       break;
     case NNTR_HTP_OP_MATMUL_LOGITS:
-      ref_matmul_logits((const __fp16 *)(const void *)p0 +
-                          (size_t)(n_tokens - 1u) * d->k,
-                        (const int8_t *)(const void *)p1,
-                        (const float *)(const void *)p2, (float *)(void *)po,
-                        d->k, d->n);
+      ref_matmul_logits(
+        (const __fp16 *)(const void *)p0 + (size_t)(n_tokens - 1u) * d->k,
+        (const int8_t *)(const void *)p1, (const float *)(const void *)p2,
+        (float *)(void *)po, d->k, d->n);
       break;
     default:
       break;
     }
   }
+}
+
+void ref_graph_forward(const uint8_t *oplist, uint8_t *weights, uint8_t *kv,
+                       uint8_t *act, const int32_t *tokens, uint32_t n_tokens,
+                       uint32_t pos, float *logits) {
+  ref_graph_forward_upto(oplist, weights, kv, act, tokens, n_tokens, pos,
+                         logits, 0xffffffffu);
 }

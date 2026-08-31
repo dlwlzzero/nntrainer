@@ -10,14 +10,16 @@
  * @bug		No known bugs except for NYI items
  */
 #include <HAP_compute_res.h>
+#include <HAP_perf.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "htp_graph.h"
 
 const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
-  hvx_op_embed,    hvx_op_rmsnorm,  hvx_op_matmul_w8a8, hvx_op_rope,
-  hvx_op_attn,     hvx_op_silu_mul, hvx_op_add,         hvx_op_matmul_logits,
+  hvx_op_embed, hvx_op_rmsnorm,       hvx_op_matmul_w8a8,
+  hvx_op_rope,  hvx_op_attn,          hvx_op_silu_mul,
+  hvx_op_add,   hvx_op_matmul_logits, hvx_op_matmul_w8a16,
 };
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
@@ -47,8 +49,8 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   if (rc)
     return rc;
 
-  g->ops = (const struct nntr_htp_op_desc *)(const void *)(oplist +
-                                                           sizeof(g->cfg));
+  g->ops =
+    (const struct nntr_htp_op_desc *)(const void *)(oplist + sizeof(g->cfg));
   memcpy(g->ctx.buf_size, buf_size, sizeof(buf_size));
   g->ctx.buf[NNTR_HTP_BUF_WEIGHTS] = weights;
   g->ctx.buf[NNTR_HTP_BUF_KV] = kv;
@@ -71,10 +73,8 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   }
   /* [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
-  g->ctx.attn_scratch =
-    memalign(128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq *
-                      sizeof(float) +
-                    128u);
+  g->ctx.attn_scratch = memalign(
+    128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
   if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale)) || !g->ctx.attn_scratch) {
     htp_graph_destroy(g);
     return 1;
@@ -102,10 +102,12 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   return 0;
 }
 
-int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,
-                      uint32_t n_tokens, uint32_t pos, float *logits,
-                      uint32_t n_logits) {
+int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
+                           uint32_t n_tokens, uint32_t pos, float *logits,
+                           uint32_t n_logits, uint32_t n_ops_limit,
+                           uint64_t *pcycles) {
   uint32_t i;
+  uint64_t t0;
 
   if (!g || !tokens || !logits)
     return 1;
@@ -116,15 +118,38 @@ int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,
     return 1;
   if (n_logits != g->cfg.vocab)
     return 1;
+  if (n_ops_limit > g->cfg.n_ops)
+    return 1;
 
   g->ctx.buf[NNTR_HTP_BUF_TOKENS] = (uint8_t *)(uintptr_t)tokens;
   g->ctx.buf[NNTR_HTP_BUF_LOGITS] = (uint8_t *)logits;
   g->ctx.n_tokens = n_tokens;
   g->ctx.pos = pos;
 
-  for (i = 0; i < g->cfg.n_ops; ++i)
+  t0 = HAP_perf_get_pcycles();
+  for (i = 0; i < n_ops_limit; ++i)
     htp_op_table[g->ops[i].kind](&g->ctx, &g->ops[i]);
+  if (pcycles)
+    *pcycles = HAP_perf_get_pcycles() - t0;
   return 0;
+}
+
+int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,
+                      uint32_t n_tokens, uint32_t pos, float *logits,
+                      uint32_t n_logits) {
+  if (!g)
+    return 1;
+  return htp_graph_forward_upto(g, tokens, n_tokens, pos, logits, n_logits,
+                                g->cfg.n_ops, 0);
+}
+
+const uint8_t *htp_graph_buf_ref(const struct htp_graph *g, uint32_t buf,
+                                 uint32_t offset, uint32_t bytes) {
+  if (!g || buf > (uint32_t)NNTR_HTP_BUF_ACT)
+    return 0;
+  if ((uint64_t)offset + bytes > (uint64_t)g->ctx.buf_size[buf])
+    return 0;
+  return g->ctx.buf[buf] + offset;
 }
 
 void htp_graph_destroy(struct htp_graph *g) {
