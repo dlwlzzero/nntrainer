@@ -194,6 +194,21 @@ e_quantize = executable('nntr_quantize',
 )
 
 
+hexpack_src = [
+    meson.current_source_dir() / 'hexagon' / 'hex_pack.cpp',
+    meson.current_source_dir() / 'hexagon' / 'hex_image.cpp',
+    meson.current_source_dir() / 'hexagon' / 'qwen3_w8cx_bin.cpp',
+    meson.current_source_dir() / 'hexagon' / 'qwen3_lowering.cpp',
+    meson.current_source_dir() / '..' / '..' / 'nntrainer' / 'tensor' / 'hexagon' / 'host' / 'graph_lowering.cpp',
+]
+
+# Host-only tool (no SDK/rpcmem): W8_CX .bin -> packed DSP weight image.
+e_hexpack = executable('nntr_hexpack',
+    hexpack_src,
+    include_directories: causallm_inc,
+)
+
+
 safetensors_info_src = [
     meson.current_source_dir() / 'safetensors_info.cpp',
 ]
