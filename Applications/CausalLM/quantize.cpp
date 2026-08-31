@@ -38,7 +38,7 @@
  *     --output_bin <name> Output weight filename (auto-generated if omitted)
  *     --output_format <fmt> Output container: 'bin' (default) or 'safetensors'
  *
- *   Supported data types: FP32, FP16, Q4_0, Q4_K, Q6_K
+ *   Supported data types: FP32, FP16, Q4_0, Q4_K, Q6_K, QS4CX, W8_CX
  *
  *   Example:
  *     # Quantize Qwen3-4B to Q4_0 FC layers (embedding stays FP32):
@@ -101,10 +101,10 @@ namespace {
  * @brief Map of string data type names to DataType enum values
  */
 const std::map<std::string, DataType> dtype_str_map = {
-  {"FP32", DataType::FP32}, {"FP16", DataType::FP16},
-  {"Q4_0", DataType::Q4_0}, {"Q6_K", DataType::Q6_K},
-  {"Q4_K", DataType::Q4_K}, {"QS4CX", DataType::QS4CX},
-  {"NONE", DataType::NONE}};
+  {"FP32", DataType::FP32},   {"FP16", DataType::FP16},
+  {"Q4_0", DataType::Q4_0},   {"Q6_K", DataType::Q6_K},
+  {"Q4_K", DataType::Q4_K},   {"QS4CX", DataType::QS4CX},
+  {"W8_CX", DataType::W8_CX}, {"NONE", DataType::NONE}};
 
 /**
  * @brief Map of string ISA names to ISA enum values
@@ -150,8 +150,9 @@ DataType strToDataType(const std::string &s) {
                  [](unsigned char c) { return std::toupper(c); });
   auto it = dtype_str_map.find(upper);
   if (it == dtype_str_map.end()) {
-    throw std::invalid_argument("Unsupported data type: " + s +
-                                ". Supported: FP32, FP16, Q4_0, Q6_K, Q4_K");
+    throw std::invalid_argument(
+      "Unsupported data type: " + s +
+      ". Supported: FP32, FP16, Q4_0, Q6_K, Q4_K, QS4CX, W8_CX");
   }
   return it->second;
 }
@@ -201,9 +202,9 @@ std::string generateOutputBinName(const std::string &original_bin,
 
   // Remove old dtype suffix patterns (e.g., _fp32, _q40_fp32)
   // Common patterns: _fp32, _fp16, _q40, _q6k, _q4k, etc.
-  std::vector<std::string> dtype_suffixes = {"_fp32", "_fp16",  "_q40",
-                                             "_q4_0", "_q6k",   "_q6_k",
-                                             "_q4k",  "_qs4cx", "_q4_k"};
+  std::vector<std::string> dtype_suffixes = {"_fp32", "_fp16", "_q40", "_q4_0",
+                                             "_q6k",  "_q6_k", "_q4k", "_qs4cx",
+                                             "_q4_k", "_w8cx"};
   for (const auto &suffix : dtype_suffixes) {
     auto pos = base.rfind(suffix);
     if (pos != std::string::npos && pos + suffix.size() == base.size()) {
@@ -423,7 +424,7 @@ void printUsage(const char *prog) {
     << "                        from this config will be used.\n"
     << "  --help, -h            Show this help message\n"
     << "\n"
-    << "Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K\n"
+    << "Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K, QS4CX, W8_CX\n"
     << "Supported ISA options: DEFAULT (current platform), X86, ARM\n"
     << "\n"
     << "Examples:\n"
@@ -689,6 +690,13 @@ int main(int argc, char *argv[]) {
     DataType fc_dtype = strToDataType(fc_dtype_str);
     DataType embd_dtype = strToDataType(embd_dtype_str);
     DataType lmhead_dtype = strToDataType(lmhead_dtype_str);
+
+    if (output_format == "safetensors" &&
+        (fc_dtype == DataType::W8_CX || embd_dtype == DataType::W8_CX ||
+         lmhead_dtype == DataType::W8_CX)) {
+      std::cerr << "safetensors output is not supported for W8_CX yet\n";
+      return EXIT_FAILURE;
+    }
 
     // Validate source model is FP32
     std::string src_tensor_type =

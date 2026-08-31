@@ -529,6 +529,15 @@ void TieWordEmbedding::save(std::ofstream &file,
                                      quant_weight.getData<uint8_t>(), K, N,
                                      nullptr);
             quant_weight.save(file);
+          } else if (dtype == nntrainer::TensorDim::DataType::W8_CX) {
+            // Embedding [vocab][hidden] is already N-major for the per-token
+            // gather: quantize per vocab row (K rows of N) without transposing.
+            std::vector<uint8_t> rhs_q(K * N + K * sizeof(float));
+            int8_t *data = reinterpret_cast<int8_t *>(rhs_q.data());
+            float *scale = reinterpret_cast<float *>(rhs_q.data() + K * N);
+            nntrainer::quant_w8cx_f32(K, N, weight.getData(), data, scale);
+            file.write(reinterpret_cast<const char *>(rhs_q.data()),
+                       rhs_q.size());
           } else {
             NNTR_THROW_IF(true, std::runtime_error)
               << "This dtype is not supported in save with quantization";
