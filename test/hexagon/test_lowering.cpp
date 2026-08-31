@@ -24,9 +24,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "../../Applications/CausalLM/hexagon/hex_image.h"
 #include "../../Applications/CausalLM/hexagon/qwen3_lowering.h"
 #include "../../nntrainer/tensor/hexagon/host/graph_lowering.h"
 #include "../../nntrainer/tensor/hexagon/htp/nntr_htp_common.h"
@@ -39,6 +41,8 @@ using nntrainer::hexagon::HexModelWeights;
 using nntrainer::hexagon::HexWeightOffsets;
 using nntrainer::hexagon::lower_qwen3;
 using nntrainer::hexagon::pack_weights;
+using nntrainer::hexagon::read_hexcfg;
+using nntrainer::hexagon::write_hexcfg;
 
 /** @brief Print the failing check and exit 1. */
 #define FAIL(msg)                                                              \
@@ -640,6 +644,22 @@ int main(void) {
   // 8. pack_weights(): int8/scale byte-exact copy, norm/RoPE fp16
   // conversion accuracy, tied-embed accounting, full write coverage.
   check_pack_weights(g, cfg);
+
+  // 9. .hexcfg round trip: every field survives text serialization.
+  {
+    std::string path = std::string(P_tmpdir) + "/hexcfg_roundtrip.hexcfg";
+    write_hexcfg(path, cfg);
+    HexModelConfig back = read_hexcfg(path);
+    CHECK(back.n_layers == cfg.n_layers && back.n_heads == cfg.n_heads &&
+            back.n_kv_heads == cfg.n_kv_heads &&
+            back.head_dim == cfg.head_dim && back.hidden == cfg.hidden &&
+            back.ffn == cfg.ffn && back.vocab == cfg.vocab &&
+            back.max_seq == cfg.max_seq && back.max_chunk == cfg.max_chunk,
+          "hexcfg integer field round trip");
+    CHECK(back.rms_eps == cfg.rms_eps && back.rope_theta == cfg.rope_theta,
+          "hexcfg float field round trip");
+    std::remove(path.c_str());
+  }
 
   // 7. Real-dims smoke: qwen3-0.6b.
   HexModelConfig real{};
