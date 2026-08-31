@@ -41,16 +41,16 @@ using nntrainer::hexagon::lower_qwen3;
 using nntrainer::hexagon::pack_weights;
 
 /** @brief Print the failing check and exit 1. */
-#define FAIL(msg)                                                            \
-  do {                                                                       \
-    std::fprintf(stderr, "FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__);     \
-    std::exit(1);                                                            \
+#define FAIL(msg)                                                              \
+  do {                                                                         \
+    std::fprintf(stderr, "FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__);       \
+    std::exit(1);                                                              \
   } while (0)
 
-#define CHECK(cond, msg)                                                     \
-  do {                                                                       \
-    if (!(cond))                                                             \
-      FAIL(msg);                                                             \
+#define CHECK(cond, msg)                                                       \
+  do {                                                                         \
+    if (!(cond))                                                               \
+      FAIL(msg);                                                               \
   } while (0)
 
 namespace {
@@ -73,22 +73,20 @@ nntr_htp_oplist_header read_header(const HexLoweredGraph &g) {
 
 nntr_htp_op_desc read_op(const HexLoweredGraph &g, uint32_t i) {
   nntr_htp_op_desc d;
-  uint64_t off = sizeof(nntr_htp_oplist_header) +
-                 static_cast<uint64_t>(i) * sizeof(d);
+  uint64_t off =
+    sizeof(nntr_htp_oplist_header) + static_cast<uint64_t>(i) * sizeof(d);
   std::memcpy(&d, g.oplist.data() + off, sizeof(d));
   return d;
 }
 
 /** @brief 16 op kinds of one transformer layer block, plan table order. */
 const uint32_t kLayerKinds[16] = {
-  NNTR_HTP_OP_RMSNORM,      NNTR_HTP_OP_MATMUL_W8A8,
-  NNTR_HTP_OP_MATMUL_W8A8,  NNTR_HTP_OP_MATMUL_W8A8,
-  NNTR_HTP_OP_RMSNORM,      NNTR_HTP_OP_RMSNORM,
-  NNTR_HTP_OP_ROPE,         NNTR_HTP_OP_ATTN,
-  NNTR_HTP_OP_MATMUL_W8A8,  NNTR_HTP_OP_ADD,
-  NNTR_HTP_OP_RMSNORM,      NNTR_HTP_OP_MATMUL_W8A8,
-  NNTR_HTP_OP_MATMUL_W8A8,  NNTR_HTP_OP_SILU_MUL,
-  NNTR_HTP_OP_MATMUL_W8A8,  NNTR_HTP_OP_ADD,
+  NNTR_HTP_OP_RMSNORM,     NNTR_HTP_OP_MATMUL_W8A8, NNTR_HTP_OP_MATMUL_W8A8,
+  NNTR_HTP_OP_MATMUL_W8A8, NNTR_HTP_OP_RMSNORM,     NNTR_HTP_OP_RMSNORM,
+  NNTR_HTP_OP_ROPE,        NNTR_HTP_OP_ATTN,        NNTR_HTP_OP_MATMUL_W8A8,
+  NNTR_HTP_OP_ADD,         NNTR_HTP_OP_RMSNORM,     NNTR_HTP_OP_MATMUL_W8A8,
+  NNTR_HTP_OP_MATMUL_W8A8, NNTR_HTP_OP_SILU_MUL,    NNTR_HTP_OP_MATMUL_W8A8,
+  NNTR_HTP_OP_ADD,
 };
 
 /** @brief Check the op sequence kinds/params for one config's graph. */
@@ -99,9 +97,8 @@ void check_sequence(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   const uint32_t n_ops = 1u + 16u * cfg.n_layers + 2u;
 
   CHECK(read_header(g).n_ops == n_ops, "n_ops mismatch");
-  CHECK(g.oplist.size() ==
-          sizeof(nntr_htp_oplist_header) +
-            (uint64_t)n_ops * sizeof(nntr_htp_op_desc),
+  CHECK(g.oplist.size() == sizeof(nntr_htp_oplist_header) +
+                             (uint64_t)n_ops * sizeof(nntr_htp_op_desc),
         "oplist byte size mismatch");
 
   nntr_htp_op_desc embed = read_op(g, 0);
@@ -115,7 +112,7 @@ void check_sequence(const HexLoweredGraph &g, const HexModelConfig &cfg) {
       CHECK(d.kind == kLayerKinds[j], "layer op kind mismatch");
 
       switch (j) {
-      case 0: // L.1 RMSNORM (attn_norm)
+      case 0:  // L.1 RMSNORM (attn_norm)
       case 10: // L.11 RMSNORM (ffn_norm)
         CHECK(d.param0 == eps_bits, "RMSNORM param0 != eps bits");
         CHECK(!(d.flags & NNTR_HTP_FLAG_PER_HEAD), "unexpected PER_HEAD");
@@ -179,14 +176,14 @@ void check_act_disjoint(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
 
   // Slot offsets are read back from the first layer's op refs (op 1..16).
-  nntr_htp_op_desc l1 = read_op(g, 1);  // out -> t
-  nntr_htp_op_desc l2 = read_op(g, 2);  // out -> q
-  nntr_htp_op_desc l3 = read_op(g, 3);  // out -> kb
-  nntr_htp_op_desc l4 = read_op(g, 4);  // out -> vb
-  nntr_htp_op_desc l8 = read_op(g, 8);  // out -> ao
-  nntr_htp_op_desc l9 = read_op(g, 9);  // out -> h2
-  nntr_htp_op_desc l12 = read_op(g, 12); // out -> g
-  nntr_htp_op_desc l13 = read_op(g, 13); // out -> u
+  nntr_htp_op_desc l1 = read_op(g, 1);    // out -> t
+  nntr_htp_op_desc l2 = read_op(g, 2);    // out -> q
+  nntr_htp_op_desc l3 = read_op(g, 3);    // out -> kb
+  nntr_htp_op_desc l4 = read_op(g, 4);    // out -> vb
+  nntr_htp_op_desc l8 = read_op(g, 8);    // out -> ao
+  nntr_htp_op_desc l9 = read_op(g, 9);    // out -> h2
+  nntr_htp_op_desc l12 = read_op(g, 12);  // out -> g
+  nntr_htp_op_desc l13 = read_op(g, 13);  // out -> u
   nntr_htp_op_desc embed = read_op(g, 0); // out -> x
 
   struct Slot {
@@ -208,7 +205,7 @@ void check_act_disjoint(const HexLoweredGraph &g, const HexModelConfig &cfg) {
     CHECK(slots[i].off + slots[i].size <= g.act_size, "ACT slot exceeds size");
     for (int j = i + 1; j < 9; ++j) {
       bool disjoint = slots[i].off + slots[i].size <= slots[j].off ||
-                       slots[j].off + slots[j].size <= slots[i].off;
+                      slots[j].off + slots[j].size <= slots[i].off;
       CHECK(disjoint, "ACT slots overlap");
     }
   }
@@ -221,30 +218,30 @@ uint64_t expected_weights_size(const HexModelConfig &cfg) {
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
   const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
 
-  add(static_cast<uint64_t>(cfg.vocab) * cfg.hidden); // embed
+  add(static_cast<uint64_t>(cfg.vocab) * cfg.hidden);  // embed
   add(static_cast<uint64_t>(cfg.vocab) * 4u);          // embed_scale
-  add(static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);  // rope_table
-  add(static_cast<uint64_t>(cfg.hidden) * 2u);          // final_norm
+  add(static_cast<uint64_t>(cfg.max_seq) * 128u * 2u); // rope_table
+  add(static_cast<uint64_t>(cfg.hidden) * 2u);         // final_norm
 
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
-    add(n_q * cfg.hidden);                    // wq
-    add(n_q * 4u);                            // wq_s
-    add(n_kv * cfg.hidden);                   // wk
-    add(n_kv * 4u);                           // wk_s
-    add(n_kv * cfg.hidden);                   // wv
-    add(n_kv * 4u);                           // wv_s
-    add(static_cast<uint64_t>(cfg.hidden) * n_q); // wo
-    add(static_cast<uint64_t>(cfg.hidden) * 4u);  // wo_s
+    add(n_q * cfg.hidden);                            // wq
+    add(n_q * 4u);                                    // wq_s
+    add(n_kv * cfg.hidden);                           // wk
+    add(n_kv * 4u);                                   // wk_s
+    add(n_kv * cfg.hidden);                           // wv
+    add(n_kv * 4u);                                   // wv_s
+    add(static_cast<uint64_t>(cfg.hidden) * n_q);     // wo
+    add(static_cast<uint64_t>(cfg.hidden) * 4u);      // wo_s
     add(static_cast<uint64_t>(cfg.ffn) * cfg.hidden); // gate
     add(static_cast<uint64_t>(cfg.ffn) * 4u);         // gate_s
     add(static_cast<uint64_t>(cfg.ffn) * cfg.hidden); // up
     add(static_cast<uint64_t>(cfg.ffn) * 4u);         // up_s
     add(static_cast<uint64_t>(cfg.hidden) * cfg.ffn); // down
     add(static_cast<uint64_t>(cfg.hidden) * 4u);      // down_s
-    add(static_cast<uint64_t>(cfg.hidden) * 2u); // attn_norm
-    add(static_cast<uint64_t>(cfg.hidden) * 2u); // ffn_norm
-    add(static_cast<uint64_t>(cfg.head_dim) * 2u); // q_norm
-    add(static_cast<uint64_t>(cfg.head_dim) * 2u); // k_norm
+    add(static_cast<uint64_t>(cfg.hidden) * 2u);      // attn_norm
+    add(static_cast<uint64_t>(cfg.hidden) * 2u);      // ffn_norm
+    add(static_cast<uint64_t>(cfg.head_dim) * 2u);    // q_norm
+    add(static_cast<uint64_t>(cfg.head_dim) * 2u);    // k_norm
   }
   return cur;
 }
@@ -287,8 +284,7 @@ void fill_norm(float *buf, uint64_t n) {
 SynthWeights make_synth_weights(const HexModelConfig &cfg) {
   SynthWeights s;
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
-  const uint64_t n_kv =
-    static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+  const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
   uint32_t ord = 0;
 
   s.embed.resize(static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
@@ -387,19 +383,15 @@ using Extent = std::pair<uint64_t, uint64_t>;
 /** @brief Ordered tensor extents (offset,size), mirroring the WEIGHTS
  *         layout section, for the full-coverage (check 5) sweep. */
 std::vector<Extent> tensor_extents(const HexLoweredGraph &g,
-                                    const HexModelConfig &cfg) {
+                                   const HexModelConfig &cfg) {
   std::vector<Extent> v;
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
-  const uint64_t n_kv =
-    static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
-  auto add = [&](uint32_t off, uint64_t size) {
-    v.push_back({off, size});
-  };
+  const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+  auto add = [&](uint32_t off, uint64_t size) { v.push_back({off, size}); };
 
   add(g.woff.embed, static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
   add(g.woff.embed_scale, static_cast<uint64_t>(cfg.vocab) * 4u);
-  add(g.woff.rope_table,
-      static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);
+  add(g.woff.rope_table, static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);
   add(g.woff.final_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
 
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
@@ -436,7 +428,7 @@ bool all_0xA5(const uint8_t *p, uint64_t n) {
 
 /** @brief memcmp check 1: byte-exact int8 blob / fp32 scale copy. */
 void check_bytes(const uint8_t *dst, uint32_t off, const void *src,
-                  uint64_t bytes, const char *msg) {
+                 uint64_t bytes, const char *msg) {
   CHECK(std::memcmp(dst + off, src, bytes) == 0, msg);
 }
 
@@ -447,27 +439,51 @@ uint16_t read_u16(const uint8_t *dst, uint32_t off, uint64_t idx) {
   return v;
 }
 
+/** @brief IEEE fp16 bits -> fp32 (integer arithmetic, no _Float16). */
+float f16_bits_to_f32(uint16_t h) {
+  const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+  const uint32_t exp = (h >> 10) & 0x1fu;
+  uint32_t mant = h & 0x3ffu;
+  uint32_t bits;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else { /* subnormal: normalize */
+      int e = 127 - 15 + 1;
+      while (!(mant & 0x400u)) {
+        mant <<= 1;
+        --e;
+      }
+      mant &= 0x3ffu;
+      bits = sign | (static_cast<uint32_t>(e) << 23) | (mant << 13);
+    }
+  } else if (exp == 0x1f) {
+    bits = sign | 0x7f800000u | (mant << 13);
+  } else {
+    bits = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+  }
+  float f;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
 /** @brief fp16 bits vs fp32 ref within |d| <= 1e-3 + 1e-3*|ref|. */
 bool close_norm(uint16_t bits, float ref) {
-  _Float16 h;
-  std::memcpy(&h, &bits, 2);
-  float got = static_cast<float>(h);
+  float got = f16_bits_to_f32(bits);
   float d = std::fabs(got - ref);
   return d <= 1e-3f + 1e-3f * std::fabs(ref);
 }
 
 /** @brief check 2: a packed fp16 norm vector matches its fp32 source. */
 void check_norm_vec(const uint8_t *dst, uint32_t off, const float *ref,
-                     uint64_t n, const char *msg) {
+                    uint64_t n, const char *msg) {
   for (uint64_t i = 0; i < n; ++i)
     CHECK(close_norm(read_u16(dst, off, i), ref[i]), msg);
 }
 
 /** @brief fp16 bits vs fp32 ref within |d| <= 2e-3 + 5e-3*|ref|. */
 bool close_rope(uint16_t bits, float ref) {
-  _Float16 h;
-  std::memcpy(&h, &bits, 2);
-  float got = static_cast<float>(h);
+  float got = f16_bits_to_f32(bits);
   float d = std::fabs(got - ref);
   return d <= 2e-3f + 5e-3f * std::fabs(ref);
 }
@@ -475,7 +491,7 @@ bool close_rope(uint16_t bits, float ref) {
 /** @brief check 3: RoPE cos/sin fp16 rows against cosf/sinf directly,
  *         for p in {0, 1, max_seq-1} and i in {0, 1, 63}. */
 void check_rope_table(const uint8_t *dst, const HexLoweredGraph &g,
-                       const HexModelConfig &cfg) {
+                      const HexModelConfig &cfg) {
   const uint32_t ps[3] = {0u, 1u, cfg.max_seq - 1u};
   const uint32_t is[3] = {0u, 1u, 63u};
   for (uint32_t p : ps) {
@@ -484,8 +500,7 @@ void check_rope_table(const uint8_t *dst, const HexLoweredGraph &g,
       float angle = static_cast<float>(p) * powf(cfg.rope_theta, exponent);
       uint64_t row = static_cast<uint64_t>(p) * 128u;
       uint16_t cos_bits = read_u16(dst, g.woff.rope_table, row + i);
-      uint16_t sin_bits =
-        read_u16(dst, g.woff.rope_table, row + 64u + i);
+      uint16_t sin_bits = read_u16(dst, g.woff.rope_table, row + 64u + i);
       CHECK(close_rope(cos_bits, cosf(angle)), "rope cos mismatch");
       CHECK(close_rope(sin_bits, sinf(angle)), "rope sin mismatch");
     }
@@ -495,8 +510,7 @@ void check_rope_table(const uint8_t *dst, const HexLoweredGraph &g,
 /** @brief pack_weights() checks 1-5: memcmp coverage, norm/RoPE
  *         conversion accuracy, tied-embed size accounting, and
  *         full-coverage writtenness against an 0xA5 prefill. */
-void check_pack_weights(const HexLoweredGraph &g,
-                         const HexModelConfig &cfg) {
+void check_pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   SynthWeights synth = make_synth_weights(cfg);
   HexModelWeights w = to_model_weights(synth);
 
@@ -504,36 +518,34 @@ void check_pack_weights(const HexLoweredGraph &g,
   pack_weights(g, cfg, w, dst.data());
 
   // 1. int8 blobs and fp32 scale arrays: byte-exact vs. source.
-  check_bytes(dst.data(), g.woff.embed, synth.embed.data(),
-              synth.embed.size(), "embed bytes");
+  check_bytes(dst.data(), g.woff.embed, synth.embed.data(), synth.embed.size(),
+              "embed bytes");
   check_bytes(dst.data(), g.woff.embed_scale, synth.embed_s.data(),
               synth.embed_s.size() * 4u, "embed_scale bytes");
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
     const SynthLayer &ly = synth.layers[l];
     check_bytes(dst.data(), pl.wq, ly.wq.data(), ly.wq.size(), "wq");
-    check_bytes(dst.data(), pl.wq_s, ly.wq_s.data(),
-                ly.wq_s.size() * 4u, "wq_s");
+    check_bytes(dst.data(), pl.wq_s, ly.wq_s.data(), ly.wq_s.size() * 4u,
+                "wq_s");
     check_bytes(dst.data(), pl.wk, ly.wk.data(), ly.wk.size(), "wk");
-    check_bytes(dst.data(), pl.wk_s, ly.wk_s.data(),
-                ly.wk_s.size() * 4u, "wk_s");
+    check_bytes(dst.data(), pl.wk_s, ly.wk_s.data(), ly.wk_s.size() * 4u,
+                "wk_s");
     check_bytes(dst.data(), pl.wv, ly.wv.data(), ly.wv.size(), "wv");
-    check_bytes(dst.data(), pl.wv_s, ly.wv_s.data(),
-                ly.wv_s.size() * 4u, "wv_s");
+    check_bytes(dst.data(), pl.wv_s, ly.wv_s.data(), ly.wv_s.size() * 4u,
+                "wv_s");
     check_bytes(dst.data(), pl.wo, ly.wo.data(), ly.wo.size(), "wo");
-    check_bytes(dst.data(), pl.wo_s, ly.wo_s.data(),
-                ly.wo_s.size() * 4u, "wo_s");
-    check_bytes(dst.data(), pl.gate, ly.gate.data(), ly.gate.size(),
-                "gate");
-    check_bytes(dst.data(), pl.gate_s, ly.gate_s.data(),
-                ly.gate_s.size() * 4u, "gate_s");
+    check_bytes(dst.data(), pl.wo_s, ly.wo_s.data(), ly.wo_s.size() * 4u,
+                "wo_s");
+    check_bytes(dst.data(), pl.gate, ly.gate.data(), ly.gate.size(), "gate");
+    check_bytes(dst.data(), pl.gate_s, ly.gate_s.data(), ly.gate_s.size() * 4u,
+                "gate_s");
     check_bytes(dst.data(), pl.up, ly.up.data(), ly.up.size(), "up");
-    check_bytes(dst.data(), pl.up_s, ly.up_s.data(),
-                ly.up_s.size() * 4u, "up_s");
-    check_bytes(dst.data(), pl.down, ly.down.data(), ly.down.size(),
-                "down");
-    check_bytes(dst.data(), pl.down_s, ly.down_s.data(),
-                ly.down_s.size() * 4u, "down_s");
+    check_bytes(dst.data(), pl.up_s, ly.up_s.data(), ly.up_s.size() * 4u,
+                "up_s");
+    check_bytes(dst.data(), pl.down, ly.down.data(), ly.down.size(), "down");
+    check_bytes(dst.data(), pl.down_s, ly.down_s.data(), ly.down_s.size() * 4u,
+                "down_s");
   }
 
   // 2. norms: fp16 vs. fp32 source within tolerance.
@@ -542,14 +554,14 @@ void check_pack_weights(const HexLoweredGraph &g,
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
     const SynthLayer &ly = synth.layers[l];
-    check_norm_vec(dst.data(), pl.attn_norm, ly.attn_norm.data(),
-                   cfg.hidden, "attn_norm value");
-    check_norm_vec(dst.data(), pl.ffn_norm, ly.ffn_norm.data(),
-                   cfg.hidden, "ffn_norm value");
-    check_norm_vec(dst.data(), pl.q_norm, ly.q_norm.data(),
-                   cfg.head_dim, "q_norm value");
-    check_norm_vec(dst.data(), pl.k_norm, ly.k_norm.data(),
-                   cfg.head_dim, "k_norm value");
+    check_norm_vec(dst.data(), pl.attn_norm, ly.attn_norm.data(), cfg.hidden,
+                   "attn_norm value");
+    check_norm_vec(dst.data(), pl.ffn_norm, ly.ffn_norm.data(), cfg.hidden,
+                   "ffn_norm value");
+    check_norm_vec(dst.data(), pl.q_norm, ly.q_norm.data(), cfg.head_dim,
+                   "q_norm value");
+    check_norm_vec(dst.data(), pl.k_norm, ly.k_norm.data(), cfg.head_dim,
+                   "k_norm value");
   }
 
   // 3. RoPE table values.
@@ -654,9 +666,8 @@ int main(void) {
   rbuf[NNTR_HTP_BUF_ACT] = static_cast<uint32_t>(rg.act_size);
   rbuf[NNTR_HTP_BUF_TOKENS] = real.max_chunk * 4u;
   rbuf[NNTR_HTP_BUF_LOGITS] = real.vocab * 4u;
-  CHECK(nntr_htp_oplist_validate(rg.oplist.data(),
-                                 static_cast<uint32_t>(rg.oplist.size()),
-                                 rbuf) == 0,
+  CHECK(nntr_htp_oplist_validate(
+          rg.oplist.data(), static_cast<uint32_t>(rg.oplist.size()), rbuf) == 0,
         "validate() failed on qwen3-0.6b dims");
 
   CHECK(rg.weights_size == expected_weights_size(real),
