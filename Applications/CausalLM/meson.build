@@ -194,6 +194,12 @@ e_quantize = executable('nntr_quantize',
 )
 
 
+e_fakequant = executable('nntr_fakequant',
+    meson.current_source_dir() / 'fake_quantize.cpp',
+    include_directories: causallm_inc,
+    dependencies: [nntrainer_dep],
+)
+
 safetensors_info_src = [
     meson.current_source_dir() / 'safetensors_info.cpp',
 ]
