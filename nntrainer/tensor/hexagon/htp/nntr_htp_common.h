@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define NNTR_HTP_OPLIST_MAGIC 0x5054484Eu /* "NHTP" little-endian */
-#define NNTR_HTP_ABI_VERSION 2u
+#define NNTR_HTP_ABI_VERSION 3u /* v3: forward pcycles + forward_debug */
 
 enum nntr_htp_buf_id {
   NNTR_HTP_BUF_WEIGHTS = 0,
@@ -36,7 +36,8 @@ enum nntr_htp_op_kind {
   NNTR_HTP_OP_SILU_MUL = 5,
   NNTR_HTP_OP_ADD = 6,
   NNTR_HTP_OP_MATMUL_LOGITS = 7,
-  NNTR_HTP_OP_KIND_COUNT = 8
+  NNTR_HTP_OP_MATMUL_W8A16 = 8, /* fp16 x (no act quant) . int8 w, fp16 y */
+  NNTR_HTP_OP_KIND_COUNT = 9
 };
 
 #define NNTR_HTP_FLAG_PER_HEAD 0x1u /* RMSNORM: per head_dim QK-Norm */
@@ -147,6 +148,7 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         d.in2.offset % 128u != 0u || d.out.offset % 128u != 0u)
       return 5;
     if ((d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
+         d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 ||
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&
         d.k % 128u != 0u)
       return 5;
@@ -178,6 +180,7 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
       break;
     }
     case NNTR_HTP_OP_MATMUL_W8A8:
+    case NNTR_HTP_OP_MATMUL_W8A16: /* same operand layout */
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.k * 2u,
                              buf_size) ||
           nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)d.n * d.k,

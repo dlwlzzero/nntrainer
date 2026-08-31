@@ -56,6 +56,8 @@ void hvx_op_silu_mul(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d);
 void hvx_op_add(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d);
 void hvx_op_matmul_logits(struct htp_exec_ctx *c,
                           const struct nntr_htp_op_desc *d);
+void hvx_op_matmul_w8a16(struct htp_exec_ctx *c,
+                         const struct nntr_htp_op_desc *d);
 
 /* Defined in Task 14's htp_graph.c: htp_op_table[d->kind] dispatches. */
 extern const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT];

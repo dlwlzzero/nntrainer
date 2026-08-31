@@ -184,20 +184,21 @@ static struct nntr_htp_tensor_ref R(uint32_t buf, uint32_t off) {
   return r;
 }
 
-static struct nntr_htp_tensor_ref W(uint32_t off) {
+static struct nntr_htp_tensor_ref
+W(uint32_t off) {
   return R(NNTR_HTP_BUF_WEIGHTS, off);
 }
 
-static struct nntr_htp_tensor_ref A(uint32_t off) {
+static struct nntr_htp_tensor_ref
+A(uint32_t off) {
   return R(NNTR_HTP_BUF_ACT, off);
 }
 
-static void emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags,
-                 uint32_t layer, uint32_t m, uint32_t k, uint32_t n,
-                 struct nntr_htp_tensor_ref in0,
-                 struct nntr_htp_tensor_ref in1,
-                 struct nntr_htp_tensor_ref in2,
-                 struct nntr_htp_tensor_ref out, uint32_t param0) {
+static void
+emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags, uint32_t layer,
+     uint32_t m, uint32_t k, uint32_t n, struct nntr_htp_tensor_ref in0,
+     struct nntr_htp_tensor_ref in1, struct nntr_htp_tensor_ref in2,
+     struct nntr_htp_tensor_ref out, uint32_t param0) {
   struct nntr_htp_op_desc *d = (*p)++;
   memset(d, 0, sizeof(*d));
   d->kind = kind;
@@ -241,16 +242,16 @@ static void build_tiny_oplist(uint8_t *buf) {
 
   for (uint32_t l = 0; l < N_LAYERS; ++l) {
     const struct layer_w *w = &P.l[l];
-    emit(&d, NNTR_HTP_OP_RMSNORM, 0, l, 0, 0, HIDDEN, A(P.resid),
-         W(w->attn_g), W(0), A(P.xn), eps);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, QDIM, A(P.xn),
-         W(w->wq), W(w->sq), A(P.q), 0);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, KVDIM, A(P.xn),
-         W(w->wk), W(w->sk), A(P.kbuf), 0);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, KVDIM, A(P.xn),
-         W(w->wv), W(w->sv), A(P.vbuf), 0);
-    emit(&d, NNTR_HTP_OP_RMSNORM, NNTR_HTP_FLAG_PER_HEAD, l, 0, 0, QDIM,
-         A(P.q), W(w->q_g), W(0), A(P.q), eps);
+    emit(&d, NNTR_HTP_OP_RMSNORM, 0, l, 0, 0, HIDDEN, A(P.resid), W(w->attn_g),
+         W(0), A(P.xn), eps);
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, QDIM, A(P.xn), W(w->wq),
+         W(w->sq), A(P.q), 0);
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, KVDIM, A(P.xn), W(w->wk),
+         W(w->sk), A(P.kbuf), 0);
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, KVDIM, A(P.xn), W(w->wv),
+         W(w->sv), A(P.vbuf), 0);
+    emit(&d, NNTR_HTP_OP_RMSNORM, NNTR_HTP_FLAG_PER_HEAD, l, 0, 0, QDIM, A(P.q),
+         W(w->q_g), W(0), A(P.q), eps);
     emit(&d, NNTR_HTP_OP_RMSNORM, NNTR_HTP_FLAG_PER_HEAD, l, 0, 0, KVDIM,
          A(P.kbuf), W(w->k_g), W(0), A(P.kbuf), eps);
     emit(&d, NNTR_HTP_OP_ROPE, 0, l, 0, 0, 0, A(P.q), A(P.kbuf), W(P.rope),
@@ -259,20 +260,20 @@ static void build_tiny_oplist(uint8_t *buf) {
          A(P.attn), attn_scale);
     emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, QDIM, HIDDEN, A(P.attn),
          W(w->wo), W(w->so), A(P.oout), 0);
-    emit(&d, NNTR_HTP_OP_ADD, 0, l, 0, 0, HIDDEN, A(P.resid), A(P.oout),
-         W(0), A(P.resid), 0);
-    emit(&d, NNTR_HTP_OP_RMSNORM, 0, l, 0, 0, HIDDEN, A(P.resid),
-         W(w->ffn_g), W(0), A(P.xn), eps);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, FFN, A(P.xn),
-         W(w->wg), W(w->sg), A(P.gate), 0);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, FFN, A(P.xn),
-         W(w->wu), W(w->su), A(P.up), 0);
+    emit(&d, NNTR_HTP_OP_ADD, 0, l, 0, 0, HIDDEN, A(P.resid), A(P.oout), W(0),
+         A(P.resid), 0);
+    emit(&d, NNTR_HTP_OP_RMSNORM, 0, l, 0, 0, HIDDEN, A(P.resid), W(w->ffn_g),
+         W(0), A(P.xn), eps);
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, FFN, A(P.xn), W(w->wg),
+         W(w->sg), A(P.gate), 0);
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, HIDDEN, FFN, A(P.xn), W(w->wu),
+         W(w->su), A(P.up), 0);
     emit(&d, NNTR_HTP_OP_SILU_MUL, 0, l, 0, 0, FFN, A(P.gate), A(P.up), W(0),
          A(P.gate), 0);
-    emit(&d, NNTR_HTP_OP_MATMUL_W8A8, 0, l, 0, FFN, HIDDEN, A(P.gate),
+    emit(&d, NNTR_HTP_OP_MATMUL_W8A16, 0, l, 0, FFN, HIDDEN, A(P.gate),
          W(w->wd), W(w->sd), A(P.fout), 0);
-    emit(&d, NNTR_HTP_OP_ADD, 0, l, 0, 0, HIDDEN, A(P.resid), A(P.fout),
-         W(0), A(P.resid), 0);
+    emit(&d, NNTR_HTP_OP_ADD, 0, l, 0, 0, HIDDEN, A(P.resid), A(P.fout), W(0),
+         A(P.resid), 0);
   }
 
   emit(&d, NNTR_HTP_OP_RMSNORM, 0, 0, 0, 0, HIDDEN, A(P.resid), W(P.final_g),
@@ -283,7 +284,7 @@ static void build_tiny_oplist(uint8_t *buf) {
 }
 
 int test_graph(void) {
-  static const int32_t prefill_tok[MAX_CHUNK] = {1, 17, 300, 511,
+  static const int32_t prefill_tok[MAX_CHUNK] = {1,  17, 300, 511,
                                                  42, 7,  129, 256};
   static const int32_t decode_tok = 99;
   float logits[VOCAB], rlogits[VOCAB];
@@ -334,10 +335,10 @@ int test_graph(void) {
   /* Negative: forward runtime-argument violations must be rejected. */
   if (!rc &&
       (htp_graph_forward(&g, prefill_tok, 0, 0, logits, VOCAB) == 0 ||
-       htp_graph_forward(&g, prefill_tok, MAX_CHUNK + 1u, 0, logits,
-                         VOCAB) == 0 ||
-       htp_graph_forward(&g, prefill_tok, MAX_CHUNK,
-                         MAX_SEQ - MAX_CHUNK + 1u, logits, VOCAB) == 0 ||
+       htp_graph_forward(&g, prefill_tok, MAX_CHUNK + 1u, 0, logits, VOCAB) ==
+         0 ||
+       htp_graph_forward(&g, prefill_tok, MAX_CHUNK, MAX_SEQ - MAX_CHUNK + 1u,
+                         logits, VOCAB) == 0 ||
        htp_graph_forward(&g, prefill_tok, 1, 0, logits, VOCAB - 1u) == 0)) {
     printf("SIM_TEST graph FAIL bad forward args accepted\n");
     rc = 1;
@@ -349,8 +350,7 @@ int test_graph(void) {
       printf("SIM_TEST graph FAIL prefill forward\n");
       rc = 1;
     } else {
-      ref_graph_forward(ol, rw, rkv, ract, prefill_tok, MAX_CHUNK, 0,
-                        rlogits);
+      ref_graph_forward(ol, rw, rkv, ract, prefill_tok, MAX_CHUNK, 0, rlogits);
       rc = cmp_f("graph_prefill", rlogits, logits, VOCAB, 3e-2f, 5e-2f);
     }
   }
@@ -361,10 +361,79 @@ int test_graph(void) {
       printf("SIM_TEST graph FAIL decode forward\n");
       rc = 1;
     } else {
-      ref_graph_forward(ol, rw, rkv, ract, &decode_tok, 1, MAX_CHUNK,
-                        rlogits);
+      ref_graph_forward(ol, rw, rkv, ract, &decode_tok, 1, MAX_CHUNK, rlogits);
       rc = cmp_f("graph_decode", rlogits, logits, VOCAB, 3e-2f, 5e-2f);
     }
+  }
+
+  /* Partial execution matches the reference executor at the same cut. */
+  if (!rc) {
+    const uint32_t cut = 9u; /* right after layer 0's ATTN */
+    const uint32_t n_attn = 3u * QDIM;
+    uint64_t pc = 0;
+    float *fa = malloc(n_attn * sizeof(float));
+    float *fb = malloc(n_attn * sizeof(float));
+    uint32_t i;
+    memset(kv, 0, KV_BYTES);
+    memset(act, 0, P.atotal);
+    if (htp_graph_forward_upto(&g, prefill_tok, 3u, 0u, logits, VOCAB, cut,
+                               &pc)) {
+      printf("SIM_TEST graph FAIL partial forward\n");
+      rc = 1;
+    } else {
+      memset(rkv, 0, KV_BYTES);
+      memset(ract, 0, P.atotal);
+      ref_graph_forward_upto(ol, rw, rkv, ract, prefill_tok, 3u, 0u, rlogits,
+                             cut);
+      for (i = 0; i < n_attn; ++i) {
+        fa[i] = (float)((const __fp16 *)(const void *)(act + P.attn))[i];
+        fb[i] = (float)((const __fp16 *)(const void *)(ract + P.attn))[i];
+      }
+      rc = cmp_f("graph_partial_attn", fb, fa, n_attn, 1e-2f, 1e-2f);
+      if (!rc && pc == 0) {
+        printf("SIM_TEST graph FAIL pcycles did not advance\n");
+        rc = 1;
+      }
+    }
+    free(fa);
+    free(fb);
+  }
+
+  /* Out-of-range limits and dump refs are rejected, not clamped. */
+  if (!rc) {
+    uint64_t pc = 0;
+    if (htp_graph_forward_upto(&g, prefill_tok, 3u, 0u, logits, VOCAB,
+                               N_OPS + 1u, &pc) == 0 ||
+        htp_graph_buf_ref(&g, NNTR_HTP_BUF_COUNT, 0u, 4u) != 0 ||
+        htp_graph_buf_ref(&g, NNTR_HTP_BUF_TOKENS, 0u, 4u) != 0 ||
+        htp_graph_buf_ref(&g, NNTR_HTP_BUF_ACT, P.atotal - 64u, 128u) != 0 ||
+        htp_graph_buf_ref(&g, NNTR_HTP_BUF_ACT, P.attn, 128u) != act + P.attn) {
+      printf("SIM_TEST graph FAIL bad limit/dump ref accepted\n");
+      rc = 1;
+    }
+  }
+
+  /* Partial execution: running ops [0, N_OPS) must equal a full run (the
+   * executor keeps no per-call state besides KV), and a truncated run must
+   * leave the logits buffer untouched. */
+  if (!rc) {
+    float la[VOCAB], lb[VOCAB];
+    uint32_t i;
+    memset(rkv, 0, KV_BYTES);
+    ref_graph_forward(ol, rw, rkv, ract, prefill_tok, 3u, 0, la);
+    memset(rkv, 0, KV_BYTES);
+    ref_graph_forward_upto(ol, rw, rkv, ract, prefill_tok, 3u, 0, lb, N_OPS);
+    for (i = 0; i < VOCAB && !rc; ++i)
+      if (la[i] != lb[i])
+        rc = 1;
+    memset(rkv, 0, KV_BYTES);
+    memset(lb, 0, sizeof(lb));
+    ref_graph_forward_upto(ol, rw, rkv, ract, prefill_tok, 3u, 0, lb,
+                           N_OPS - 1u);
+    if (lb[0] != 0.0f)
+      rc = 1;
+    if (rc)
+      printf("SIM_TEST graph FAIL ref partial execution\n");
   }
 
   if (inited)

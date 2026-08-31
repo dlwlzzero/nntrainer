@@ -18,7 +18,7 @@
  * @brief Graph executor state. Treat as opaque: init/forward/destroy only.
  */
 struct htp_graph {
-  struct nntr_htp_oplist_header cfg; /**< header copy */
+  struct nntr_htp_oplist_header cfg;  /**< header copy */
   const struct nntr_htp_op_desc *ops; /**< points into the caller's oplist */
   struct htp_exec_ctx ctx;            /**< owns pool + scratch pointers */
   unsigned vtcm_ctx_id;               /**< HAP compute-res id, 0 = no VTCM */
@@ -43,6 +43,25 @@ int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,
 /**
  * @brief Release VTCM, scratch and the worker pool.
  */
+/**
+ * @brief Run ops [0, n_ops_limit) of one chunk. n_ops_limit == n_ops runs the
+ *        whole list (identical to htp_graph_forward); larger is rejected.
+ * @param pcycles optional out: HAP_perf_get_pcycles() delta over the op loop
+ * @return 0 ok, non-zero on bad runtime arguments
+ */
+int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
+                           uint32_t n_tokens, uint32_t pos, float *logits,
+                           uint32_t n_logits, uint32_t n_ops_limit,
+                           uint64_t *pcycles);
+
+/**
+ * @brief Resolve a (buf id, offset, bytes) triple against the mapped
+ *        WEIGHTS/KV/ACT buffers (TOKENS/LOGITS are per-call arguments).
+ * @return pointer, or 0 when out of bounds / not a mapped buffer
+ */
+const uint8_t *htp_graph_buf_ref(const struct htp_graph *g, uint32_t buf,
+                                 uint32_t offset, uint32_t bytes);
+
 void htp_graph_destroy(struct htp_graph *g);
 
 #endif /* NNTR_HTP_GRAPH_H */

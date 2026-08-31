@@ -67,11 +67,10 @@ int HexagonRunner::init(const void *oplist, uint32_t oplist_size,
       return err;
     }
   }
-  int err = nntr_htp_init(
-    handle_, (const uint8_t *)oplist, (int)oplist_size,
-    (const uint8_t *)weights.data(), (int)weights.size(), weights.fd(),
-    kv.fd(), (uint32_t)kv.size(), act.fd(), (uint32_t)act.size(),
-    &dsp_abi_version);
+  int err = nntr_htp_init(handle_, (const uint8_t *)oplist, (int)oplist_size,
+                          (const uint8_t *)weights.data(), (int)weights.size(),
+                          weights.fd(), kv.fd(), (uint32_t)kv.size(), act.fd(),
+                          (uint32_t)act.size(), &dsp_abi_version);
   if (err != AEE_SUCCESS) {
     fprintf(stderr, "hexagon: init failed (0x%x), host abi v%u, dsp abi v%u\n",
             err, NNTR_HTP_ABI_VERSION, dsp_abi_version);
@@ -88,9 +87,28 @@ int HexagonRunner::init(const void *oplist, uint32_t oplist_size,
 }
 
 int HexagonRunner::forward(const int32_t *token_ids, uint32_t n_tokens,
-                           uint32_t pos, float *logits, uint32_t n_logits) {
-  return nntr_htp_forward(handle_, token_ids, (int)n_tokens, pos, logits,
-                          (int)n_logits);
+                           uint32_t pos, float *logits, uint32_t n_logits,
+                           uint64_t *dsp_pcycles) {
+  uint64 pc = 0; /* QAIC type; may differ from uint64_t on aarch64 */
+  int err = nntr_htp_forward(handle_, token_ids, (int)n_tokens, pos, logits,
+                             (int)n_logits, &pc);
+  if (dsp_pcycles)
+    *dsp_pcycles = pc;
+  return err;
+}
+
+int HexagonRunner::forward_debug(const int32_t *token_ids, uint32_t n_tokens,
+                                 uint32_t pos, uint32_t n_ops_limit,
+                                 uint32_t dump_buf, uint32_t dump_offset,
+                                 uint8_t *dump, uint32_t dump_bytes,
+                                 uint64_t *dsp_pcycles) {
+  uint64 pc = 0; /* QAIC type; may differ from uint64_t on aarch64 */
+  int err =
+    nntr_htp_forward_debug(handle_, token_ids, (int)n_tokens, pos, n_ops_limit,
+                           dump_buf, dump_offset, dump, (int)dump_bytes, &pc);
+  if (dsp_pcycles)
+    *dsp_pcycles = pc;
+  return err;
 }
 
 } // namespace nntrainer::hexagon

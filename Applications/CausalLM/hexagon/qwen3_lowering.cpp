@@ -107,8 +107,8 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   uint32_t act_u = acur.alloc(mc * cfg.ffn * 2u);
   g.act_size = acur.size();
 
-  g.kv_size = 2ull * cfg.n_layers * cfg.n_kv_heads * cfg.max_seq *
-              cfg.head_dim * 2ull;
+  g.kv_size =
+    2ull * cfg.n_layers * cfg.n_kv_heads * cfg.max_seq * cfg.head_dim * 2ull;
 
   const uint32_t eps_bits = f32_bits(cfg.rms_eps);
   const uint32_t inv_sqrt_hd_bits =
@@ -295,10 +295,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_g);
       ops.push_back(op);
     }
-    // L.15: MATMUL_W8A8 g*down -> h2
+    // L.15: MATMUL_W8A16 g*down -> h2. The SwiGLU output is outlier-heavy;
+    // per-token int8 there alone costs ~6% PPL on qwen3-0.6b (M4 Task 5),
+    // so this one matmul keeps the fp16 activation.
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = NNTR_HTP_OP_MATMUL_W8A16;
       op.k = cfg.ffn;
       op.n = cfg.hidden;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_g);
@@ -359,8 +361,7 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   header.max_seq = cfg.max_seq;
   header.max_chunk = cfg.max_chunk;
 
-  g.oplist.resize(sizeof(header) +
-                   ops.size() * sizeof(nntr_htp_op_desc));
+  g.oplist.resize(sizeof(header) + ops.size() * sizeof(nntr_htp_op_desc));
   std::memcpy(g.oplist.data(), &header, sizeof(header));
   if (!ops.empty())
     std::memcpy(g.oplist.data() + sizeof(header), ops.data(),
