@@ -62,6 +62,19 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
 const uint8_t *htp_graph_buf_ref(const struct htp_graph *g, uint32_t buf,
                                  uint32_t offset, uint32_t bytes);
 
+/**
+ * @brief Zero the per-kind pcycle/call counters (see htp_exec_ctx).
+ */
+void htp_graph_profile_reset(struct htp_graph *g);
+
+/**
+ * @brief Copy out the per-kind pcycle and call counters accumulated by
+ *        htp_graph_forward_upto since init or the last reset.
+ */
+void htp_graph_profile_get(const struct htp_graph *g,
+                           uint64_t cycles[NNTR_HTP_OP_KIND_COUNT],
+                           uint32_t calls[NNTR_HTP_OP_KIND_COUNT]);
+
 void htp_graph_destroy(struct htp_graph *g);
 
 #endif /* NNTR_HTP_GRAPH_H */

@@ -376,6 +376,7 @@ int test_graph(void) {
     uint32_t i;
     memset(kv, 0, KV_BYTES);
     memset(act, 0, P.atotal);
+    htp_graph_profile_reset(&g);
     if (htp_graph_forward_upto(&g, prefill_tok, 3u, 0u, logits, VOCAB, cut,
                                &pc)) {
       printf("SIM_TEST graph FAIL partial forward\n");
@@ -393,6 +394,33 @@ int test_graph(void) {
       if (!rc && pc == 0) {
         printf("SIM_TEST graph FAIL pcycles did not advance\n");
         rc = 1;
+      }
+      if (!rc) {
+        /* Per-kind profile: 9 ops ran, their cycles must account for the
+         * whole loop (the loop's own timer reads are the only slack). */
+        uint64_t pk[NNTR_HTP_OP_KIND_COUNT];
+        uint32_t ck[NNTR_HTP_OP_KIND_COUNT];
+        uint64_t sum = 0;
+        uint32_t calls = 0, kk;
+        htp_graph_profile_get(&g, pk, ck);
+        for (kk = 0; kk < (uint32_t)NNTR_HTP_OP_KIND_COUNT; ++kk) {
+          sum += pk[kk];
+          calls += ck[kk];
+        }
+        /* cut == 9: EMBED, RMSNORM x3 (attn_norm, q_norm, k_norm),
+         * MATMUL_W8A8 x3, ROPE, ATTN */
+        if (calls != cut || ck[NNTR_HTP_OP_EMBED] != 1u ||
+            ck[NNTR_HTP_OP_RMSNORM] != 3u ||
+            ck[NNTR_HTP_OP_MATMUL_W8A8] != 3u || ck[NNTR_HTP_OP_ROPE] != 1u ||
+            ck[NNTR_HTP_OP_ATTN] != 1u || ck[NNTR_HTP_OP_ADD] != 0u) {
+          printf("SIM_TEST graph FAIL profile calls (total %u)\n",
+                 (unsigned)calls);
+          rc = 1;
+        } else if (sum > pc || sum * 100u < pc * 99u) {
+          printf("SIM_TEST graph FAIL profile cycles sum=%llu loop=%llu\n",
+                 (unsigned long long)sum, (unsigned long long)pc);
+          rc = 1;
+        }
       }
     }
     free(fa);

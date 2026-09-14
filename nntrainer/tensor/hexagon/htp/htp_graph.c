@@ -127,11 +127,32 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   g->ctx.pos = pos;
 
   t0 = HAP_perf_get_pcycles();
-  for (i = 0; i < n_ops_limit; ++i)
-    htp_op_table[g->ops[i].kind](&g->ctx, &g->ops[i]);
+  for (i = 0; i < n_ops_limit; ++i) {
+    const uint32_t kind = g->ops[i].kind;
+    const uint64_t s = HAP_perf_get_pcycles();
+    htp_op_table[kind](&g->ctx, &g->ops[i]);
+    g->ctx.prof_cycles[kind] += HAP_perf_get_pcycles() - s;
+    g->ctx.prof_calls[kind] += 1u;
+  }
   if (pcycles)
     *pcycles = HAP_perf_get_pcycles() - t0;
   return 0;
+}
+
+void htp_graph_profile_reset(struct htp_graph *g) {
+  if (!g)
+    return;
+  memset(g->ctx.prof_cycles, 0, sizeof(g->ctx.prof_cycles));
+  memset(g->ctx.prof_calls, 0, sizeof(g->ctx.prof_calls));
+}
+
+void htp_graph_profile_get(const struct htp_graph *g,
+                           uint64_t cycles[NNTR_HTP_OP_KIND_COUNT],
+                           uint32_t calls[NNTR_HTP_OP_KIND_COUNT]) {
+  if (!g)
+    return;
+  memcpy(cycles, g->ctx.prof_cycles, sizeof(g->ctx.prof_cycles));
+  memcpy(calls, g->ctx.prof_calls, sizeof(g->ctx.prof_calls));
 }
 
 int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,

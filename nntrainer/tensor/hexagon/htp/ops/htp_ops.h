@@ -29,6 +29,11 @@ struct htp_exec_ctx {
   float *attn_scratch; /**< [n_workers][max_seq] fp32 scores */
   uint8_t *vtcm;       /**< Task 7 onward, split per worker */
   uint32_t vtcm_size;
+  /* Per-op-kind profile, accumulated by htp_graph_forward_upto around each
+   * op call; read/cleared through htp_graph_profile_get/reset. Sim-side
+   * instrumentation only: not part of the RPC ABI. */
+  uint64_t prof_cycles[NNTR_HTP_OP_KIND_COUNT];
+  uint32_t prof_calls[NNTR_HTP_OP_KIND_COUNT];
 };
 
 typedef void (*htp_op_fn)(struct htp_exec_ctx *c,
