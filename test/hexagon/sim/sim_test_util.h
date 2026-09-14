@@ -48,4 +48,12 @@ static inline int cmp_f(const char *tag, const float *ref, const float *got,
   return 0;
 }
 
+/* argv passthrough: sim_argv[1] is the test name, [2..] test arguments.
+ * Defined in sim_test_main.c. */
+extern int sim_argc;
+extern char **sim_argv;
+static inline const char *sim_arg(int i, const char *dflt) {
+  return (i < sim_argc && sim_argv[i] && sim_argv[i][0]) ? sim_argv[i] : dflt;
+}
+
 #endif

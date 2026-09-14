@@ -22,6 +22,7 @@ int test_embed(void);
 int test_attn(void);
 int test_logits(void);
 int test_graph(void);
+int test_profile(void);
 /* Each task adds one extern declaration here and one table entry below. */
 static const struct {
   const char *name;
@@ -33,9 +34,13 @@ static const struct {
   {"rmsnorm", test_rmsnorm}, {"rope", test_rope},
   {"eltwise", test_eltwise}, {"embed", test_embed},
   {"attn", test_attn},       {"logits", test_logits},
-  {"graph", test_graph},
+  {"graph", test_graph},     {"profile", test_profile},
 };
+int sim_argc;
+char **sim_argv;
 int main(int argc, char **argv) {
+  sim_argc = argc;
+  sim_argv = argv;
   if (argc < 2) {
     printf("SIM_TEST usage: <name>\n");
     return 2;
