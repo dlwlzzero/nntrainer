@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <HAP_perf.h>
+
 #include "htp_graph.h"
 #include "ref_ops.h"
 #include "sim_model.h"
@@ -44,6 +46,12 @@ typedef char kind_name_count_check[(sizeof(KIND_NAME) / sizeof(KIND_NAME[0]) ==
                                     (size_t)NNTR_HTP_OP_KIND_COUNT)
                                      ? 1
                                      : -1];
+
+static void noop_job(void *arg, int wid, int nw) {
+  (void)arg;
+  (void)wid;
+  (void)nw;
+}
 
 static void *xmemalign(const char *what, size_t bytes, int *rc) {
   void *p = memalign(128, bytes);
@@ -211,6 +219,17 @@ int test_profile(void) {
         (steps[DECODE_STEPS / 2u - 1u] + steps[DECODE_STEPS / 2u]) / 2u;
       print_kinds(scenario, nw, 1u, pos, median, cyc, calls, DECODE_STEPS);
     }
+  }
+
+  /* Fork-join cost: 1000 empty wp_run() calls. 451 ops per forward pay
+   * this once each, so 451 * (this / 1000) is the per-token barrier
+   * floor (sim cycles). */
+  {
+    const uint64_t b0 = HAP_perf_get_pcycles();
+    for (i = 0; i < 1000u; ++i)
+      wp_run(g.ctx.pool, noop_job, 0);
+    printf("SIM_PROF barrier_empty_x1000=%llu\n",
+           (unsigned long long)(HAP_perf_get_pcycles() - b0));
   }
 
 out:
