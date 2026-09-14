@@ -15,9 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <qurt.h>
+
 #include "htp_graph.h"
 #include "ref_ops.h"
 #include "sim_test_util.h"
+#include "worker_pool.h"
 
 #define N_LAYERS 2u
 #define HIDDEN 256u
@@ -462,6 +465,63 @@ int test_graph(void) {
       rc = 1;
     if (rc)
       printf("SIM_TEST graph FAIL ref partial execution\n");
+  }
+
+  /* Worker-count independence: the same prefill with a forced 2-worker
+   * pool must match the reference too (the sim has 4 HVX units; the
+   * device count differs, so kernels may not bake either in). */
+  if (!rc && inited) {
+    htp_graph_destroy(&g);
+    inited = 0;
+    memset(kv, 0, KV_BYTES);
+    memset(act, 0, P.atotal);
+    memset(rkv, 0, KV_BYTES);
+    memset(ract, 0, P.atotal);
+    if (htp_graph_init_ex(&g, ol, OPLIST_LEN, w, P.wtotal, kv, KV_BYTES, act,
+                          P.atotal, 2)) {
+      printf("SIM_TEST graph FAIL init_ex(2)\n");
+      rc = 1;
+    } else {
+      inited = 1;
+      if (wp_size(g.ctx.pool) != 2) {
+        printf("SIM_TEST graph FAIL init_ex pool size %d != 2\n",
+               wp_size(g.ctx.pool));
+        rc = 1;
+      } else if (htp_graph_forward(&g, prefill_tok, MAX_CHUNK, 0, logits,
+                                   VOCAB)) {
+        printf("SIM_TEST graph FAIL prefill forward (2 workers)\n");
+        rc = 1;
+      } else {
+        ref_graph_forward(ol, rw, rkv, ract, prefill_tok, MAX_CHUNK, 0,
+                          rlogits);
+        rc =
+          cmp_f("graph_prefill_2workers", rlogits, logits, VOCAB, 3e-2f, 5e-2f);
+      }
+    }
+  }
+
+  /* Over-large request must be clamped to the 128B-mode HVX unit count: a
+   * worker without a unit blocks forever in qurt_hvx_lock(). No forward
+   * needed, the pool size is the whole check. */
+  if (!rc && inited) {
+    const int units = (qurt_hvx_get_units() >> 8) & 0xFF;
+    const int expect = units > 0 ? units : 1;
+    htp_graph_destroy(&g);
+    inited = 0;
+    memset(kv, 0, KV_BYTES);
+    memset(act, 0, P.atotal);
+    if (htp_graph_init_ex(&g, ol, OPLIST_LEN, w, P.wtotal, kv, KV_BYTES, act,
+                          P.atotal, 64)) {
+      printf("SIM_TEST graph FAIL init_ex(64)\n");
+      rc = 1;
+    } else {
+      inited = 1;
+      if (wp_size(g.ctx.pool) != expect) {
+        printf("SIM_TEST graph FAIL init_ex clamp pool size %d != %d\n",
+               wp_size(g.ctx.pool), expect);
+        rc = 1;
+      }
+    }
   }
 
   if (inited)

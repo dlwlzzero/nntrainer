@@ -24,9 +24,10 @@ const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
 
-int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
-                   uint8_t *weights, uint32_t wsize, uint8_t *kv,
-                   uint32_t kvsize, uint8_t *act, uint32_t actsize) {
+int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
+                      uint8_t *weights, uint32_t wsize, uint8_t *kv,
+                      uint32_t kvsize, uint8_t *act, uint32_t actsize,
+                      int n_workers) {
   uint32_t buf_size[NNTR_HTP_BUF_COUNT];
   uint32_t k_max = 0, i;
   int rc;
@@ -57,7 +58,7 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   g->ctx.buf[NNTR_HTP_BUF_ACT] = act;
   g->ctx.cfg = &g->cfg;
 
-  g->ctx.pool = wp_create(0);
+  g->ctx.pool = wp_create(n_workers);
   if (!g->ctx.pool)
     return 1;
 
@@ -100,6 +101,13 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
     }
   }
   return 0;
+}
+
+int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
+                   uint8_t *weights, uint32_t wsize, uint8_t *kv,
+                   uint32_t kvsize, uint8_t *act, uint32_t actsize) {
+  return htp_graph_init_ex(g, oplist, len, weights, wsize, kv, kvsize, act,
+                           actsize, 0);
 }
 
 int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,

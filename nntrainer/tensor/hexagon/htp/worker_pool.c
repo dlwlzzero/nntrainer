@@ -55,13 +55,16 @@ static void worker_main(void *varg) {
 }
 
 struct wp_pool *wp_create(int n_workers) {
+  int units = qurt_hvx_get_units();
+  int u = (units >> 8) & 0xFF; /* count of 128B-mode HVX units */
+  if (u <= 0)
+    u = 1;
+  /* worker_main() locks an HVX unit at thread entry, so a worker beyond the
+   * unit count would block forever in qurt_hvx_lock() and wp_run() would
+   * never return: clamp instead. */
   int n = n_workers;
-  if (n <= 0) {
-    int units = qurt_hvx_get_units();
-    n = (units >> 8) & 0xFF; /* count of 128B-mode HVX units */
-    if (n <= 0)
-      n = 1;
-  }
+  if (n <= 0 || n > u)
+    n = u;
 
   struct wp_pool *p = malloc(sizeof(*p));
   struct worker *workers = malloc(sizeof(*workers) * (size_t)n);

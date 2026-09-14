@@ -33,6 +33,18 @@ int htp_graph_init(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
                    uint32_t kvsize, uint8_t *act, uint32_t actsize);
 
 /**
+ * @brief Same as htp_graph_init, with an explicit worker-pool size.
+ * @param n_workers <= 0 picks the HVX-unit count; larger values are clamped
+ *        to it by wp_create (a worker without a unit would block forever on
+ *        qurt_hvx_lock). test_graph exercises a forced 2-worker pool; the
+ *        sim profile test passes the argv count through.
+ */
+int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
+                      uint8_t *weights, uint32_t wsize, uint8_t *kv,
+                      uint32_t kvsize, uint8_t *act, uint32_t actsize,
+                      int n_workers);
+
+/**
  * @brief Run one chunk of n_tokens starting at sequence position pos.
  * @return 0 ok, non-zero on bad runtime arguments
  */
