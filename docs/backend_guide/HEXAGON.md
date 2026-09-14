@@ -279,6 +279,8 @@ test/hexagon/
 └── sim/                      # simulator golden tests
     ├── ref_ops.{h,c}         # scalar reference kernels (also used by hexagon_ref_run)
     ├── ref_fp16_x86.h        # __fp16 stand-in for gcc < 12 on x86
+    ├── sim_model.{h,c}       # parameterized hand lowering (qwen3 op sequence, any shape)
+    ├── test_profile.c        # per-op-kind pcycle profile at qwen3 shape (SIM_PROF lines)
     └── test_*.c              # one file per test
 
 tools/hexagon/
@@ -289,7 +291,8 @@ tools/hexagon/
 ├── run_device_test.sh / check_rpc_log.py / plot_rpc_latency.py   # M1 round-trip
 ├── run_e2e_test.sh           # push image + harness, run, pull dumps, capture FARF
 ├── make_tokens.py            # text -> int32 LE token file
-└── find_divergence.py        # bisect the first op where DSP != x86 reference
+├── find_divergence.py        # bisect the first op where DSP != x86 reference
+└── summ_prof.py              # SIM_PROF logs -> per-kind / rescaled / thread-balance tables
 ```
 
 `hvx/hvx-exp.h`, `hvx-inverse.h`, `hvx-base.h`, `hvx-floor.h`,
@@ -363,6 +366,30 @@ execution — against `ref_ops.c` with a mixed bound `|d| <= atol + rtol *
 v75 and v79 (SDK 6.3.0.0, toolchain 8.8). The `run_main_on_hexagon`
 image is picked per `HEX_ARCH`; `HEX_EXTRA_CFLAGS` appends compiler
 flags to both sim and skel builds.
+
+**Profile test.** `run_sim_test.sh profile <prefill0|prefill512|decode512>
+[n_workers]` lowers the qwen3-0.6b shape with 2 layers and vocab 4096
+(`sim_model`) and prints `SIM_PROF` lines: per-op-kind pcycles
+(`htp_graph_profile_get`, a DSP-side API — the RPC ABI is unchanged) for
+a 128-token chunk at pos 0, the same chunk at pos 512, or the median of
+eight n=1 decode steps at pos 512, plus the cost of 1000 empty
+`wp_run()` barriers. `prefill0` additionally checks an 8-token prefill
+against the reference; the other two scenarios only time the graph. That
+check uses the same 0.1 atol/rtol bound as `find_divergence.py` (section
+6), not the graph test's tighter 3e-2/5e-2, because per-token int8
+re-binning at this depth amplifies a 1-ulp fp16 difference roughly 2×
+per layer. `n_workers` requests the pool size
+(`htp_graph_init_ex`; `wp_create` clamps it to the 128B-mode HVX-unit
+count, 4 in the simulator — the device count is not recorded yet).
+`SIM_TIMING=1` adds
+`--timing`, but it is impractically slow at this shape — a 2026-09-14
+run was aborted after 30 minutes without reaching its first
+`SIM_PROF scenario=` line (it stalled inside the 8-token accuracy
+forward), so section 8.3's baseline uses `timing=off` throughout.
+`python3 tools/hexagon/summ_prof.py logs/hexagon/sim_prof_*.log`
+rescales to 28 layers / full vocab and prints a sim-derived ms/token at
+2.09 GHz; these are simulator cycles, not device measurements
+(section 8.3).
 
 ### 5.3 Device
 
@@ -592,6 +619,102 @@ the chunk size — about 10 GMAC/s on 0.44 GMAC/token — so the W8A8 matmul
 is compute-bound in its inner loop (`hvx_dot_i8` per (row, token) with a
 horizontal reduction each, the same shape the attention kernel had), not
 bandwidth-bound; that is the next target.
+
+### 8.3 Simulator profile (M6 baseline)
+
+hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
+vocab-4096 model, workers 4 (auto; `htp_graph_init_ex` can request a
+count but `wp_create` clamps it to the simulator's 4 HVX units, so a
+6-worker run is not expressible and was skipped), measured
+2026-09-14, logs `logs/hexagon/sim_prof_{prefill0,prefill512,decode512}_w4.log`.
+Cycles are simulator pcycles; "ms/tok" divides the 28-layer / full-vocab
+rescaling by 2.09 GHz and is **not** a device measurement — the
+simulator does not model DDR bandwidth, so decode numbers here bound
+compute only. `SIM_TIMING=1` (cycle-accurate timing) exists but is
+impractically slow at this shape: a `--timing` run of `prefill0` was
+aborted after 30 minutes without reaching its first
+`SIM_PROF scenario=` line (it stalled inside the 8-token accuracy
+forward), against 23m48s wall-clock for the non-timing run below
+(prefill512 41m35s, decode512 34m42s). The accuracy gate for these runs
+is `profile_prefill_acc STAT max_abs=0.080923 max_rel=165.186`, inside
+the 0.1 atol/rtol bound (section 5.2) with no single divergent op.
+
+**raw (sim pcycles, model as run)**
+
+| scenario | workers | timing | tokens | total | EMBED | RMSNORM | MATMUL_W8A8 | ROPE | ATTN | SILU_MUL | ADD | MATMUL_LOGITS | MATMUL_W8A16 | barrier/op |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| prefill0 | 4 | off | 128 | 1028601630 | 1479141 | 1157993 | 939704687 | 298476 | 6102014 | 1291956 | 83238 | 601029 | 77882241 | 4332 |
+| prefill512 | 4 | off | 128 | 1059812175 | 1479915 | 1158034 | 938298568 | 298476 | 38715038 | 1292706 | 85885 | 600504 | 77882194 | n/a\* |
+| decode512 | 4 | off | 1 | 9265863 | 50160 | 78894 | 7533759 | 10344 | 288128 | 50531 | 22739 | 600837 | 632788 | n/a\* |
+
+\* `barrier_empty_x1000` is only in the `prefill0` log — the other two
+were recorded before the test printed that line. The barrier cost does
+not depend on the scenario, so the `prefill0` value (4332 cyc/op) is
+applied to all three rows of the scaled table below via `--barrier-cyc`.
+
+**scaled to 28 layers / vocab 151936 (sim-derived ms at 2.09 GHz, NOT device time; 451 ops/token, barrier/op override = 4332 cyc)**
+
+| scenario | workers | timing | ms/tok | barrier ms/tok | EMBED | RMSNORM | MATMUL_W8A8 | ROPE | ATTN | SILU_MUL | ADD | MATMUL_LOGITS | MATMUL_W8A16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| prefill0 | 4 | off | 53.82 | 0.007 | 0.01% | 0.11% | 91.39% | 0.03% | 0.59% | 0.13% | 0.01% | 0.15% | 7.57% |
+| prefill512 | 4 | off | 55.45 | 0.007 | 0.01% | 0.11% | 88.57% | 0.03% | 3.65% | 0.12% | 0.01% | 0.15% | 7.35% |
+| decode512 | 4 | off | 69.35 | 0.935 | 0.04% | 0.77% | 73.77% | 0.10% | 2.82% | 0.49% | 0.22% | 15.59% | 6.20% |
+
+Generated by
+
+```bash
+python3 tools/hexagon/summ_prof.py --barrier-cyc 4332 \
+  logs/hexagon/sim_prof_prefill0_w4.log \
+  logs/hexagon/sim_prof_prefill512_w4.log \
+  logs/hexagon/sim_prof_decode512_w4.log
+```
+
+`--barrier-cyc 4332` forces the `prefill0` barrier value onto all three
+rows so every `ms/tok` shares one definition (op cycles + 451 barriers);
+the percentages are over the scaled op total, excluding the barrier.
+MATMUL_LOGITS is rescaled by vocab, the layer kinds by 28/2; EMBED is a
+gather (cost O(tokens × hidden)) and is counted once per forward,
+unscaled. Scaling RMSNORM by 14 also multiplies the single final norm,
+a known ~0.1 % overstatement.
+
+(Device measurements, section 8.2: 25 tok/s prefill, 11–13 tok/s decode.
+The sim-derived numbers land in the same order of magnitude, so the sim
+ratios are usable for bottleneck ranking even though they are not a
+device measurement.)
+
+Reading: MATMUL_W8A8 is 91% of prefill and 74% of decode's sim-derived
+cycles (simulator-derived, not device); at 2-layer × 128-token scale
+that op does ≈3.2 GMAC in 938M cycles, ≈3.4 MAC/cycle against HVX's
+≈2048 MAC/cycle vrmpy peak, and decode's single-token matmul is equally
+inefficient (the average W8A8 call, ≈2.1 MMAC at m=1, costs 628K
+cycles — the per-kind counters cannot attribute cost to one op) — so
+decode is kernel-efficiency-bound, not bandwidth-bound, at this shape, which puts
+the tiled W8A8 kernel ahead of any DMA/VTCM work. MATMUL_W8A16 (`down`)
+is next at 7.4%/6.2% and will grow in relative share once W8A8 is
+tiled. MATMUL_LOGITS is 15.6% of decode once rescaled to the full
+vocabulary, making it decode's second-largest cost after W8A8. ATTN
+scales linearly with sequence length (6.1M cycles at L=128 vs 38.7M at
+L=640), giving it 3.6% of prefill512 and 2.8% of decode512 — both far
+behind W8A8. The barrier (4332 cycles/op, 451 ops/token) sim-derives to
+1.95M cycles ≈ 0.93 ms/token (simulator-derived, not device), well under
+this project's 3 ms predicate for the fusion follow-up, but inside
+decode it dominates the smallest ops (most of RMSNORM's 8.8K cycles and
+ADD's 5.7K cycles is the 4.3K-cycle barrier), so any future "split
+decode into columns" change gets a low ceiling from the barrier floor
+alone. Per-worker instruction counts (T1..T4: 76% / 80% / 84% spread
+across the three scenarios) look imbalanced, but the simulator's
+per-thread Insns cover the whole run — including DMA busy-waits and
+unmeasured setup/fill work — so they are an upper bound on kernel
+imbalance, not a measurement of the profiled window; a real balance
+verdict needs a `HTP_MM_NO_VTCM` comparison to separate out DMA wait.
+
+Budget framing (all simulator-derived, not device): against the 10 ms/tok
+sim predicate for prefill (06-verification), everything except W8A8 is
+already ≈6.3 ms/tok at prefill512, leaving ≈3.7 ms for W8A8's current
+≈49.1 ms — so the tiled W8A8 kernel alone needs roughly 13×
+(≈3.4 → ≈46 MAC/cycle), after which MATMUL_W8A16 (≈4.1 ms/tok) is
+≈41 % of the whole budget. W8A8 tiling alone therefore cannot close the
+gap; W8A16 has to follow.
 
 ---
 
