@@ -109,31 +109,41 @@ DSP methods return AEE codes (`AEEStdErr.h`) unchanged to the host. **rout
 parameters are not copied back on failure** — `dsp_abi_version` reads 0
 when `init()` fails; that is expected, not a marshalling bug.
 
-### 1.4 Op-list wire format (ABI v3)
+### 1.4 Op-list wire format (ABI v4)
 
 The op-list passed to `init()` is one 64-byte `nntr_htp_oplist_header`
 (magic, version, `n_ops`, model shape — layers/heads/dims/`max_seq`/
-`max_chunk`) followed by `n_ops` × 64-byte `nntr_htp_op_desc` records.
-Each descriptor names an op kind, its m/k/n shape (`m == 0` means "the
-per-call token count"), and up to four tensor references — a buffer id
-(WEIGHTS / KV / ACT / TOKENS / LOGITS) plus a 128-byte-aligned offset.
+`max_chunk`, and the WEIGHTS layout id (`weight_layout`, v4)) followed by
+`n_ops` × 64-byte `nntr_htp_op_desc` records. Each descriptor names an op
+kind, its m/k/n shape (`m == 0` means "the per-call token count"), and up
+to four tensor references — a buffer id (WEIGHTS / KV / ACT / TOKENS /
+LOGITS) plus a 128-byte-aligned offset.
 
 | kind | computes |
 |------|----------|
-| `EMBED` | int8 embedding row gather + dequant → fp16 |
+| `EMBED` | tiled32 int8 embedding row gather + dequant → fp16 |
 | `RMSNORM` | RMS norm, optional per-head QK-Norm (`FLAG_PER_HEAD`) |
-| `MATMUL_W8A8` | per-token dynamic-quant int8×int8 matmul → fp16 |
+| `MATMUL_W8A8` | per-token dynamic-quant int8×int8 matmul over tiled32 weights → fp16 |
 | `MATMUL_W8A16` | fp16 activation × int8 weight, fp32 accumulate → fp16 (no activation quant; `down_proj`) |
 | `ROPE` | rotary embedding on q/k in place, precomputed cos/sin |
 | `ATTN` | causal GQA attention against the persistent KV cache |
 | `SILU_MUL` | SiLU(gate) ⊙ up |
 | `ADD` | elementwise residual add |
-| `MATMUL_LOGITS` | last-token int8 matmul → fp32 logits |
+| `MATMUL_LOGITS` | last-token int8 matmul over tiled32 weights → fp32 logits |
 
 `init()` validates everything up front (header, kinds, alignment, every
 tensor ref bounds-checked against the real buffer sizes) and rejects a
 bad list with `AEE_EBADPARM`; `forward()` only checks runtime arguments
 (token count ≤ `max_chunk`, position < `max_seq`, logits length).
+
+v4 additions: `reserved2[0]` became `weight_layout` and must read
+`NNTR_HTP_WEIGHT_LAYOUT_TILED32` (1); any other value is rejected with
+rc 4. `MATMUL_W8A8` / `MATMUL_LOGITS` need `n % 32 == 0` and `EMBED`
+needs `vocab % 32 == 0` (rc 5) because their weights are stored in
+32-row tiles (section 2.1). `MATMUL_W8A16` (`down_proj`) stays row-major
+and is exempt. All four (`MATMUL_W8A8`/`MATMUL_W8A16`/`MATMUL_LOGITS`/
+`EMBED`) also require `k % 128 == 0`. A v3 op-list fails the version
+check as before.
 
 v3 additions: `forward()` returns the DSP cycle count of the op loop
 (`HAP_perf_get_pcycles`), and `forward_debug()` runs ops `[0, n)` only
@@ -170,11 +180,39 @@ A bump cursor lays out the image with every tensor 128B-aligned:
 5. per layer: `wq/wq_s`, `wk/wk_s`, `wv/wv_s`, `wo/wo_s`, `gate/gate_s`,
    `up/up_s`, `down/down_s`, then `attn_norm/ffn_norm/q_norm/k_norm`.
 
-Projections are int8 N-major (`[N][K]`) with one fp32 scale per output
-channel, copied byte-exact; norm gammas and the RoPE table are converted
-to fp16. For qwen3-0.6b (28 layers, hidden 1024, 16/8 heads, head_dim
-128, ffn 3072, vocab 151936, max_seq 2048) the image is exactly
+Projections carry one fp32 scale per output channel and are int8, but
+since ABI v4 every projection except `down` is stored **tiled32** — the
+same `N*K` bytes in a different order:
+
+```
+n_tiles = N / 32, k_tiles = K / 128
+tile(nt, kt)  : 4096 B at ((nt * k_tiles + kt) * 4096)   # n-tile outer, k-tile inner
+inside a tile : 32 vectors v[g], g = 0..31 (128 B each)
+v[g] bytes [4r, 4r+3] = w[nt*32 + r][kt*128 + 4g .. +3]    (r = 0..31)
+```
+
+One vector therefore holds "32 rows × 4 consecutive k", which is exactly
+what a `vrmpyacc` against a 4-byte activation splat wants: lane `r`
+accumulates row `nt*32 + r`, and after all `g` and `kt` every lane is a
+complete dot product with no horizontal reduction. A whole n-tile's K
+strip (`32*K` bytes) is contiguous, so it streams with one DMA
+descriptor. The inverse index is
+`nntr_htp_tile_off(n, k, K) = ((n/32)*k_tiles + k/128)*4096 + ((k%128)/4)*128 + (n%32)*4 + k%4`
+(`nntr_htp_common.h`); the host packer (`nntr_htp_repack_tiled32`), the
+DSP kernels and the scalar references all use that one function.
+Requirements: `K % 128 == 0` (as before) and `N % 32 == 0`; qwen3-0.6b's
+N ∈ {1024, 2048, 3072, 151936} all qualify. `down` stays row-major
+`[N][K]` because `MATMUL_W8A16` reads fp16 × int8 rows and gains nothing
+from tiles. Norm gammas and the RoPE table are converted to fp16 as
+before. For qwen3-0.6b (28 layers, hidden 1024, 16/8 heads, head_dim
+128, ffn 3072, vocab 151936, max_seq 2048) the image is still exactly
 **598,623,744 bytes** with no alignment padding.
+
+Until the tiled `vrmpy` kernel lands (M6 P3) the `MATMUL_W8A8` /
+`MATMUL_LOGITS` kernels gather each output row from the tiles into a
+per-worker scratch row and run the previous row-dot; `EMBED` indexes the
+table through `nntr_htp_tile_off`. That bridge is correctness-only
+(K/4 scalar loads per output row).
 
 ### 2.2 ACT buffer
 
@@ -233,9 +271,14 @@ it and hands out non-owning pointers as a `HexModelWeights`.
 
 `nntr_hexpack <bin> <prefix> [--layers N]` writes `<prefix>.hexw` (the
 WEIGHTS image; 172,498,944 B for the 1-layer bring-up image) and
-`<prefix>.hexcfg` (11 `key=value` lines = `HexModelConfig`). Every
-consumer re-runs `lower_qwen3()` from the `.hexcfg`, so image and
-op-list cannot drift.
+`<prefix>.hexcfg` (12 `key=value` lines: the 11 `HexModelConfig` fields
+plus `weight_layout=tiled32`). Every consumer re-runs `lower_qwen3()`
+from the `.hexcfg`, so image and op-list cannot drift.
+
+A `.hexcfg` without `weight_layout` is a pre-v4, row-major image;
+`read_hexcfg` rejects it ("legacy image ... regenerate with
+nntr_hexpack") so it can never be paired with the tiled kernels. The
+CausalLM app packs from the `.bin` at start-up and needs no regeneration.
 
 ---
 
@@ -245,7 +288,7 @@ op-list cannot drift.
 nntrainer/tensor/hexagon/
 ├── htp/                      # hexagon-clang (DSP side)
 │   ├── nntr_htp.idl          # FastRPC interface (init/forward/forward_debug)
-│   ├── nntr_htp_common.h     # op-list wire format v3 + validation (shared with host)
+│   ├── nntr_htp_common.h     # op-list wire format v4 + validation + tiled32 index (shared with host)
 │   ├── executor.c            # FastRPC glue -> htp_graph (or n_ops==0 dummy path)
 │   ├── htp_graph.{h,c}       # executor: pool, scratch, VTCM, dispatch, forward_upto
 │   ├── worker_pool.{h,c}     # QuRT worker pool + barrier
@@ -340,6 +383,13 @@ python3 tools/hexagon/make_tokens.py $HF_DIR text.txt /tmp/t.i32 --limit 512
 ./build_x86_hexagon/hexagon_ref_run /tmp/qwen3_full --tokens /tmp/t.i32 --eval
 ```
 
+Images packed before ABI v4 (no `weight_layout` line in the `.hexcfg`)
+must be regenerated with `nntr_hexpack`; sizes are unchanged
+(598,623,744 / 172,498,944 bytes). The `--eval` PPL is bit-identical
+across the layout change because the int8 paths are integer-exact
+(verified on 386 steps of a local prompt: PPL 37.4738 / top1 133 before
+and after).
+
 `hexagon_ref_run` interprets a packed image with the scalar `ref_*`
 kernels — the same fp16 + per-token int8 math as the DSP — and is the
 accuracy oracle. Modes: default (prefill in chunks, then greedy
@@ -367,14 +417,16 @@ v75 and v79 (SDK 6.3.0.0, toolchain 8.8). The `run_main_on_hexagon`
 image is picked per `HEX_ARCH`; `HEX_EXTRA_CFLAGS` appends compiler
 flags to both sim and skel builds.
 
-**Profile test.** `run_sim_test.sh profile <prefill0|prefill512|decode512>
+**Profile test.** `run_sim_test.sh profile <acc|prefill0|prefill512|decode512>
 [n_workers]` lowers the qwen3-0.6b shape with 2 layers and vocab 4096
 (`sim_model`) and prints `SIM_PROF` lines: per-op-kind pcycles
 (`htp_graph_profile_get`, a DSP-side API — the RPC ABI is unchanged) for
 a 128-token chunk at pos 0, the same chunk at pos 512, or the median of
 eight n=1 decode steps at pos 512, plus the cost of 1000 empty
-`wp_run()` barriers. `prefill0` additionally checks an 8-token prefill
-against the reference; the other two scenarios only time the graph. That
+`wp_run()` barriers. `acc` runs only that 8-token accuracy check (a few
+minutes) and is the per-task gate from M6 P2 on; `prefill0` additionally
+checks an 8-token prefill against the reference; the other two scenarios
+only time the graph. That
 check uses the same 0.1 atol/rtol bound as `find_divergence.py` (section
 6), not the graph test's tighter 3e-2/5e-2, because per-token int8
 re-binning at this depth amplifies a 1-ulp fp16 difference roughly 2×
@@ -389,7 +441,8 @@ forward), so section 8.3's baseline uses `timing=off` throughout.
 `python3 tools/hexagon/summ_prof.py logs/hexagon/sim_prof_*.log`
 rescales to 28 layers / full vocab and prints a sim-derived ms/token at
 2.09 GHz; these are simulator cycles, not device measurements
-(section 8.3).
+(section 8.3). Every scenario also prints one `SIM_PROF op=` line per op
+(kind, layer, k, n, pcycles); `summ_prof.py` groups them by (kind, k, n).
 
 ### 5.3 Device
 
@@ -636,8 +689,13 @@ aborted after 30 minutes without reaching its first
 `SIM_PROF scenario=` line (it stalled inside the 8-token accuracy
 forward), against 23m48s wall-clock for the non-timing run below
 (prefill512 41m35s, decode512 34m42s). The accuracy gate for these runs
-is `profile_prefill_acc STAT max_abs=0.080923 max_rel=165.186`, inside
-the 0.1 atol/rtol bound (section 5.2) with no single divergent op.
+is `profile_prefill_acc STAT max_abs=0.0914676 max_rel=93.3662` — moved
+from the P1 baseline because the sim profile model (`sim_model.c` fill)
+is now a permuted draw of the same random bytes, read through the tile
+index instead of row-major, so the reference and DSP inputs differ from
+P1's numerically but the kernels vs. scalar references still agree
+bit-exactly on every integer path — inside the 0.1 atol/rtol bound
+(section 5.2) with no single divergent op.
 
 **raw (sim pcycles, model as run)**
 
@@ -707,6 +765,11 @@ per-thread Insns cover the whole run — including DMA busy-waits and
 unmeasured setup/fill work — so they are an upper bound on kernel
 imbalance, not a measurement of the profiled window; a real balance
 verdict needs a `HTP_MM_NO_VTCM` comparison to separate out DMA wait.
+
+M6 P2 (tiled32 layout, ABI v4) changed the WEIGHTS byte order and the
+kernels' addressing only; the table above remains the baseline. The P2
+bridge kernels are slower than the M5 ones (row gather), so no P2 row is
+recorded — P3 replaces the bridge and re-measures all three scenarios.
 
 Budget framing (all simulator-derived, not device): against the 10 ms/tok
 sim predicate for prefill (06-verification), everything except W8A8 is
