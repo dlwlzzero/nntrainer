@@ -170,6 +170,13 @@ int main(void) {
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
     wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+
+    /* EMBED needs k % 128 == 0 -> 5; k=4u (a multiple of 4, not 128) keeps
+     * the vocab*k bounds check from tripping first. */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].kind = NNTR_HTP_OP_EMBED;
+    wire.ops[1].k = 4u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
   }
 
   puts("oplist header check: PASS");

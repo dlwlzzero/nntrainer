@@ -110,6 +110,9 @@ static void fill_gamma(uint8_t *w, uint32_t off, uint32_t count) {
     p[i] = (__fp16)(1.0f + 0.25f * frand());
 }
 
+/* The int8 areas are uniform random bytes, so the same fill is a valid
+ * tiled32 image: kernel and reference both index it with
+ * nntr_htp_tile_off, no repack needed here. */
 void sim_model_fill_weights(const struct sim_model_plan *p, uint8_t *w) {
   const struct sim_model_cfg *c = &p->cfg;
   const uint32_t qdim = c->n_heads * c->head_dim;

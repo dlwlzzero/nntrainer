@@ -71,12 +71,14 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   if (k_max) {
     g->ctx.xq = memalign(128, (size_t)g->cfg.max_chunk * k_max);
     g->ctx.xq_scale = malloc((size_t)g->cfg.max_chunk * sizeof(float));
+    g->ctx.wrow_scratch = memalign(128, (size_t)wp_size(g->ctx.pool) * k_max);
   }
   /* [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   g->ctx.attn_scratch = memalign(
     128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
-  if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale)) || !g->ctx.attn_scratch) {
+  if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale || !g->ctx.wrow_scratch)) ||
+      !g->ctx.attn_scratch) {
     htp_graph_destroy(g);
     return 1;
   }
@@ -188,6 +190,7 @@ void htp_graph_destroy(struct htp_graph *g) {
     HAP_compute_res_release(g->vtcm_ctx_id);
   free(g->ctx.xq);
   free(g->ctx.xq_scale);
+  free(g->ctx.wrow_scratch);
   free(g->ctx.attn_scratch);
   if (g->ctx.pool)
     wp_destroy(g->ctx.pool);

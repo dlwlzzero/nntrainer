@@ -33,8 +33,16 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
 
   for (uint32_t i = 0; i < m * k; ++i)
     x[i] = (__fp16)frand();
+  /* Row-major source, repacked tiled32 for the kernel (a16 == 0 only:
+   * down_proj / W8A16 stays row-major). The reference reads the same
+   * tiled buffer; ref_dot_i8 on the row-major source ties it back. */
+  int8_t *wrm = malloc((size_t)n * k);
   for (uint32_t i = 0; i < n * k; ++i)
-    w[i] = (int8_t)(frand() * 127.f);
+    wrm[i] = (int8_t)(frand() * 127.f);
+  if (a16)
+    memcpy(w, wrm, (size_t)n * k);
+  else
+    nntr_htp_repack_tiled32((uint8_t *)w, (const uint8_t *)wrm, n, k);
   for (uint32_t j = 0; j < n; ++j)
     sw[j] = 0.001f + 0.019f * (frand() * 0.5f + 0.5f);
 
@@ -45,6 +53,7 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)m * k);
   c.xq_scale = malloc((size_t)m * sizeof(float));
+  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * k);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -82,11 +91,27 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
            (unsigned)m);
   int rc = cmp_f(tag, ref_f, got_f, m * n, 2e-3f, 1e-3f);
 
+  if (!a16) {
+    /* tiled reader == row-major reader on the same quantized row. */
+    int8_t *xq = malloc((size_t)k);
+    const uint32_t rows[5] = {0u, 1u, 31u, 32u, n - 1u};
+    ref_quant_row(x, xq, k);
+    for (uint32_t r = 0; r < 5u; ++r)
+      if (ref_dot_i8_tiled(w, rows[r], xq, k) !=
+          ref_dot_i8(wrm + (size_t)rows[r] * k, xq, k)) {
+        printf("SIM_TEST matmul FAIL tiled dot row %u\n", (unsigned)rows[r]);
+        rc = 1;
+      }
+    free(xq);
+  }
+
   free(ref_f);
   free(got_f);
   free(y_ref);
   free(c.xq);
   free(c.xq_scale);
+  free(c.wrow_scratch);
+  free(wrm);
   wp_destroy(c.pool);
   free(act);
   return rc;

@@ -27,16 +27,25 @@ extern "C" {
 /* Same formula as htp_quant_row_fp16, so results are bit-exact. */
 float ref_quant_row(const __fp16 *x, int8_t *q, uint32_t k);
 
-/* Naive scalar int32 dot product. */
+/* Naive scalar int32 dot product. Row-major; kept for cross-checking the
+ * tiled reader in tests. */
 int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k);
 
-/* Reference for MATMUL_W8A8: x fp16[m][k], w int8[n][k], sw fp32[n],
- * y fp16[m][n]. Quantizes each x row with ref_quant_row, then dots. */
+/* Row n of a tiled32 int8 tensor (nntr_htp_tile_off, the WEIGHTS image
+ * layout since ABI v4) dotted with x[K]. Integer, so bit-exact against
+ * ref_dot_i8 on the row-major source. */
+int32_t ref_dot_i8_tiled(const int8_t *w_base, uint32_t n, const int8_t *x,
+                         uint32_t K);
+
+/* Reference for MATMUL_W8A8: x fp16[m][k], w int8 tiled32 [n][k]
+ * (nntr_htp_tile_off), sw fp32[n], y fp16[m][n]. Quantizes each x row with
+ * ref_quant_row, then dots. */
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 
 /* Reference for MATMUL_W8A16: like W8A8 but x stays fp16 (no per-token
- * quantization), fp32 accumulation, y = (fp16)(dot * sw[n]). */
+ * quantization), fp32 accumulation, y = (fp16)(dot * sw[n]).
+ * w stays row-major [n][k] (down_proj is not tiled). */
 void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
                       __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 
@@ -78,12 +87,14 @@ void ref_attn(const __fp16 *q, const __fp16 *k, const __fp16 *v, __fp16 *kv,
               uint32_t hd, uint32_t max_seq, float scale);
 
 /* Reference for MATMUL_LOGITS: x_last fp16[k] (the last token row),
- * w int8[n][k], sw fp32[n], out fp32[n]. Quantizes x_last with
- * ref_quant_row (same formula as the kernel = bit-exact), then dots. */
+ * w int8 tiled32 [n][k] (nntr_htp_tile_off), sw fp32[n], out fp32[n].
+ * Quantizes x_last with ref_quant_row (same formula as the kernel =
+ * bit-exact), then dots. */
 void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
                        float *out, uint32_t k, uint32_t n);
 
-/* Reference for EMBED: tokens int32[m], w int8[vocab][k], scale fp32[vocab],
+/* Reference for EMBED: tokens int32[m], w int8 tiled32 [vocab][k]
+ * (nntr_htp_tile_off), scale fp32[vocab],
  * y fp16[m][k]. y[t][i] = (fp16)(w[tokens[t]][i] * scale[tokens[t]]). */
 void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
                __fp16 *y, uint32_t m, uint32_t k);

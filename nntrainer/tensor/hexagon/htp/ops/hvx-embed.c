@@ -2,7 +2,7 @@
 /**
  * @file	hvx-embed.c
  * @date	19 August 2026
- * @brief	EMBED kernel: gather int8 rows by token id, dequant to fp16
+ * @brief	EMBED kernel: gather tiled32 int8 rows by token id, dequant to fp16
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -31,11 +31,14 @@ static void embed_worker(void *arg, int wid, int nw) {
 
   for (uint32_t t = t0; t < t1; ++t) {
     uint32_t row = (uint32_t)tokens[t];
-    const int8_t *wrow = w + (size_t)row * k;
     float s = scale[row];
     __fp16 *yrow = y + (size_t)t * k;
-    for (uint32_t i = 0; i < k; ++i)
-      yrow[i] = (__fp16)((float)wrow[i] * s);
+    /* tiled32 table: 4 consecutive k share one lane (nntr_htp_tile_off). */
+    for (uint32_t i = 0; i < k; i += 4u) {
+      const int8_t *w4 = w + nntr_htp_tile_off(row, i, k);
+      for (uint32_t b = 0; b < 4u; ++b)
+        yrow[i + b] = (__fp16)((float)w4[b] * s);
+    }
   }
 }
 

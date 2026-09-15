@@ -39,8 +39,11 @@ int test_matmul_dma(void) {
 
   for (uint32_t i = 0; i < m * k; ++i)
     x[i] = (__fp16)frand();
+  int8_t *wrm = malloc((size_t)n * k);
   for (uint32_t i = 0; i < n * k; ++i)
-    w[i] = (int8_t)(frand() * 127.f);
+    wrm[i] = (int8_t)(frand() * 127.f);
+  nntr_htp_repack_tiled32((uint8_t *)w, (const uint8_t *)wrm, n, k);
+  free(wrm);
   for (uint32_t j = 0; j < n; ++j)
     sw[j] = 0.001f + 0.019f * (frand() * 0.5f + 0.5f);
 
@@ -51,6 +54,7 @@ int test_matmul_dma(void) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)m * k);
   c.xq_scale = malloc((size_t)m * sizeof(float));
+  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * k);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -79,6 +83,7 @@ int test_matmul_dma(void) {
     printf("SIM_TEST matmul_dma vtcm acquire fail\n");
     free(c.xq);
     free(c.xq_scale);
+    free(c.wrow_scratch);
     wp_destroy(c.pool);
     free(act);
     return 1;
@@ -89,6 +94,7 @@ int test_matmul_dma(void) {
     HAP_compute_res_release(ctx_id);
     free(c.xq);
     free(c.xq_scale);
+    free(c.wrow_scratch);
     wp_destroy(c.pool);
     free(act);
     return 1;
@@ -131,6 +137,7 @@ int test_matmul_dma(void) {
 
   free(c.xq);
   free(c.xq_scale);
+  free(c.wrow_scratch);
   wp_destroy(c.pool);
   free(act);
 

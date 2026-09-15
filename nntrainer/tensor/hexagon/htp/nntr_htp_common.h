@@ -193,7 +193,8 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
       return 5;
     if ((d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 ||
-         d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&
+         d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
+         d.kind == (uint32_t)NNTR_HTP_OP_EMBED) &&
         d.k % 128u != 0u)
       return 5;
     /* tiled32 projections are whole 32-row tiles; down_proj (W8A16) stays

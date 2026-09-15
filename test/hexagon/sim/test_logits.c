@@ -38,8 +38,11 @@ int test_logits(void) {
       x[(size_t)t * K + i] = (__fp16)((i & 1) ? 30000.f : -30000.f);
   for (uint32_t i = 0; i < K; ++i)
     x[(size_t)(M - 1) * K + i] = (__fp16)frand();
+  int8_t *wrm = malloc((size_t)N * K);
   for (uint32_t i = 0; i < N * K; ++i)
-    w[i] = (int8_t)(frand() * 127.f);
+    wrm[i] = (int8_t)(frand() * 127.f);
+  nntr_htp_repack_tiled32((uint8_t *)w, (const uint8_t *)wrm, N, K);
+  free(wrm);
   for (uint32_t j = 0; j < N; ++j)
     sw[j] = 0.001f + 0.019f * (frand() * 0.5f + 0.5f);
 
@@ -53,6 +56,7 @@ int test_logits(void) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)K);
   c.xq_scale = malloc(sizeof(float));
+  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * K);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -79,6 +83,7 @@ int test_logits(void) {
   free(ref);
   free(c.xq);
   free(c.xq_scale);
+  free(c.wrow_scratch);
   wp_destroy(c.pool);
   free(logits);
   free(act);

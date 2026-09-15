@@ -28,8 +28,14 @@ int test_embed(void) {
   int8_t *w = (int8_t *)(wbuf + off_w);
   float *scale = (float *)(wbuf + off_s);
 
+  /* Row-major source repacked tiled32; the kernel output is checked both
+   * against ref_embed (tiled reader) and directly against the row-major
+   * source, so a reader that disagrees with the packer's traversal is
+   * caught (the formula itself is pinned by test_oplist_header). */
+  int8_t *wrm = malloc((size_t)vocab * k);
   for (uint32_t i = 0; i < vocab * k; ++i)
-    w[i] = (int8_t)(frand() * 127.0f);
+    wrm[i] = (int8_t)(frand() * 127.0f);
+  nntr_htp_repack_tiled32((uint8_t *)w, (const uint8_t *)wrm, vocab, k);
   for (uint32_t i = 0; i < vocab; ++i)
     scale[i] = 0.001f + 0.02f * (frand() * 0.5f + 0.5f);
 
@@ -90,6 +96,14 @@ int test_embed(void) {
   }
   int rc = cmp_f("embed", ref_f, got_f, count, 1e-3f, 1e-4f);
 
+  for (uint32_t t = 0; t < m; ++t) {
+    const uint32_t row = (uint32_t)tokens[t];
+    for (uint32_t i = 0; i < k; ++i)
+      ref_f[(size_t)t * k + i] = (float)wrm[(size_t)row * k + i] * scale[row];
+  }
+  if (cmp_f("embed_rowmajor", ref_f, got_f, count, 1e-3f, 1e-4f))
+    rc = 1;
+
   free(ref_f);
   free(got_f);
   free(y_ref);
@@ -97,6 +111,7 @@ int test_embed(void) {
   free(act);
   free(tokens);
   free(wbuf);
+  free(wrm);
   if (rc)
     return 1;
 

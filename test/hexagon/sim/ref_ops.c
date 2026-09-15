@@ -35,13 +35,26 @@ int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k) {
   return acc;
 }
 
+int32_t ref_dot_i8_tiled(const int8_t *w_base, uint32_t n, const int8_t *x,
+                         uint32_t K) {
+  int32_t acc = 0;
+  /* Four consecutive k share one tile lane, so index once per 4 (K % 128
+   * == 0 is validated). */
+  for (uint32_t k = 0; k < K; k += 4u) {
+    const int8_t *w4 = w_base + nntr_htp_tile_off(n, k, K);
+    for (uint32_t j = 0; j < 4u; ++j)
+      acc += (int32_t)w4[j] * (int32_t)x[k + j];
+  }
+  return acc;
+}
+
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n) {
   int8_t *xq = (int8_t *)malloc((size_t)k);
   for (uint32_t t = 0; t < m; ++t) {
     float sx = ref_quant_row(x + (size_t)t * k, xq, k);
     for (uint32_t j = 0; j < n; ++j) {
-      int32_t dot = ref_dot_i8(w + (size_t)j * k, xq, k);
+      int32_t dot = ref_dot_i8_tiled(w, j, xq, k);
       y[(size_t)t * n + j] = (__fp16)((float)dot * sw[j] * sx);
     }
   }
@@ -65,7 +78,7 @@ void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,
   int8_t *xq = (int8_t *)malloc((size_t)k);
   float sx = ref_quant_row(x_last, xq, k);
   for (uint32_t j = 0; j < n; ++j)
-    out[j] = (float)ref_dot_i8(w + (size_t)j * k, xq, k) * sw[j] * sx;
+    out[j] = (float)ref_dot_i8_tiled(w, j, xq, k) * sw[j] * sx;
   free(xq);
 }
 
@@ -185,10 +198,12 @@ void ref_embed(const int32_t *tokens, const int8_t *w, const float *scale,
                __fp16 *y, uint32_t m, uint32_t k) {
   for (uint32_t t = 0; t < m; ++t) {
     uint32_t row = (uint32_t)tokens[t];
-    const int8_t *wrow = w + (size_t)row * k;
     __fp16 *yrow = y + (size_t)t * k;
-    for (uint32_t i = 0; i < k; ++i)
-      yrow[i] = (__fp16)((float)wrow[i] * scale[row]);
+    for (uint32_t i = 0; i < k; i += 4u) {
+      const int8_t *w4 = w + nntr_htp_tile_off(row, i, k);
+      for (uint32_t j = 0; j < 4u; ++j)
+        yrow[i + j] = (__fp16)((float)w4[j] * scale[row]);
+    }
   }
 }
 
