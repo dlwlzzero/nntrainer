@@ -200,6 +200,25 @@ static void mm_worker(void *arg, int wid, int nw) {
            n, n0, n1);
 }
 
+/* Per-token quantization spread over the pool: rows [m*wid/nw, m*(wid+1)/nw).
+ * Same scalar routine as before, so xq/xq_scale bytes are unchanged; one
+ * extra barrier replaces a serial 128 x k loop on the RPC thread. */
+struct quant_job {
+  const __fp16 *x;
+  int8_t *xq;
+  float *sx;
+  uint32_t m, k;
+};
+
+static void quant_worker(void *arg, int wid, int nw) {
+  struct quant_job *q = arg;
+  uint32_t t0 = (uint32_t)(((uint64_t)q->m * wid) / nw);
+  uint32_t t1 = (uint32_t)(((uint64_t)q->m * (wid + 1)) / nw);
+  for (uint32_t t = t0; t < t1; ++t)
+    q->sx[t] = htp_quant_row_fp16(q->x + (size_t)t * q->k,
+                                  q->xq + (size_t)t * q->k, q->k);
+}
+
 /* fp16 x . int8 w dot in fp32: each 128B of w is sign-extended to two
  * int16 vectors, converted to hf (exact for |w| <= 127) and multiply-
  * accumulated with the matching 64-half x vectors in IEEE sf (see
@@ -255,9 +274,8 @@ void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
     return;
   const uint32_t m = htp_m(c, d), k = d->k;
   const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
-  for (uint32_t t = 0; t < m; ++t) /* one quant pass on op entry */
-    c->xq_scale[t] =
-      htp_quant_row_fp16(x + (size_t)t * k, c->xq + (size_t)t * k, k);
+  struct quant_job q = {x, c->xq, c->xq_scale, m, k};
+  wp_run(c->pool, quant_worker, &q);
   struct mm_job j = {c, d, m, false};
   wp_run(c->pool, mm_worker, &j);
 }
