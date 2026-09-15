@@ -87,6 +87,15 @@ void htp_graph_profile_get(const struct htp_graph *g,
                            uint64_t cycles[NNTR_HTP_OP_KIND_COUNT],
                            uint32_t calls[NNTR_HTP_OP_KIND_COUNT]);
 
+/**
+ * @brief Copy out the per-op-index pcycles (op-list order, n_ops entries)
+ *        accumulated since init or the last reset. Same window as
+ *        htp_graph_profile_get; a kind's counter is the sum of its ops.
+ * @return 0 ok, 1 when n is smaller than the op count
+ */
+int htp_graph_profile_get_ops(const struct htp_graph *g, uint64_t *cycles,
+                              uint32_t n);
+
 void htp_graph_destroy(struct htp_graph *g);
 
 #endif /* NNTR_HTP_GRAPH_H */

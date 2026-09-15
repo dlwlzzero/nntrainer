@@ -73,12 +73,14 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
     g->ctx.xq_scale = malloc((size_t)g->cfg.max_chunk * sizeof(float));
     g->ctx.wrow_scratch = memalign(128, (size_t)wp_size(g->ctx.pool) * k_max);
   }
+  g->ctx.prof_op_cycles =
+    calloc(g->cfg.n_ops ? g->cfg.n_ops : 1u, sizeof(uint64_t));
   /* [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   g->ctx.attn_scratch = memalign(
     128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
   if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale || !g->ctx.wrow_scratch)) ||
-      !g->ctx.attn_scratch) {
+      !g->ctx.attn_scratch || !g->ctx.prof_op_cycles) {
     htp_graph_destroy(g);
     return 1;
   }
@@ -141,8 +143,10 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
     const uint32_t kind = g->ops[i].kind;
     const uint64_t s = HAP_perf_get_pcycles();
     htp_op_table[kind](&g->ctx, &g->ops[i]);
-    g->ctx.prof_cycles[kind] += HAP_perf_get_pcycles() - s;
+    const uint64_t dt = HAP_perf_get_pcycles() - s;
+    g->ctx.prof_cycles[kind] += dt;
     g->ctx.prof_calls[kind] += 1u;
+    g->ctx.prof_op_cycles[i] += dt;
   }
   if (pcycles)
     *pcycles = HAP_perf_get_pcycles() - t0;
@@ -154,6 +158,7 @@ void htp_graph_profile_reset(struct htp_graph *g) {
     return;
   memset(g->ctx.prof_cycles, 0, sizeof(g->ctx.prof_cycles));
   memset(g->ctx.prof_calls, 0, sizeof(g->ctx.prof_calls));
+  memset(g->ctx.prof_op_cycles, 0, (size_t)g->cfg.n_ops * sizeof(uint64_t));
 }
 
 void htp_graph_profile_get(const struct htp_graph *g,
@@ -163,6 +168,15 @@ void htp_graph_profile_get(const struct htp_graph *g,
     return;
   memcpy(cycles, g->ctx.prof_cycles, sizeof(g->ctx.prof_cycles));
   memcpy(calls, g->ctx.prof_calls, sizeof(g->ctx.prof_calls));
+}
+
+int htp_graph_profile_get_ops(const struct htp_graph *g, uint64_t *cycles,
+                              uint32_t n) {
+  if (!g || !cycles || n < g->cfg.n_ops)
+    return 1;
+  memcpy(cycles, g->ctx.prof_op_cycles,
+         (size_t)g->cfg.n_ops * sizeof(uint64_t));
+  return 0;
 }
 
 int htp_graph_forward(struct htp_graph *g, const int32_t *tokens,
@@ -192,6 +206,7 @@ void htp_graph_destroy(struct htp_graph *g) {
   free(g->ctx.xq_scale);
   free(g->ctx.wrow_scratch);
   free(g->ctx.attn_scratch);
+  free(g->ctx.prof_op_cycles);
   if (g->ctx.pool)
     wp_destroy(g->ctx.pool);
   memset(g, 0, sizeof(*g));

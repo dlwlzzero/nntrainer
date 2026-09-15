@@ -210,6 +210,22 @@ int test_graph(void) {
           printf("SIM_TEST graph FAIL profile cycles sum=%llu loop=%llu\n",
                  (unsigned long long)sum, (unsigned long long)pc);
           rc = 1;
+        } else {
+          /* Per-op counters: same window, sum equals the per-kind sum, op
+           * `cut` (not run) stays 0, op 0 (EMBED, ran) is non-zero. */
+          uint64_t po[N_OPS], osum = 0;
+          if (htp_graph_profile_get_ops(&g, po, N_OPS)) {
+            printf("SIM_TEST graph FAIL profile_get_ops\n");
+            rc = 1;
+          } else {
+            for (kk = 0; kk < N_OPS; ++kk)
+              osum += po[kk];
+            if (osum != sum || po[cut] != 0u || po[0] == 0u) {
+              printf("SIM_TEST graph FAIL profile per-op sum=%llu kinds=%llu\n",
+                     (unsigned long long)osum, (unsigned long long)sum);
+              rc = 1;
+            }
+          }
         }
       }
     }

@@ -37,6 +37,8 @@ struct htp_exec_ctx {
    * instrumentation only: not part of the RPC ABI. */
   uint64_t prof_cycles[NNTR_HTP_OP_KIND_COUNT];
   uint32_t prof_calls[NNTR_HTP_OP_KIND_COUNT];
+  uint64_t *prof_op_cycles; /**< [n_ops] per-op-index pcycles, same window as
+                                 prof_cycles (kind = sum over its ops). */
 };
 
 typedef void (*htp_op_fn)(struct htp_exec_ctx *c,

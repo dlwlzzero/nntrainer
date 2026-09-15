@@ -87,6 +87,24 @@ static void print_kinds(const char *scenario, int workers, uint32_t tokens,
   }
 }
 
+/* One line per op so q/k/v/o and gate/up can be told apart (the kind
+ * table lumps every MATMUL_W8A8 together). Descriptors come from the
+ * op-list bytes the graph was built from. */
+static void print_ops(const struct htp_graph *g, const uint8_t *ol,
+                      uint32_t n_ops, uint32_t divisor) {
+  const struct nntr_htp_op_desc *d =
+    (const struct nntr_htp_op_desc
+       *)(const void *)(ol + sizeof(struct nntr_htp_oplist_header));
+  uint64_t po[n_ops];
+  if (htp_graph_profile_get_ops(g, po, n_ops))
+    return;
+  for (uint32_t i = 0; i < n_ops; ++i)
+    printf("SIM_PROF op=%u kind=%s layer=%u k=%u n=%u pcycles=%llu\n",
+           (unsigned)i, KIND_NAME[d[i].kind], (unsigned)d[i].layer,
+           (unsigned)d[i].k, (unsigned)d[i].n,
+           (unsigned long long)(po[i] / divisor));
+}
+
 static int cmp_u64(const void *a, const void *b) {
   uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
   return x < y ? -1 : x > y;
@@ -191,6 +209,7 @@ int test_profile(void) {
     }
     htp_graph_profile_get(&g, cyc, calls);
     print_kinds(scenario, nw, tokens, 0, pc, cyc, calls, 1u);
+    print_ops(&g, ol, P.n_ops, 1u);
   } else {
     /* Fill positions 0..511 (not measured). */
     for (i = 0; i < FILL_CHUNKS; ++i) {
@@ -213,6 +232,7 @@ int test_profile(void) {
       }
       htp_graph_profile_get(&g, cyc, calls);
       print_kinds(scenario, nw, CHUNK, pos, pc, cyc, calls, 1u);
+      print_ops(&g, ol, P.n_ops, 1u);
     } else {
       uint64_t steps[DECODE_STEPS];
       htp_graph_profile_reset(&g);
@@ -229,6 +249,7 @@ int test_profile(void) {
       const uint64_t median =
         (steps[DECODE_STEPS / 2u - 1u] + steps[DECODE_STEPS / 2u]) / 2u;
       print_kinds(scenario, nw, 1u, pos, median, cyc, calls, DECODE_STEPS);
+      print_ops(&g, ol, P.n_ops, DECODE_STEPS);
     }
   }
 

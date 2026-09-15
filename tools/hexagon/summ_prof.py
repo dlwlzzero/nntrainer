@@ -26,6 +26,9 @@ reference, unmeasured fill chunks) and count DMA-queue busy-wait
 instructions; the worker-thread spread reported in the thread-balance
 section is an upper bound on kernel imbalance, not a measurement of the
 profiled window.
+
+Also prints (4) a per-(kind,k,n) table from the SIM_PROF op= lines when
+present.
 """
 import argparse
 import re
@@ -40,7 +43,7 @@ KINDS = ["EMBED", "RMSNORM", "MATMUL_W8A8", "ROPE", "ATTN", "SILU_MUL", "ADD",
 
 
 def parse(path):
-    r = {"path": path, "kinds": {}, "threads": [], "timing": "off"}
+    r = {"path": path, "kinds": {}, "threads": [], "timing": "off", "ops": []}
     with open(path, encoding="utf-8", errors="replace") as f:
         for ln in f:
             ln = ln.strip()
@@ -58,6 +61,10 @@ def parse(path):
                              f"update KINDS/LAYER_KINDS/VOCAB_KINDS in "
                              f"{__file__} to say how it rescales")
                 r["kinds"][m.group(1)] = (int(m.group(2)), int(m.group(3)))
+            m = re.match(r"SIM_PROF op=(\d+) kind=(\S+) layer=(\d+) k=(\d+) n=(\d+) pcycles=(\d+)", ln)
+            if m:
+                r["ops"].append((int(m.group(1)), m.group(2), int(m.group(3)),
+                                 int(m.group(4)), int(m.group(5)), int(m.group(6))))
             m = re.match(r"SIM_PROF barrier_empty_x1000=(\d+)", ln)
             if m:
                 r["barrier"] = int(m.group(1)) / 1000.0
@@ -160,6 +167,21 @@ def main():
         labels = [f"T{t[0]}(main)={t[1]}" if t[0] == 0 else f"T{t[0]}={t[1]}" for t in r["threads"]]
         print(f"- {r['scenario']} w{r['workers']}: " + ", ".join(labels)
               + f" (worker spread T1..T{workers} {spread})")
+
+    print("\n## per-shape (raw pcycles, model as run; ops grouped by kind,k,n)\n")
+    for r in runs:
+        if not r["ops"]:
+            print(f"- {r['scenario']} w{r['workers']}: no SIM_PROF op= lines")
+            continue
+        buckets = {}
+        for _, kind, _, k, n, cyc in r["ops"]:
+            calls, tot = buckets.get((kind, k, n), (0, 0))
+            buckets[(kind, k, n)] = (calls + 1, tot + cyc)
+        print(f"### {r['scenario']} w{r['workers']}\n")
+        print("| kind | k | n | calls | pcycles | per_call |")
+        print("|---|---|---|---|---|---|")
+        for (kind, k, n), (calls, tot) in sorted(buckets.items(), key=lambda x: -x[1][1]):
+            print(f"| {kind} | {k} | {n} | {calls} | {tot} | {tot // calls} |")
 
 
 if __name__ == "__main__":
