@@ -15,7 +15,22 @@
 #include <string.h>
 
 #define NNTR_HTP_OPLIST_MAGIC 0x5054484Eu /* "NHTP" little-endian */
-#define NNTR_HTP_ABI_VERSION 3u /* v3: forward pcycles + forward_debug */
+#define NNTR_HTP_ABI_VERSION                                                   \
+  4u /* v4: tiled32 int8 projections, header weight_layout */
+
+/* WEIGHTS layout id carried in the op-list header (v4). The only value the
+ * kernels understand; anything else is rejected by the validator. */
+#define NNTR_HTP_WEIGHT_LAYOUT_TILED32 1u
+
+/* tiled32: an int8 [N][K] projection is stored as 4 KB tiles of 32 rows x
+ * 128 k, n-tile outer, k-tile inner. Inside a tile, vector g (128 B) holds
+ * bytes [4r, 4r+3] = w[nt*32 + r][kt*128 + 4g .. +3], so one vrmpy of
+ * vector g against a 4-byte activation splat accumulates a 4-MAC partial
+ * sum for 32 output rows at once (no horizontal reduction). Requires
+ * N % 32 == 0 and K % 128 == 0. down_proj (MATMUL_W8A16) is NOT tiled. */
+#define NNTR_HTP_TILE_ROWS 32u
+#define NNTR_HTP_TILE_K 128u
+#define NNTR_HTP_TILE_BYTES 4096u
 
 enum nntr_htp_buf_id {
   NNTR_HTP_BUF_WEIGHTS = 0,
@@ -68,7 +83,8 @@ struct nntr_htp_oplist_header {
   uint32_t n_layers, n_heads, n_kv_heads, head_dim;
   uint32_t hidden, ffn, vocab, max_seq;
   uint32_t max_chunk;
-  uint32_t reserved2[3];
+  uint32_t weight_layout; /* v4: NNTR_HTP_WEIGHT_LAYOUT_*; was reserved2[0] */
+  uint32_t reserved2[2];
 }; /* 64B, size check required */
 
 /* The struct is the wire ABI: all three toolchains must agree on 64 bytes. */
@@ -76,6 +92,33 @@ typedef char nntr_htp_oplist_header_size_check
   [(sizeof(struct nntr_htp_oplist_header) == 64) ? 1 : -1];
 typedef char
   nntr_htp_op_desc_size_check[(sizeof(struct nntr_htp_op_desc) == 64) ? 1 : -1];
+
+/**
+ * @brief Byte offset of element w[n][k] inside a tiled32 [N][K] int8
+ *        tensor (the inverse index of the layout above). Shared by the host
+ *        packer, the DSP kernels and the scalar references so no two of
+ *        them can disagree.
+ */
+static inline uint32_t nntr_htp_tile_off(uint32_t n, uint32_t k, uint32_t K) {
+  const uint32_t k_tiles = K / NNTR_HTP_TILE_K;
+  return ((n / NNTR_HTP_TILE_ROWS) * k_tiles + k / NNTR_HTP_TILE_K) *
+           NNTR_HTP_TILE_BYTES +
+         ((k % NNTR_HTP_TILE_K) / 4u) * 128u + (n % NNTR_HTP_TILE_ROWS) * 4u +
+         (k % 4u);
+}
+
+/**
+ * @brief Repack a row-major int8 [N][K] tensor into the tiled32 layout.
+ *        dst and src are N*K bytes each and must not overlap. Rows are
+ *        moved in 4-byte chunks (the smallest contiguous unit of a tile).
+ */
+static inline void nntr_htp_repack_tiled32(uint8_t *dst, const uint8_t *src,
+                                           uint32_t N, uint32_t K) {
+  uint32_t n, k;
+  for (n = 0; n < N; ++n)
+    for (k = 0; k < K; k += 4u)
+      memcpy(dst + nntr_htp_tile_off(n, k, K), src + (uint64_t)n * K + k, 4u);
+}
 
 /**
  * @brief Validate an op-list buffer header.
@@ -109,7 +152,7 @@ nntr_htp_check_ref(uint32_t buf_id, uint32_t offset, uint64_t bytes,
  * @brief Validate an op-list buffer: header fields, op kinds/refs, and
  * per-op tensor bounds against the caller-provided buffer sizes.
  * @return 0 ok, 1 bad pointer/size, 2 bad magic, 3 version mismatch,
- * 4 bad header field, 5 bad op
+ * 4 bad header field (incl. unknown weight_layout), 5 bad op
  */
 static inline int
 nntr_htp_oplist_validate(const void *buf, uint32_t len,
@@ -128,7 +171,8 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
       (uint64_t)sizeof(h) + (uint64_t)h.n_ops * sizeof(struct nntr_htp_op_desc))
     return 1;
   if (h.head_dim != 128u || h.hidden % 64u != 0u || h.ffn % 64u != 0u ||
-      h.n_kv_heads == 0u || h.n_heads % h.n_kv_heads != 0u || h.max_chunk < 1u)
+      h.n_kv_heads == 0u || h.n_heads % h.n_kv_heads != 0u ||
+      h.max_chunk < 1u || h.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_TILED32)
     return 4;
 
   for (i = 0; i < h.n_ops; ++i) {
@@ -151,6 +195,15 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 ||
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&
         d.k % 128u != 0u)
+      return 5;
+    /* tiled32 projections are whole 32-row tiles; down_proj (W8A16) stays
+     * row-major and is exempt. EMBED's table has vocab rows. */
+    if ((d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
+         d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&
+        d.n % NNTR_HTP_TILE_ROWS != 0u)
+      return 5;
+    if (d.kind == (uint32_t)NNTR_HTP_OP_EMBED &&
+        h.vocab % NNTR_HTP_TILE_ROWS != 0u)
       return 5;
 
     m = d.m ? d.m : h.max_chunk;

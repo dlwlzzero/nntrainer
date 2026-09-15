@@ -625,6 +625,8 @@ int main(void) {
   nntr_htp_oplist_header h = read_header(g);
   CHECK(h.magic == NNTR_HTP_OPLIST_MAGIC, "header magic");
   CHECK(h.version == NNTR_HTP_ABI_VERSION, "header version");
+  CHECK(h.weight_layout == NNTR_HTP_WEIGHT_LAYOUT_TILED32,
+        "header weight_layout");
   CHECK(h.n_layers == cfg.n_layers, "header n_layers");
   CHECK(h.n_heads == cfg.n_heads, "header n_heads");
   CHECK(h.n_kv_heads == cfg.n_kv_heads, "header n_kv_heads");

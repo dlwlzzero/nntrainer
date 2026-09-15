@@ -77,7 +77,9 @@ int sim_model_plan_init(struct sim_model_plan *p,
   p->kv_bytes = 2u * cfg->n_layers * cfg->n_kv_heads * cfg->max_seq *
                 cfg->head_dim * 2u;
   p->n_ops = 1u + 16u * cfg->n_layers + 2u;
-  p->oplist_len = 64u + 64u * p->n_ops;
+  p->oplist_len =
+    (uint32_t)(sizeof(struct nntr_htp_oplist_header) +
+               (size_t)p->n_ops * sizeof(struct nntr_htp_op_desc));
   return 0;
 }
 
@@ -203,6 +205,7 @@ void sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf) {
   h->vocab = c->vocab;
   h->max_seq = c->max_seq;
   h->max_chunk = c->max_chunk;
+  h->weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
 
   emit(&d, NNTR_HTP_OP_EMBED, 0, 0, 0, c->hidden, 0, R(NNTR_HTP_BUF_TOKENS, 0),
        W(p->embed_w), W(p->embed_s), A(p->resid), 0);

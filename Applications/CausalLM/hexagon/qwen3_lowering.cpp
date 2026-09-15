@@ -360,6 +360,7 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   header.vocab = cfg.vocab;
   header.max_seq = cfg.max_seq;
   header.max_chunk = cfg.max_chunk;
+  header.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
 
   g.oplist.resize(sizeof(header) + ops.size() * sizeof(nntr_htp_op_desc));
   std::memcpy(g.oplist.data(), &header, sizeof(header));

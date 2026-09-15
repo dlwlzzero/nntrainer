@@ -42,6 +42,7 @@ int main() {
 
   nntr_htp_oplist_header hdr = {NNTR_HTP_OPLIST_MAGIC, NNTR_HTP_ABI_VERSION, 0,
                                 0};
+  hdr.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32; // v4 header check
 
   // Version handshake: a wrong version must be rejected before execution.
   hdr.version = 999u;

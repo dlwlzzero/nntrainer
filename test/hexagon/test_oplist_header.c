@@ -9,6 +9,7 @@
  * @bug		No known bugs except for NYI items
  */
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -33,6 +34,7 @@ static void build_valid(struct nntr_htp_oplist_header *h,
   h->vocab = 32;
   h->max_seq = 8;
   h->max_chunk = 4;
+  h->weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
 
   memset(ops, 0, 2 * sizeof(*ops));
   /* op0: RMSNORM, x[ACT@0] * gamma[WEIGHTS@0] -> out[ACT@1024] */
@@ -70,6 +72,41 @@ static void build_valid(struct nntr_htp_oplist_header *h,
 int main(void) {
   struct nntr_htp_oplist_header h = {NNTR_HTP_OPLIST_MAGIC,
                                      NNTR_HTP_ABI_VERSION, 0, 0};
+
+  /* v4: reserved2[0] became weight_layout; the record stays 64 bytes. */
+  assert(NNTR_HTP_ABI_VERSION == 4u);
+  assert(sizeof(struct nntr_htp_oplist_header) == 64u);
+  assert(offsetof(struct nntr_htp_oplist_header, weight_layout) == 52u);
+
+  /* tile_off by example (spec P2 "타일 정의"): K = 256 -> k_tiles = 2. */
+  assert(nntr_htp_tile_off(0u, 0u, 256u) == 0u);
+  assert(nntr_htp_tile_off(0u, 1u, 256u) == 1u);   /* k%4 is the byte */
+  assert(nntr_htp_tile_off(1u, 0u, 256u) == 4u);   /* row r -> lane 4r */
+  assert(nntr_htp_tile_off(0u, 4u, 256u) == 128u); /* 4k group g -> vector g */
+  assert(nntr_htp_tile_off(31u, 127u, 256u) ==
+         4095u); /* last byte of tile(0,0) */
+  assert(nntr_htp_tile_off(0u, 128u, 256u) == 4096u); /* tile(0,1) */
+  assert(nntr_htp_tile_off(32u, 0u, 256u) ==
+         8192u); /* tile(1,0) = k_tiles*4096 */
+
+  /* repack is a bijection onto [0, N*K) and tile_off is its inverse. */
+  {
+    enum { TN = 64, TK = 256 };
+    static uint8_t src[TN * TK], dst[TN * TK], seen[TN * TK];
+    uint32_t n, k;
+    for (n = 0; n < (uint32_t)(TN * TK); ++n)
+      src[n] = (uint8_t)(n * 31u + 7u);
+    memset(seen, 0, sizeof(seen));
+    nntr_htp_repack_tiled32(dst, src, TN, TK);
+    for (n = 0; n < TN; ++n)
+      for (k = 0; k < TK; ++k) {
+        uint32_t o = nntr_htp_tile_off(n, k, TK);
+        assert(o < (uint32_t)(TN * TK) && !seen[o]);
+        seen[o] = 1;
+        assert(dst[o] == src[n * TK + k]);
+      }
+  }
+
   assert(nntr_htp_oplist_check(&h, sizeof(h)) == 0);
 
   h.version = 999u;
@@ -121,6 +158,18 @@ int main(void) {
     build_valid(&wire.h, wire.ops, buf_size);
     buf_size[NNTR_HTP_BUF_ACT] = 10u;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /* v4: unknown weight_layout -> 4 (a v3-era list has 0 here) */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.h.weight_layout = 0u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 4);
+
+    /* tiled kinds need n % 32 == 0 -> 5; W8A16 (down, row-major) is exempt */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].n = 250u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
   }
 
   puts("oplist header check: PASS");

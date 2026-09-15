@@ -37,7 +37,9 @@
 #define QDIM (N_HEADS * HEAD_DIM)     /* 512 */
 #define KVDIM (N_KV_HEADS * HEAD_DIM) /* 256 */
 #define N_OPS 35u
-#define OPLIST_LEN (64u + N_OPS * 64u)
+#define OPLIST_LEN                                                             \
+  ((uint32_t)(sizeof(struct nntr_htp_oplist_header) +                          \
+              N_OPS * sizeof(struct nntr_htp_op_desc)))
 #define KV_BYTES (2u * N_LAYERS * N_KV_HEADS * MAX_SEQ * HEAD_DIM * 2u)
 #define EPS 1e-5f
 
@@ -91,6 +93,20 @@ int test_graph(void) {
     if (htp_graph_init(&g, bad, OPLIST_LEN, w, P.wtotal, kv, KV_BYTES, act,
                        P.atotal) == 0) {
       printf("SIM_TEST graph FAIL corrupted head_dim accepted\n");
+      rc = 1;
+    }
+    free(bad);
+  }
+
+  /* Negative: an op-list without the tiled32 weight_layout id (a v3-era
+   * producer, or an unknown layout) must be rejected at init. */
+  {
+    uint8_t *bad = malloc(OPLIST_LEN);
+    memcpy(bad, ol, OPLIST_LEN);
+    ((struct nntr_htp_oplist_header *)(void *)bad)->weight_layout = 0u;
+    if (htp_graph_init(&g, bad, OPLIST_LEN, w, P.wtotal, kv, KV_BYTES, act,
+                       P.atotal) == 0) {
+      printf("SIM_TEST graph FAIL weight_layout 0 accepted\n");
       rc = 1;
     }
     free(bad);
