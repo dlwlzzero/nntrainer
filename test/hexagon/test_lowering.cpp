@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -686,6 +687,31 @@ int main(void) {
           "hexcfg integer field round trip");
     CHECK(back.rms_eps == cfg.rms_eps && back.rope_theta == cfg.rope_theta,
           "hexcfg float field round trip");
+
+    // v4: the layout key is written and its absence / an unknown value is
+    // rejected (a pre-v4 .hexw would otherwise decode as garbage).
+    {
+      std::vector<uint8_t> txt = nntrainer::hexagon::read_file(path);
+      std::string s(txt.begin(), txt.end());
+      CHECK(s.find("weight_layout=tiled32\n") != std::string::npos,
+            "hexcfg weight_layout key");
+
+      std::string legacy = std::string(P_tmpdir) + "/hexcfg_legacy.hexcfg";
+      auto rejects = [&](const std::string &body) {
+        nntrainer::hexagon::write_file(legacy, body.data(), body.size());
+        try {
+          read_hexcfg(legacy);
+        } catch (const std::runtime_error &) {
+          return true;
+        }
+        return false;
+      };
+      std::string body = s.substr(0, s.find("weight_layout="));
+      CHECK(rejects(body), "legacy hexcfg (no weight_layout) accepted");
+      CHECK(rejects(body + "weight_layout=rowmajor\n"),
+            "unknown weight_layout accepted");
+      std::remove(legacy.c_str());
+    }
     std::remove(path.c_str());
   }
 

@@ -24,7 +24,8 @@ void write_hexcfg(const std::string &path, const HexModelConfig &c) {
   f << "n_layers=" << c.n_layers << "\nn_heads=" << c.n_heads
     << "\nn_kv_heads=" << c.n_kv_heads << "\nhead_dim=" << c.head_dim
     << "\nhidden=" << c.hidden << "\nffn=" << c.ffn << "\nvocab=" << c.vocab
-    << "\nmax_seq=" << c.max_seq << "\nmax_chunk=" << c.max_chunk << "\n";
+    << "\nmax_seq=" << c.max_seq << "\nmax_chunk=" << c.max_chunk
+    << "\nweight_layout=tiled32\n";
   char buf[64];
   // %.9g round-trips any float through strtof exactly.
   snprintf(buf, sizeof(buf), "rms_eps=%.9g\nrope_theta=%.9g\n", c.rms_eps,
@@ -56,6 +57,17 @@ HexModelConfig read_hexcfg(const std::string &path) {
   auto u32 = [&](const char *key) {
     return static_cast<uint32_t>(strtoul(get(key).c_str(), nullptr, 10));
   };
+  // v4 images record the WEIGHTS byte order. A .hexcfg without the key was
+  // packed row-major by a pre-v4 nntr_hexpack; its .hexw would be read
+  // through the tiled index and decode as garbage, so refuse it here.
+  auto wl = kv.find("weight_layout");
+  if (wl == kv.end())
+    throw std::runtime_error("hexcfg: legacy image (no weight_layout) " + path +
+                             ", regenerate with nntr_hexpack");
+  if (wl->second != "tiled32")
+    throw std::runtime_error("hexcfg: unsupported weight_layout '" +
+                             wl->second + "' in " + path);
+
   HexModelConfig c{};
   c.n_layers = u32("n_layers");
   c.n_heads = u32("n_heads");

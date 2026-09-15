@@ -20,7 +20,9 @@
 
 namespace nntrainer::hexagon {
 
-/** Write/read the 11-field .hexcfg text file. @throw std::runtime_error */
+/** Write/read the 12-field .hexcfg text file (11 HexModelConfig fields +
+ * weight_layout=tiled32; a file without the layout key is a pre-v4 image
+ * and is rejected). @throw std::runtime_error */
 void write_hexcfg(const std::string &path, const HexModelConfig &cfg);
 HexModelConfig read_hexcfg(const std::string &path);
 
