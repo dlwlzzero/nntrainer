@@ -123,6 +123,11 @@ int test_matmul(void) {
     return 1;
   if (run_case(8, 1024, 256, 0))
     return 1;
+  /* 7 = one 4-token block + 3 single-token tail; 128 = max_chunk. */
+  if (run_case(7, 1024, 256, 0))
+    return 1;
+  if (run_case(128, 1024, 256, 0))
+    return 1;
   if (run_case(1, 3072, 256, 1))
     return 1;
   if (run_case(8, 3072, 256, 1))

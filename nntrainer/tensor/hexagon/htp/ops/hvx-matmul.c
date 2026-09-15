@@ -32,8 +32,8 @@
  * for c. Must be a power of two (dma_queue_init rounds up regardless). */
 #define MM_DMA_QUEUE_CAP 4
 
-/* Tokens per weight-vector load (Task 2 raises it to 4). */
-#define MM_TB 1u
+/* Tokens per weight-vector load: one vload feeds MM_TB vrmpyacc. */
+#define MM_TB 4u
 
 struct mm_job {
   struct htp_exec_ctx *c;
@@ -103,7 +103,11 @@ static void mm_tiles(const int8_t *w_n0, const float *sw, const int8_t *xq,
       (const HVX_Vector *)(const void *)(w_n0 + (size_t)(jn - n0) * k);
     const HVX_Vector swv = hvx_vmem(sw + jn);
     uint8_t *yj = y + (size_t)jn * esz;
-    for (uint32_t t = 0; t < m; ++t)
+    uint32_t t = 0;
+    for (; t + MM_TB <= m; t += MM_TB)
+      mm_tile(wv, swv, xq + (size_t)t * k, sx + t, yj + t * y_stride, y_stride,
+              y_is_f32, k, MM_TB);
+    for (; t < m; ++t)
       mm_tile(wv, swv, xq + (size_t)t * k, sx + t, yj + t * y_stride, y_stride,
               y_is_f32, k, 1u);
   }
