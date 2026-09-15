@@ -6,7 +6,9 @@
  *		(2 layers, vocab 4096): per-op-kind pcycles for a prefill
  *		chunk at pos 0, a prefill chunk at pos 512 and n=1 decode
  *		steps at pos 512, printed as SIM_PROF lines for summ_prof.py.
- *		argv: profile <prefill0|prefill512|decode512> [n_workers]
+ *		argv: profile <acc|prefill0|prefill512|decode512> [n_workers]
+ *		acc runs only the 8-token accuracy check (the P2+ per-task
+ *		gate).
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -98,8 +100,8 @@ int test_profile(void) {
   int rc = 0, inited = 0;
   uint32_t i;
 
-  if (strcmp(scenario, "prefill0") && strcmp(scenario, "prefill512") &&
-      strcmp(scenario, "decode512")) {
+  if (strcmp(scenario, "acc") && strcmp(scenario, "prefill0") &&
+      strcmp(scenario, "prefill512") && strcmp(scenario, "decode512")) {
     printf("SIM_TEST profile FAIL unknown scenario %s\n", scenario);
     return 2;
   }
@@ -146,7 +148,7 @@ int test_profile(void) {
   uint64_t cyc[NNTR_HTP_OP_KIND_COUNT];
   uint32_t calls[NNTR_HTP_OP_KIND_COUNT];
 
-  if (!strcmp(scenario, "prefill0")) {
+  if (!strcmp(scenario, "acc") || !strcmp(scenario, "prefill0")) {
     /* Accuracy first, on a small chunk the scalar reference can afford.
      * Tolerance matches tools/hexagon/find_divergence.py (atol/rtol 0.1):
      * per-token int8 re-binning amplifies 1-ulp fp16 differences ~2x per
@@ -154,7 +156,10 @@ int test_profile(void) {
      * max_abs ~0.08 against the scalar reference with no single culprit op
      * (logs/hexagon/sim_diverge_qwen3_2l.log). The tiny graph test keeps
      * its 3e-2/5e-2 bound. */
-    if (htp_graph_forward(&g, tok, ACC_TOKENS, 0, logits, P.cfg.vocab)) {
+    uint64_t pc = 0;
+    htp_graph_profile_reset(&g);
+    if (htp_graph_forward_upto(&g, tok, ACC_TOKENS, 0, logits, P.cfg.vocab,
+                               P.n_ops, &pc)) {
       printf("SIM_TEST profile FAIL forward (accuracy)\n");
       rc = 1;
       goto out;
@@ -167,19 +172,25 @@ int test_profile(void) {
     if (rc)
       goto out;
 
-    /* Measured chunk: 128 tokens at pos 0 on a clean cache. */
-    memset(act, 0, P.atotal);
-    memset(kv, 0, P.kv_bytes);
-    uint64_t pc = 0;
-    htp_graph_profile_reset(&g);
-    if (htp_graph_forward_upto(&g, tok, CHUNK, 0, logits, P.cfg.vocab, P.n_ops,
-                               &pc)) {
-      printf("SIM_TEST profile FAIL forward prefill0\n");
-      rc = 1;
-      goto out;
+    /* acc is gate-only: report the 8-token forward's own profile so the
+     * per-kind/per-op lines exist for every scenario. prefill0 measures a
+     * 128-token chunk at pos 0 on a clean cache instead. */
+    uint32_t tokens = ACC_TOKENS;
+    if (strcmp(scenario, "acc")) {
+      memset(act, 0, P.atotal);
+      memset(kv, 0, P.kv_bytes);
+      pc = 0;
+      htp_graph_profile_reset(&g);
+      if (htp_graph_forward_upto(&g, tok, CHUNK, 0, logits, P.cfg.vocab,
+                                 P.n_ops, &pc)) {
+        printf("SIM_TEST profile FAIL forward prefill0\n");
+        rc = 1;
+        goto out;
+      }
+      tokens = CHUNK;
     }
     htp_graph_profile_get(&g, cyc, calls);
-    print_kinds(scenario, nw, CHUNK, 0, pc, cyc, calls, 1u);
+    print_kinds(scenario, nw, tokens, 0, pc, cyc, calls, 1u);
   } else {
     /* Fill positions 0..511 (not measured). */
     for (i = 0; i < FILL_CHUNKS; ++i) {
