@@ -436,6 +436,17 @@ void check_bytes(const uint8_t *dst, uint32_t off, const void *src,
   CHECK(std::memcmp(dst + off, src, bytes) == 0, msg);
 }
 
+/** @brief tiled32 check: source byte w[n][k] must sit at
+ *         nntr_htp_tile_off(n, k, K) - the inverse index every reader uses. */
+void check_tiled(const uint8_t *dst, uint32_t off, const int8_t *src,
+                 uint32_t n_rows, uint32_t k, const char *msg) {
+  for (uint32_t n = 0; n < n_rows; ++n)
+    for (uint32_t kk = 0; kk < k; ++kk)
+      CHECK(static_cast<int8_t>(dst[off + nntr_htp_tile_off(n, kk, k)]) ==
+              src[static_cast<uint64_t>(n) * k + kk],
+            msg);
+}
+
 /** @brief Read one fp16 (as raw bits) back from the packed buffer. */
 uint16_t read_u16(const uint8_t *dst, uint32_t off, uint64_t idx) {
   uint16_t v;
@@ -521,36 +532,51 @@ void check_pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   std::vector<uint8_t> dst(g.weights_size, 0xA5u);
   pack_weights(g, cfg, w, dst.data());
 
-  // 1. int8 blobs and fp32 scale arrays: byte-exact vs. source.
-  check_bytes(dst.data(), g.woff.embed, synth.embed.data(), synth.embed.size(),
-              "embed bytes");
+  const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
+  const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
+
+  // 1. int8 projections land tiled32 (inverse index), down stays row-major;
+  //    fp32 scale arrays are byte-exact.
+  const uint32_t n_q32 = static_cast<uint32_t>(n_q);
+  const uint32_t n_kv32 = static_cast<uint32_t>(n_kv);
+  check_tiled(dst.data(), g.woff.embed, synth.embed.data(), cfg.vocab,
+              cfg.hidden, "embed tiled");
   check_bytes(dst.data(), g.woff.embed_scale, synth.embed_s.data(),
               synth.embed_s.size() * 4u, "embed_scale bytes");
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
     const SynthLayer &ly = synth.layers[l];
-    check_bytes(dst.data(), pl.wq, ly.wq.data(), ly.wq.size(), "wq");
+    check_tiled(dst.data(), pl.wq, ly.wq.data(), n_q32, cfg.hidden, "wq tiled");
     check_bytes(dst.data(), pl.wq_s, ly.wq_s.data(), ly.wq_s.size() * 4u,
                 "wq_s");
-    check_bytes(dst.data(), pl.wk, ly.wk.data(), ly.wk.size(), "wk");
+    check_tiled(dst.data(), pl.wk, ly.wk.data(), n_kv32, cfg.hidden,
+                "wk tiled");
     check_bytes(dst.data(), pl.wk_s, ly.wk_s.data(), ly.wk_s.size() * 4u,
                 "wk_s");
-    check_bytes(dst.data(), pl.wv, ly.wv.data(), ly.wv.size(), "wv");
+    check_tiled(dst.data(), pl.wv, ly.wv.data(), n_kv32, cfg.hidden,
+                "wv tiled");
     check_bytes(dst.data(), pl.wv_s, ly.wv_s.data(), ly.wv_s.size() * 4u,
                 "wv_s");
-    check_bytes(dst.data(), pl.wo, ly.wo.data(), ly.wo.size(), "wo");
+    check_tiled(dst.data(), pl.wo, ly.wo.data(), cfg.hidden, n_q32, "wo tiled");
     check_bytes(dst.data(), pl.wo_s, ly.wo_s.data(), ly.wo_s.size() * 4u,
                 "wo_s");
-    check_bytes(dst.data(), pl.gate, ly.gate.data(), ly.gate.size(), "gate");
+    check_tiled(dst.data(), pl.gate, ly.gate.data(), cfg.ffn, cfg.hidden,
+                "gate tiled");
     check_bytes(dst.data(), pl.gate_s, ly.gate_s.data(), ly.gate_s.size() * 4u,
                 "gate_s");
-    check_bytes(dst.data(), pl.up, ly.up.data(), ly.up.size(), "up");
+    check_tiled(dst.data(), pl.up, ly.up.data(), cfg.ffn, cfg.hidden,
+                "up tiled");
     check_bytes(dst.data(), pl.up_s, ly.up_s.data(), ly.up_s.size() * 4u,
                 "up_s");
     check_bytes(dst.data(), pl.down, ly.down.data(), ly.down.size(), "down");
     check_bytes(dst.data(), pl.down_s, ly.down_s.data(), ly.down_s.size() * 4u,
                 "down_s");
   }
+  // A tiled tensor is not a byte copy (would pass check_tiled only if
+  // tile_off were the identity, which it is not for K >= 128, N >= 2).
+  CHECK(std::memcmp(dst.data() + g.woff.layers[0].wq, synth.layers[0].wq.data(),
+                    synth.layers[0].wq.size()) != 0,
+        "wq still row-major");
 
   // 2. norms: fp16 vs. fp32 source within tolerance.
   check_norm_vec(dst.data(), g.woff.final_norm, synth.final_norm.data(),

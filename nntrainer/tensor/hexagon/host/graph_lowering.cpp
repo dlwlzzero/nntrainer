@@ -7,11 +7,14 @@
  *		(e.g. lower_qwen3()) already computed, plus the precomputed
  *		RoPE cos/sin table. No shape knowledge beyond HexModelConfig
  *		and HexWeightOffsets; walks whatever a lowering produced.
+ *		int8 projections other than down_proj are written tiled32
+ *		(nntr_htp_tile_off).
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
  */
 #include "graph_lowering.h"
+#include "nntr_htp_common.h"
 
 #include <cmath>
 #include <cstring>
@@ -45,6 +48,18 @@ void write_rope_table(uint8_t *dst, uint32_t off, uint32_t max_seq,
   }
 }
 
+/**
+ * @brief Write an int8 [n][k] projection in the tiled32 WEIGHTS layout
+ *        (nntr_htp_tile_off): same byte count as the row-major source,
+ *        only the order changes. down_proj is the one projection that
+ *        stays row-major (MATMUL_W8A16 reads rows).
+ */
+void write_tiled(uint8_t *dst, uint32_t off, const int8_t *src, uint32_t n,
+                 uint32_t k) {
+  nntr_htp_repack_tiled32(dst + off, reinterpret_cast<const uint8_t *>(src), n,
+                          k);
+}
+
 } // namespace
 
 void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
@@ -52,8 +67,7 @@ void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
   const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
 
-  std::memcpy(dst + g.woff.embed, w.embed,
-              static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
+  write_tiled(dst, g.woff.embed, w.embed, cfg.vocab, cfg.hidden);
   std::memcpy(dst + g.woff.embed_scale, w.embed_s,
               static_cast<uint64_t>(cfg.vocab) * 4u);
   write_rope_table(dst, g.woff.rope_table, cfg.max_seq, cfg.rope_theta);
@@ -63,23 +77,24 @@ void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
     const HexLayerWeights &lw = w.layers[l];
 
-    std::memcpy(dst + pl.wq, lw.wq, n_q * cfg.hidden);
+    const uint32_t n_q32 = static_cast<uint32_t>(n_q);
+    const uint32_t n_kv32 = static_cast<uint32_t>(n_kv);
+
+    write_tiled(dst, pl.wq, lw.wq, n_q32, cfg.hidden);
     std::memcpy(dst + pl.wq_s, lw.wq_s, n_q * 4u);
-    std::memcpy(dst + pl.wk, lw.wk, n_kv * cfg.hidden);
+    write_tiled(dst, pl.wk, lw.wk, n_kv32, cfg.hidden);
     std::memcpy(dst + pl.wk_s, lw.wk_s, n_kv * 4u);
-    std::memcpy(dst + pl.wv, lw.wv, n_kv * cfg.hidden);
+    write_tiled(dst, pl.wv, lw.wv, n_kv32, cfg.hidden);
     std::memcpy(dst + pl.wv_s, lw.wv_s, n_kv * 4u);
-    std::memcpy(dst + pl.wo, lw.wo, static_cast<uint64_t>(cfg.hidden) * n_q);
+    write_tiled(dst, pl.wo, lw.wo, cfg.hidden, n_q32);
     std::memcpy(dst + pl.wo_s, lw.wo_s, static_cast<uint64_t>(cfg.hidden) * 4u);
-    std::memcpy(dst + pl.gate, lw.w_gate,
-                static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    write_tiled(dst, pl.gate, lw.w_gate, cfg.ffn, cfg.hidden);
     std::memcpy(dst + pl.gate_s, lw.w_gate_s,
                 static_cast<uint64_t>(cfg.ffn) * 4u);
-    std::memcpy(dst + pl.up, lw.w_up,
-                static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
+    write_tiled(dst, pl.up, lw.w_up, cfg.ffn, cfg.hidden);
     std::memcpy(dst + pl.up_s, lw.w_up_s, static_cast<uint64_t>(cfg.ffn) * 4u);
     std::memcpy(dst + pl.down, lw.w_down,
-                static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
+                static_cast<uint64_t>(cfg.hidden) * cfg.ffn); /* row-major */
     std::memcpy(dst + pl.down_s, lw.w_down_s,
                 static_cast<uint64_t>(cfg.hidden) * 4u);
 

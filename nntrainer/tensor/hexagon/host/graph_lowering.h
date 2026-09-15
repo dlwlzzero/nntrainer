@@ -121,7 +121,9 @@ struct HexLoweredGraph {
 
 /**
  * @brief Pack source weights into dst according to a lowered graph's
- *        WEIGHTS layout. Implemented in Task 8.
+ *        WEIGHTS layout. int8 projections except down_proj are stored
+ *        tiled32 (see nntr_htp_tile_off in nntr_htp_common.h); scales,
+ *        norms and the RoPE table are unchanged.
  * @param g lowered graph carrying the WEIGHTS offsets/sizes.
  * @param cfg the same config passed to lower_qwen3().
  * @param w source weights to pack.
