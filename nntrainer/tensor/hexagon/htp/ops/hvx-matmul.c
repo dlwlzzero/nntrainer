@@ -2,28 +2,24 @@
 /**
  * @file	hvx-matmul.c
  * @date	18 August 2026
- * @brief	MATMUL_W8A8 kernel: fp16 activation x int8 weight. DDR
- *		direct-read path plus a VTCM/DMA double-buffered streaming
- *		path (used when c->vtcm != NULL); both produce bit-identical
- *		fp16 output since the streaming path only moves the same
- *		bytes through VTCM before the identical dot/scale math.
- *		Also MATMUL_LOGITS: quantizes only the last token row and
- *		emits fp32 logits through the same DDR dot/scale path.
- *		MATMUL_W8A16 keeps the activation in fp16 (no per-token int8
- *		quantization) and accumulates in qf32; used for down_proj,
- *		whose SwiGLU input is too outlier-heavy for per-token int8.
- *		P2 bridge: the WEIGHTS int8 projections are tiled32
- *		(nntr_htp_tile_off). Each output row is gathered into the
- *		worker's wrow_scratch row and the unchanged hvx_dot_i8 runs on
- *		it; worker N-ranges and DMA chunks are whole 32-row tiles so a
- *		row range is still one contiguous byte range. Correctness only
- *		(K/4 scalar loads per row); the P3 tiled vrmpy kernel replaces it.
+ * @brief	MATMUL_W8A8 / MATMUL_LOGITS: int8 x int8 vrmpy kernel over the
+ *		tiled32 WEIGHTS layout. One n-tile (32 output rows) is a
+ *		contiguous strip of k/4 vectors; vector i holds bytes
+ *		k = 4i..4i+3 of all 32 rows, so one vrmpyacc against a 4-byte
+ *		activation splat advances 32 dot products with no horizontal
+ *		reduction and no vector->scalar traffic. DDR direct-read path
+ *		plus a VTCM/DMA double-buffered streaming path (c->vtcm !=
+ *		NULL); both run the same math on the same bytes, so their
+ *		output is bit-identical. MATMUL_LOGITS is the same kernel with
+ *		m=1 and fp32 output. MATMUL_W8A16 keeps the activation in fp16
+ *		(no per-token int8 quantization), accumulates in fp32 and
+ *		reads row-major weights; used for down_proj, whose SwiGLU
+ *		input is too outlier-heavy for per-token int8.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
  */
 #include <stdlib.h>
-#include <string.h>
 
 #include "dma-queue.h"
 #include "htp_ops.h"
@@ -36,19 +32,15 @@
  * for c. Must be a power of two (dma_queue_init rounds up regardless). */
 #define MM_DMA_QUEUE_CAP 4
 
+/* Tokens per weight-vector load (Task 2 raises it to 4). */
+#define MM_TB 1u
+
 struct mm_job {
   struct htp_exec_ctx *c;
   const struct nntr_htp_op_desc *d;
   uint32_t m;
+  bool y_is_f32; /* MATMUL_LOGITS writes fp32, W8A8 fp16 */
 };
-
-/* Gather output row local_n of the tiled32 tensor at w (first row of w is
- * a tile boundary) into a contiguous, 128B-aligned row for hvx_dot_i8. */
-static void mm_gather_row(int8_t *row, const int8_t *w, uint32_t local_n,
-                          uint32_t k) {
-  for (uint32_t kk = 0; kk < k; kk += 4u)
-    memcpy(row + kk, w + nntr_htp_tile_off(local_n, kk, k), 4u);
-}
 
 /* Worker N-range in whole tiles: n0/n1 are multiples of 32 (the validator
  * guarantees n % 32 == 0), so rows [n0, n1) of a tiled tensor are the
@@ -62,63 +54,83 @@ static void mm_tile_range(uint32_t n, int wid, int nw, uint32_t *n0,
         NNTR_HTP_TILE_ROWS;
 }
 
-/* Task 6 compute: dot + scale + store for output columns [n0, n1), using
- * whatever xq/xrow the caller hands in (DDR pointers, or VTCM copies -
- * same bytes either way, so the result is bit-identical). w points at the
- * tile holding row w_base (w_base % 32 == 0: the DDR base, or a DMA'd
- * slab). y_is_f32 selects the store type: fp16 for W8A8, fp32 for
- * MATMUL_LOGITS. */
-static void mm_compute_range(const int8_t *w, int8_t *rowbuf, uint32_t w_base,
-                             const float *sw, const int8_t *xq,
-                             const float *xq_scale, void *y, bool y_is_f32,
-                             uint32_t m, uint32_t k, uint32_t n, uint32_t n0,
-                             uint32_t n1) {
-  for (uint32_t jn = n0; jn < n1; ++jn) {
-    mm_gather_row(rowbuf, w, jn - w_base, k);
-    for (uint32_t t = 0; t < m; ++t) {
-      int32_t acc = hvx_dot_i8(rowbuf, xq + (size_t)t * k, k);
-      float v = (float)acc * sw[jn] * xq_scale[t];
-      if (y_is_f32)
-        ((float *)y)[(size_t)t * n + jn] = v;
-      else
-        ((__fp16 *)y)[(size_t)t * n + jn] = (__fp16)v;
+/* One n-tile x tb tokens. wv is the tile's strip: k/4 vectors, since the
+ * tiled32 offset kt*4096 + g*128 of k = kt*128 + 4g is 128 * (k/4). swv
+ * holds the tile's 32 fp32 scales; xq, sx and y point at the first of the
+ * tb token rows. int32 lanes are exact whatever the order, so the sums are
+ * bit-exact against the scalar reference; the scale product keeps the
+ * reference order ((float)acc * sw) * sx, in qf32 (HEXAGON.md section 7:
+ * qf-format ops only), and narrows to fp16 once (Vhf_equals_Wqf32, exact
+ * RNE). Always inlined with a constant tb so the accumulators stay in
+ * registers. */
+static inline __attribute__((always_inline)) void
+mm_tile(const HVX_Vector *wv, HVX_Vector swv, const int8_t *xq, const float *sx,
+        uint8_t *y, size_t y_stride, bool y_is_f32, uint32_t k, uint32_t tb) {
+  HVX_Vector acc[MM_TB];
+  for (uint32_t u = 0; u < tb; ++u)
+    acc[u] = Q6_V_vzero();
+  for (uint32_t i = 0; i < k / 4u; ++i) {
+    const HVX_Vector w4 = wv[i];
+    for (uint32_t u = 0; u < tb; ++u) {
+      const uint32_t *xw = (const uint32_t *)(const void *)(xq + (size_t)u * k);
+      acc[u] = Q6_Vw_vrmpyacc_VwVbVb(acc[u], w4, Q6_V_vsplat_R(xw[i]));
     }
+  }
+  for (uint32_t u = 0; u < tb; ++u) {
+    HVX_Vector f = Q6_Vsf_equals_Vw(acc[u]);
+    f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(f, swv));
+    f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(f, hvx_vec_splat_f32(sx[u])));
+    uint8_t *yu = y + u * y_stride;
+    /* Masked stores: 32 floats = 128 B, 32 halves = 64 B. The fp16 y is
+     * 64 B-aligned (n % 32 == 0), but the fp32 logits buffer comes from the
+     * caller with no alignment guarantee, so neither store may assume one. */
+    if (y_is_f32)
+      hvx_vec_store_u(yu, 128u, f);
+    else
+      hvx_vec_store_u(yu, 64u, hvx_vec_f32_to_f16(f, f));
+  }
+}
+
+/* Output rows [n0, n1) (whole tiles) x tokens [0, m). w_n0 is the strip of
+ * row n0 - the DDR tensor at n0*k, or a DMA'd VTCM slab that starts on that
+ * tile; either way strip s of the range sits at w_n0 + s*32*k. */
+static void mm_tiles(const int8_t *w_n0, const float *sw, const int8_t *xq,
+                     const float *sx, uint8_t *y, bool y_is_f32, uint32_t m,
+                     uint32_t k, uint32_t n, uint32_t n0, uint32_t n1) {
+  const size_t esz = y_is_f32 ? 4u : 2u, y_stride = (size_t)n * esz;
+  for (uint32_t jn = n0; jn < n1; jn += NNTR_HTP_TILE_ROWS) {
+    const HVX_Vector *wv =
+      (const HVX_Vector *)(const void *)(w_n0 + (size_t)(jn - n0) * k);
+    const HVX_Vector swv = hvx_vmem(sw + jn);
+    uint8_t *yj = y + (size_t)jn * esz;
+    for (uint32_t t = 0; t < m; ++t)
+      mm_tile(wv, swv, xq + (size_t)t * k, sx + t, yj + t * y_stride, y_stride,
+              y_is_f32, k, 1u);
   }
 }
 
 /* VTCM/DMA streaming path for this worker's N-slab. Returns false if the
- * slab is too small to hold the Xq copy plus at least one double-buffered
- * weight row, in which case the caller falls back to the DDR path. */
+ * slab cannot hold two 32-row tiles, in which case the caller falls back to
+ * the DDR path. Activations are not copied: the kernel reads c->xq through
+ * the cache (4-byte scalar loads gain nothing from VTCM). */
 static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
-                           int8_t *rowbuf, const float *sw, __fp16 *y,
+                           const float *sw, uint8_t *y, bool y_is_f32,
                            uint32_t m, uint32_t k, uint32_t n, uint32_t n0,
                            uint32_t n1, int wid, int nw) {
 #ifdef HTP_MM_NO_VTCM
   return false; /* measurement-only: forces the direct DDR read path */
 #endif
-  /* Round the per-worker slab size down to a multiple of 128 first, so
-   * every worker's slab base (and therefore buf[0]/buf[1]) stays 128B
-   * aligned - this matters for the DMA descriptors today, and will
-   * matter again for direct HVX_Vector loads once P3's tiled kernel
-   * reads the slab directly. */
+  /* Per-worker slab rounded down to 128 B so buf[0] is vector-aligned;
+   * buf[1] = buf[0] + rows_per_buf*k is too, because rows_per_buf % 32 == 0
+   * and k % 128 == 0. Whole tiles per chunk keep every DMA'd slab starting
+   * on a tile, which mm_tiles relies on. */
   size_t slab_sz = (c->vtcm_size / (uint32_t)nw) & ~(size_t)127;
-  uint8_t *slab = c->vtcm + (size_t)wid * slab_sz;
-  size_t xq_bytes = (size_t)m * k;
-
-  if (xq_bytes + HEX_L2_LINE_SIZE + 2u * NNTR_HTP_TILE_ROWS * k > slab_sz)
-    return false; /* not even one double-buffered tile row-group fits */
-
-  size_t half = (slab_sz - xq_bytes - HEX_L2_LINE_SIZE) / 2;
-  /* Whole tiles per chunk: keeps every DMA'd slab starting on a tile so
-   * mm_compute_range can index it with nntr_htp_tile_off from row 0. */
-  uint32_t rows_per_buf = (uint32_t)(half / k) & ~(NNTR_HTP_TILE_ROWS - 1u);
+  uint32_t rows_per_buf =
+    (uint32_t)(slab_sz / 2 / k) & ~(NNTR_HTP_TILE_ROWS - 1u);
   if (rows_per_buf < NNTR_HTP_TILE_ROWS)
     return false;
-
-  int8_t *xq_local = (int8_t *)slab;
-  memcpy(xq_local, c->xq, xq_bytes);
   uint8_t *buf[2];
-  buf[0] = slab + xq_bytes + HEX_L2_LINE_SIZE;
+  buf[0] = c->vtcm + (size_t)wid * slab_sz;
   buf[1] = buf[0] + (size_t)rows_per_buf * k;
 
   void *qmem =
@@ -154,9 +166,8 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
 
     dma_queue_pop(q); /* wait for this chunk's DMA (kicked one iteration ago) */
 
-    mm_compute_range((const int8_t *)buf[ci & 1], rowbuf, n0 + row0, sw,
-                     xq_local, c->xq_scale, y, false, m, k, n, n0 + row0,
-                     n0 + row0 + rows);
+    mm_tiles((const int8_t *)buf[ci & 1], sw, c->xq, c->xq_scale, y, y_is_f32,
+             m, k, n, n0 + row0, n0 + row0 + rows);
   }
 
   dma_queue_free(q);
@@ -164,6 +175,8 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
   return true;
 }
 
+/* W8A8 and LOGITS worker: per-worker N-slab [n0, n1) of whole tiles, VTCM
+ * streaming when it fits, DDR direct read otherwise. */
 static void mm_worker(void *arg, int wid, int nw) {
   struct mm_job *j = arg;
   struct htp_exec_ctx *c = j->c;
@@ -171,42 +184,16 @@ static void mm_worker(void *arg, int wid, int nw) {
   const uint32_t k = d->k, n = d->n;
   const int8_t *w = (const int8_t *)htp_ref_ptr(c, d->in1);
   const float *sw = (const float *)htp_ref_ptr(c, d->in2);
-  __fp16 *y = (__fp16 *)htp_ref_ptr(c, d->out);
-  /* Per-worker N-slab [n0,n1) - outer N, inner M (isomorphic to the VTCM
-   * tile-reuse layout). */
+  uint8_t *y = htp_ref_ptr(c, d->out);
   uint32_t n0, n1;
   mm_tile_range(n, wid, nw, &n0, &n1);
   if (n0 == n1)
     return;
-  int8_t *rowbuf = c->wrow_scratch + (size_t)wid * k;
-
   if (c->vtcm &&
-      mm_worker_vtcm(c, w, rowbuf, sw, y, j->m, k, n, n0, n1, wid, nw))
+      mm_worker_vtcm(c, w, sw, y, j->y_is_f32, j->m, k, n, n0, n1, wid, nw))
     return;
-
-  mm_compute_range(w, rowbuf, 0, sw, c->xq, c->xq_scale, y, false, j->m, k, n,
-                   n0, n1);
-}
-
-/* MATMUL_LOGITS worker: m=1, fp32 output, DDR direct-read only (a single
- * activation row makes VTCM streaming pointless). Same N-slab split and the
- * same mm_compute_range/hvx_dot_i8 path as the W8A8 DDR case. */
-static void mm_logits_worker(void *arg, int wid, int nw) {
-  struct mm_job *j = arg;
-  struct htp_exec_ctx *c = j->c;
-  const struct nntr_htp_op_desc *d = j->d;
-  const uint32_t k = d->k, n = d->n;
-  const int8_t *w = (const int8_t *)htp_ref_ptr(c, d->in1);
-  const float *sw = (const float *)htp_ref_ptr(c, d->in2);
-  float *y = (float *)htp_ref_ptr(c, d->out);
-  uint32_t n0, n1;
-  mm_tile_range(n, wid, nw, &n0, &n1);
-  if (n0 == n1)
-    return;
-  int8_t *rowbuf = c->wrow_scratch + (size_t)wid * k;
-
-  mm_compute_range(w, rowbuf, 0, sw, c->xq, c->xq_scale, y, true, 1, k, n, n0,
-                   n1);
+  mm_tiles(w + (size_t)n0 * k, sw, c->xq, c->xq_scale, y, j->y_is_f32, j->m, k,
+           n, n0, n1);
 }
 
 /* fp16 x . int8 w dot in fp32: each 128B of w is sign-extended to two
@@ -252,7 +239,7 @@ static void mm_w8a16_worker(void *arg, int wid, int nw) {
 
 void hvx_op_matmul_w8a16(struct htp_exec_ctx *c,
                          const struct nntr_htp_op_desc *d) {
-  struct mm_job j = {c, d, htp_m(c, d)};
+  struct mm_job j = {c, d, htp_m(c, d), false};
   wp_run(c->pool, mm_w8a16_worker, &j);
 }
 
@@ -267,7 +254,7 @@ void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
   for (uint32_t t = 0; t < m; ++t) /* one quant pass on op entry */
     c->xq_scale[t] =
       htp_quant_row_fp16(x + (size_t)t * k, c->xq + (size_t)t * k, k);
-  struct mm_job j = {c, d, m};
+  struct mm_job j = {c, d, m, false};
   wp_run(c->pool, mm_worker, &j);
 }
 
@@ -284,6 +271,6 @@ void hvx_op_matmul_logits(struct htp_exec_ctx *c,
   const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
   const __fp16 *x_last = x + (size_t)(c->n_tokens - 1) * k;
   c->xq_scale[0] = htp_quant_row_fp16(x_last, c->xq, k);
-  struct mm_job j = {c, d, 1};
-  wp_run(c->pool, mm_logits_worker, &j);
+  struct mm_job j = {c, d, 1, true};
+  wp_run(c->pool, mm_worker, &j);
 }

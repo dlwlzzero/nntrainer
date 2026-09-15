@@ -56,7 +56,6 @@ int test_logits(void) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)K);
   c.xq_scale = malloc(sizeof(float));
-  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * K);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -83,7 +82,6 @@ int test_logits(void) {
   free(ref);
   free(c.xq);
   free(c.xq_scale);
-  free(c.wrow_scratch);
   wp_destroy(c.pool);
   free(logits);
   free(act);

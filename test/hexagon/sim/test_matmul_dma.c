@@ -3,8 +3,9 @@
  * @file	test_matmul_dma.c
  * @date	18 August 2026
  * @brief	Hexagon-sim test for the MATMUL_W8A8 VTCM/DMA streaming path:
- *		checks it against the scalar reference and against the Task 6
- *		DDR direct-read path for bit-exact fp16 output.
+ *		checks it against the scalar reference and against the DDR
+ *		direct-read path for bit-exact fp16 output at three VTCM sizes
+ *		(4 MB, 256 KB, 64 KB fallback).
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -54,7 +55,6 @@ int test_matmul_dma(void) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)m * k);
   c.xq_scale = malloc((size_t)m * sizeof(float));
-  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * k);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -70,77 +70,70 @@ int test_matmul_dma(void) {
   d.in2.offset = off_sw;
   d.out.buf = NNTR_HTP_BUF_ACT;
 
-  /* DDR direct-read path (Task 6). */
+  /* DDR direct-read path. */
   d.out.offset = off_y_ddr;
   hvx_op_matmul_w8a8(&c, &d);
 
-  /* VTCM/DMA streaming path (this task). */
   compute_res_attr_t rattr;
   HAP_compute_res_attr_init(&rattr);
   HAP_compute_res_attr_set_vtcm_param(&rattr, 4 * 1024 * 1024, 1);
   unsigned ctx_id = HAP_compute_res_acquire(&rattr, 10000 /*us*/);
-  if (ctx_id == 0) {
-    printf("SIM_TEST matmul_dma vtcm acquire fail\n");
-    free(c.xq);
-    free(c.xq_scale);
-    free(c.wrow_scratch);
-    wp_destroy(c.pool);
-    free(act);
-    return 1;
-  }
-  void *vtcm = HAP_compute_res_attr_get_vtcm_ptr(&rattr);
+  void *vtcm = ctx_id ? HAP_compute_res_attr_get_vtcm_ptr(&rattr) : NULL;
   if (!vtcm) {
     printf("SIM_TEST matmul_dma vtcm acquire fail\n");
-    HAP_compute_res_release(ctx_id);
+    if (ctx_id)
+      HAP_compute_res_release(ctx_id);
     free(c.xq);
     free(c.xq_scale);
-    free(c.wrow_scratch);
     wp_destroy(c.pool);
     free(act);
     return 1;
   }
   c.vtcm = (uint8_t *)vtcm;
-  c.vtcm_size = 4 * 1024 * 1024;
-  d.out.offset = off_y_dma;
-  hvx_op_matmul_w8a8(&c, &d);
-  HAP_compute_res_release(ctx_id);
 
-  int rc = 0;
-
-  /* (a) DMA path vs scalar reference. */
   __fp16 *y_ref = malloc((size_t)m * n * sizeof(__fp16));
   ref_matmul_w8a8(x, w, sw, y_ref, m, k, n);
   float *ref_f = malloc((size_t)m * n * sizeof(float));
   float *got_f = malloc((size_t)m * n * sizeof(float));
-  for (uint32_t i = 0; i < m * n; ++i) {
+  for (uint32_t i = 0; i < m * n; ++i)
     ref_f[i] = (float)y_ref[i];
-    got_f[i] = (float)y_dma[i];
+
+  /* VTCM/DMA streaming path at three slab sizes: 4 MB (what htp_graph
+   * acquires), 256 KB (64 KB per worker = exactly one double-buffered
+   * 32-row tile at k=1024, so every chunk is a single tile and each worker
+   * pipelines 24 chunks) and 64 KB (16 KB per worker holds less than two
+   * tiles, so mm_worker_vtcm must fall back to the DDR path). Each run must
+   * match the scalar reference and be bit-identical to the DDR run. */
+  const size_t nbytes = (size_t)m * n * sizeof(__fp16);
+  const uint32_t sizes[3] = {4u << 20, 256u << 10, 64u << 10};
+  int rc = 0;
+  d.out.offset = off_y_dma;
+  for (uint32_t s = 0; s < 3u && !rc; ++s) {
+    char tag[32];
+    c.vtcm_size = sizes[s];
+    memset(y_dma, 0, nbytes);
+    hvx_op_matmul_w8a8(&c, &d);
+    for (uint32_t i = 0; i < m * n; ++i)
+      got_f[i] = (float)y_dma[i];
+    snprintf(tag, sizeof(tag), "matmul_dma_ref_%uk",
+             (unsigned)(sizes[s] >> 10));
+    if (cmp_f(tag, ref_f, got_f, m * n, 2e-3f, 1e-3f))
+      rc = 1;
+    if (memcmp(y_ddr, y_dma, nbytes)) {
+      printf("SIM_TEST matmul_dma FAIL vtcm=%uk differs from the DDR path\n",
+             (unsigned)(sizes[s] >> 10));
+      rc = 1;
+    }
   }
-  if (cmp_f("matmul_dma_ref", ref_f, got_f, m * n, 2e-3f, 1e-3f))
-    rc = 1;
+  HAP_compute_res_release(ctx_id);
+
   free(ref_f);
   free(got_f);
   free(y_ref);
-
-  /* (b) DMA path vs DDR path: must be bit-identical. */
-  size_t nbytes = (size_t)m * n * sizeof(__fp16);
-  int diff = memcmp(y_ddr, y_dma, nbytes);
-  if (diff) {
-    const uint8_t *a = (const uint8_t *)y_ddr, *b = (const uint8_t *)y_dma;
-    size_t i;
-    for (i = 0; i < nbytes; ++i)
-      if (a[i] != b[i])
-        break;
-    printf("SIM_TEST matmul_dma FAIL bit-mismatch at byte %u\n", (unsigned)i);
-    rc = 1;
-  }
-
   free(c.xq);
   free(c.xq_scale);
-  free(c.wrow_scratch);
   wp_destroy(c.pool);
   free(act);
-
   if (rc)
     return 1;
 

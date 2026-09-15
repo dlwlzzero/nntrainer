@@ -2,8 +2,7 @@
 /**
  * @file	test_quant.c
  * @date	18 August 2026
- * @brief	Hexagon-sim test for per-token dynamic quantization and the int8 dot
- * primitive
+ * @brief	Hexagon-sim test for per-token dynamic quantization
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -20,9 +19,6 @@
 static __fp16 x_row[KQ] __attribute__((aligned(128)));
 static int8_t q_got[KQ] __attribute__((aligned(128)));
 static int8_t q_ref[KQ] __attribute__((aligned(128)));
-
-static int8_t w_i8[KQ] __attribute__((aligned(128)));
-static int8_t x_i8[KQ] __attribute__((aligned(128)));
 
 static int test_quant_row(void) {
   /* (a) random fp16 row: all int8 values identical and scale exactly equal. */
@@ -62,27 +58,8 @@ static int test_quant_row(void) {
   return 0;
 }
 
-static int test_dot_i8_k(uint32_t k) {
-  for (uint32_t i = 0; i < k; ++i) {
-    w_i8[i] = (int8_t)(frand() * 127.f);
-    x_i8[i] = (int8_t)(frand() * 127.f);
-  }
-  int32_t got = hvx_dot_i8(w_i8, x_i8, k);
-  int32_t ref = ref_dot_i8(w_i8, x_i8, k);
-  if (got != ref) {
-    printf("SIM_TEST quant FAIL dot_i8 k=%u got=%d ref=%d\n", (unsigned)k,
-           (int)got, (int)ref);
-    return 1;
-  }
-  return 0;
-}
-
 int test_quant(void) {
   if (test_quant_row())
-    return 1;
-  if (test_dot_i8_k(128))
-    return 1;
-  if (test_dot_i8_k(1024))
     return 1;
 
   printf("SIM_TEST quant PASS\n");

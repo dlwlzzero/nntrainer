@@ -53,7 +53,6 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
   c.pool = wp_create(0);
   c.xq = memalign(128, (size_t)m * k);
   c.xq_scale = malloc((size_t)m * sizeof(float));
-  c.wrow_scratch = memalign(128, (size_t)wp_size(c.pool) * k);
 
   struct nntr_htp_op_desc d;
   memset(&d, 0, sizeof(d));
@@ -110,7 +109,6 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
   free(y_ref);
   free(c.xq);
   free(c.xq_scale);
-  free(c.wrow_scratch);
   free(wrm);
   wp_destroy(c.pool);
   free(act);
@@ -118,6 +116,9 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
 }
 
 int test_matmul(void) {
+  /* n=64 is two tiles over four workers: two workers get an empty range. */
+  if (run_case(1, 1024, 64, 0))
+    return 1;
   if (run_case(1, 1024, 256, 0))
     return 1;
   if (run_case(8, 1024, 256, 0))
