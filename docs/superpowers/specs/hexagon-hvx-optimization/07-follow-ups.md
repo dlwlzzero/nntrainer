@@ -24,6 +24,8 @@ M5에서 하네스는 이미 최고 클럭(2.09 Gcyc/s)이었지만, 앱은 토�
 
 HEXAGON.md §7. IEEE hf·qf32 체인 오동작 원인 규명 후 `HEX_ARCH=v79` 기본화. 타일 커널(P3)·int16 lanewise 커널(P4)은 qf 포맷 규칙만 쓰므로 영향 없음. 전제: ⑭ SDK 상향(v79 QuRT sim 이미지는 6.0.0.2에 없어 sim 게이트가 v75에 묶여 있음). 작업 순서: (1) ⑭ 후 v79 sim에서 13개 + `profile acc` 재실행, (2) `HEX_ARCH=v79 build_skel.sh` → 디바이스 e2e PPL이 v75 skel과 일치하는지, (3) `hvx-base.h`의 `__HVX_ARCH__ >= 79` 분기(`Wsf_vmpyacc`, `Vsf_vadd/vmpy` IEEE 경로)가 §7 규칙 1의 실리콘 오동작을 다시 밟지 않도록 qf 경로 강제 여부 결정, (4) 기본값 v79로 전환 + HEXAGON.md §5.3/§7 갱신.
 
+- **(1) 결과 (#23, 2026-09-17, SDK 6.4.0.2 / hexagon-clang 19.0.04, v79 sim)**: 13개 중 9 PASS / 4 FAIL. FAIL = `quant`(tie 행 `x=-1.5`가 `-2` 대신 `-1`, `rand0`/`rand15`/`k3072`에 ±1 원소 1개씩, `quant_generic 13/65536`, `quant16_generic 229/25600`), `matmul`(`w8a8_m1` max_abs 0.03125 / max_rel 0.045677), `matmul_dma`(`ref_4096k` 0.0625 / 0.273998), `logits`(0.0195827 / 0.273973). PASS = smoke pool exp rmsnorm rope eltwise embed attn graph. 즉 실패면은 `hvx-quant.h`·`hvx-matmul.c` 에필로그의 `>= 79` 분기(양자화기·W8A8 에필로그)이고 attn/eltwise는 sim에서 통과. `profile acc` v79: PASS, STAT `max_abs=0.0899355 max_rel=49.2742`(v75 값에서 이동, 0.1 밴드 안), v79 sim은 HVX 6유닛이라 `workers=6`(`total_pcycles` 6,105,728; v75 4워커와 비교 불가). (2)는 `docs/measurements/23-sdk64-baseline.md` 변형 B로 진행 중.
+
 ## ⑤ down_proj 레이아웃 단일화 (속도 문제는 P4가 해소)
 
 - **P4 갱신(2026-09-16)**: 속도 문제는 블록 양자화가 아니라 **per-token int16 + int32 lane-wise 누적**으로 해소됐다(acc per_call 3.58×, [04 측정 기록](04-w8a16-down-kernel.md#측정-기록-2026-09-16)). 정확도도 개선 방향(x86 PPL −0.83 %)이라 int8 블록 양자화로 갈 이유가 없어졌다. 남은 것은 **레이아웃 단일화**뿐이다.
@@ -71,7 +73,9 @@ P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 s
 
 P4의 int16 lanewise `down_proj` 커널은 DDR 직접 읽기(행 4개 × 3 KB 동시 스트림)다. sim은 DDR/DMA를 모델링하지 않아 스트리밍의 이득을 판정할 수 없어 제외했다. 디바이스에서 `HTP_MM_NO_VTCM`식 A/B(같은 세션, decode·prefill 모두)로 판정하고, 이득이 있으면 `mm_worker_vtcm`의 청킹(`rows_per_buf`를 `MM16_R` 배수로)을 row-major용으로 일반화한다. `hvx-matmul.c`의 `Follow-up:` 노트가 자리다.
 
-## ⑭ Hexagon SDK 6.0.0.2 → 6.4 이상 상향 — **사용자 요청(2026-09-16)**
+## ⑭ Hexagon SDK 6.0.0.2 → 6.4 이상 상향 — **사용자 요청(2026-09-16)** — **완료(디바이스 확인 대기, #23)**
+
+- 2026-09-17, `docs/plans/23-sdk64-baseline.md` / 브랜치 `hvx/23-sdk64-baseline`: 컨테이너(`tools/docker/`)에서 SDK 6.4.0.2 / hexagon-clang 19.0.04(`toolv19`)로 v75 13개 + `profile acc` 전부 PASS, STAT은 P4 기록과 비트 동일(HEXAGON.md §8.3). `hexagon_toolv19_v79`·`computev79` 존재, `-mhvx-ieee-fp` v75/v79 모두 허용(스크립트가 프로브해 출력), `Q6_*` 94개 이름 모두 19.0.04 헤더에 존재(리네임 없음). HexKL은 1.0.0-beta1(`lib/hexagon_toolv19_{v73,v75,v79}`)이 `~/Qualcomm/hexkl_addon`에 있어 공존 문제 없음(#27). 디바이스 재측정은 `docs/measurements/23-sdk64-baseline.md`(v75/v79 skel, 512/1024/4096) 핸드오프로 진행; 채워지면 완료.
 
 현재 sim·skel 빌드는 `/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.0.0.2`(toolchain 8.7.08)에 고정돼 있고, QuRT sim 이미지가 v75까지만 있어 sim 게이트가 v75다(HEXAGON.md §5.2는 SDK 6.3.0.0/toolchain 8.8에서도 통과했다고 기록). 상향 시 확인할 것: `setup_sdk_env.source` 경로(`build_sim_test.sh`, `run_sim_test.sh`, `build_skel.sh`, 계획서·핸드오프의 하드코딩), `run_main_on_hexagon` 이미지의 `hexagon_toolv*_v79` 존재, `-mhvx-ieee-fp` 플래그 호환, `hvx_hexagon_protos.h` 인트린식 이름 변화, HexKL(6.0.0.2 lib)과의 공존(메모리 `hmx-impl-worktree`). 완료 후 13개 + `profile acc` + 디바이스 e2e를 새 SDK로 재측정하고 HEXAGON.md §5.2/§8.3의 SDK·툴체인 표기를 갱신한다. ④의 전제.
 
