@@ -29,14 +29,16 @@ fi
 mkdir -p "$LOG_DIR"
 "${ADB[@]}" shell mkdir -p "$DEV_DIR"
 
-# push only when the device copy is missing or has a different size (the
-# full image is ~600MB; re-pushing it every run would dominate the loop)
+# push only when the device copy is missing or differs (md5, not size: ABI
+# v4 reordered the ~600MB image without changing its size and a size check
+# kept a stale copy on the device; the device md5 of 600MB takes a few
+# seconds, re-pushing every run would take minutes)
 push_if_changed() {
   local src="$1" dst="$DEV_DIR/$(basename "$1")"
-  local lsize dsize
-  lsize=$(stat -c %s "$src")
-  dsize=$("${ADB[@]}" shell "stat -c %s '$dst' 2>/dev/null || echo -1" | tr -d '\r')
-  if [ "$lsize" != "$dsize" ]; then
+  local lsum dsum
+  lsum=$(md5sum "$src" | cut -d' ' -f1)
+  dsum=$("${ADB[@]}" shell "md5sum '$dst' 2>/dev/null" | cut -d' ' -f1 | tr -d '\r')
+  if [ "$lsum" != "$dsum" ]; then
     "${ADB[@]}" push "$src" "$dst"
   fi
 }
