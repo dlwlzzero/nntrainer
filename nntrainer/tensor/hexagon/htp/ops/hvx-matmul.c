@@ -60,9 +60,9 @@ static void mm_tile_range(uint32_t n, int wid, int nw, uint32_t *n0,
  * tb token rows. int32 lanes are exact whatever the order, so the sums are
  * bit-exact against the scalar reference; the scale product keeps the
  * reference order ((float)acc * sw) * sx, in qf32 (HEXAGON.md section 7:
- * qf-format ops only), and narrows to fp16 once (Vhf_equals_Wqf32, exact
- * RNE). Always inlined with a constant tb so the accumulators stay in
- * registers. */
+ * qf-format ops only), and narrows to fp16 once (Vhf_equals_Wqf32, RNE
+ * except exact ties (qf32 carries an implicit half-LSB)). Always inlined
+ * with a constant tb so the accumulators stay in registers. */
 static inline __attribute__((always_inline)) void
 mm_tile(const HVX_Vector *wv, HVX_Vector swv, const int8_t *xq, const float *sx,
         uint8_t *y, size_t y_stride, bool y_is_f32, uint32_t k, uint32_t tb) {
@@ -201,8 +201,9 @@ static void mm_worker(void *arg, int wid, int nw) {
 }
 
 /* Per-token quantization spread over the pool: rows [m*wid/nw, m*(wid+1)/nw).
- * Same scalar routine as before, so xq/xq_scale bytes are unchanged; one
- * extra barrier replaces a serial 128 x k loop on the RPC thread. */
+ * Dispatches the HVX routine htp_quant_row_fp16 over the pool, each row
+ * quantized by exactly one worker; also used for the single LOGITS row so
+ * that no HVX code ever runs on the RPC thread. */
 struct quant_job {
   const __fp16 *x;
   int8_t *xq;
@@ -289,10 +290,13 @@ void hvx_op_matmul_logits(struct htp_exec_ctx *c,
   const uint32_t k = d->k;
   /* in0 is the full X fp16[n_tokens][k]; only the last token row feeds the
    * logits. The desc carries m=1, so the row offset comes from the runtime
-   * chunk size c->n_tokens, not from htp_m(). */
+   * chunk size c->n_tokens, not from htp_m(). Quantization of that single
+   * row runs on the worker pool via quant_worker, same as W8A8, so no HVX
+   * code ever executes on the RPC/caller thread. */
   const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
   const __fp16 *x_last = x + (size_t)(c->n_tokens - 1) * k;
-  c->xq_scale[0] = htp_quant_row_fp16(x_last, c->xq, k);
+  struct quant_job q = {x_last, c->xq, c->xq_scale, 1u, k};
+  wp_run(c->pool, quant_worker, &q);
   struct mm_job j = {c, d, 1, true};
   wp_run(c->pool, mm_worker, &j);
 }

@@ -27,7 +27,8 @@ struct htp_exec_ctx {
   int8_t *xq;          /**< per-token quant scratch [max_chunk][k_max] */
   float *xq_scale;     /**< [max_chunk] */
   float *attn_scratch; /**< [n_workers][max_seq] fp32 scores */
-  uint8_t *vtcm;       /**< Task 7 onward, split per worker */
+  uint8_t *vtcm;       /**< per-worker weight double buffer for the tiled matmul
+                          (hvx-matmul.c) */
   uint32_t vtcm_size;
   /* Per-op-kind profile, accumulated by htp_graph_forward_upto around each
    * op call; read/cleared through htp_graph_profile_get/reset. Sim-side

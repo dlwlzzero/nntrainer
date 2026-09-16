@@ -7,6 +7,7 @@
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
  */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 

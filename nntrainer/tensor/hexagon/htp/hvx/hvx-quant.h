@@ -39,9 +39,13 @@ static inline float htp_quant_row_fp16(const __fp16 *x, int8_t *q, uint32_t k) {
    * "+half-1+lsb" step is then ties-to-even like lrintf. The rounding
    * resolution is therefore 2^-14: a true product landing within 2^-14 above a
    * .5 tie rounds to even instead of up, which makes about 3.6e-5 of the
-   * elements differ from ref_quant_row by one LSB. A NaN input also counts as
-   * the absmax here (its sign-cleared bits exceed every finite one) while the
-   * scalar reference skips it. */
+   * elements differ from ref_quant_row by one LSB. That 3.6e-5 figure is a
+   * modelled/theoretical rate over uniformly random ties; test_quant's
+   * frand-generated data is dyadic, so near-ties in that test always land on
+   * an odd n and are not truly random, which is why the test's observed
+   * pm1=0/65536 is expected rather than a contradiction of the ~3.6e-5
+   * figure. A NaN input also counts as the absmax here (its sign-cleared
+   * bits exceed every finite one) while the scalar reference skips it. */
   const HVX_Vector vinv = hvx_vec_splat_f32(inv);
   const HVX_Vector magic = Q6_V_vsplat_R(0x43C00000);
   const HVX_Vector one = Q6_V_vsplat_R(1);
