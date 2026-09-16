@@ -20,6 +20,18 @@ OUT="$REPO/build_hexagon"
 
 mkdir -p "$OUT/generated" "$OUT/skel"
 
+# HEXAGON.md §7 rule 4: the kernels need -mhvx-ieee-fp for the fp16 intrinsics
+# (accepted by toolchain 8.8 and 19.0.04 on v75 and v79). Probe it instead of
+# assuming it so an SDK that drops or implies the flag still builds; the
+# outcome is printed so every build log records which way it went.
+HEX_CLANG="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang"
+if "$HEX_CLANG" -m"$HEX_ARCH" -mhvx -mhvx-length=128B -mhvx-ieee-fp -c -x c /dev/null -o /dev/null 2>/dev/null; then
+  HEX_IEEE_FLAG=-mhvx-ieee-fp
+else
+  HEX_IEEE_FLAG=
+fi
+echo "hexagon-clang $HEX_ARCH: -mhvx-ieee-fp probe -> ${HEX_IEEE_FLAG:-<not accepted, omitted>}"
+
 "$HEXAGON_SDK_ROOT/ipc/fastrpc/qaic/Ubuntu/qaic" \
     -I "$HEXAGON_SDK_ROOT/incs" \
     -I "$HEXAGON_SDK_ROOT/incs/stddef" \
@@ -32,8 +44,8 @@ for f in "$HTP_DIR"/worker_pool.c "$HTP_DIR"/htp_graph.c \
   [ -e "$f" ] && SRCS+=("$f")
 done
 
-"$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
-    -m"$HEX_ARCH" -mhvx -mhvx-length=128B -mhvx-ieee-fp -G0 -O3 -fPIC -shared \
+"$HEX_CLANG" \
+    -m"$HEX_ARCH" -mhvx -mhvx-length=128B $HEX_IEEE_FLAG -G0 -O3 -fPIC -shared \
     -Wall -Werror -Wno-unused-function \
     -I "$OUT/generated" \
     -I "$HTP_DIR" -I "$HTP_DIR/ops" -I "$HTP_DIR/hvx" -I "$HTP_DIR/hex" \
