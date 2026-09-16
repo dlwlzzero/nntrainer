@@ -10,10 +10,15 @@ Status: qwen3-0.6b (W8_CX int8 weights) runs end-to-end on an 8 Elite
 cDSP from a packed weight image and matches the x86 reference executor at
 the model level (PPL 19.98 vs 20.27 reference). The CausalLM app runs it
 through `"engine": "htp"` in `nntr_config.json` (section 5.4) at
-13 tok/s decode / 24 tok/s prefill, with CPU fallback verified. That is
-still **slower than the same phone's CPU running the fp32 checkpoint
-(18.7 tok/s decode)**: the W8A8 matmul inner loop is compute-bound
-(section 8.2) and is the next piece of work (section 9). The standalone
+13 tok/s decode / 24 tok/s prefill, with CPU fallback verified — behind
+the same phone's CPU on the fp32 checkpoint (18.7 tok/s decode), but
+those are M5-kernel numbers. M6 P3's tiled `vrmpy` matmul cuts DSP
+decode time 2.5–2.8× on an S25 Ultra (55.9 M pcycles/step teacher-forced,
+21.8 tok/s host wall) and a 128-token prefill chunk from ≈5.4 s to
+736 ms, with the PPL matching the x86 reference (section 8.2); the
+app-level numbers in section 5.4 predate it. What now limits decode on
+the device is the host side — RPC plus the 151,936-float logits copy and
+argmax, ~40 ms per generation step (section 9). The standalone
 harnesses in section 5.3 remain the measurement/debug entry points.
 
 ---
@@ -123,13 +128,13 @@ LOGITS) plus a 128-byte-aligned offset.
 |------|----------|
 | `EMBED` | tiled32 int8 embedding row gather + dequant → fp16 |
 | `RMSNORM` | RMS norm, optional per-head QK-Norm (`FLAG_PER_HEAD`) |
-| `MATMUL_W8A8` | per-token dynamic-quant int8×int8 matmul over tiled32 weights → fp16 |
+| `MATMUL_W8A8` | per-token dynamic-quant int8×int8 tiled `vrmpy` matmul (32 rows per vector) → fp16 |
 | `MATMUL_W8A16` | fp16 activation × int8 weight, fp32 accumulate → fp16 (no activation quant; `down_proj`) |
 | `ROPE` | rotary embedding on q/k in place, precomputed cos/sin |
 | `ATTN` | causal GQA attention against the persistent KV cache |
 | `SILU_MUL` | SiLU(gate) ⊙ up |
 | `ADD` | elementwise residual add |
-| `MATMUL_LOGITS` | last-token int8 matmul over tiled32 weights → fp32 logits |
+| `MATMUL_LOGITS` | last-token int8 tiled `vrmpy` matmul → fp32 logits (same kernel, VTCM-streamed) |
 
 `init()` validates everything up front (header, kinds, alignment, every
 tensor ref bounds-checked against the real buffer sizes) and rejects a
@@ -208,11 +213,12 @@ before. For qwen3-0.6b (28 layers, hidden 1024, 16/8 heads, head_dim
 128, ffn 3072, vocab 151936, max_seq 2048) the image is still exactly
 **598,623,744 bytes** with no alignment padding.
 
-Until the tiled `vrmpy` kernel lands (M6 P3) the `MATMUL_W8A8` /
-`MATMUL_LOGITS` kernels gather each output row from the tiles into a
-per-worker scratch row and run the previous row-dot; `EMBED` indexes the
-table through `nntr_htp_tile_off`. That bridge is correctness-only
-(K/4 scalar loads per output row).
+Since M6 P3 the `MATMUL_W8A8` / `MATMUL_LOGITS` kernel reads a tile
+strip as `k/4` consecutive vectors (`kt*4096 + g*128 == 128*(k/4)`), one
+`vrmpyacc` per vector per token against a 4-byte activation splat, and
+finishes the 32 lanes in qf32 (section 7, rule 5). `EMBED` still indexes
+the table through `nntr_htp_tile_off` (a gather of K/4 4-byte loads per
+token; it runs once per forward).
 
 ### 2.2 ACT buffer
 
@@ -234,6 +240,17 @@ The KV cache is separate: `kv_size = 2 * n_layers * n_kv_heads * max_seq
 transposed (`[head_dim][max_seq]`) so the score kernel streams 64
 positions per vector; V is `[max_seq][head_dim]`. The validator requires
 `max_seq % 64 == 0`. The layout is DSP-private (never read by the host).
+
+**VTCM (4 MB requested best-effort at `init`).** `MATMUL_W8A8` /
+`MATMUL_LOGITS` split it evenly per worker (rounded down to 128 B) and
+use each slab as a two-chunk double buffer of whole 32-row tiles
+(`rows_per_buf & ~31`; `buf[1] = buf[0] + rows_per_buf*k` stays
+vector-aligned because `rows_per_buf % 32 == 0` and `k % 128 == 0`).
+Activations are not copied into VTCM: the kernel reads the quantized
+rows `xq` through the cache with 4-byte scalar loads, for which VTCM
+brings nothing. A slab that cannot hold two tiles (or `HTP_MM_NO_VTCM`)
+falls back to direct DDR reads with bit-identical output
+(`test_matmul_dma` checks 4 MB, 256 KB and 64 KB).
 
 ### 2.3 Op sequence
 
@@ -293,10 +310,10 @@ nntrainer/tensor/hexagon/
 │   ├── htp_graph.{h,c}       # executor: pool, scratch, VTCM, dispatch, forward_upto
 │   ├── worker_pool.{h,c}     # QuRT worker pool + barrier
 │   ├── ops/                  # one kernel per op kind
-│   │   ├── hvx-matmul.c      # W8A8 (DDR + VTCM/DMA), W8A16, LOGITS
+│   │   ├── hvx-matmul.c      # tiled vrmpy W8A8/LOGITS (VTCM/DMA streaming) + quant worker; W8A16 row-major
 │   │   ├── hvx-attn.c / hvx-rmsnorm.c / hvx-rope.c / hvx-embed.c
 │   │   └── hvx-eltwise.c     # ADD + SILU_MUL
-│   ├── hvx/                  # vector helpers: f16 math, quant; exp/inverse from ggml-hexagon
+│   ├── hvx/                  # vector helpers: f16 math, per-token int8 quantization (HVX); exp/inverse from ggml-hexagon
 │   ├── hex/                  # scalar utils (ggml-hexagon)
 │   └── dma/                  # user-DMA queue (ggml-hexagon)
 ├── host/                     # NDK clang, part of libnntrainer (enable-hexagon)
@@ -417,6 +434,15 @@ v75 and v79 (SDK 6.3.0.0, toolchain 8.8). The `run_main_on_hexagon`
 image is picked per `HEX_ARCH`; `HEX_EXTRA_CFLAGS` appends compiler
 flags to both sim and skel builds.
 
+`test_matmul` covers m ∈ {1, 7, 8, 128} at n = 256 plus n = 64, which is
+two tiles over four workers so two of them get an empty range;
+`test_matmul_dma` runs the VTCM path at 4 MB / 256 KB / 64 KB (the last
+one falls back to DDR). `test_quant` requires byte-identity against
+`ref_quant_row` on random, all-zero, tie, negative-only, k=128 and
+k=3072 rows and at most a 2e-4 rate of ±1 differences on 64 generic
+rows, printing `SIM_TEST quant_generic STAT pm1=<n>/<total>`
+(section 7, rule 6).
+
 **Profile test.** `run_sim_test.sh profile <acc|prefill0|prefill512|decode512>
 [n_workers]` lowers the qwen3-0.6b shape with 2 layers and vocab 4096
 (`sim_model`) and prints `SIM_PROF` lines: per-op-kind pcycles
@@ -443,6 +469,9 @@ rescales to 28 layers / full vocab and prints a sim-derived ms/token at
 2.09 GHz; these are simulator cycles, not device measurements
 (section 8.3). Every scenario also prints one `SIM_PROF op=` line per op
 (kind, layer, k, n, pcycles); `summ_prof.py` groups them by (kind, k, n).
+`summ_prof.py` also prints a ms/tok row for `acc`; that is an 8-token
+gate run, not a measurement — use the three long scenarios
+(section 8.3).
 
 ### 5.3 Device
 
@@ -465,6 +494,15 @@ DSP FARF lines never reach logcat — and capture them into
 `logs/hexagon/device_farf_<stamp>.log`. `run_e2e_test.sh` pushes the skel,
 harness, image and token file only when the device copy differs in size
 (the image is ~600 MB) and pulls back `--dump-out` files.
+
+**Pitfall: that push check compares file size only.** ABI v4 reordered
+the WEIGHTS bytes without changing the image size (still 598,623,744),
+so a device that already held a pre-v4 image kept it — a row-major image
+paired with a `.hexcfg` claiming `weight_layout=tiled32`, which every P2
+and P3 skel read as garbage (PPL 2e8 … nan) until the `.hexw` was pushed
+by hand. After regenerating an image, either `adb push` the `.hexw`
+explicitly or compare `md5sum` with the device copy. Teaching the script
+to checksum is a follow-up.
 
 `hexagon_rpc_test` drives `init()` with `n_ops == 0` and verifies the
 RPC/mapping contract: session open, rpcmem, ABI-mismatch rejection, fd
@@ -587,6 +625,56 @@ simulators pass either way, so a device pass is not optional.
    `1/(1+inf)` into NaN instead of 0.
 4. The kernels require `-mhvx-ieee-fp` (toolchain 8.8) for the fp16
    intrinsics; both build scripts pass it.
+5. **Tiled int8 matmul (M6 P3).** The weight vector is shared across
+   tokens and the activation is broadcast with `Q6_V_vsplat_R` of 4
+   quantized bytes; `Q6_Vw_vrmpyacc_VwVbVb` (signed × signed) accumulates
+   32 rows in int32, which is exact in any order, so the sums match the
+   scalar reference bit for bit. The epilogue converts with
+   `Q6_Vsf_equals_Vw` and multiplies in the reference's order
+   `((float)acc * sw[n]) * sx[t]` through `Vqf32_vmpy_VsfVsf` /
+   `Vsf_equals_Vqf32`, then narrows once with `Vhf_equals_Wqf32`
+   (`hvx_vec_f32_to_f16`). Both stores go through `hvx_vec_store_u` —
+   64 B per tile for fp16, 128 B for the fp32 logits, whose pointer
+   carries no alignment guarantee. qf32 rounding can differ from the
+   CPU's IEEE product by one fp16 ulp, which moved the `matmul_w8a8_m8`
+   STAT from `max_abs` 0 to 0.0078125 (one fp16 ulp) and is why the unit
+   tests keep a 2e-3/1e-3 bound; the `profile acc` STAT did not move
+   (section 8.3), and the integer path itself is exact.
+   `Q6_Vsf_equals_Vw` is the one instruction P3 newly exercises on
+   silicon — no earlier kernel converted int32 to fp32 in vector — and
+   rule 1 makes that worth stating; the S25 Ultra `--eval` run
+   (section 8.2) matched the x86 reference, so it behaves.
+6. **Vector per-token quantization (M6 P3).** `htp_quant_row_fp16` takes
+   `absmax` as an unsigned integer max over sign-cleared fp16 bits
+   (exact — positive fp16 bit patterns are monotone in value), forms the
+   fp32 product with `Vqf32_vmpy_VsfVsf` / `Vsf_equals_Vqf32`, then
+   rounds by adding the magic `1.5*2^8` in qf32 so that the resulting sf
+   bits minus the magic bits read `2*floor(p*2^14) + 1`, shifting that
+   toward zero and finishing with an integer ties-to-even step. A plain
+   magic add does not work here: Qfloat uses Von Neumann rounding (the
+   fraction LSB is an implicit one — V75 HVX PRM §4.6), so every qf32
+   result is truncated onto a 2-ulp grid and biased half a step away
+   from zero before any rounding code runs, and no qf-only kernel can
+   reproduce `lrintf(fl32(x*inv))` for every input. Rounding therefore
+   happens at 2^-14 resolution and differs from the scalar
+   `ref_quant_row` by one int8 step on roughly 3.6e-5 of elements of
+   generic data (modelled; 0/65536 observed on the simulator), which is
+   what `test_quant`'s ±1 rate bound allows (section 5.2). NaN inputs
+   count towards `absmax` here while the scalar skips them. Still to do
+   on the device: run the tie row explicitly. The negative-tie path
+   relies on Qfloat rounding being sign-symmetric, which the PRM does not
+   spell out, and the S25 Ultra `--eval` match (section 8.2) only covers
+   it indirectly.
+7. **HVX code may only run on pool workers.** `wp_create` has every
+   worker `qurt_hvx_lock` a 128 B unit at thread entry and hold it for
+   the session, so no unit is left for the RPC/caller thread: it owns no
+   HVX context, and locking one there deadlocks. Anything vectorized
+   therefore has to go through `wp_run`, including the degenerate cases
+   — the `MATMUL_LOGITS` row was quantized inline on the caller until
+   P3's last commit routed it through `quant_worker`, paying one barrier
+   rather than shortcutting `m == 1`. The simulator does not enforce
+   context ownership, so this class of bug is invisible there and only a
+   device run (or review) catches it.
 
 ---
 
@@ -617,7 +705,7 @@ Prejudice*, first 70k chars in 8 × 2048-token windows (torch proxy).
 * 1-layer image: device vs reference top-1 8/8, generated ids identical;
   per-op rel-RMS ≤ 1e-4 up to ATTN, bit-exact for EMBED / RMSNORM / W8A8.
 
-### 8.2 Performance (M5)
+### 8.2 Performance on device (M5, then M6 P3)
 
 `--chunk 128 --steps 64`; medians over decode steps 2–64, host wall time
 around each RPC. "M4" is the scalar-score attention kernel, "M5" the
@@ -669,11 +757,38 @@ prefill, so neither is limited by getting weights into the core.
 
 `max_chunk=128` stays the default. Prefill costs ~43 ms per token whatever
 the chunk size — about 10 GMAC/s on 0.44 GMAC/token — so the W8A8 matmul
-is compute-bound in its inner loop (`hvx_dot_i8` per (row, token) with a
-horizontal reduction each, the same shape the attention kernel had), not
-bandwidth-bound; that is the next target.
+is compute-bound in its inner loop (the M5 kernel ran one dot product
+per (row, token), each with a horizontal reduction — the same shape the
+attention kernel had before M5), not
+bandwidth-bound; that was M6 P3's target (section 8.3).
 
-### 8.3 Simulator profile (M6 baseline)
+**M6 P3 on device.** Galaxy S25 Ultra (R3CY10WM83Y), v75 skel built at
+`343653a5`, 2026-09-16. `run_device_test.sh` RPC_TEST PASS (median
+259 µs round-trip). Measured against the M5 numbers above on the same
+harness:
+
+| | M5 | M6 P3 |
+|---|---|---|
+| `--eval` 386 steps, PPL / top-1 | 19.9787 / 157 (`eval.txt`) | **37.5336 / 134** (x86 reference 37.4738 / 133) |
+| `--eval` decode, DSP pcycles/step | 156 M (77.1 ms, 13.0 tok/s) | **55.9 M** (26.8 ms); host wall 45.8 ms (**21.8 tok/s**) |
+| `--chunk 128 --steps 64` decode | 185 M (89.2 ms, 11.2 tok/s) | ~73 M steady (35 ms) after a ~92 M warm-up over ~20 steps; host wall 76.4 ms (13.1 tok/s) |
+| 128-token prefill chunk at pos 0 | ≈ 5.4 s | **1,413 M pcycles / 736 ms** host |
+
+The PPL pair is the accuracy result that matters: 37.5336 on the device
+against 37.4738 from `hexagon_ref_run` on the same tokens — the local
+prompt of section 5.1, not `eval.txt`, so the absolute value is not
+comparable to the 19.98 in the M5 row; the DSP-vs-reference gap is what
+is being read. That closes the silicon question for the tiled kernel,
+`Q6_Vsf_equals_Vw` and the vector quant at once (section 7, rules 5–6).
+
+DSP decode time fell 2.5–2.8×, but ~40 ms of every generation step is
+host-side — the RPC round trip plus copying and argmax-ing 151,936
+floats of logits — so on the device the decode bottleneck is now the
+host/RPC path, not the DSP (section 9). The two decode rows differ
+because `--eval` is teacher-forced (no sampling, no KV divergence) while
+`--steps` generates; the warm-up is not explained yet.
+
+### 8.3 Simulator profile (M6 baseline and P3)
 
 hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
 vocab-4096 model, workers 4 (auto; `htp_graph_init_ex` can request a
@@ -689,8 +804,9 @@ aborted after 30 minutes without reaching its first
 `SIM_PROF scenario=` line (it stalled inside the 8-token accuracy
 forward), against 23m48s wall-clock for the non-timing run below
 (prefill512 41m35s, decode512 34m42s). The accuracy gate for these runs
-is `profile_prefill_acc STAT max_abs=0.0914676 max_rel=93.3662` — moved
-from the P1 baseline because the sim profile model (`sim_model.c` fill)
+is `profile_prefill_acc STAT max_abs=0.0914676 max_rel=93.3662`
+(unchanged through every M6 P3 commit) — moved once at P2, because the
+sim profile model (`sim_model.c` fill)
 is now a permuted draw of the same random bytes, read through the tile
 index instead of row-major, so the reference and DSP inputs differ from
 P1's numerically but the kernels vs. scalar references still agree
@@ -701,22 +817,30 @@ bit-exactly on every integer path — inside the 0.1 atol/rtol bound
 
 | scenario | workers | timing | tokens | total | EMBED | RMSNORM | MATMUL_W8A8 | ROPE | ATTN | SILU_MUL | ADD | MATMUL_LOGITS | MATMUL_W8A16 | barrier/op |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| prefill0 | 4 | off | 128 | 1028601630 | 1479141 | 1157993 | 939704687 | 298476 | 6102014 | 1291956 | 83238 | 601029 | 77882241 | 4332 |
-| prefill512 | 4 | off | 128 | 1059812175 | 1479915 | 1158034 | 938298568 | 298476 | 38715038 | 1292706 | 85885 | 600504 | 77882194 | n/a\* |
-| decode512 | 4 | off | 1 | 9265863 | 50160 | 78894 | 7533759 | 10344 | 288128 | 50531 | 22739 | 600837 | 632788 | n/a\* |
+| prefill0 (P1) | 4 | off | 128 | 1028601630 | 1479141 | 1157993 | 939704687 | 298476 | 6102014 | 1291956 | 83238 | 601029 | 77882241 | 4332 |
+| prefill512 (P1) | 4 | off | 128 | 1059812175 | 1479915 | 1158034 | 938298568 | 298476 | 38715038 | 1292706 | 85885 | 600504 | 77882194 | n/a\* |
+| decode512 (P1) | 4 | off | 1 | 9265863 | 50160 | 78894 | 7533759 | 10344 | 288128 | 50531 | 22739 | 600837 | 632788 | n/a\* |
+| prefill0 (P3) | 4 | off | 128 | 109369374 | 1553238 | 1161944 | 20931070 | 298446 | 6101996 | 1291212 | 82445 | 65485 | 77882368 | 4329 |
+| prefill512 (P3) | 4 | off | 128 | 141982701 | 1553631 | 1161983 | 20931069 | 298446 | 38715020 | 1291212 | 82450 | 65485 | 77882235 | 4329 |
+| decode512 (P3) | 4 | off | 1 | 1664446 | 52185 | 79464 | 462297 | 10326 | 288110 | 49828 | 23310 | 65092 | 632676 | 4329 |
 
-\* `barrier_empty_x1000` is only in the `prefill0` log — the other two
+\* `barrier_empty_x1000` is only in the P1 `prefill0` log — the other two
 were recorded before the test printed that line. The barrier cost does
 not depend on the scenario, so the `prefill0` value (4332 cyc/op) is
-applied to all three rows of the scaled table below via `--barrier-cyc`.
+applied to all three P1 rows of the scaled table below via
+`--barrier-cyc`; the P3 logs all carry the line. All three P3 rows come
+from one commit (`343653a5`).
 
-**scaled to 28 layers / vocab 151936 (sim-derived ms at 2.09 GHz, NOT device time; 451 ops/token, barrier/op override = 4332 cyc)**
+**scaled to 28 layers / vocab 151936 (sim-derived ms at 2.09 GHz, NOT device time; 451 ops/token, barrier/op override = 4332 cyc for the P1 rows)**
 
 | scenario | workers | timing | ms/tok | barrier ms/tok | EMBED | RMSNORM | MATMUL_W8A8 | ROPE | ATTN | SILU_MUL | ADD | MATMUL_LOGITS | MATMUL_W8A16 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| prefill0 | 4 | off | 53.82 | 0.007 | 0.01% | 0.11% | 91.39% | 0.03% | 0.59% | 0.13% | 0.01% | 0.15% | 7.57% |
-| prefill512 | 4 | off | 55.45 | 0.007 | 0.01% | 0.11% | 88.57% | 0.03% | 3.65% | 0.12% | 0.01% | 0.15% | 7.35% |
-| decode512 | 4 | off | 69.35 | 0.935 | 0.04% | 0.77% | 73.77% | 0.10% | 2.82% | 0.49% | 0.22% | 15.59% | 6.20% |
+| prefill0 (P1) | 4 | off | 53.82 | 0.007 | 0.01% | 0.11% | 91.39% | 0.03% | 0.59% | 0.13% | 0.01% | 0.15% | 7.57% |
+| prefill512 (P1) | 4 | off | 55.45 | 0.007 | 0.01% | 0.11% | 88.57% | 0.03% | 3.65% | 0.12% | 0.01% | 0.15% | 7.35% |
+| decode512 (P1) | 4 | off | 69.35 | 0.935 | 0.04% | 0.77% | 73.77% | 0.10% | 2.82% | 0.49% | 0.22% | 15.59% | 6.20% |
+| prefill0 (P3) | 4 | off | 5.66 | 0.007 | 0.10% | 1.08% | 19.37% | 0.28% | 5.65% | 1.20% | 0.08% | 0.16% | 72.09% |
+| prefill512 (P3) | 4 | off | 7.37 | 0.007 | 0.08% | 0.83% | 14.88% | 0.21% | 27.53% | 0.92% | 0.06% | 0.12% | 55.37% |
+| decode512 (P3) | 4 | off | 12.47 | 0.934 | 0.22% | 4.61% | 26.84% | 0.60% | 16.73% | 2.89% | 1.35% | 10.01% | 36.74% |
 
 Generated by
 
@@ -725,6 +849,10 @@ python3 tools/hexagon/summ_prof.py --barrier-cyc 4332 \
   logs/hexagon/sim_prof_prefill0_w4.log \
   logs/hexagon/sim_prof_prefill512_w4.log \
   logs/hexagon/sim_prof_decode512_w4.log
+python3 tools/hexagon/summ_prof.py \
+  logs/hexagon/sim_prof_prefill0_w4_p3c.log \
+  logs/hexagon/sim_prof_prefill512_w4_p3c.log \
+  logs/hexagon/sim_prof_decode512_w4_p3c.log   # -> logs/hexagon/summ_p3c.txt
 ```
 
 `--barrier-cyc 4332` forces the `prefill0` barrier value onto all three
@@ -740,7 +868,10 @@ The sim-derived numbers land in the same order of magnitude, so the sim
 ratios are usable for bottleneck ranking even though they are not a
 device measurement.)
 
-Reading: MATMUL_W8A8 is 91% of prefill and 74% of decode's sim-derived
+Reading the P1 baseline (superseded by the P3 rows above and the P3
+notes below, kept because it is the reasoning that ordered P2–P5):
+MATMUL_W8A8 is 91% of prefill
+and 74% of decode's sim-derived
 cycles (simulator-derived, not device); at 2-layer × 128-token scale
 that op does ≈3.2 GMAC in 938M cycles, ≈3.4 MAC/cycle against HVX's
 ≈2048 MAC/cycle vrmpy peak, and decode's single-token matmul is equally
@@ -766,30 +897,96 @@ unmeasured setup/fill work — so they are an upper bound on kernel
 imbalance, not a measurement of the profiled window; a real balance
 verdict needs a `HTP_MM_NO_VTCM` comparison to separate out DMA wait.
 
-M6 P2 (tiled32 layout, ABI v4) changed the WEIGHTS byte order and the
-kernels' addressing only; the table above remains the baseline. The P2
-bridge kernels are slower than the M5 ones (row gather), so no P2 row is
-recorded — P3 replaces the bridge and re-measures all three scenarios.
+M6 P2 (tiled32 layout, ABI v4) changed only the WEIGHTS byte order; no
+P2 row is recorded because its bridge kernels gathered rows out of the
+tiles and were slower than the M5 ones. **M6 P3** replaced the
+W8A8/LOGITS kernel with the tiled `vrmpy` one, moved activation
+quantization onto the worker pool and vectorized it:
 
-Budget framing (all simulator-derived, not device): against the 10 ms/tok
-sim predicate for prefill (06-verification), everything except W8A8 is
-already ≈6.3 ms/tok at prefill512, leaving ≈3.7 ms for W8A8's current
-≈49.1 ms — so the tiled W8A8 kernel alone needs roughly 13×
-(≈3.4 → ≈46 MAC/cycle), after which MATMUL_W8A16 (≈4.1 ms/tok) is
-≈41 % of the whole budget. W8A8 tiling alone therefore cannot close the
-gap; W8A16 has to follow.
+* prefill512 `MATMUL_W8A8` 938,298,568 → **20,931,069** pcycles (44.8×,
+  predicate ≤ 234,574,642 PASS); whole-scenario total 1,059,812,175 →
+  141,982,701 (7.5×).
+* decode512 `MATMUL_W8A8 + MATMUL_LOGITS` 7,533,759 + 600,837 =
+  8,134,596 → 462,297 + 65,092 = **527,389** (15.4×, predicate
+  ≤ 2,711,532 PASS); total 9,265,863 → 1,664,446 (5.6×).
+* Per-shape `per_call` on the 8-token `acc` run, P2 bridge → P3 at
+  `3a52c764` (the commit before the LOGITS quant fix): gate/up 1024→3072
+  9,952,435 → 173,868; kv 1024→1024 5,779,039 → 66,405; o 2048→1024
+  11,335,208 → 119,414; q 1024→2048 7,864,199 → 120,678; LOGITS
+  7,693,620 → 60,874; all ops 114,455,535 → 6,940,426.
+* Whole-run thread Insns fell from 6,976,126,635 to 3,551,900,612
+  (prefill512, 2.0×) and 5,893,729,661 to 3,113,313,034 (decode512,
+  1.9×), and the T1..T4 worker spread from 80 %/84 % to **16 %** and
+  **17 %** — just over 06-verification's < 15 % predicate, and still an
+  upper bound because the counters cover the whole run including DMA
+  busy-wait. `prefill0`'s 344 % spread is that caveat in the extreme: it
+  also runs the single-threaded scalar reference for the 8-token
+  accuracy check.
+* `MM_TB 4` (four tokens blocked per weight vector load) was adopted on
+  a 1.3–3.7 % per-shape W8A8 gain in the `acc` run. That is small only
+  because the simulator does not charge weight bandwidth realistically;
+  the on-device gain should be larger, which is why it must be
+  re-measured there.
+* Token blocking does nothing at m=1, so after the first three commits
+  decode512 was still at 7,396,241 (1.10×, predicate FAIL): the scalar
+  `htp_quant_row_fp16` cost ≈345K pcycles for one k=1024 row and at m=1
+  a single worker ran it alone. Vectorizing it (section 7, rule 6) is
+  what closed the gate, and it also took prefill512 from 18.19 to
+  7.37 ms/tok.
+* `MATMUL_LOGITS` rose from 59,580 to 65,485 pcycles in the last commit:
+  its single activation row was still quantized inline on the RPC
+  thread, which owns no HVX context (section 7, rule 7), so it now goes
+  through `quant_worker` at the cost of one extra barrier per op.
+
+The P3 qf32 epilogue left the `profile acc` STAT untouched
+(0.0914676 / 93.3662 from P2 through HEAD); the only accuracy movement
+is `matmul_w8a8_m8` going from `max_abs` 0 to one fp16 ulp (0.0078125),
+inside the unit tests' 2e-3/1e-3 bound.
+
+**per-shape `per_call` at P3 HEAD** (raw pcycles, 2-layer / vocab 4096):
+
+| kind | k → n | prefill512 (128 tok) | decode512 (1 tok) |
+|---|---|---|---|
+| `MATMUL_W8A16` (`down`) | 3072 → 1024 | 38,941,117 | 316,338 |
+| `MATMUL_W8A8` (gate/up) | 1024 → 3072 | 2,591,091 | 52,281 |
+| `MATMUL_W8A8` (q) | 1024 → 2048 | 1,746,051 | 38,121 |
+| `MATMUL_W8A8` (o) | 2048 → 1024 | 1,731,893 | 38,459 |
+| `MATMUL_W8A8` (k/v) | 1024 → 1024 | 902,704 | 25,002 |
+| `MATMUL_LOGITS` | 1024 → 4096 | 65,485 | 65,092 |
+
+Budget framing (all simulator-derived, not device): prefill512 is
+**7.37 ms/tok**, inside 06-verification's ≤ 10 ms/tok predicate, and
+decode512 is 12.47 ms/tok against a ≤ 16.5 ms compute budget. W8A8 is no
+longer the bottleneck — it is 14.9 % of prefill512 and 26.8 % of
+decode512. `MATMUL_W8A16` (`down_proj`, still row-major, no VTCM, one
+fp16 × int8 dot per row) is now **55.4 % of prefill and 36.7 % of
+decode**, which makes it P4's target; the single 3072→1024 call costs
+more than every W8A8 call of its layer put together. ATTN is second at
+long context (27.5 % of prefill512, 16.7 % of decode512) and grows
+linearly with sequence length, so it stays P5. The barrier is unchanged
+at 0.934 ms/tok in decode.
 
 ---
 
 ## 9. Planned work
 
-* **Performance (first)**: the W8A8 matmul inner loop (section 8.2:
-  prefill is compute-bound at ~10 GMAC/s, decode reads weights at
-  ~7 GB/s; the CPU fp32 path is 1.4× faster at decode today) — batch rows
-  per weight load and drop the per-dot horizontal reduction, the same
-  restructuring the attention kernel got in M5; then VTCM streaming for
-  W8A16 (`ponytail:` note in `hvx-matmul.c`) and K^T reuse across query
-  rows in prefill attention (`ponytail:` note in `hvx-attn.c`).
+* **Performance (first)**: `MATMUL_W8A16` (`down_proj`), now 55 % of
+  prefill and 37 % of decode in the simulator profile (section 8.3) —
+  blocking and VTCM streaming (`ponytail:` note in `hvx-matmul.c`), and
+  possibly tiling `down` too so the image carries one layout. Then K^T
+  reuse across query rows in prefill attention (`ponytail:` note in
+  `hvx-attn.c`), which is the second-largest cost at long context.
+* **The host/RPC decode path**, which after M6 P3 costs more than the
+  DSP does: ~40 ms of every generation step is the RPC round trip plus
+  copying and argmax-ing 151,936 floats of logits (section 8.2). Return
+  a top-k slice, or do the argmax on the DSP, instead of the whole
+  logits vector.
+* **Device re-measurement of the rest**: section 5.4's app numbers and
+  the section 8.2 M5 tables predate P3, `MM_TB`'s real effect (the
+  simulator showed only 1–4 %) is unmeasured on silicon, and the vector
+  quant's tie row has only been covered indirectly by the `--eval` PPL
+  match (section 7, rule 6). The `--steps` warm-up (~92 M → ~73 M
+  pcycles over the first ~20 steps) is also unexplained.
 * **`engine="htp"` follow-ups**: route host-side `hexagon:` messages
   into the nntrainer logger instead of stderr; system-prompt KV
   save/load on the DSP (today it forces the CPU path); a second lowered
