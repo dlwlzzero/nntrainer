@@ -34,8 +34,8 @@ option('enable-npu', type: 'boolean', value: false)
 # See docs/backend_guide/QNN_BUILD.md for details.
 option('qnn-sdk-root', type: 'string', value: '')
 # Hexagon HVX backend (graph-level cDSP offload).
-#   meson setup build -Denable-hexagon=true \
-#     -Dhexagon-sdk-root=/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.3.0.0
+#   meson setup build -Denable-hexagon=true -Dhexagon-sdk-root=$HEXAGON_SDK_ROOT
+#   (e.g. /opt/qcom/Hexagon_SDK/6.4.0.2 inside tools/docker; SDK 6.4 or newer)
 option('enable-hexagon', type: 'boolean', value: false)
 option('hexagon-sdk-root', type: 'string', value: '')
 option('mmap-read', type: 'boolean', value: true)
