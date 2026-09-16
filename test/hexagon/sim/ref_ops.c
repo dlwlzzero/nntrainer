@@ -28,6 +28,19 @@ float ref_quant_row(const __fp16 *x, int8_t *q, uint32_t k) {
   return amax / 127.f;
 }
 
+float ref_quant_row_i16(const __fp16 *x, int16_t *q, uint32_t k) {
+  float amax = 0.f;
+  for (uint32_t i = 0; i < k; ++i) {
+    float v = fabsf((float)x[i]);
+    if (v > amax)
+      amax = v;
+  }
+  float inv = amax > 0.f ? 32767.f / amax : 0.f;
+  for (uint32_t i = 0; i < k; ++i)
+    q[i] = (int16_t)lrintf((float)x[i] * inv);
+  return amax / 32767.f;
+}
+
 int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k) {
   int32_t acc = 0;
   for (uint32_t i = 0; i < k; ++i)
@@ -63,14 +76,17 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
 
 void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
                       __fp16 *y, uint32_t m, uint32_t k, uint32_t n) {
+  int16_t *xq = (int16_t *)malloc((size_t)k * sizeof(int16_t));
   for (uint32_t t = 0; t < m; ++t) {
+    float sx = ref_quant_row_i16(x + (size_t)t * k, xq, k);
     for (uint32_t j = 0; j < n; ++j) {
-      float acc = 0.f;
+      int64_t dot = 0;
       for (uint32_t i = 0; i < k; ++i)
-        acc += (float)x[(size_t)t * k + i] * (float)w[(size_t)j * k + i];
-      y[(size_t)t * n + j] = (__fp16)(acc * sw[j]);
+        dot += (int64_t)w[(size_t)j * k + i] * (int64_t)xq[i];
+      y[(size_t)t * n + j] = (__fp16)((float)dot * sw[j] * sx);
     }
   }
+  free(xq);
 }
 
 void ref_matmul_logits(const __fp16 *x_last, const int8_t *w, const float *sw,

@@ -51,7 +51,7 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
   c.buf[NNTR_HTP_BUF_ACT] = act;
   c.buf_size[NNTR_HTP_BUF_ACT] = total;
   c.pool = wp_create(0);
-  c.xq = memalign(128, (size_t)m * k);
+  c.xq = memalign(128, (size_t)m * k * (a16 ? 2u : 1u));
   c.xq_scale = malloc((size_t)m * sizeof(float));
 
   struct nntr_htp_op_desc d;
@@ -131,6 +131,14 @@ int test_matmul(void) {
   if (run_case(1, 3072, 256, 1))
     return 1;
   if (run_case(8, 3072, 256, 1))
+    return 1;
+  /* 7 = one 2-token block + tail; n=100 over four workers = 25 rows each,
+   * so every worker ends on a 1-row tail of the 4-row block. */
+  if (run_case(7, 3072, 100, 1))
+    return 1;
+  /* k=128 (one 128-byte weight chunk) and n=6: 1- and 2-row tails whatever
+   * the worker count. */
+  if (run_case(2, 128, 6, 1))
     return 1;
 
   printf("SIM_TEST matmul PASS\n");

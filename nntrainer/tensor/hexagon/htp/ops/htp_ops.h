@@ -24,7 +24,9 @@ struct htp_exec_ctx {
   const struct nntr_htp_oplist_header *cfg;
   uint32_t n_tokens, pos;
   struct wp_pool *pool;
-  int8_t *xq;          /**< per-token quant scratch [max_chunk][k_max] */
+  int8_t *xq;          /**< per-token quant scratch: int8 [max_chunk][k_max] for
+                          W8A8/LOGITS or int16 [max_chunk][k_max] for W8A16
+                          (allocated 2*max_chunk*k_max bytes) */
   float *xq_scale;     /**< [max_chunk] */
   float *attn_scratch; /**< [n_workers][max_seq] fp32 scores */
   uint8_t *vtcm;       /**< per-worker weight double buffer for the tiled matmul

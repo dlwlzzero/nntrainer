@@ -62,14 +62,16 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   if (!g->ctx.pool)
     return 1;
 
-  /* Quant scratch sized by the widest matmul k in this op-list. */
+  /* Quant scratch sized by the widest matmul k in this op-list; x2 for the
+   * int16 rows of MATMUL_W8A16. */
   for (i = 0; i < g->cfg.n_ops; ++i)
     if ((g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
-         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&
+         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
+         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16) &&
         g->ops[i].k > k_max)
       k_max = g->ops[i].k;
   if (k_max) {
-    g->ctx.xq = memalign(128, (size_t)g->cfg.max_chunk * k_max);
+    g->ctx.xq = memalign(128, (size_t)g->cfg.max_chunk * k_max * 2u);
     g->ctx.xq_scale = malloc((size_t)g->cfg.max_chunk * sizeof(float));
   }
   g->ctx.prof_op_cycles =

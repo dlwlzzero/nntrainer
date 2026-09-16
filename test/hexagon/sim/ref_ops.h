@@ -43,9 +43,12 @@ int32_t ref_dot_i8_tiled(const int8_t *w_base, uint32_t n, const int8_t *x,
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 
-/* Reference for MATMUL_W8A16: like W8A8 but x stays fp16 (no per-token
- * quantization), fp32 accumulation, y = (fp16)(dot * sw[n]).
- * w stays row-major [n][k] (down_proj is not tiled). */
+/* Per-token int16 quantization: scale = absmax / 32767, q = lrintf(x *
+ * 32767/absmax). */
+float ref_quant_row_i16(const __fp16 *x, int16_t *q, uint32_t k);
+
+/* MATMUL_W8A16: x quantized per token to int16 (ref_quant_row_i16), exact
+ * integer dot, y = (fp16)(((float)dot * sw[n]) * sx[t]). */
 void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
                       __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 

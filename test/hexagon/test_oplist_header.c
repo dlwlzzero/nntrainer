@@ -177,6 +177,12 @@ int main(void) {
     wire.ops[1].kind = NNTR_HTP_OP_EMBED;
     wire.ops[1].k = 4u;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /* W8A16 int32 accumulation is only exact for k <= 16384 -> 5 above it */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
+    wire.ops[1].k = 16512u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
   }
 
   puts("oplist header check: PASS");

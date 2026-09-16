@@ -51,7 +51,8 @@ enum nntr_htp_op_kind {
   NNTR_HTP_OP_SILU_MUL = 5,
   NNTR_HTP_OP_ADD = 6,
   NNTR_HTP_OP_MATMUL_LOGITS = 7,
-  NNTR_HTP_OP_MATMUL_W8A16 = 8, /* fp16 x (no act quant) . int8 w, fp16 y */
+  NNTR_HTP_OP_MATMUL_W8A16 =
+    8, /* per-token int16 x . int8 w (row-major), fp16 y; down_proj */
   NNTR_HTP_OP_KIND_COUNT = 9
 };
 
@@ -196,6 +197,9 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
          d.kind == (uint32_t)NNTR_HTP_OP_EMBED) &&
         d.k % 128u != 0u)
+      return 5;
+    /* W8A16 accumulates int16 x int8 in int32 lanes: exact for k <= 16384. */
+    if (d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 && d.k > 16384u)
       return 5;
     /* tiled32 projections are whole 32-row tiles; down_proj (W8A16) stays
      * row-major and is exempt. EMBED's table has vocab rows. */

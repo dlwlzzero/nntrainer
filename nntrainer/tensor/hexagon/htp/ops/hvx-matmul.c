@@ -11,10 +11,12 @@
  *		plus a VTCM/DMA double-buffered streaming path (c->vtcm !=
  *		NULL); both run the same math on the same bytes, so their
  *		output is bit-identical. MATMUL_LOGITS is the same kernel with
- *		m=1 and fp32 output. MATMUL_W8A16 keeps the activation in fp16
- *		(no per-token int8 quantization), accumulates in fp32 and
- *		reads row-major weights; used for down_proj, whose SwiGLU
- *		input is too outlier-heavy for per-token int8.
+ *		m=1 and fp32 output.
+ *		MATMUL_W8A16 (down_proj) quantizes the activation per token to
+ *		int16 instead (its SwiGLU input is too outlier-heavy for int8),
+ *		keeps the row-major weights and accumulates 64 int32 lanes per
+ *		(row, token) with Ww_vmpyacc; 4 rows x 2 tokens per block and one
+ *		shuffle tree reduces the four rows together.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -23,7 +25,6 @@
 
 #include "dma-queue.h"
 #include "htp_ops.h"
-#include "hvx-f16-math.h"
 #include "hvx-quant.h"
 
 /* Ring depth for the per-worker DMA queue: only ever one chunk in flight
@@ -206,9 +207,10 @@ static void mm_worker(void *arg, int wid, int nw) {
  * that no HVX code ever runs on the RPC thread. */
 struct quant_job {
   const __fp16 *x;
-  int8_t *xq;
+  void *xq;
   float *sx;
   uint32_t m, k;
+  bool i16; /* W8A16 quantizes to int16, W8A8/LOGITS to int8 */
 };
 
 static void quant_worker(void *arg, int wid, int nw) {
@@ -216,55 +218,112 @@ static void quant_worker(void *arg, int wid, int nw) {
   uint32_t t0 = (uint32_t)(((uint64_t)q->m * wid) / nw);
   uint32_t t1 = (uint32_t)(((uint64_t)q->m * (wid + 1)) / nw);
   for (uint32_t t = t0; t < t1; ++t)
-    q->sx[t] = htp_quant_row_fp16(q->x + (size_t)t * q->k,
-                                  q->xq + (size_t)t * q->k, q->k);
+    q->sx[t] =
+      q->i16 ? htp_quant_row_fp16_i16(q->x + (size_t)t * q->k,
+                                      (int16_t *)q->xq + (size_t)t * q->k, q->k)
+             : htp_quant_row_fp16(q->x + (size_t)t * q->k,
+                                  (int8_t *)q->xq + (size_t)t * q->k, q->k);
 }
 
-/* fp16 x . int8 w dot in fp32: each 128B of w is sign-extended to two
- * int16 vectors, converted to hf (exact for |w| <= 127) and multiply-
- * accumulated with the matching 64-half x vectors in IEEE sf (see
- * hvx_dot_fp16 for why not qf32). k%128==0, w/x 128B aligned (validator +
- * lowering guarantee both). */
-static inline float hvx_dot_fp16_i8(const __fp16 *x, const int8_t *w,
-                                    uint32_t k) {
-  HVX_VectorPair acc = Q6_W_vcombine_VV(Q6_V_vzero(), Q6_V_vzero());
-  for (uint32_t i = 0; i < k; i += 128u) {
-    HVX_VectorPair wh = Q6_Wh_vunpack_Vb(hvx_vmem(w + i));
-    acc = hvx_vec_mpyacc_f32_f16(acc, hvx_vmem(x + i),
-                                 Q6_Vhf_equals_Vh(Q6_V_lo_W(wh)));
-    acc = hvx_vec_mpyacc_f32_f16(acc, hvx_vmem(x + i + 64u),
-                                 Q6_Vhf_equals_Vh(Q6_V_hi_W(wh)));
+/* W8A16 block: MM16_R rows x tb tokens. w points at row jn (row-major, k
+ * bytes per row); rows < MM16_R means the last valid row is repeated so the
+ * block shape never changes and only 2*rows bytes are stored. Each 128 B of a
+ * row is unpacked once to two int16 vectors and multiplied lane-wise against
+ * the token's two int16 vectors with Ww_vmpyacc (64 int32 lanes; the widened
+ * pair order does not matter because every lane is summed at the end).
+ * |x| <= 32767, |w| <= 127: a lane holds k/64 products, lo+hi 2*k/64, so
+ * int32 is exact for k <= 16384 (the validator enforces it).
+ * Epilogue: lo+hi (int32) converted to sf, then a vshuff tree folds the four
+ * rows into one vector (lane 4j+r = row r partial) with qf32 adds; three
+ * vror folds in qf32 -> lanes 0..3 hold the four dots; scale in the
+ * reference order ((float)dot * sw[n]) * sx[t], narrow with
+ * hvx_vec_f32_to_f16 and store 2*rows bytes (HEXAGON.md section 7, rule 8). */
+#define MM16_R 4u
+#define MM16_TB 2u
+
+static inline __attribute__((always_inline)) void
+mm16_block(const int8_t *w, uint32_t k, uint32_t rows, const int16_t *xq,
+           const float *sx, const float *sw, __fp16 *y, uint32_t n,
+           uint32_t tb) {
+  const int8_t *wr[MM16_R];
+  HVX_VectorPair acc[MM16_R][MM16_TB];
+  for (uint32_t r = 0; r < MM16_R; ++r) {
+    wr[r] = w + (size_t)(r < rows ? r : rows - 1u) * k;
+    for (uint32_t u = 0; u < tb; ++u)
+      acc[r][u] = Q6_W_vcombine_VV(Q6_V_vzero(), Q6_V_vzero());
   }
-  return hvx_sum_sf_pair(acc);
+  for (uint32_t i = 0; i < k; i += 128u) {
+    for (uint32_t r = 0; r < MM16_R; ++r) {
+      const HVX_VectorPair wh = Q6_Wh_vunpack_Vb(hvx_vmem(wr[r] + i));
+      for (uint32_t u = 0; u < tb; ++u) {
+        const int16_t *xu = xq + (size_t)u * k + i;
+        acc[r][u] =
+          Q6_Ww_vmpyacc_WwVhVh(acc[r][u], Q6_V_lo_W(wh), hvx_vmem(xu));
+        acc[r][u] =
+          Q6_Ww_vmpyacc_WwVhVh(acc[r][u], Q6_V_hi_W(wh), hvx_vmem(xu + 64));
+      }
+    }
+  }
+  const HVX_Vector swv = hvx_vmemu(sw); /* lanes 0..3 = sw[jn..jn+3] */
+  for (uint32_t u = 0; u < tb; ++u) {
+    HVX_Vector s[MM16_R];
+    for (uint32_t r = 0; r < MM16_R; ++r)
+      s[r] = Q6_Vsf_equals_Vw(
+        Q6_Vw_vadd_VwVw(Q6_V_lo_W(acc[r][u]), Q6_V_hi_W(acc[r][u])));
+    /* rows (0,1) and (2,3) interleaved at 4 B, then the two at 8 B: lane
+     * 4j + r holds a partial of row r. */
+    HVX_VectorPair p01 = Q6_W_vshuff_VVR(s[1], s[0], -4);
+    HVX_VectorPair p23 = Q6_W_vshuff_VVR(s[3], s[2], -4);
+    HVX_Vector e = hvx_vec_add_f32_f32(Q6_V_lo_W(p01), Q6_V_hi_W(p01));
+    HVX_Vector f = hvx_vec_add_f32_f32(Q6_V_lo_W(p23), Q6_V_hi_W(p23));
+    HVX_VectorPair pef = Q6_W_vshuff_VVR(f, e, -8);
+    HVX_Vector g = hvx_vec_add_f32_f32(Q6_V_lo_W(pef), Q6_V_hi_W(pef));
+    g = hvx_vec_add_f32_f32(g, Q6_V_vror_VR(g, 64));
+    g = hvx_vec_add_f32_f32(g, Q6_V_vror_VR(g, 32));
+    g = hvx_vec_add_f32_f32(g, Q6_V_vror_VR(g, 16));
+    g = hvx_vec_mul_f32_f32(g, swv);
+    g = hvx_vec_mul_f32_f32(g, hvx_vec_splat_f32(sx[u]));
+    hvx_vec_store_u(y + (size_t)u * n, 2u * rows, hvx_vec_f32_to_f16(g, g));
+  }
 }
 
-/* MATMUL_W8A16 worker: same N-slab split, DDR direct read.
- * ponytail: no VTCM/DMA streaming for this kind yet - add by generalizing
- * mm_worker_vtcm if the M5 measurements show down_proj prefill needs it. */
-static void mm_w8a16_worker(void *arg, int wid, int nw) {
+/* MATMUL_W8A16 worker: rows [n*wid/nw, n*(wid+1)/nw) in 4-row blocks, tokens
+ * in 2-token blocks with a 1-token tail; DDR direct read.
+ * ponytail: no VTCM/DMA streaming for this kind - the simulator cannot show
+ * its value (no DDR model); decide on the device with an A/B like
+ * HTP_MM_NO_VTCM (spec 07 (13)). */
+static void mm16_worker(void *arg, int wid, int nw) {
   struct mm_job *j = arg;
   struct htp_exec_ctx *c = j->c;
   const struct nntr_htp_op_desc *d = j->d;
   const uint32_t k = d->k, n = d->n, m = j->m;
-  const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
   const int8_t *w = (const int8_t *)htp_ref_ptr(c, d->in1);
   const float *sw = (const float *)htp_ref_ptr(c, d->in2);
   __fp16 *y = (__fp16 *)htp_ref_ptr(c, d->out);
+  const int16_t *xq = (const int16_t *)(const void *)c->xq;
   uint32_t n0 = (uint32_t)(((uint64_t)n * wid) / nw);
   uint32_t n1 = (uint32_t)(((uint64_t)n * (wid + 1)) / nw);
 
-  for (uint32_t jn = n0; jn < n1; ++jn) {
-    const int8_t *wrow = w + (size_t)jn * k;
-    for (uint32_t t = 0; t < m; ++t)
-      y[(size_t)t * n + jn] =
-        (__fp16)(hvx_dot_fp16_i8(x + (size_t)t * k, wrow, k) * sw[jn]);
+  for (uint32_t jn = n0; jn < n1; jn += MM16_R) {
+    const uint32_t rows = n1 - jn < MM16_R ? n1 - jn : MM16_R;
+    uint32_t t = 0;
+    for (; t + MM16_TB <= m; t += MM16_TB)
+      mm16_block(w + (size_t)jn * k, k, rows, xq + (size_t)t * k,
+                 c->xq_scale + t, sw + jn, y + (size_t)t * n + jn, n, MM16_TB);
+    for (; t < m; ++t)
+      mm16_block(w + (size_t)jn * k, k, rows, xq + (size_t)t * k,
+                 c->xq_scale + t, sw + jn, y + (size_t)t * n + jn, n, 1u);
   }
 }
 
 void hvx_op_matmul_w8a16(struct htp_exec_ctx *c,
                          const struct nntr_htp_op_desc *d) {
-  struct mm_job j = {c, d, htp_m(c, d), false};
-  wp_run(c->pool, mm_w8a16_worker, &j);
+  const uint32_t m = htp_m(c, d), k = d->k;
+  const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
+  struct quant_job q = {x, c->xq, c->xq_scale, m, k, true};
+  wp_run(c->pool, quant_worker, &q);
+  struct mm_job j = {c, d, m, false};
+  wp_run(c->pool, mm16_worker, &j);
 }
 
 void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
@@ -275,7 +334,7 @@ void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
     return;
   const uint32_t m = htp_m(c, d), k = d->k;
   const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
-  struct quant_job q = {x, c->xq, c->xq_scale, m, k};
+  struct quant_job q = {x, c->xq, c->xq_scale, m, k, false};
   wp_run(c->pool, quant_worker, &q);
   struct mm_job j = {c, d, m, false};
   wp_run(c->pool, mm_worker, &j);
@@ -295,7 +354,7 @@ void hvx_op_matmul_logits(struct htp_exec_ctx *c,
    * code ever executes on the RPC/caller thread. */
   const __fp16 *x = (const __fp16 *)htp_ref_ptr(c, d->in0);
   const __fp16 *x_last = x + (size_t)(c->n_tokens - 1) * k;
-  struct quant_job q = {x_last, c->xq, c->xq_scale, 1u, k};
+  struct quant_job q = {x_last, c->xq, c->xq_scale, 1u, k, false};
   wp_run(c->pool, quant_worker, &q);
   struct mm_job j = {c, d, 1, true};
   wp_run(c->pool, mm_worker, &j);
