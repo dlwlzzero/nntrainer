@@ -1,0 +1,86 @@
+---
+name: hexagon-gates
+description: The verification ladder for any change to the Hexagon backend (x86 reference → simulator → skel/harness compile → device handoff), with the exact container commands and what "pass" means at each rung. Use before claiming a Hexagon change works.
+---
+
+All commands run through `tools/docker/run.sh` from the repo root. Never
+report a rung as passed without its pass line in the output. Rungs are
+cumulative: a PR needs 0–4; a single step inside a plan needs the rung the
+plan names.
+
+## 0. Format (every commit)
+
+```
+tools/docker/run.sh clang-format-14 -i <changed .c .cpp .h>
+```
+Pass: `git diff --stat` after formatting shows only intended files.
+
+## 1. x86 reference (no SDK; seconds)
+
+```
+tools/docker/run.sh ./tools/hexagon/build_host_x86.sh
+tools/docker/run.sh ./build_x86_hexagon/test_lowering        # LOWER_TEST PASS
+tools/docker/run.sh ./build_x86_hexagon/test_w8cx_bin /model/<w8cx>.bin   # W8CX_BIN_TEST PASS
+tools/docker/run.sh bash -c 'gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c && /tmp/t'
+```
+When the packer, lowering or `ref_ops.c` changed, also regenerate the image
+and check the reference perplexity did not move unless the plan says it
+should (record the number in the plan):
+```
+tools/docker/run.sh ./build_x86_hexagon/nntr_hexpack /model/<w8cx>.bin /work/build_x86_hexagon/qwen3_full
+tools/docker/run.sh python3 tools/hexagon/make_tokens.py /model <text.txt> /work/build_x86_hexagon/t.i32 --limit 512
+tools/docker/run.sh ./build_x86_hexagon/hexagon_ref_run /work/build_x86_hexagon/qwen3_full --tokens /work/build_x86_hexagon/t.i32 --eval
+```
+Reference values live in HEXAGON.md §5.1 (e.g. 512-token local prompt PPL
+33.0195 / top1 184 after M6 P4).
+
+## 2. Simulator, per-task gate (SDK; tens of minutes under emulation)
+
+```
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh profile acc
+```
+Pass: `SIM_TEST profile PASS` and the 8-token accuracy check within the
+0.1 atol/rtol bound; note the `SIM_PROF` per-kind pcycles in the plan as a
+*relative* signal only.
+
+## 3. Simulator, full (before a PR)
+
+```
+for t in smoke pool exp quant matmul matmul_dma rmsnorm rope eltwise embed attn logits graph; do
+  HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh $t || break
+done
+```
+Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
+STAT lines within HEXAGON.md §5.2 rates. Once follow-up ⑭ (SDK 6.4) is
+closed, repeat with `HEX_ARCH=v79`.
+
+## 4. Skel and host harness compile (SDK + NDK; no device)
+
+```
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh     # build_hexagon/skel/libnntr_htp_skel.so
+tools/docker/run.sh ./tools/hexagon/build_host_test.sh              # build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
+```
+Pass: both artifacts exist; record `md5sum` of each for the handoff. For
+variants use `HEX_EXTRA_CFLAGS=-D...` and copy each skel to
+`build_hexagon/skel/libnntr_htp_skel.<variant>.so` before the next build.
+
+## 5. Device (user only)
+
+Never run here. Write a handoff (`hexagon-handoff` skill), set
+`state:needs-measurement`, stop. Performance conclusions are drawn only
+from filled handoff tables; simulator cycle counts never decide a
+performance question (plan §2, gap rule 1).
+
+## Kernel review list (HEXAGON.md §7, apply to any hvx-*.c change)
+
+* qf16/qf32 format ops only; no `Vsf`/`Vhf` IEEE arithmetic paths on the
+  device build.
+* Vector quantizer: tie row and zero row byte-identical to `ref_quant_row`
+  / `ref_quant_row_i16`; ±1 LSB rate within the §5.2 bound.
+* Integer paths (W8A8, LOGITS, EMBED, int16 down_proj accumulate) stay
+  bit-exact against `ref_ops.c`.
+* 128-byte alignment of every DMA/VTCM buffer; worker count from
+  `wp_create`, never hard-coded.
+* Any ABI/layout change bumps the version in `nntr_htp_common.h`, rejects
+  old images in `.hexcfg`, and updates HEXAGON.md §1.4/§2 in the same PR.
