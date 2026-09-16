@@ -97,6 +97,14 @@ Supervision scope is the Hexagon subtree only: `nntrainer/tensor/hexagon/**`,
 `docs/backend_guide/hexagon-guide/**`. Anything in nntrainer core is filed as
 an issue, not touched.
 
+GitHub access: the claude.ai GitHub MCP is used for reads. On 2026-09-16
+it returned `403 Resource not accessible by integration` for issue and PR
+creation on this fork, so writes go through the `gh` CLI (`brew install gh
+&& gh auth login`) until the Claude GitHub App is granted write access to
+`dlwlzzero/nntrainer`; every role that writes to GitHub has `Bash` for
+that reason. Issues must also be enabled on the fork (Settings → General →
+Features → Issues); they were off on 2026-09-16.
+
 All roles inherit the session model. Commits use `git commit -s` in the
 user's name plus `Co-Authored-By: Claude ... <noreply@anthropic.com>`, one
 topic per commit, `[component] message` subjects (AGENTS.md).
