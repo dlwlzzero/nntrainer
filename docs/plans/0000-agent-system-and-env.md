@@ -68,7 +68,7 @@ Whenever a new gap is found, the supervisor appends a rule to HEXAGON.md §7.
 Hexagon SDK **6.4 or newer**, installed once by the user with the Linux
 `qpm-cli` *inside* the container (wizard: `tools/docker/setup_wizard.sh`)
 into the host directory that `run.sh` mounts. The workstation's 6.0.0.2 is
-no longer used for builds. Issue #1 rebuilds `hvx_impl` HEAD with 6.4,
+no longer used for builds. Issue #23 rebuilds `hvx_impl` HEAD with 6.4,
 reruns the 13 simulator tests on v75 and v79, builds both skels and hands
 off a regression measurement against HEXAGON.md §8.2 (P4: 192.1 / 27.7
 tok/s @512). Matching numbers close follow-up ⑭; the v79 run doubles as the
@@ -97,13 +97,12 @@ Supervision scope is the Hexagon subtree only: `nntrainer/tensor/hexagon/**`,
 `docs/backend_guide/hexagon-guide/**`. Anything in nntrainer core is filed as
 an issue, not touched.
 
-GitHub access: the claude.ai GitHub MCP is used for reads. On 2026-09-16
-it returned `403 Resource not accessible by integration` for issue and PR
-creation on this fork, so writes go through the `gh` CLI (`brew install gh
-&& gh auth login`) until the Claude GitHub App is granted write access to
-`dlwlzzero/nntrainer`; every role that writes to GitHub has `Bash` for
-that reason. Issues must also be enabled on the fork (Settings → General →
-Features → Issues); they were off on 2026-09-16.
+GitHub access: the claude.ai GitHub MCP is used for reads only. It
+returned `403 Resource not accessible by integration` for issue and PR
+creation on this fork (2026-09-16), so every write (issues, labels, PRs)
+goes through the `gh` CLI, which is logged in as the repo owner; every
+role that writes to GitHub has `Bash` for that reason. Labels were created
+on 2026-09-16; the first queue is issues #23–#28 and PR #22.
 
 All roles inherit the session model. Commits use `git commit -s` in the
 user's name plus `Co-Authored-By: Claude ... <noreply@anthropic.com>`, one

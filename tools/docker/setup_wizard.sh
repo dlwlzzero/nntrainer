@@ -106,7 +106,7 @@ step_check() {
   "$SCRIPT_DIR/run.sh" ./tools/hexagon/build_host_x86.sh test_lowering && "$SCRIPT_DIR/run.sh" ./build_x86_hexagon/test_lowering
   ok "container builds and runs the x86 lowering test"
   echo
-  echo "Done. Next: in Claude Code run /hexagon-cycle (issue #1 rebuilds hvx_impl with the new SDK)."
+  echo "Done. Next: in Claude Code run /hexagon-cycle (issue #23 rebuilds hvx_impl with the new SDK)."
 }
 
 case "${1:-all}" in
