@@ -19,7 +19,7 @@ Host layout the wrapper expects (all overridable by environment, see `run.sh`):
 | repo | `/work` | this checkout (build dirs are created inside it) |
 | `~/Qualcomm/Hexagon_SDK/<ver>/` | `/opt/qcom/Hexagon_SDK/<ver>/` | Hexagon SDK installed by `qpm-cli` inside the container (licensed, never in the image) |
 | `~/Qualcomm/hexkl_addon/` | `/opt/qcom/hexkl_addon/` | HexKL micro API (optional, HMX work) |
-| `Applications/CausalLM/res/qwen3/qwen3-0.6b/` | `/model` (ro) | W8CX `.bin` + HF tokenizer files |
+| `Applications/CausalLM/res/qwen3/qwen3-0.6b/` | `/model` (ro) | `hf/` (HuggingFace Qwen3-0.6B: safetensors + tokenizer, downloaded by the wizard) and `nntr_qwen3_0.6b_w8cx_DEFAULT.bin` (built from it by `tools/hexagon/make_w8cx_bin.py`) |
 
 The entrypoint sources `setup_sdk_env.source` of the newest SDK version (or
 `HEXAGON_SDK_VERSION`) so `HEXAGON_SDK_ROOT`, `DEFAULT_HEXAGON_TOOLS_ROOT`

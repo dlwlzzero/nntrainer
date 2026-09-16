@@ -98,23 +98,30 @@ step_sdk() {
 
 step_model() {
   say "4/5 model files in $MODEL_DIR"
-  local missing=0
-  ls "$MODEL_DIR"/*.bin >/dev/null 2>&1 || { todo "copy the qwen3-0.6b W8CX .bin (nntr_hexpack input) here"; missing=1; }
-  [ -f "$MODEL_DIR/tokenizer.json" ] || { todo "copy the HuggingFace Qwen3-0.6B directory files (tokenizer.json, tokenizer_config.json, config.json) here"; missing=1; }
-  if [ $missing = 1 ]; then
-    echo  "      scp -r <workstation>:<path>/qwen3-0.6b/{*.bin,tokenizer.json,tokenizer_config.json,config.json} '$MODEL_DIR/'"
-    echo  "   (the packed .hexw image is regenerated in the container with nntr_hexpack; do not copy it)"
-    ask "Copy them, then press"
-    step_model; return
+  mkdir -p "$MODEL_DIR"
+  local bin="$MODEL_DIR/nntr_qwen3_0.6b_w8cx_DEFAULT.bin" hf="$MODEL_DIR/hf"
+  if [ ! -f "$hf/model.safetensors" ] || [ ! -f "$hf/tokenizer.json" ]; then
+    echo "   downloading Qwen/Qwen3-0.6B (public, ~1.5 GB) into $hf"
+    "$SCRIPT_DIR/run.sh" python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('Qwen/Qwen3-0.6B', local_dir='/work/${MODEL_DIR#$REPO_ROOT/}/hf',
+                  allow_patterns=['*.json', '*.txt', 'model.safetensors'])"
   fi
-  ok "model files present"
+  ok "HF checkpoint + tokenizer present ($hf)"
+  if [ ! -f "$bin" ]; then
+    echo "   building the W8_CX checkpoint from the HF weights (tools/hexagon/make_w8cx_bin.py, ~2 min)"
+    "$SCRIPT_DIR/run.sh" python3 tools/hexagon/make_w8cx_bin.py \
+      "/work/${MODEL_DIR#$REPO_ROOT/}/hf" "/work/${MODEL_DIR#$REPO_ROOT/}/nntr_qwen3_0.6b_w8cx_DEFAULT.bin" | tail -1
+  fi
+  ok "W8_CX checkpoint present ($(stat -f %z "$bin" 2>/dev/null || stat -c %s "$bin") bytes; expected 598230528)"
 }
 
 step_check() {
   say "5/5 smoke test inside the container"
   "$SCRIPT_DIR/run.sh" bash -c 'echo "sdk: ${HEXAGON_SDK_ROOT:-<none>}"; echo "ndk: $ANDROID_NDK"; which hexagon-clang qaic clang-format-14 meson ninja g++ 2>/dev/null || true; python3 -c "import transformers, numpy; print(\"python ok\")"'
-  "$SCRIPT_DIR/run.sh" ./tools/hexagon/build_host_x86.sh test_lowering && "$SCRIPT_DIR/run.sh" ./build_x86_hexagon/test_lowering
-  ok "container builds and runs the x86 lowering test"
+  "$SCRIPT_DIR/run.sh" ./tools/hexagon/build_host_x86.sh >/dev/null && "$SCRIPT_DIR/run.sh" ./build_x86_hexagon/test_lowering
+  "$SCRIPT_DIR/run.sh" ./build_x86_hexagon/test_w8cx_bin /model/nntr_qwen3_0.6b_w8cx_DEFAULT.bin
+  ok "container builds the x86 tools; lowering and W8_CX reader tests pass"
   echo
   echo "Done. Next: in Claude Code run /hexagon-cycle (issue #23 rebuilds hvx_impl with the new SDK)."
 }

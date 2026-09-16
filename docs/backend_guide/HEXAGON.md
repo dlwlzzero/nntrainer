@@ -399,7 +399,14 @@ The DSP skel is **not** part of the meson build (section 5.3).
 
 ### 5.1 x86 (no SDK, no device)
 
+The W8_CX checkpoint (`$W8CX.bin` below) is produced from the
+HuggingFace Qwen3-0.6B directory by `tools/hexagon/make_w8cx_bin.py`
+(numpy only; same primitive and tensor order as `nntr_quantize --fc_dtype
+W8_CX` on the hvx_m3 branch, 598,230,528 bytes). `tools/docker/setup_wizard.sh`
+downloads the HF files and runs it.
+
 ```bash
+python3 tools/hexagon/make_w8cx_bin.py $HF_DIR $W8CX.bin      # ~2 min
 ./tools/hexagon/build_host_x86.sh        # -> build_x86_hexagon/{test_lowering,test_w8cx_bin,nntr_hexpack,hexagon_ref_run}
 ./build_x86_hexagon/test_lowering                        # LOWER_TEST PASS
 ./build_x86_hexagon/test_w8cx_bin $W8CX.bin              # W8CX_BIN_TEST PASS
