@@ -7,6 +7,7 @@ causallm_src = [
     meson.current_source_dir() / 'api' / 'model_config.cpp',
     meson.current_source_dir() / 'api' / 'streamer.cpp',
     meson.current_source_dir() / 'kv_cache_manager.cpp',
+    meson.current_source_dir() / 'hexagon' / 'qwen3_lowering.cpp',
 ]
 
 executable_src = [
@@ -14,7 +15,14 @@ executable_src = [
 ]
 
 causallm_inc_abs = [meson.current_source_dir()]
-causallm_inc = [include_directories('.')]
+# qwen3_lowering.cpp only needs graph_lowering.h/nntr_htp_common.h, which
+# have no SDK/rpcmem dependency, so these two dirs are safe to add even
+# when enable-hexagon is off (default x86 builds).
+causallm_inc = [
+    include_directories('.'),
+    include_directories('../../nntrainer/tensor/hexagon/host'),
+    include_directories('../../nntrainer/tensor/hexagon/htp'),
+]
 causallm_inc_minja_inc = include_directories('third_party/minja/include')
 causallm_inc_nlohmann_inc = include_directories('third_party')
 
