@@ -15,8 +15,12 @@ the same phone's CPU on the fp32 checkpoint (18.7 tok/s decode), but
 those are M5-kernel numbers. M6 P3's tiled `vrmpy` matmul cuts DSP
 decode time 2.5–2.8× on an S25 Ultra (55.9 M pcycles/step teacher-forced,
 21.8 tok/s host wall) and a 128-token prefill chunk from ≈5.4 s to
-736 ms, with the PPL matching the x86 reference (section 8.2); the
-app-level numbers in section 5.4 predate it. What now limits decode on
+736 ms, with the PPL matching the x86 reference (section 8.2). M6 P4's
+int16 `down_proj` kernel takes that further: on the same S25 Ultra
+decode runs at **32.0 tok/s** host wall in generation mode (59.5 M
+pcycles/step) and a 128-token prefill chunk at **478 ms**, with the
+remaining PPL gap to the x86 reference explained in section 8.2. The
+app-level numbers in section 5.4 predate P3 and P4. What now limits decode on
 the device is the host side — RPC plus the 151,936-float logits copy and
 argmax, ~40 ms per generation step (section 9). The standalone
 harnesses in section 5.3 remain the measurement/debug entry points.
@@ -129,7 +133,7 @@ LOGITS) plus a 128-byte-aligned offset.
 | `EMBED` | tiled32 int8 embedding row gather + dequant → fp16 |
 | `RMSNORM` | RMS norm, optional per-head QK-Norm (`FLAG_PER_HEAD`) |
 | `MATMUL_W8A8` | per-token dynamic-quant int8×int8 tiled `vrmpy` matmul (32 rows per vector) → fp16 |
-| `MATMUL_W8A16` | fp16 activation × int8 weight, fp32 accumulate → fp16 (no activation quant; `down_proj`) |
+| `MATMUL_W8A16` | per-token int16 activation × int8 row-major weight, int32 lanes → fp32 → fp16 (`down_proj`; the op name keeps its wire meaning "no int8 activation quant") |
 | `ROPE` | rotary embedding on q/k in place, precomputed cos/sin |
 | `ATTN` | causal GQA attention against the persistent KV cache |
 | `SILU_MUL` | SiLU(gate) ⊙ up |
@@ -147,8 +151,10 @@ rc 4. `MATMUL_W8A8` / `MATMUL_LOGITS` need `n % 32 == 0` and `EMBED`
 needs `vocab % 32 == 0` (rc 5) because their weights are stored in
 32-row tiles (section 2.1). `MATMUL_W8A16` (`down_proj`) stays row-major
 and is exempt. All four (`MATMUL_W8A8`/`MATMUL_W8A16`/`MATMUL_LOGITS`/
-`EMBED`) also require `k % 128 == 0`. A v3 op-list fails the version
-check as before.
+`EMBED`) also require `k % 128 == 0`. Since M6 P4 `MATMUL_W8A16`
+additionally requires `k <= 16384` (rc 5): its int16 × int8 lanes
+accumulate in int32, which is exact only up to that depth (section 7,
+rule 8). A v3 op-list fails the version check as before.
 
 v3 additions: `forward()` returns the DSP cycle count of the op loop
 (`HAP_perf_get_pcycles`), and `forward_debug()` runs ops `[0, n)` only
@@ -207,8 +213,9 @@ descriptor. The inverse index is
 DSP kernels and the scalar references all use that one function.
 Requirements: `K % 128 == 0` (as before) and `N % 32 == 0`; qwen3-0.6b's
 N ∈ {1024, 2048, 3072, 151936} all qualify. `down` stays row-major
-`[N][K]` because `MATMUL_W8A16` reads fp16 × int8 rows and gains nothing
-from tiles. Norm gammas and the RoPE table are converted to fp16 as
+`[N][K]` because `MATMUL_W8A16` reads whole weight rows (int16
+activation × int8 weight since M6 P4) and gains nothing from tiles;
+unifying the layout is a follow-up (section 9). Norm gammas and the RoPE table are converted to fp16 as
 before. For qwen3-0.6b (28 layers, hidden 1024, 16/8 heads, head_dim
 128, ffn 3072, vocab 151936, max_seq 2048) the image is still exactly
 **598,623,744 bytes** with no alignment padding.
@@ -250,7 +257,11 @@ Activations are not copied into VTCM: the kernel reads the quantized
 rows `xq` through the cache with 4-byte scalar loads, for which VTCM
 brings nothing. A slab that cannot hold two tiles (or `HTP_MM_NO_VTCM`)
 falls back to direct DDR reads with bit-identical output
-(`test_matmul_dma` checks 4 MB, 256 KB and 64 KB).
+(`test_matmul_dma` checks 4 MB, 256 KB and 64 KB). `MATMUL_W8A16` does
+not use VTCM (a follow-up, section 9). The quant scratch `xq` is
+`2 × max_chunk × k_max` bytes since M6 P4 — int8 rows for
+W8A8/LOGITS, int16 rows for W8A16 — and `k_max` now includes the W8A16
+`k` (3072).
 
 ### 2.3 Op sequence
 
@@ -310,10 +321,10 @@ nntrainer/tensor/hexagon/
 │   ├── htp_graph.{h,c}       # executor: pool, scratch, VTCM, dispatch, forward_upto
 │   ├── worker_pool.{h,c}     # QuRT worker pool + barrier
 │   ├── ops/                  # one kernel per op kind
-│   │   ├── hvx-matmul.c      # tiled vrmpy W8A8/LOGITS (VTCM/DMA streaming) + quant worker; W8A16 row-major
+│   │   ├── hvx-matmul.c      # tiled vrmpy W8A8/LOGITS (VTCM/DMA streaming) + int16 lane-wise W8A16 + quant worker
 │   │   ├── hvx-attn.c / hvx-rmsnorm.c / hvx-rope.c / hvx-embed.c
 │   │   └── hvx-eltwise.c     # ADD + SILU_MUL
-│   ├── hvx/                  # vector helpers: f16 math, per-token int8 quantization (HVX); exp/inverse from ggml-hexagon
+│   ├── hvx/                  # vector helpers: f16 math, per-token int8/int16 quantization (HVX); exp/inverse from ggml-hexagon
 │   ├── hex/                  # scalar utils (ggml-hexagon)
 │   └── dma/                  # user-DMA queue (ggml-hexagon)
 ├── host/                     # NDK clang, part of libnntrainer (enable-hexagon)
@@ -407,6 +418,14 @@ across the layout change because the int8 paths are integer-exact
 (verified on 386 steps of a local prompt: PPL 37.4738 / top1 133 before
 and after).
 
+Since M6 P4 `hexagon_ref_run` implements the int16 `down_proj`
+activation (`ref_quant_row_i16` + `ref_matmul_w8a16`), so its numerics
+changed: the `--eval` PPL on the 387-token local prompt is **37.1629 /
+top1 134** (was 37.4738 / 133, −0.83 %) and on the 512-token prompt
+**33.0195 / 184** (was 33.4011 / 181, −1.14 %). The `eval.txt` 20.2718
+row of section 8.1 was not re-measured — that text is not on the build
+machine. The 8-token `find_divergence.py` bound is unchanged.
+
 `hexagon_ref_run` interprets a packed image with the scalar `ref_*`
 kernels — the same fp16 + per-token int8 math as the DSP — and is the
 accuracy oracle. Modes: default (prefill in chunks, then greedy
@@ -435,13 +454,21 @@ image is picked per `HEX_ARCH`; `HEX_EXTRA_CFLAGS` appends compiler
 flags to both sim and skel builds.
 
 `test_matmul` covers m ∈ {1, 7, 8, 128} at n = 256 plus n = 64, which is
-two tiles over four workers so two of them get an empty range;
+two tiles over four workers so two of them get an empty range, and the
+W8A16 cases m ∈ {1, 8} at n = 256 plus `(m, k, n) = (7, 3072, 100)`
+(row and token tails together) and `(2, 128, 6)` (k = 128, the 1- and
+2-row tails independently of the worker count);
 `test_matmul_dma` runs the VTCM path at 4 MB / 256 KB / 64 KB (the last
 one falls back to DDR). `test_quant` requires byte-identity against
 `ref_quant_row` on random, all-zero, tie, negative-only, k=128 and
 k=3072 rows and at most a 2e-4 rate of ±1 differences on 64 generic
 rows, printing `SIM_TEST quant_generic STAT pm1=<n>/<total>`
-(section 7, rule 6).
+(section 7, rule 6). The int16 rows are checked the same way against
+`ref_quant_row_i16`: the zero row and the tie row (`x[0] = 32767`, then
+±(n + 0.5) up to 2047.5) must be byte-identical, and 16 generic rows
+(k alternating 3072 / 128) may differ by ±1 LSB at a rate under 2 %,
+printing `SIM_TEST quant16_generic STAT pm1=<n>/25600` (section 7,
+rule 8).
 
 **Profile test.** `run_sim_test.sh profile <acc|prefill0|prefill512|decode512>
 [n_workers]` lowers the qwen3-0.6b shape with 2 layers and vocab 4096
@@ -492,17 +519,18 @@ The binaries link only host sources + stub with `-static-libstdc++`
 scripts write `0x1f` into `<binary>.farf` on the device — without it
 DSP FARF lines never reach logcat — and capture them into
 `logs/hexagon/device_farf_<stamp>.log`. `run_e2e_test.sh` pushes the skel,
-harness, image and token file only when the device copy differs in size
+harness, image and token file only when the device copy differs
 (the image is ~600 MB) and pulls back `--dump-out` files.
 
-**Pitfall: that push check compares file size only.** ABI v4 reordered
-the WEIGHTS bytes without changing the image size (still 598,623,744),
-so a device that already held a pre-v4 image kept it — a row-major image
-paired with a `.hexcfg` claiming `weight_layout=tiled32`, which every P2
-and P3 skel read as garbage (PPL 2e8 … nan) until the `.hexw` was pushed
-by hand. After regenerating an image, either `adb push` the `.hexw`
-explicitly or compare `md5sum` with the device copy. Teaching the script
-to checksum is a follow-up.
+**Pitfall: that push check used to compare file size only.** ABI v4
+reordered the WEIGHTS bytes without changing the image size (still
+598,623,744), so a device that already held a pre-v4 image kept it — a
+row-major image paired with a `.hexcfg` claiming
+`weight_layout=tiled32`, which every P2 and P3 skel read as garbage
+(PPL 2e8 … nan) until the `.hexw` was pushed by hand. Since M6 P4 the
+script's `push_if_changed` compares `md5sum` with the device copy
+instead, so a same-size image is re-pushed; an out-of-band `adb push`
+is no longer needed.
 
 `hexagon_rpc_test` drives `init()` with `n_ops == 0` and verifies the
 RPC/mapping contract: session open, rpcmem, ABI-mismatch rejection, fd
@@ -675,6 +703,35 @@ simulators pass either way, so a device pass is not optional.
    rather than shortcutting `m == 1`. The simulator does not enforce
    context ownership, so this class of bug is invisible there and only a
    device run (or review) catches it.
+8. **int16 activation for `down_proj` (M6 P4).** The SwiGLU output is
+   quantized per token to int16 (`absmax / 32767`) by
+   `htp_quant_row_fp16_i16`, the same magic-constant rounding as rule 6
+   through the shared `quant_row(x, q, k, i8)` body but with
+   `1.5*2^16`, so the rounding resolution is 2^-6 of an int16 step and
+   about 1 % of generic elements differ from `ref_quant_row_i16` by one
+   LSB (modelled; `test_quant` observed `quant16_generic
+   STAT pm1=167/25600`). The kernel multiplies int16 × int8 lane-wise
+   with `Q6_Ww_vmpyacc_WwVhVh` after a `Q6_Wh_vunpack_Vb` of each 128
+   weight bytes — exact int32, since a lane holds `k/64` products of
+   magnitude ≤ 32767 × 127 and lo+hi `2*k/64` of them, which stays
+   inside int32 for `k <= 16384`; the validator rejects a larger
+   `MATMUL_W8A16` `k` with rc 5 (section 1.4). It then folds four rows
+   with two `Q6_W_vshuff_VVR` steps and three `vror` steps, converting
+   with `Q6_Vsf_equals_Vw` first and doing every fold in qf32, so the
+   fp32 summation order differs from the reference's exact int64 dot
+   and the unit tests keep their 2e-3/1e-3 bound. Scaling stays in the
+   reference order `((float)dot * sw[n]) * sx[t]`, the narrowing is one
+   `hvx_vec_f32_to_f16` and the store one `hvx_vec_store_u` of
+   `2*rows` bytes — no horizontal scalar sum and no scalar fp16
+   conversion is left. This changes the model's numerics (the fp16
+   activation is gone): x86 `--eval` PPL moved 37.4738 → **37.1629** on
+   the 387-token local prompt (section 5.1), and the S25 Ultra matched
+   the new reference to +1.29 % there and +0.89 % on 512 tokens
+   (section 8.2) — a gap whose source was isolated to the upstream
+   qf32 chain, not to this kernel. `Q6_Ww_vmpyacc_WwVhVh` and the
+   `Q6_W_vshuff_VVR` fold are the instructions P4 first exercises on
+   silicon, which rule 1 makes worth stating; the 1-ulp isolation in
+   section 8.2 is what shows they behave.
 
 ---
 
@@ -704,8 +761,13 @@ Prejudice*, first 70k chars in 8 × 2048-token windows (torch proxy).
   design — ②' shows the same +3.4 % — not a kernel error.
 * 1-layer image: device vs reference top-1 8/8, generated ids identical;
   per-op rel-RMS ≤ 1e-4 up to ATTN, bit-exact for EMBED / RMSNORM / W8A8.
+* M6 P4's int16 `down_proj` activation moved the x86 reference from
+  37.4738 to 37.1629 on the 387-token local prompt (−0.83 %; the
+  `eval.txt` rows above were not re-measured, so ②' and ③ still show
+  the fp16-activation definition). Compare that with the +6 % an int8
+  `down_proj` costs (section 2.3).
 
-### 8.2 Performance on device (M5, then M6 P3)
+### 8.2 Performance on device (M5, then M6 P3 and P4)
 
 `--chunk 128 --steps 64`; medians over decode steps 2–64, host wall time
 around each RPC. "M4" is the scalar-score attention kernel, "M5" the
@@ -788,7 +850,67 @@ host/RPC path, not the DSP (section 9). The two decode rows differ
 because `--eval` is teacher-forced (no sampling, no KV divergence) while
 `--steps` generates; the warm-up is not explained yet.
 
-### 8.3 Simulator profile (M6 baseline and P3)
+**M6 P4 on device.** Same phone (Galaxy S25 Ultra, R3CY10WM83Y), v75
+skel built at `82eacd7e`, 2026-09-16; `run_device_test.sh` RPC_TEST
+PASS, and both the skel and the image md5 were verified against the
+device copies before every run. The P4 x86 reference is the int16
+`down_proj` one of section 5.1.
+
+| `--eval` | DSP (P4) | x86 reference (P4) | gap |
+|---|---|---|---|
+| 387 tok, PPL / top-1 | **37.6413 / 138** | 37.1629 / 134 | **+1.29 %** |
+| 512 tok, PPL / top-1 | **33.3132 / 189** | 33.0195 / 184 | **+0.89 %** |
+
+Running the P3 skel (`8669ed2b`) on the same tokens gives 37.5336 / 134
+(+0.16 % against its own reference 37.4738) and 33.5493 / 183
+(+0.44 % against 33.4011), so P3 → P4 on 512 tokens moved the DSP
+−0.70 % and the reference −1.14 %.
+
+That widening was isolated with the 1-layer image (`--dump-op`, a
+128-token chunk) and it is not the new kernel. The `down_proj`
+**input** — the SILU_MUL output, code unchanged since P3 — already
+differs DSP-vs-reference by rel-RMS 2.65 % (max_abs 0.113, still 0
+elements outside the 0.1/0.1 bound), and the `down_proj` output differs
+by 2.46 %, i.e. slightly less. Recomputing the int16 reference from the
+DSP's *own* input and comparing against the DSP output gives rel-RMS
+1.6e-4 with max_abs 0.00098 = one fp16 ulp, on 19.9 % of elements —
+consistent with the ~1 % ±1-LSB quantization rate of section 7, rule 8.
+So the kernel is exact to its definition on silicon; the DSP-vs-
+reference gap comes from the upstream ATTN/W8A8 qf32 chain, and PPL on
+these prompts responds by ~1 % to sub-1e-3 perturbations (the reference
+itself moved 1.14 % from the int16 change alone). The 0.16 / 0.44 /
+0.89 / 1.29 % figures are therefore one band, not a regression;
+closing it is an accuracy follow-up on the upstream chain (section 9).
+
+| | M6 P3 | M6 P4 |
+|---|---|---|
+| `--eval` decode, DSP pcycles/step | 55.9 M (26.8 ms); host 45.8 ms (21.8 tok/s) | **43.3 M** mean (median 43.65 M, 20.7 ms at 2.09 GHz); host 38.0 ms (**26.3 tok/s**) |
+| `--chunk 128 --steps 64` decode, steady | ~73 M (35 ms); host 76.4 ms (13.1 tok/s) | **59.5 M** (28.5 ms); host 31.2 ms (**32.0 tok/s**) |
+| 128-token prefill chunk at pos 0 | 1,413 M pcycles / 736 ms host | **871.9 M / 478 ms** |
+
+The generation-mode warm-up behaves as in P3 (75 M → 59.5 M over ~20
+steps). Note that host wall in generation mode fell further than the
+DSP did (76.4 → 31.2 ms host against 35 → 28.5 ms DSP); the P3 host
+figure may have included host-side conditions that differ and this was
+not investigated, so **the DSP pcycles are the comparable number**.
+
+Throughput by context, generation mode `--chunk 128 --steps 64`
+(prefill tok/s = prompt tokens ÷ host wall of all prefill chunks;
+decode tok/s = 1000 ÷ the median host wall over the 63 decode steps
+after the prompt — host wall, not DSP time):
+
+| context (prompt tokens) | prefill tok/s | DSP Mcyc/tok | decode tok/s | decode median host ms | decode median DSP Mcyc |
+|---|---|---|---|---|---|
+| 512 | 192.1 | 11 | 27.7 | 36.1 | 68.9 |
+| 1024 | 118.2 | 18 | 22.9 | 43.7 | 85.2 |
+| 4096 | 27.3 | 77 | 9.4 | 106.1 | 216.9 |
+
+The 4096 row needs an image packed with `--max-seq 4224` (weights
+599,180,800 B). Against the M5 rows at the top of this section: 512
+tokens went 25.2 → 192.1 tok/s prefill and 11.2 → 27.7 tok/s decode,
+1024 tokens 23.2 → 118.2 and 11.3 → 22.9.
+
+### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
 hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
 vocab-4096 model, workers 4 (auto; `htp_graph_init_ex` can request a
@@ -958,39 +1080,86 @@ Budget framing (all simulator-derived, not device): prefill512 is
 **7.37 ms/tok**, inside 06-verification's ≤ 10 ms/tok predicate, and
 decode512 is 12.47 ms/tok against a ≤ 16.5 ms compute budget. W8A8 is no
 longer the bottleneck — it is 14.9 % of prefill512 and 26.8 % of
-decode512. `MATMUL_W8A16` (`down_proj`, still row-major, no VTCM, one
-fp16 × int8 dot per row) is now **55.4 % of prefill and 36.7 % of
-decode**, which makes it P4's target; the single 3072→1024 call costs
+decode512. `MATMUL_W8A16` (`down_proj`, as of P3 still row-major, no
+VTCM and one fp16 × int8 dot per row) was **55.4 % of prefill and
+36.7 % of decode**, which is what made it P4's target; the single 3072→1024 call costs
 more than every W8A8 call of its layer put together. ATTN is second at
 long context (27.5 % of prefill512, 16.7 % of decode512) and grows
 linearly with sequence length, so it stays P5. The barrier is unchanged
 at 0.934 ms/tok in decode.
 
+**M6 P4 (`82eacd7e`), `profile acc` only.** The three long scenarios
+were *not* re-run for P4 — the device measurements of section 8.2 were
+taken instead — so every `prefill0` / `prefill512` / `decode512` row and
+percentage above is still P3 and does not describe the int16 kernel.
+What was re-run is the 8-token `acc` gate
+(`logs/hexagon/sim_prof_acc_w4_p4t2.log`, wall 10m39s against P3's
+~16m), plus the 13 golden tests (13/13 PASS,
+`logs/hexagon/sim_13tests_p4.log`):
+
+* per-shape `per_call`, `MATMUL_W8A16` 3072 → 1024: 2,445,246 →
+  **683,954 pcycles (3.58×)**, past the ≥ 3× completion predicate; the
+  whole 8-token run went 6,940,426 → 3,415,503 (2.03×) and the other
+  kinds stayed within ±5 %.
+* the `acc` STAT moved to `max_abs=0.077216 max_rel=98.2637` (P3
+  0.0914676 / 93.3662), inside the 0.1/0.1 gate. It moves at all
+  because the reference itself changed (`ref_quant_row_i16` +
+  `ref_matmul_w8a16`), not only the kernel.
+* unit STATs: `matmul_w8a16_m1 0/0`, `m2 0/0`, `m8
+  0.0078125/0.000974659`, `m7 0.03125/0.0138741` — all inside the
+  2e-3/1e-3 bound; `quant16_generic pm1=167/25600`; the `matmul_w8a8_*`
+  and `matmul_dma_*` STATs are unchanged from P3. The graph STATs
+  shifted within the bound (`graph_prefill` 0.020095/16.4921 →
+  0.0245416/9.3795, `graph_decode` 0.0241753/10.7802 →
+  0.0202219/23.975) for the same reason.
+
+The ≤ 25 % share predicate of `06-verification.md` cannot be read off
+this run — it is defined on `prefill512`, which was not re-measured —
+so P4 was judged on the `acc` ratio and on the device instead. VTCM/DMA
+streaming for W8A16 and an `MM16_R`/`MM16_TB` sweep were both left out
+(section 9); the simulator does not model DDR, so neither is decidable
+here.
+
 ---
 
 ## 9. Planned work
 
-* **Performance (first)**: `MATMUL_W8A16` (`down_proj`), now 55 % of
-  prefill and 37 % of decode in the simulator profile (section 8.3) —
-  blocking and VTCM streaming (`ponytail:` note in `hvx-matmul.c`), and
-  possibly tiling `down` too so the image carries one layout. Then K^T
-  reuse across query rows in prefill attention (`ponytail:` note in
-  `hvx-attn.c`), which is the second-largest cost at long context.
+* **Performance (first)**: K^T reuse across query rows in prefill
+  attention (`ponytail:` note in `hvx-attn.c`) — P5. After P4 took
+  `MATMUL_W8A16` down 3.58× (section 8.3), ATTN is the largest
+  remaining cost at long context and the only one that grows with
+  sequence length.
+* **Accuracy: the upstream qf32 divergence.** At layer 0 on the device
+  the SILU_MUL output already differs from the x86 reference by
+  rel-RMS 2.65 % while the new int16 kernel is exact to one fp16 ulp on
+  the DSP's own input (section 8.2). That ATTN/W8A8 qf32 chain, not the
+  kernels, is what sets the 0.16–1.29 % DSP-vs-reference PPL band, and
+  it should be looked at together with the P5 attention work.
 * **The host/RPC decode path**, which after M6 P3 costs more than the
   DSP does: ~40 ms of every generation step is the RPC round trip plus
   copying and argmax-ing 151,936 floats of logits (section 8.2). Return
   a top-k slice, or do the argmax on the DSP, instead of the whole
   logits vector.
 * **Device re-measurement of the rest**: section 5.4's app numbers and
-  the section 8.2 M5 tables predate P3, `MM_TB`'s real effect (the
-  simulator showed only 1–4 %) is unmeasured on silicon, and the vector
-  quant's tie row has only been covered indirectly by the `--eval` PPL
-  match (section 7, rule 6). The `--steps` warm-up (~92 M → ~73 M
-  pcycles over the first ~20 steps) is also unexplained.
+  the section 8.2 M5 tables predate P3 and P4, `MM_TB`'s real effect
+  (the simulator showed only 1–4 %) is unmeasured on silicon, and the
+  vector quant's tie row has only been covered indirectly by the
+  `--eval` PPL match (section 7, rule 6). The `--steps` warm-up
+  (~75 M → ~59.5 M pcycles over the first ~20 steps in P4) is also
+  unexplained.
+* **Left out of P4, still open**: VTCM/DMA streaming for the W8A16
+  weight rows, which only a device A/B can decide because the simulator
+  does not model DDR bandwidth; an `MM16_R` / `MM16_TB` sweep on the
+  device for the same reason; and tiling `down` so the image carries
+  one weight layout.
 * **`engine="htp"` follow-ups**: route host-side `hexagon:` messages
   into the nntrainer logger instead of stderr; system-prompt KV
   save/load on the DSP (today it forces the CPU path); a second lowered
   architecture would move the `Qwen3ForCausalLM` gate in `main.cpp` into
   a per-model lowering table.
 * **v79-native skel**: find why the IEEE/qf32-chain paths misbehave
-  (section 7) so `HEX_ARCH=v79` can be the default again.
+  (section 7) so `HEX_ARCH=v79` can be the default again. This waits on
+  a **Hexagon SDK upgrade to 6.4 or newer**: the pinned 6.0.0.2 carries
+  no v79 QuRT simulator image, which is why the simulator gate is on
+  v75. Neither the P3 tiled kernel nor the P4 int16 one is affected —
+  both use qf-format ops only.
