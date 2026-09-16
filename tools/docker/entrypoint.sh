@@ -21,9 +21,20 @@ if [ -z "${HEXAGON_SDK_ROOT:-}" ]; then
 fi
 
 if [ -n "${HEXAGON_SDK_ROOT:-}" ] && [ -f "$HEXAGON_SDK_ROOT/setup_sdk_env.source" ]; then
-  export HEXAGON_SDK_ROOT
-  # shellcheck disable=SC1091
-  source "$HEXAGON_SDK_ROOT/setup_sdk_env.source" >/dev/null
+  # setup_sdk_env.source returns early when HEXAGON_SDK_ROOT is already set,
+  # so hand it the path via BASH_SOURCE (it derives the root from its own
+  # location) and let it export everything itself. It needs `python`, `make`
+  # and `awk`, and it (re)links the qaic binary inside the SDK tree.
+  sdk_setup="$HEXAGON_SDK_ROOT/setup_sdk_env.source"
+  unset HEXAGON_SDK_ROOT
+  set +u   # the SDK script tests unset variables
+  # shellcheck disable=SC1090
+  source "$sdk_setup" >/dev/null
+  set -u
+  if [ -z "${DEFAULT_HEXAGON_TOOLS_ROOT:-}" ] || [ ! -d "$DEFAULT_HEXAGON_TOOLS_ROOT" ]; then
+    echo "nntr-entrypoint: setup_sdk_env.source did not set DEFAULT_HEXAGON_TOOLS_ROOT (got '${DEFAULT_HEXAGON_TOOLS_ROOT:-}')" >&2
+    [ "${NNTR_REQUIRE_SDK:-0}" = "1" ] && exit 2
+  fi
 elif [ "${NNTR_REQUIRE_SDK:-0}" = "1" ]; then
   echo "nntr-entrypoint: no Hexagon SDK under $BASE (run tools/docker/setup_wizard.sh)" >&2
   exit 2

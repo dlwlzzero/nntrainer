@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libopenblas-dev libiniparser-dev libjsoncpp-dev libcurl4-openssl-dev \
         libglib2.0-dev libgstreamer1.0-dev libgtest-dev flatbuffers-compiler \
         libunwind-dev libssl-dev \
-        python3 python3-dev python3-pip python3-numpy python3-matplotlib \
+        python3 python3-dev python3-pip python3-numpy python3-matplotlib python-is-python3 \
         clang-format-14 \
         file less vim-tiny \
     && rm -rf /var/lib/apt/lists/*
@@ -52,6 +52,15 @@ RUN cd /opt && \
     rm "android-ndk-${NDK_VERSION}-linux.zip"
 ENV ANDROID_NDK=/opt/android-ndk-${NDK_VERSION}
 ENV ANDROID_API=31
+
+# --- ncurses 5 for hexagon-sim (SDK 6.4 tools link libncurses.so.5; Ubuntu 24.04 ships only 6)
+ARG NCURSES5_VER=6.3-2ubuntu0.3
+RUN cd /tmp && \
+    for p in libtinfo5 libncurses5; do \
+      wget -q "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/${p}_${NCURSES5_VER}_amd64.deb"; \
+    done && \
+    dpkg -i libtinfo5_${NCURSES5_VER}_amd64.deb libncurses5_${NCURSES5_VER}_amd64.deb && \
+    rm -f /tmp/*.deb
 
 # --- Hexagon SDK mount point (populated by run.sh -v, or by setup_wizard.sh with qpm-cli)
 RUN mkdir -p /opt/qcom/Hexagon_SDK /opt/qcom/hexkl_addon
