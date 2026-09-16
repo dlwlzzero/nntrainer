@@ -8,6 +8,8 @@ causallm_src = [
     meson.current_source_dir() / 'api' / 'streamer.cpp',
     meson.current_source_dir() / 'kv_cache_manager.cpp',
     meson.current_source_dir() / 'hexagon' / 'qwen3_lowering.cpp',
+    meson.current_source_dir() / 'hexagon' / 'qwen3_w8cx_bin.cpp',
+    meson.current_source_dir() / 'hexagon' / 'hexagon_backend.cpp',
 ]
 
 executable_src = [
