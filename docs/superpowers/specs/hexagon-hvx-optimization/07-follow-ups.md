@@ -1,0 +1,84 @@
+# 후속 작업 (이번 범위 외)
+
+상위: [00-overview](00-overview.md)
+
+M6에서 만들지 않지만 설계 근거를 남긴다. ①②는 decode 대역폭·배리어 계열로 **디바이스 측정이 가능해진 뒤** 별 마일스톤으로, ③④는 환경 작업, ⑤⑥은 수치가 바뀌는 선택이라 사용자 결정이 필요하다.
+
+## ① cross-op weight prefetch (decode 대역폭)
+
+- 문제: 각 matmul이 자기 첫 스트립 DMA를 op 진입 후 kick하고 기다린다. ATTN·RMSNORM·eltwise가 도는 동안 DDR은 idle.
+- 설계: `htp_graph_forward_upto`가 op i를 실행하기 전에 op i+1..i+2 중 matmul의 첫 청크(워커별 buf[0])를 미리 kick. 워커 슬랩의 buf[0]을 "다음 op 전용"으로 예약하면 현재 op의 더블버퍼와 충돌하지 않는다(현재 op는 buf[1], buf[2] 사용 → 슬랩을 3분할). `dma_queue`를 op 수명이 아니라 그래프 수명으로 승격(현재는 op마다 memalign/free).
+- 기대: decode에서 matmul 사이 non-matmul 시간(P1 프로파일의 ATTN+RMSNORM+ROPE+ADD+SILU 합)만큼 DMA가 앞서 감. sim에서는 효과 측정 불가.
+
+## ② op 퓨전 (배리어 수 감소, ABI v5)
+
+- 후보: `RMSNORM → MATMUL_W8A8(q/k/v 셋)` (quant를 norm 출력에서 바로), `SILU_MUL → MATMUL_W8A16`, `MATMUL → ADD`(residual을 store 시점에 합산). q/k/v와 gate/up은 같은 입력이라 N 방향 이어붙여 matmul 1회로 융합 가능(호스트 lowering 변경, 가중치 이미지 순서 변경).
+- 비용: `lower_qwen3` op 시퀀스·`ref_graph_forward`·sim `graph` 테스트·`find_divergence.py`의 op 인덱스 전부 변경. ABI v5.
+- 판단 근거: P1의 `barrier_empty_x1000` × 451이 토큰당 3 ms(sim-derived)를 넘거나, 디바이스 decode에서 non-matmul 구간이 20 %를 넘을 때.
+
+## ③ HAP_power 투표 (앱)
+
+M5에서 하네스는 이미 최고 클럭(2.09 Gcyc/s)이었지만, 앱은 토큰 사이에 샘플링·출력으로 idle 갭이 있어 클럭이 내려갈 수 있다. `HexagonRunner::init`에 compute apptype + DCVS performance 모드 투표를 넣고 앱 tok/s로 판정. 디바이스 필요.
+
+## ④ v79-native skel — **사용자 요청(2026-09-16): v79 skel로 변경할 것**
+
+HEXAGON.md §7. IEEE hf·qf32 체인 오동작 원인 규명 후 `HEX_ARCH=v79` 기본화. 타일 커널(P3)·int16 lanewise 커널(P4)은 qf 포맷 규칙만 쓰므로 영향 없음. 전제: ⑭ SDK 상향(v79 QuRT sim 이미지는 6.0.0.2에 없어 sim 게이트가 v75에 묶여 있음). 작업 순서: (1) ⑭ 후 v79 sim에서 13개 + `profile acc` 재실행, (2) `HEX_ARCH=v79 build_skel.sh` → 디바이스 e2e PPL이 v75 skel과 일치하는지, (3) `hvx-base.h`의 `__HVX_ARCH__ >= 79` 분기(`Wsf_vmpyacc`, `Vsf_vadd/vmpy` IEEE 경로)가 §7 규칙 1의 실리콘 오동작을 다시 밟지 않도록 qf 경로 강제 여부 결정, (4) 기본값 v79로 전환 + HEXAGON.md §5.3/§7 갱신.
+
+## ⑤ down_proj 레이아웃 단일화 (속도 문제는 P4가 해소)
+
+- **P4 갱신(2026-09-16)**: 속도 문제는 블록 양자화가 아니라 **per-token int16 + int32 lane-wise 누적**으로 해소됐다(acc per_call 3.58×, [04 측정 기록](04-w8a16-down-kernel.md#측정-기록-2026-09-16)). 정확도도 개선 방향(x86 PPL −0.83 %)이라 int8 블록 양자화로 갈 이유가 없어졌다. 남은 것은 **레이아웃 단일화**뿐이다.
+- 남은 내용: 이미지에서 `down`도 타일링해 row-major/tiled32 이중 레이아웃을 없앤다. int16 커널은 행 단위로 128 B씩 읽으므로 타일 인덱스로 바꾸는 것은 주소 계산 변경에 가깝다. 이득은 속도가 아니라 packer·validator·문서의 단순화(HEXAGON.md §2.1 "`down` stays row-major").
+- 원안(참고): SwiGLU 출력을 128개 단위 스케일로 int8화(ggml q8_0) → 타일 vrmpy 경로. per-token int8이 +6 % PPL이었고 int16은 −0.83 %라, 이 방향은 수치 손해를 감수해야 정당화된다 — 현재 근거 없음.
+
+## ⑥ 가중치 부호 오프셋 + 스칼라 vrmpy (명령수 감소)
+
+- `Q6_Vw_vrmpyacc_VwVubRb`(unsigned 벡터 × signed 스칼라 4B)를 쓰면 vsplat이 사라져 벡터당 vload + vrmpy만 남는다. 조건: 가중치를 `w + 128`(uint8)로 저장하고 결과에서 `128 × Σ_k xq[t][k]`(토큰당 스칼라, 모든 행 공통)를 뺀다. 정수 경로라 여전히 bit-exact.
+- 배제 이유(M6): 저장 타입이 int8 → uint8-with-offset으로 바뀌어 "데이터 타입 불변" 결정과 충돌. vsplat이 vrmpy와 다른 슬롯에서 공발행되면 이득이 없을 수 있음 → P3 프로파일에서 벡터당 packet 수가 1을 크게 넘을 때만 재검토.
+
+## ⑦ decode M>1 (speculative / batch)
+
+타일 커널의 TB 블로킹이 그대로 적용되므로 커널 변경 없음. 앱·RPC 계약(`batch_size > 1` fallback) 쪽 작업.
+
+## ⑧ quant 후속 (P3에서 벡터화 완료, 남은 항목)
+
+당초 "벡터화 보류" 항목이었으나 P3 Task 3b에서 [03-1](03-1-quant-vectorization.md)로 구현했다. 남은 것:
+
+- **디바이스 tie-row 검증(S25 Ultra)**: 음수 tie 경로가 Qfloat 반올림의 부호 대칭성에 기대는데 V75 HVX PRM이 명시하지 않는다. sim은 통과. `test_quant` (c) 케이스를 디바이스에서 한 번 돌린다.
+- **NaN 처리 차이**: 벡터 absmax는 NaN을 absmax 후보로 세고 스칼라 `ref_quant_row`는 건너뛴다. 실모델 활성화에 NaN이 없어 방치했다.
+- **정확 일치가 필요해지면**: 정수 가수 곱 커널(fp16 가수를 정수로 꺼내 `Vw` 곱 → 시프트). 리뷰어 추정 ~20 vector ops / 32 lane으로 여전히 §7 한계(qf 포맷 연산만) 안에 들어간다. 현재 ±1 비율 3.6e-5(모델, sim 실측 0/65536)가 문제되지 않는 한 불필요.
+
+## ⑨ W8A8 DMA 청크 크기
+
+`mm_worker_vtcm`의 청크는 슬랩 절반에 맞는 최대 타일 수(max-fit)라 decode(m=1, n=1024)는 워커당 청크 1개 = DMA 후 계산의 직렬 구조다. 스트립(32행) 단위 등 작은 청크와의 비교는 DDR 지연을 모델링하는 디바이스에서만 가능 — ① cross-op prefetch와 함께 판정. P3 이후 decode는 W8A16 지배(37 %)라 우선순위는 낮다.
+
+## ⑩ `MM_TB` 디바이스 재측정
+
+sim에서 `MM_TB 4`의 per-shape W8A8 이득은 1.3~3.7 %에 그쳤다(시뮬레이터가 가중치 대역폭을 제대로 과금하지 않기 때문). 디바이스에서 `MM_TB` 1/2/4/8을 재측정해 기본값을 확정한다.
+
+P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 sim만 보고 정한 값이다(레지스터 압박 대 재사용의 절충). 디바이스에서 `MM16_R` 2/4/8 × `MM16_TB` 1/2/4 스윕을 decode(m=1)와 prefill(m=128) 양쪽에서 돌려 기본값을 확정한다 — m=1에서는 TB 블로킹이 무효라 R만 의미가 있다. ⑬(VTCM 스트리밍)과 같은 세션에서 함께 측정하는 것이 효율적이다.
+
+## ⑪ `run_e2e_test.sh` 체크섬 push — **완료 (2026-09-16, `7dd3a949`)**
+
+`push_if_changed`가 **파일 크기만** 비교한다. ABI v4는 WEIGHTS 바이트 순서만 바꾸고 크기(598,623,744)를 유지했으므로, 디바이스에 남아 있던 2026-09-01 row-major 이미지가 그대로 쓰였고 `.hexcfg`는 `weight_layout=tiled32`라 P2·P3 skel 전부가 쓰레기 출력(PPL 2e8 … nan)을 냈다. 수동 `adb push`로 해소(2026-09-16). 수정: 크기 대신 `md5sum` 비교(또는 `.hexw`에 레이아웃 id를 포함한 짧은 헤더/사이드카 파일). 600 MB md5는 디바이스에서 수 초 걸리므로 `--force-push` 플래그 병행 검토.
+
+**완료**: `7dd3a949` [tools] Compare checksums before pushing the Hexagon e2e image — `push_if_changed`가 크기 대신 md5를 비교한다. P4 디바이스 측정에서 skel·하네스·1-layer 이미지가 조용히·정확히 push되는 것을 확인했다.
+
+## ⑫ 호스트/RPC decode 경로 (P3 이후 실제 병목)
+
+디바이스 측정(2026-09-16, 06 디바이스 표): `--eval` decode DSP 26.8 ms인데 host wall 45.8 ms, 생성 모드는 DSP 35 ms / host 76.4 ms — step당 ~40 ms가 호스트다. 내역: FastRPC 왕복(~0.26 ms, 무시 가능) + **151,936 float logits 복사** + 호스트 argmax. 설계 후보: (a) `forward()`가 top-k(값+인덱스)만 rout으로 반환 — 샘플링 파라미터를 DSP가 알아야 하므로 greedy/top-k만, (b) argmax를 DSP에서 수행해 토큰 id 1개만 반환(샘플링 불가, 앱 제약), (c) logits를 rpcmem ACT 슬롯에 써서 복사를 없애고 호스트가 zero-copy로 읽기 — ABI 변경 최소. **(c) → (a) 순으로 검토.** P4 이후 디바이스에서 판정.
+
+## ⑬ W8A16 VTCM/DMA 스트리밍 (P4에서 제외, D3)
+
+P4의 int16 lanewise `down_proj` 커널은 DDR 직접 읽기(행 4개 × 3 KB 동시 스트림)다. sim은 DDR/DMA를 모델링하지 않아 스트리밍의 이득을 판정할 수 없어 제외했다. 디바이스에서 `HTP_MM_NO_VTCM`식 A/B(같은 세션, decode·prefill 모두)로 판정하고, 이득이 있으면 `mm_worker_vtcm`의 청킹(`rows_per_buf`를 `MM16_R` 배수로)을 row-major용으로 일반화한다. `hvx-matmul.c`의 `ponytail:` 노트가 자리다.
+
+## ⑭ Hexagon SDK 6.0.0.2 → 6.4 이상 상향 — **사용자 요청(2026-09-16)**
+
+현재 sim·skel 빌드는 `/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.0.0.2`(toolchain 8.7.08)에 고정돼 있고, QuRT sim 이미지가 v75까지만 있어 sim 게이트가 v75다(HEXAGON.md §5.2는 SDK 6.3.0.0/toolchain 8.8에서도 통과했다고 기록). 상향 시 확인할 것: `setup_sdk_env.source` 경로(`build_sim_test.sh`, `run_sim_test.sh`, `build_skel.sh`, 계획서·핸드오프의 하드코딩), `run_main_on_hexagon` 이미지의 `hexagon_toolv*_v79` 존재, `-mhvx-ieee-fp` 플래그 호환, `hvx_hexagon_protos.h` 인트린식 이름 변화, HexKL(6.0.0.2 lib)과의 공존(메모리 `hmx-impl-worktree`). 완료 후 13개 + `profile acc` + 디바이스 e2e를 새 SDK로 재측정하고 HEXAGON.md §5.2/§8.3의 SDK·툴체인 표기를 갱신한다. ④의 전제.
+
+## ⑮ 상류 qf32 발산 (ATTN/W8A8 체인)
+
+P4 디바이스 격리(2026-09-16, 1-layer 이미지 `--dump-op`, 128-tok 청크)에서: `down_proj` **입력**(= SILU_MUL 출력, P3 이후 코드 불변)이 이미 DSP vs x86 ref rel-RMS **2.65 %**(max_abs 0.113, 0.1/0.1 밴드 밖 원소는 0개), 출력은 2.46 %. 반면 DSP 자기 입력으로 int16 ref를 재계산해 DSP 출력과 비교하면 rel-RMS 1.6e-4 / max_abs 0.00098(fp16 1 ulp, 원소의 19.9 % — ⑧의 ±1 LSB 비율과 정합). 즉 **커널은 실리콘에서 정의대로 정확하고, DSP-vs-reference PPL 갭(0.16 / 0.44 / 0.89 / 1.29 % 한 밴드)을 만드는 것은 상류 ATTN/W8A8 qf32 체인**이다. 레이어 0에서 이미 2.65 %라는 것은 ATTN(qf32 score/softmax/PV)과 W8A8 에필로그의 qf32 반올림이 fp32 ref와 다른 지점이 누적된다는 뜻이다.
+
+- 왜 지금 안 고치나: 정확도가 나쁜 방향으로 회귀한 것이 아니고(P4는 x86 ref를 −0.83 % 개선), 이 프롬프트의 PPL이 1e-3 미만 섭동에 ~1 % 반응해 갭 자체가 판정력이 낮다.
+- 어떻게 볼 것인가: P5 ATTN 작업(K^T 재사용)에서 커널을 어차피 다시 쓰므로 그때 함께 본다. 후보 절차: (1) 1-layer에서 op별 rel-RMS 프로파일을 떠서 2.65 %가 어느 op에서 생기는지 이분(ATTN 내부는 `forward_debug`로 안 보이므로 중간 dump 추가 필요), (2) 해당 지점만 fp32 누적/`Vsf_equals_Vqf32` 순서를 ref와 맞춰 재측정, (3) 갭이 0.2 % 밴드로 줄면 06의 게이트를 다시 세운다.
+- 관련: §7 규칙 1(IEEE 경로 사용 불가)이 qf32를 강제하므로, 완전 일치는 ⑧의 "정수 가수 곱" 계열 수단이 필요할 수 있다.
