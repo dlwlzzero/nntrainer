@@ -71,18 +71,25 @@ step_sdk() {
     [ -n "$deb" ] || { echo "   no .deb found in $QPM_DEB_DIR"; exit 1; }
   fi
   echo "   installing qpm-cli in a throwaway root container and running the interactive login + install."
-  echo "   You will be asked for your Qualcomm credentials. Product name: hexagonsdk6.x (choose the newest 6.4+ version when prompted)."
+  echo "   You will be asked for your Qualcomm credentials. Product name: hexagonsdk6.x; the newest version is installed"
+  echo "   unless QPM_SDK_VERSION=<x.y.z.w> is set (the --info line printed before the install lists the versions)."
   ask "Press to start"
   docker run --rm -it --platform linux/amd64 \
+    -e QPM_SDK_VERSION="${QPM_SDK_VERSION:-}" \
     -v "$QPM_DEB_DIR:/deb:ro" -v "$HEXAGON_SDK_DIR:/opt/qcom/Hexagon_SDK" \
     ubuntu:24.04 bash -lc '
       set -e
-      apt-get update >/dev/null && apt-get install -y --no-install-recommends ca-certificates libglib2.0-0 >/dev/null
+      apt-get update >/dev/null && apt-get install -y --no-install-recommends ca-certificates libglib2.0-0 librtmp1 libsasl2-2 >/dev/null
       dpkg -i /deb/QualcommPackageManager3*Linux*x86*.deb || apt-get install -y -f
       qpm-cli --version
       qpm-cli --login
       qpm-cli --license-activate hexagonsdk6.x
-      qpm-cli --install hexagonsdk6.x --path /opt/qcom/Hexagon_SDK
+      qpm-cli --info hexagonsdk6.x || true
+      if [ -n "${QPM_SDK_VERSION:-}" ]; then
+        qpm-cli --install hexagonsdk6.x --version "$QPM_SDK_VERSION" --path /opt/qcom/Hexagon_SDK
+      else
+        qpm-cli --install hexagonsdk6.x --path /opt/qcom/Hexagon_SDK
+      fi
       ls /opt/qcom/Hexagon_SDK
     '
   found="$(ls -d "$HEXAGON_SDK_DIR"/6.*/ 2>/dev/null | sort -V | tail -1 || true)"
