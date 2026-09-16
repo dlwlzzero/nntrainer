@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+# OrbStack installs its docker CLI under ~/.orbstack/bin; make it visible to non-login shells.
+[ -d "$HOME/.orbstack/bin" ] && export PATH="$HOME/.orbstack/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HEXAGON_SDK_DIR="${HEXAGON_SDK_DIR:-$HOME/Qualcomm/Hexagon_SDK}"
