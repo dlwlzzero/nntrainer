@@ -134,8 +134,9 @@ is processed before anything else. A PR that merges closes its issue
    clean-architecture sweep of the subtree and file issues.
 2. Planner: turn the top `state:needs-plan` into a plan file, label
    `state:planned`.
-3. Implementer: if nothing is `in-progress` and nothing is
-   `needs-measurement`, take the top `state:planned`, implement through the
+3. Implementer: if nothing is `in-progress` (a `needs-measurement` issue
+   does not block a planned issue that needs no device step; still at most
+   one `in-progress`), take the top `state:planned`, implement through the
    gates (`.claude/skills/hexagon-gates`), then either open a PR
    (`state:review`) or write a handoff (`state:needs-measurement`).
 4. Guide writer: on `--guide`, or when a PR merged since the last guide

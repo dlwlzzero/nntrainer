@@ -23,7 +23,8 @@ say what is uncommitted.
    touches anything else).
 3. If any issue is `state:needs-plan` and not `needs-user`: spawn
    `hexagon-planner` with the highest-priority one. Wait.
-4. If no issue is `state:in-progress` and none is `state:needs-measurement`:
+4. If no issue is `state:in-progress` (a `state:needs-measurement` issue
+   does not block, as long as the new issue needs no device step):
    pick the highest-priority `state:planned` (or a `state:measured` the
    supervisor handed back as `in-progress`) and spawn `hexagon-implementer`
    with it. Wait. If an issue is `state:in-progress` with unanswered PR
