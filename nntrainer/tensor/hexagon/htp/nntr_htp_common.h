@@ -150,8 +150,30 @@ nntr_htp_check_ref(uint32_t buf_id, uint32_t offset, uint64_t bytes,
 }
 
 /**
+ * @brief The per-call token-id gate shared by the DSP executor and the
+ *        host pre-check: every id must index the vocab-row tables. One
+ *        unsigned compare also rejects negative ids (they wrap past 2^31).
+ * @return 1 if all n ids are < vocab, 0 otherwise
+ */
+static inline int nntr_htp_token_ids_ok(const int32_t *ids, uint32_t n,
+                                        uint32_t vocab) {
+  uint32_t i;
+  for (i = 0; i < n; ++i)
+    if ((uint32_t)ids[i] >= vocab)
+      return 0;
+  return 1;
+}
+
+/**
  * @brief Validate an op-list buffer: header fields, op kinds/refs, and
  * per-op tensor bounds against the caller-provided buffer sizes.
+ *
+ * rc 5 covers every per-op rule: unknown kind, buf id or unaligned offset,
+ * m != 0 on any kind but LOGITS, k == 0 or k % 128 on the four int8 kinds,
+ * k > 16384 on W8A16, n % 32 on the tiled kinds, n % 64 on
+ * RMSNORM/ADD/SILU_MUL, PER_HEAD n % head_dim, ATTN.layer >= n_layers, a
+ * LOGITS in0 that cannot hold max_chunk rows, and any tensor ref past its
+ * buffer (ROPE's out is in-place, == in0, and is not checked separately).
  * @return 0 ok, 1 bad pointer/size, 2 bad magic, 3 version mismatch,
  * 4 bad header field (incl. unknown weight_layout), 5 bad op
  */
@@ -196,7 +218,7 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 ||
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
          d.kind == (uint32_t)NNTR_HTP_OP_EMBED) &&
-        d.k % 128u != 0u)
+        (d.k == 0u || d.k % 128u != 0u))
       return 5;
     /* W8A16 accumulates int16 x int8 in int32 lanes: exact for k <= 16384. */
     if (d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 && d.k > 16384u)
@@ -211,7 +233,15 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         h.vocab % NNTR_HTP_TILE_ROWS != 0u)
       return 5;
 
-    m = d.m ? d.m : h.max_chunk;
+    /** m is the per-call token count on every kind: forward() validates
+     * n_tokens, pos and the ids for exactly that many rows (TOKENS holds
+     * n_tokens ids on the wire, KV/rope rows run [pos, pos + m), the quant
+     * scratch has max_chunk rows), so a descriptor-fixed m would bypass
+     * all of it. MATMUL_LOGITS ignores m (it reads row n_tokens - 1) and
+     * the lowering writes 1 there. */
+    if (d.m != 0u && d.kind != (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS)
+      return 5;
+    m = h.max_chunk; /* the widest row count forward() can pass */
 
     switch (d.kind) {
     case NNTR_HTP_OP_EMBED:
@@ -229,6 +259,12 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
       uint64_t gamma_bytes = (d.flags & NNTR_HTP_FLAG_PER_HEAD)
                                ? (uint64_t)h.head_dim * 2u
                                : (uint64_t)d.n * 2u;
+      /** Rows are consumed as whole 64-half vectors; PER_HEAD additionally
+       * splits every row into head_dim chunks. */
+      if (d.n % 64u != 0u)
+        return 5;
+      if ((d.flags & NNTR_HTP_FLAG_PER_HEAD) && d.n % h.head_dim != 0u)
+        return 5;
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
                              buf_size) ||
           nntr_htp_check_ref(d.in1.buf, d.in1.offset, gamma_bytes, buf_size) ||
@@ -261,9 +297,18 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         return 5;
       break;
     case NNTR_HTP_OP_ATTN:
-      /* K/V are addressed by layer into the KV buffer, not by in1/in2. */
+      /** in1/in2 are this chunk's fresh K/V rows (appended to the KV cache
+       * slice that d.layer selects); the cache itself is sized below. */
+      if (d.layer >= h.n_layers)
+        return 5;
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset,
                              (uint64_t)m * h.n_heads * 128u * 2u, buf_size) ||
+          nntr_htp_check_ref(d.in1.buf, d.in1.offset,
+                             (uint64_t)m * h.n_kv_heads * 128u * 2u,
+                             buf_size) ||
+          nntr_htp_check_ref(d.in2.buf, d.in2.offset,
+                             (uint64_t)m * h.n_kv_heads * 128u * 2u,
+                             buf_size) ||
           nntr_htp_check_ref(d.out.buf, d.out.offset,
                              (uint64_t)m * h.n_heads * 128u * 2u, buf_size))
         return 5;
@@ -274,6 +319,8 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         return 5;
       break;
     case NNTR_HTP_OP_SILU_MUL:
+      if (d.n % 64u != 0u) /* whole 64-half vectors per row */
+        return 5;
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
                              buf_size) ||
           nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)m * d.n * 2u,
@@ -283,6 +330,8 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         return 5;
       break;
     case NNTR_HTP_OP_ADD:
+      if (d.n % 64u != 0u) /* whole 64-half vectors per row */
+        return 5;
       if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
                              buf_size) ||
           nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)m * d.n * 2u,
@@ -292,8 +341,10 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
         return 5;
       break;
     case NNTR_HTP_OP_MATMUL_LOGITS:
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.k * 2u,
-                             buf_size) ||
+      /** The kernel reads row n_tokens - 1 of in0 whatever d.m says
+       * (n_tokens <= max_chunk), so in0 must hold max_chunk rows. */
+      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset,
+                             (uint64_t)h.max_chunk * d.k * 2u, buf_size) ||
           nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)d.n * d.k,
                              buf_size) ||
           nntr_htp_check_ref(d.in2.buf, d.in2.offset, (uint64_t)d.n * 4u,

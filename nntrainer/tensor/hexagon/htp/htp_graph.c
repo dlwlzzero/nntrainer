@@ -133,6 +133,11 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
     return 1;
   if (n_ops_limit > g->cfg.n_ops)
     return 1;
+  /** Token ids exist only per call: EMBED gathers row (uint32_t)tokens[t]
+   * of the vocab-row table unchecked, so reject here, before any buffer
+   * pointer or KV row is touched. */
+  if (!nntr_htp_token_ids_ok(tokens, n_tokens, g->cfg.vocab))
+    return 1;
 
   g->ctx.buf[NNTR_HTP_BUF_TOKENS] = (uint8_t *)(uintptr_t)tokens;
   g->ctx.buf[NNTR_HTP_BUF_LOGITS] = (uint8_t *)logits;

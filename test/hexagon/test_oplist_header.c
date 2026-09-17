@@ -183,6 +183,87 @@ int main(void) {
     wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
     wire.ops[1].k = 16512u;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /** k == 0 passes k % 128 but no kernel can run it -> 5 on all four
+     * int8 kinds (the k-dependent bounds shrink to 0 bytes, so only the k
+     * rule can reject). */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].k = 0u; /* W8A8 */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_LOGITS;
+    wire.ops[1].n = 32u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].kind = NNTR_HTP_OP_EMBED;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /* RMSNORM / ADD / SILU_MUL consume whole 64-half vectors: n % 64 -> 5 */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[0].n = 65u; /* RMSNORM; 4 x 65 halves still fit the ACT slot */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[0].kind = NNTR_HTP_OP_ADD;
+    wire.ops[0].n = 65u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[0].kind = NNTR_HTP_OP_SILU_MUL;
+    wire.ops[0].n = 65u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /** PER_HEAD RMSNORM chunks each row by head_dim: n = 192 is a multiple
+     * of 64, so only the head_dim rule can reject it -> 5; n = 256 -> 0. */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[0].flags = NNTR_HTP_FLAG_PER_HEAD;
+    wire.ops[0].n = 192u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[0].n = 256u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+
+    /** ATTN indexes the KV cache by layer: layer >= n_layers -> 5. KV is
+     * sized for exactly n_layers (1) at max_seq 64, so layer 0 -> 0. */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].kind = NNTR_HTP_OP_ATTN;
+    wire.ops[1].layer = 1u;
+    wire.h.max_seq = 64u;
+    buf_size[NNTR_HTP_BUF_KV] = 65536u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].layer = 0u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+    /* ATTN in1/in2 are the fresh K/V rows: max_chunk * n_kv_heads * 256 B */
+    wire.ops[1].in2.offset = 65536u - 128u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /** m is the per-call token count on every kind but LOGITS: a fixed m
+     * would bypass the forward() gates -> 5 (RMSNORM); LOGITS m = 1 -> 0
+     * is the control below. */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[0].m = 2u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+
+    /** LOGITS reads row n_tokens - 1 of in0, so in0 must hold max_chunk
+     * rows whatever m says: at offset 7936 one 256 B row fits the 8192 B
+     * ACT, four (max_chunk) do not -> 5; at offset 1024 -> 0. */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_LOGITS;
+    wire.ops[1].m = 1u;
+    wire.ops[1].k = 128u;
+    wire.ops[1].n = 32u;
+    wire.ops[1].in0.offset = 7936u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].in0.offset = 1024u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+  }
+
+  /* token-id gate: shared by htp_graph.c and HexagonBackend::forward */
+  {
+    static const int32_t ok[3] = {0, 17, 31};
+    static const int32_t big[3] = {0, 32, 31};
+    static const int32_t neg[3] = {0, 17, -1};
+    assert(nntr_htp_token_ids_ok(ok, 3u, 32u) == 1);
+    assert(nntr_htp_token_ids_ok(ok, 0u, 32u) == 1);
+    assert(nntr_htp_token_ids_ok(big, 3u, 32u) == 0);
+    assert(nntr_htp_token_ids_ok(neg, 3u, 32u) == 0);
   }
 
   puts("oplist header check: PASS");
