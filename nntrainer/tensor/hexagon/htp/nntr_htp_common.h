@@ -165,6 +165,118 @@ static inline int nntr_htp_token_ids_ok(const int32_t *ids, uint32_t n,
 }
 
 /**
+ * @brief Op row count: d->m if set, else the current call's n_tokens. The
+ *        one rule every executor (DSP kernels, x86 reference, simulator
+ *        reference) applies to a descriptor.
+ */
+static inline uint32_t nntr_htp_op_rows(const struct nntr_htp_op_desc *d,
+                                        uint32_t n_tokens) {
+  return d->m ? d->m : n_tokens;
+}
+
+/** @brief KV cache bytes: K and V, fp16,
+ * [n_layers][n_kv_heads][max_seq][head_dim]. */
+static inline uint64_t nntr_htp_kv_bytes(uint32_t n_layers, uint32_t n_kv_heads,
+                                         uint32_t max_seq, uint32_t head_dim) {
+  return 2ull * n_layers * n_kv_heads * max_seq * head_dim * 2u;
+}
+
+/** @brief Wire size of an op-list: header + n_ops descriptors. */
+static inline uint64_t nntr_htp_oplist_bytes(uint32_t n_ops) {
+  return (uint64_t)sizeof(struct nntr_htp_oplist_header) +
+         (uint64_t)n_ops * sizeof(struct nntr_htp_op_desc);
+}
+
+/**
+ * @brief Byte extent of each tensor ref of one op for `rows` token rows.
+ */
+struct nntr_htp_op_extent {
+  uint64_t in0, in1, in2, out; /**< bytes each ref must cover for `rows` */
+  uint32_t used;               /**< bit i set: ref i (in0,in1,in2,out) is read
+                                  or written by the kind */
+  uint32_t out_alias_in0;      /**< ROPE: out is in place on in0 and is not
+                                  a separate extent */
+};
+
+/**
+ * @brief The per-kind operand shape table: how many bytes of every ref an
+ *        op of kind d->kind touches for `rows` token rows, with k/n from the
+ *        descriptor and the model dims from the header. The validator passes
+ *        h->max_chunk (the widest count forward() can pass); executors and
+ *        dump tools pass n_tokens. d->m is ignored: the validator forces it
+ *        to 0 on every kind but LOGITS, whose kernel ignores it.
+ * @return 0 ok, 1 unknown kind
+ */
+static inline int nntr_htp_op_extent(const struct nntr_htp_oplist_header *h,
+                                     const struct nntr_htp_op_desc *d,
+                                     uint32_t rows,
+                                     struct nntr_htp_op_extent *e) {
+  const uint64_t r = rows;
+  const uint64_t q_row = (uint64_t)h->n_heads * 128u * 2u;
+  const uint64_t kv_row = (uint64_t)h->n_kv_heads * 128u * 2u;
+
+  memset(e, 0, sizeof(*e));
+  switch (d->kind) {
+  case NNTR_HTP_OP_EMBED: /* TOKENS ids, tiled int8 table, fp32 scales */
+    e->in0 = r * 4u;
+    e->in1 = (uint64_t)h->vocab * d->k;
+    e->in2 = (uint64_t)h->vocab * 4u;
+    e->out = r * d->k * 2u;
+    e->used = 0xFu;
+    break;
+  case NNTR_HTP_OP_RMSNORM: /* gamma is head_dim long under PER_HEAD */
+    e->in0 = r * d->n * 2u;
+    e->in1 = (d->flags & NNTR_HTP_FLAG_PER_HEAD) ? (uint64_t)h->head_dim * 2u
+                                                 : (uint64_t)d->n * 2u;
+    e->out = r * d->n * 2u;
+    e->used = 0xBu;
+    break;
+  case NNTR_HTP_OP_MATMUL_W8A8:
+  case NNTR_HTP_OP_MATMUL_W8A16: /* same operand layout */
+    e->in0 = r * d->k * 2u;
+    e->in1 = (uint64_t)d->n * d->k;
+    e->in2 = (uint64_t)d->n * 4u;
+    e->out = r * d->n * 2u;
+    e->used = 0xFu;
+    break;
+  case NNTR_HTP_OP_ROPE: /* q in place, k, cos/sin table of max_seq rows */
+    e->in0 = r * q_row;
+    e->in1 = r * kv_row;
+    e->in2 = (uint64_t)h->max_seq * 128u * 2u;
+    e->out = e->in0;
+    e->used = 0x7u;
+    e->out_alias_in0 = 1u;
+    break;
+  case NNTR_HTP_OP_ATTN: /* in1/in2: this chunk's fresh K/V rows; the cache
+                          * itself is nntr_htp_kv_bytes, not a ref */
+    e->in0 = r * q_row;
+    e->in1 = r * kv_row;
+    e->in2 = r * kv_row;
+    e->out = r * q_row;
+    e->used = 0xFu;
+    break;
+  case NNTR_HTP_OP_SILU_MUL:
+  case NNTR_HTP_OP_ADD:
+    e->in0 = r * d->n * 2u;
+    e->in1 = r * d->n * 2u;
+    e->out = r * d->n * 2u;
+    e->used = 0xBu;
+    break;
+  case NNTR_HTP_OP_MATMUL_LOGITS: /* reads row rows-1 of in0, one fp32 row out
+                                   */
+    e->in0 = r * d->k * 2u;
+    e->in1 = (uint64_t)d->n * d->k;
+    e->in2 = (uint64_t)d->n * 4u;
+    e->out = (uint64_t)d->n * 4u;
+    e->used = 0xFu;
+    break;
+  default:
+    return 1;
+  }
+  return 0;
+}
+
+/**
  * @brief Validate an op-list buffer: header fields, op kinds/refs, and
  * per-op tensor bounds against the caller-provided buffer sizes.
  *
@@ -174,6 +286,8 @@ static inline int nntr_htp_token_ids_ok(const int32_t *ids, uint32_t n,
  * RMSNORM/ADD/SILU_MUL, PER_HEAD n % head_dim, ATTN.layer >= n_layers, a
  * LOGITS in0 that cannot hold max_chunk rows, and any tensor ref past its
  * buffer (ROPE's out is in-place, == in0, and is not checked separately).
+ * The byte extent of every ref comes from nntr_htp_op_extent at
+ * rows = max_chunk.
  * @return 0 ok, 1 bad pointer/size, 2 bad magic, 3 version mismatch,
  * 4 bad header field (incl. unknown weight_layout), 5 bad op
  */
@@ -190,8 +304,7 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
     return 2;
   if (h.version != NNTR_HTP_ABI_VERSION)
     return 3;
-  if ((uint64_t)len !=
-      (uint64_t)sizeof(h) + (uint64_t)h.n_ops * sizeof(struct nntr_htp_op_desc))
+  if ((uint64_t)len != nntr_htp_oplist_bytes(h.n_ops))
     return 1;
   if (h.head_dim != 128u || h.hidden % 64u != 0u || h.ffn % 64u != 0u ||
       h.n_kv_heads == 0u || h.n_heads % h.n_kv_heads != 0u ||
@@ -200,7 +313,10 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
 
   for (i = 0; i < h.n_ops; ++i) {
     struct nntr_htp_op_desc d;
-    uint32_t m;
+    struct nntr_htp_op_extent e;
+    const struct nntr_htp_tensor_ref *ref[4];
+    uint64_t bytes[4];
+    uint32_t j;
     memcpy(&d, (const uint8_t *)buf + sizeof(h) + (uint64_t)i * sizeof(d),
            sizeof(d));
 
@@ -241,121 +357,52 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
      * the lowering writes 1 there. */
     if (d.m != 0u && d.kind != (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS)
       return 5;
-    m = h.max_chunk; /* the widest row count forward() can pass */
 
     switch (d.kind) {
-    case NNTR_HTP_OP_EMBED:
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * 4u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)h.vocab * d.k,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in2.buf, d.in2.offset, (uint64_t)h.vocab * 4u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)m * d.k * 2u,
-                             buf_size))
-        return 5;
-      break;
-    case NNTR_HTP_OP_RMSNORM: {
-      uint64_t gamma_bytes = (d.flags & NNTR_HTP_FLAG_PER_HEAD)
-                               ? (uint64_t)h.head_dim * 2u
-                               : (uint64_t)d.n * 2u;
+    case NNTR_HTP_OP_RMSNORM:
       /** Rows are consumed as whole 64-half vectors; PER_HEAD additionally
        * splits every row into head_dim chunks. */
       if (d.n % 64u != 0u)
         return 5;
       if ((d.flags & NNTR_HTP_FLAG_PER_HEAD) && d.n % h.head_dim != 0u)
         return 5;
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, gamma_bytes, buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)m * d.n * 2u,
-                             buf_size))
-        return 5;
-      break;
-    }
-    case NNTR_HTP_OP_MATMUL_W8A8:
-    case NNTR_HTP_OP_MATMUL_W8A16: /* same operand layout */
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.k * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)d.n * d.k,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in2.buf, d.in2.offset, (uint64_t)d.n * 4u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)m * d.n * 2u,
-                             buf_size))
-        return 5;
-      break;
-    case NNTR_HTP_OP_ROPE:
-      /* out is in-place (== in0); skip the out bounds check. */
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset,
-                             (uint64_t)m * h.n_heads * 128u * 2u, buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset,
-                             (uint64_t)m * h.n_kv_heads * 128u * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in2.buf, d.in2.offset,
-                             (uint64_t)h.max_seq * 128u * 2u, buf_size))
-        return 5;
       break;
     case NNTR_HTP_OP_ATTN:
-      /** in1/in2 are this chunk's fresh K/V rows (appended to the KV cache
-       * slice that d.layer selects); the cache itself is sized below. */
+      /* d.layer selects the KV cache slice; the cache must hold n_layers. */
       if (d.layer >= h.n_layers)
         return 5;
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset,
-                             (uint64_t)m * h.n_heads * 128u * 2u, buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset,
-                             (uint64_t)m * h.n_kv_heads * 128u * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in2.buf, d.in2.offset,
-                             (uint64_t)m * h.n_kv_heads * 128u * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset,
-                             (uint64_t)m * h.n_heads * 128u * 2u, buf_size))
-        return 5;
-      if (2ull * h.n_layers * h.n_kv_heads * h.max_seq * h.head_dim * 2u >
+      if (nntr_htp_kv_bytes(h.n_layers, h.n_kv_heads, h.max_seq, h.head_dim) >
           (uint64_t)buf_size[NNTR_HTP_BUF_KV])
         return 5;
       if (h.max_seq % 64u) /* K^T rows are streamed 64 positions/vector */
         return 5;
       break;
     case NNTR_HTP_OP_SILU_MUL:
-      if (d.n % 64u != 0u) /* whole 64-half vectors per row */
-        return 5;
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)m * d.n * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)m * d.n * 2u,
-                             buf_size))
-        return 5;
-      break;
     case NNTR_HTP_OP_ADD:
       if (d.n % 64u != 0u) /* whole 64-half vectors per row */
         return 5;
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset, (uint64_t)m * d.n * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)m * d.n * 2u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)m * d.n * 2u,
-                             buf_size))
-        return 5;
-      break;
-    case NNTR_HTP_OP_MATMUL_LOGITS:
-      /** The kernel reads row n_tokens - 1 of in0 whatever d.m says
-       * (n_tokens <= max_chunk), so in0 must hold max_chunk rows. */
-      if (nntr_htp_check_ref(d.in0.buf, d.in0.offset,
-                             (uint64_t)h.max_chunk * d.k * 2u, buf_size) ||
-          nntr_htp_check_ref(d.in1.buf, d.in1.offset, (uint64_t)d.n * d.k,
-                             buf_size) ||
-          nntr_htp_check_ref(d.in2.buf, d.in2.offset, (uint64_t)d.n * 4u,
-                             buf_size) ||
-          nntr_htp_check_ref(d.out.buf, d.out.offset, (uint64_t)d.n * 4u,
-                             buf_size))
-        return 5;
       break;
     default:
-      return 5;
+      break;
     }
+
+    /** Every ref the kind touches must fit its buffer for max_chunk rows,
+     * the widest count forward() can pass (LOGITS reads row n_tokens - 1 of
+     * in0 whatever d.m says). */
+    if (nntr_htp_op_extent(&h, &d, h.max_chunk, &e))
+      return 5;
+    ref[0] = &d.in0;
+    ref[1] = &d.in1;
+    ref[2] = &d.in2;
+    ref[3] = &d.out;
+    bytes[0] = e.in0;
+    bytes[1] = e.in1;
+    bytes[2] = e.in2;
+    bytes[3] = e.out;
+    for (j = 0; j < 4u; ++j)
+      if (((e.used >> j) & 1u) &&
+          nntr_htp_check_ref(ref[j]->buf, ref[j]->offset, bytes[j], buf_size))
+        return 5;
   }
   return 0;
 }
