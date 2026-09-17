@@ -33,8 +33,8 @@ Branch `hvx/<issue#>-<slug>` @ `<commit sha>` — estimated device time: <N> min
 1. `git fetch && git checkout hvx/<issue#>-<slug>` and copy the artifacts above from the Mac if the workstation did not build them.
 2. `adb devices` shows `R3CY10WM83Y device`.
 3. For each variant: `cp build_hexagon/skel/libnntr_htp_skel.<variant>.so build_hexagon/skel/libnntr_htp_skel.so && ./tools/hexagon/run_e2e_test.sh /tmp/qwen3_full R3CY10WM83Y -- --tokens /tmp/t512.i32 --chunk 128 --steps 64`
-   Expected log lines: `E2E prefill ... tok/s`, `E2E decode median ... ms`.
-4. Accuracy: `... -- --tokens /tmp/t512.i32 --eval` → `E2E eval ppl=<x> top1=<n>`.
+   Expected log lines: `E2E init ok weights=... act=... n_ops=...`, one `E2E step ... n=<n> pcycles=<c> us=<t> top1=<id>` per chunk / decode step, `E2E gen <ids>`, `E2E decode steps=<n> median_us=<u> median_pcycles=<c> pcycles_per_us=<r>` (since #24: the medians the result table reads, over the `n=1` steps — no by-hand median), `E2E wall_ms <w>`.
+4. Accuracy: `... -- --tokens /tmp/t512.i32 --eval` → `E2E ppl <x> steps <n> top1 <n> wall_ms <w>` followed by the same `E2E decode ...` line.
 5. Paste the summary lines below, commit this file on the same branch, push, and set the issue label to `state:measured`.
 
 ## Results (fill in)

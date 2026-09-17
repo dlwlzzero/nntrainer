@@ -70,6 +70,8 @@ P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 s
 
 디바이스 측정(2026-09-16, 06 디바이스 표): `--eval` decode DSP 26.8 ms인데 host wall 45.8 ms, 생성 모드는 DSP 35 ms / host 76.4 ms — step당 ~40 ms가 호스트다. 내역: FastRPC 왕복(~0.26 ms, 무시 가능) + **151,936 float logits 복사** + 호스트 argmax. 설계 후보: (a) `forward()`가 top-k(값+인덱스)만 rout으로 반환 — 샘플링 파라미터를 DSP가 알아야 하므로 greedy/top-k만, (b) argmax를 DSP에서 수행해 토큰 id 1개만 반환(샘플링 불가, 앱 제약), (c) logits를 rpcmem ACT 슬롯에 써서 복사를 없애고 호스트가 zero-copy로 읽기 — ABI 변경 최소. **(c) → (a) 순으로 검토.** P4 이후 디바이스에서 판정.
 
+- 2026-09-17, `docs/plans/24-host-logits.md` / 브랜치 `hvx/24-host-logits`: #23 로그(하네스는 RPC만 계측, argmax·`log_softmax_at`은 구간 밖)를 다시 읽으면 생성 모드의 host−DSP 간격은 512/1024/4096에서 0.5 / 2.9 / 2.2 ms(host 31.3 / 43.2 / 104.1 ms vs DSP 64.3 / 84.2 / 213.0 Mcyc @ 2.09 GHz)로, "~40 ms"는 P3 생성 모드(비교 불가로 이미 표시)와 teacher-forced `--eval` 행(`pcycles÷us` 1.15 GHz — 호스트가 151,936개 `exp()`에 ~10 ms를 쓰는 동안 DSP가 반클록으로 내려가는 idle-gap/DCVS 효과)에서 온 값이다. 구현은 (c)의 최소형: ABI·IDL·이미지 무변경, 호스트 logits 버퍼만 rpcmem(`HexagonBackend::logits_`, 하네스 `--logits-mem malloc|rpcmem|static`, `static`은 `FASTRPC_MAP_STATIC` 1회 매핑). `hexagon_rpc_test`가 8-float 대비 151,936-float 반환 비용을 메모리 종류별로 측정하고(`forward_full_us mem=…`), 하네스가 `E2E decode steps= median_us= median_pcycles= pcycles_per_us=` 요약을 찍는다. (a)/(b)는 static 반환이 8-float 대비 ≥ 2 ms일 때만 필요. 디바이스 수치: `docs/measurements/24-host-logits.md` (`<fill from handoff>`).
+
 ## ⑬ W8A16 VTCM/DMA 스트리밍 (P4에서 제외, D3)
 
 P4의 int16 lanewise `down_proj` 커널은 DDR 직접 읽기(행 4개 × 3 KB 동시 스트림)다. sim은 DDR/DMA를 모델링하지 않아 스트리밍의 이득을 판정할 수 없어 제외했다. 디바이스에서 `HTP_MM_NO_VTCM`식 A/B(같은 세션, decode·prefill 모두)로 판정하고, 이득이 있으면 `mm_worker_vtcm`의 청킹(`rows_per_buf`를 `MM16_R` 배수로)을 row-major용으로 일반화한다. `hvx-matmul.c`의 `Follow-up:` 노트가 자리다.
