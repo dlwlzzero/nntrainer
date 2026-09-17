@@ -435,6 +435,21 @@ top1 134** (was 37.4738 / 133, −0.83 %) and on the 512-token prompt
 row of section 8.1 was not re-measured — that text is not on the build
 machine. The 8-token `find_divergence.py` bound is unchanged.
 
+**A reference figure can depend on the `hexagon_ref_run` build that
+produced it.** Issue #23 ran the same packed image (md5 `5abf61be…`)
+and the same 512-token file (md5 `10bb428f…`) through two builds of the
+tool: the container's clang build gives PPL **41.2365 / top-1 161**,
+the workstation's native gcc 13.1.0 build **41.5466 / 164** — 0.75 %
+apart with no DSP involved, as large as the DSP-vs-reference gaps this
+section is used to judge.
+
+The workstation build is stable across the toolchain move: re-run at
+`e086248a` on 2026-09-17 it reproduces the 512-token prompt figure
+above exactly (**33.0195 / 184**, 199 s). So the spread is between the
+two host builds on the new prompt, not drift in this machine's
+reference. Quote the reference build alongside any device gap; the
+33.0195 / 184 figure is the workstation build.
+
 `hexagon_ref_run` interprets a packed image with the scalar `ref_*`
 kernels — the same fp16 + per-token int8 math as the DSP — and is the
 accuracy oracle. Modes: default (prefill in chunks, then greedy
@@ -941,6 +956,38 @@ The 4096 row needs an image packed with `--max-seq 4224` (weights
 599,180,800 B). Against the M5 rows at the top of this section: 512
 tokens went 25.2 → 192.1 tok/s prefill and 11.2 → 27.7 tok/s decode,
 1024 tokens 23.2 → 118.2 and 11.3 → 22.9.
+
+The same three contexts re-measured 2026-09-17 after the SDK 6.4 move
+(issue #23, `docs/measurements/23-sdk64-baseline.md`; skels built with
+Hexagon SDK 6.4.0.1 / hexagon-clang 19.0.04 instead of 6.0.0.2 /
+toolchain 8.7.08, kernels unchanged). The P4 rows above are kept rather
+than overwritten, because the two sets were taken on different days and
+the decode figures carry the spread described below:
+
+| context | v75 prefill tok/s | v75 decode tok/s | v75 decode Mcyc | v79 prefill tok/s | v79 decode tok/s | v79 decode Mcyc |
+|---|---|---|---|---|---|---|
+| 512 | 189.0 | 31.92 | 64.3 | 207.4 | 31.36 | 60.1 |
+| 1024 | 117.1 | 23.16 | 84.2 | 131.2 | 25.27 | 76.5 |
+| 4096 | 27.1 | 9.61 | 213.0 | 34.4 | 11.44 | 177.6 |
+
+Two things to read from it. **The SDK move cost nothing**: the v75
+columns match P4 within −1.6 … −0.6 % on prefill and are at or above it
+on decode. **The v79-native skel is 10–27 % faster on the same
+silicon** and the gap grows with context (prefill +9.7 / +12.0 / +26.9 %
+against v75, decode cycles −6.5 / −9.1 / −16.6 %), with PPL and top-1
+tracking v75 at every context — so the `__HVX_ARCH__ >= 79` surface that
+fails four simulator tests (section 5.2) does no device-visible damage.
+Issue #35 should be re-read against these numbers.
+
+Caveat on the decode column at 512, measured from the #23 logs: the
+generation-mode median is taken over 63 steps that are still settling,
+and only the 512 runs drift during them (first-ten → last-ten median
+Mcyc: 512 `67.1 → 64.3`, 1024 `83.6 → 84.8`, 4096 `212.3 → 213.6`).
+Effective DSP clock across the six runs spans 1884 – 2064 MHz. Session
+thermals are not the cause — the same context depth measured in
+teacher-forced mode gives 52.0 Mcyc cold and 51.6 Mcyc ten minutes
+later. Treat the 512 decode pair as ±5 %; a firmer number needs
+repeated medians or an estimator taken from the settled tail.
 
 ### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
