@@ -171,7 +171,7 @@ int main(int argc, char **argv) {
     RpcmemBuffer weights(g.weights_size), kv(g.kv_size), act(g.act_size);
     if (!weights.valid() || !kv.valid() || !act.valid())
       throw std::runtime_error("rpcmem allocation failed");
-    /* Where the DSP's logits land on the host (see the file comment).
+    /** Where the DSP's logits land on the host (see the file comment).
      * Allocated before the runner so that, like WEIGHTS/KV/ACT, it is freed
      * only after the session (and any static mapping) is closed. */
     std::vector<float> logits_heap;
@@ -222,7 +222,7 @@ int main(int argc, char **argv) {
                                  ")");
     }
 
-    /* Decode bookkeeping for the `E2E decode ...` summary: every forward
+    /** Decode bookkeeping for the `E2E decode ...` summary: every forward
      * made while `decoding` (the generation loop after the prompt, or the
      * whole teacher-forced run) — not "n == 1", which a prompt of length
      * 1 mod chunk would also produce as its last prefill call. */

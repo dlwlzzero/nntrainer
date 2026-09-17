@@ -68,7 +68,7 @@ int HexagonBackend::forward(const int32_t *tokens, uint32_t n_tokens,
     pos += n;
     n_tokens -= n;
   }
-  /* Only the last chunk's logits are the result; ~0.1 ms on the host for
+  /** Only the last chunk's logits are the result; ~0.1 ms on the host for
    * 151,936 floats, against the staging copy the driver no longer makes. */
   std::memcpy(logits, out, (size_t)cfg_.vocab * sizeof(float));
   return 0;
