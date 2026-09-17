@@ -32,7 +32,9 @@ HexagonBackend::create(const std::string &w8cx_bin, const HexModelConfig &cfg) {
     b->weights_ = std::make_shared<RpcmemBuffer>(g.weights_size);
     b->kv_ = std::make_shared<RpcmemBuffer>(g.kv_size);
     b->act_ = std::make_shared<RpcmemBuffer>(g.act_size);
-    if (!b->weights_->valid() || !b->kv_->valid() || !b->act_->valid())
+    b->logits_ = std::make_shared<RpcmemBuffer>((size_t)cfg.vocab * 4);
+    if (!b->weights_->valid() || !b->kv_->valid() || !b->act_->valid() ||
+        !b->logits_->valid())
       throw std::runtime_error("rpcmem allocation failed");
     pack_weights(g, cfg, bin.weights(), (uint8_t *)b->weights_->data());
     std::memset(b->kv_->data(), 0, g.kv_size);
@@ -56,15 +58,19 @@ int HexagonBackend::forward(const int32_t *tokens, uint32_t n_tokens,
    * would already sit in KV. */
   if (!nntr_htp_token_ids_ok(tokens, n_tokens, cfg_.vocab))
     return kHexagonBadParm;
+  float *out = static_cast<float *>(logits_->data());
   while (n_tokens) {
     const uint32_t n = n_tokens < cfg_.max_chunk ? n_tokens : cfg_.max_chunk;
-    int err = runner_->forward(tokens, n, pos, logits, cfg_.vocab);
+    int err = runner_->forward(tokens, n, pos, out, cfg_.vocab);
     if (err)
       return err;
     tokens += n;
     pos += n;
     n_tokens -= n;
   }
+  /* Only the last chunk's logits are the result; ~0.1 ms on the host for
+   * 151,936 floats, against the staging copy the driver no longer makes. */
+  std::memcpy(logits, out, (size_t)cfg_.vocab * sizeof(float));
   return 0;
 }
 

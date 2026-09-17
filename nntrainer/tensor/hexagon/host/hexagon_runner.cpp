@@ -10,6 +10,7 @@
 #include "hexagon_runner.h"
 
 #include <cstdio>
+#include <initializer_list>
 
 #include <AEEStdErr.h>
 #include <remote.h>
@@ -53,7 +54,21 @@ std::unique_ptr<HexagonRunner> HexagonRunner::create() {
   return runner;
 }
 
+// FASTRPC_MAP_STATIC is an enumerator of remote.h's fastrpc_map_flags, so
+// the preprocessor cannot see it; tools/hexagon/build_host_test.sh and the
+// enable-hexagon block of the top-level meson.build grep remote.h and
+// define NNTR_HAVE_FASTRPC_MAP_STATIC when it is there. A build without
+// the define (an older SDK) keeps the runner usable and reports the
+// variant as unsupported instead of failing to compile.
+#ifndef NNTR_HAVE_FASTRPC_MAP_STATIC
+#define NNTR_HAVE_FASTRPC_MAP_STATIC 0
+#endif
+
 HexagonRunner::~HexagonRunner() {
+#if NNTR_HAVE_FASTRPC_MAP_STATIC
+  for (const StaticMap &m : static_maps_)
+    fastrpc_munmap(CDSP_DOMAIN_ID, m.fd, m.data, m.size); /* before close */
+#endif
   if (handle_ != 0)
     nntr_htp_close(handle_);
 }
@@ -96,6 +111,33 @@ int HexagonRunner::init(const void *oplist, uint32_t oplist_size,
     return AEE_EUNSUPPORTED;
   }
   return 0;
+}
+
+bool HexagonRunner::static_map_supported() {
+  return NNTR_HAVE_FASTRPC_MAP_STATIC != 0;
+}
+
+int HexagonRunner::register_static(const RpcmemBuffer &buf) {
+#if NNTR_HAVE_FASTRPC_MAP_STATIC
+  for (const StaticMap &m : static_maps_)
+    if (m.fd == buf.fd() && m.data == buf.data())
+      return 0; /* this runner already mapped it */
+  // AEE_EALREADY is deliberately not success here: this runner did not map
+  // that fd, so it is a stale or foreign mapping (fd numbers are recycled),
+  // and forward() would silently take the per-call path.
+  int err = fastrpc_mmap(CDSP_DOMAIN_ID, buf.fd(), buf.data(), 0, buf.size(),
+                         FASTRPC_MAP_STATIC);
+  if (err != AEE_SUCCESS) {
+    fprintf(stderr, "hexagon: fastrpc_mmap(STATIC) failed (0x%x, fd=%d)\n", err,
+            buf.fd());
+    return err;
+  }
+  static_maps_.push_back({buf.fd(), buf.data(), buf.size()});
+  return 0;
+#else
+  (void)buf;
+  return AEE_EUNSUPPORTED;
+#endif
 }
 
 int HexagonRunner::forward(const int32_t *token_ids, uint32_t n_tokens,
