@@ -23,8 +23,11 @@ Host layout the wrapper expects (all overridable by environment, see `run.sh`):
 
 The entrypoint sources `setup_sdk_env.source` of the newest SDK version (or
 `HEXAGON_SDK_VERSION`) so `HEXAGON_SDK_ROOT`, `DEFAULT_HEXAGON_TOOLS_ROOT`
-and `hexagon-clang` are ready; the scripts under `tools/hexagon/` then work
-unchanged:
+and `DEFAULT_TOOLS_VARIANT` are set (the compiler itself is not on `PATH`;
+the scripts call `$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang` by
+full path and `run_sim_test.sh` picks the `run_main_on_hexagon` image of
+`$DEFAULT_TOOLS_VARIANT`, e.g. `hexagon_toolv19_v75` for HEXAGON_Tools
+19.0.04); the scripts under `tools/hexagon/` then work unchanged:
 
 ```
 tools/docker/run.sh ./tools/hexagon/build_host_x86.sh

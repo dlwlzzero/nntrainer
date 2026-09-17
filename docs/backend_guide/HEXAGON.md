@@ -379,8 +379,10 @@ ggml-hexagon backend (MIT); they keep their headers and are listed in
 ./tools/package_android.sh . -Denable-hexagon=true -Dhexagon-sdk-root=$HEXAGON_SDK_ROOT
 ```
 
-Prerequisites: Hexagon SDK 6.3.0.0+ (bring-your-own, as for QNN) and an
-Android NDK. The option (default `false`, strict no-op when off):
+Prerequisites: Hexagon SDK 6.4 or newer (bring-your-own, as for QNN;
+mounted into the dev container by `tools/docker/run.sh`, which exports
+`HEXAGON_SDK_ROOT`) and an Android NDK (r26d is baked into the
+container). The option (default `false`, strict no-op when off):
 
 * errors out unless `platform=android` and an SDK root is given;
 * runs QAIC at **configure time** into `<builddir>/nntr_htp_generated/`
@@ -433,6 +435,21 @@ top1 134** (was 37.4738 / 133, −0.83 %) and on the 512-token prompt
 row of section 8.1 was not re-measured — that text is not on the build
 machine. The 8-token `find_divergence.py` bound is unchanged.
 
+**A reference figure can depend on the `hexagon_ref_run` build that
+produced it.** Issue #23 ran the same packed image (md5 `5abf61be…`)
+and the same 512-token file (md5 `10bb428f…`) through two builds of the
+tool: the container's clang build gives PPL **41.2365 / top-1 161**,
+the workstation's native gcc 13.1.0 build **41.5466 / 164** — 0.75 %
+apart with no DSP involved, as large as the DSP-vs-reference gaps this
+section is used to judge.
+
+The workstation build is stable across the toolchain move: re-run at
+`e086248a` on 2026-09-17 it reproduces the 512-token prompt figure
+above exactly (**33.0195 / 184**, 199 s). So the spread is between the
+two host builds on the new prompt, not drift in this machine's
+reference. Quote the reference build alongside any device gap; the
+33.0195 / 184 figure is the workstation build.
+
 `hexagon_ref_run` interprets a packed image with the scalar `ref_*`
 kernels — the same fp16 + per-token int8 math as the DSP — and is the
 accuracy oracle. Modes: default (prefill in chunks, then greedy
@@ -445,9 +462,9 @@ compiled as C++ so `__fp16` can be a conversion struct
 ### 5.2 Simulator golden tests
 
 ```bash
-source $HEXAGON_SDK_ROOT/setup_sdk_env.source
-HEX_ARCH=v75 ./tools/hexagon/build_sim_test.sh    # -> build_hexagon/sim/libnntr_sim_test.so
-HEX_ARCH=v75 ./tools/hexagon/run_sim_test.sh <name>
+# inside tools/docker/run.sh the entrypoint has already sourced setup_sdk_env.source
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh    # -> build_hexagon/sim/libnntr_sim_test.so
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh <name>
 ```
 
 `hexagon-sim` boots a QuRT image and dispatches one test by name; a pass
@@ -455,10 +472,31 @@ prints `SIM_TEST <name> PASS`. The 13 tests (`smoke pool exp quant
 matmul matmul_dma rmsnorm rope eltwise embed attn logits graph`) compare
 each kernel — and `graph`, a full 2-layer prefill/decode plus partial
 execution — against `ref_ops.c` with a mixed bound `|d| <= atol + rtol *
-|ref|`; the integer paths are bit-exact by construction. All pass on
-v75 and v79 (SDK 6.3.0.0, toolchain 8.8). The `run_main_on_hexagon`
-image is picked per `HEX_ARCH`; `HEX_EXTRA_CFLAGS` appends compiler
-flags to both sim and skel builds.
+|ref|`; the integer paths are bit-exact by construction. History: all
+13 passed on v75 and v79 with SDK 6.3.0.0 / toolchain 8.8 (M2), and on
+v75 with SDK 6.0.0.2 / toolchain 8.7.08 through M6 P4. Current
+toolchain (#23, 2026-09-17): **SDK 6.4.0.2, QuIC LLVM Hexagon Clang
+19.0.04 (HEXAGON_Tools 19.0.04, `toolv19`), `run_main_on_hexagon`
+`hexagon_toolv19_v75` / `hexagon_toolv19_v79`**, inside
+`tools/docker/run.sh`. On **v75** all 13 pass and `profile acc` passes
+with every STAT bit-identical to the P4 record (section 8.3). On
+**v79** the same build gives 9 PASS / 4 FAIL: `quant` (tie row
+`x=-1.5` → `-1` instead of `-2`, plus a ±1 element in `rand0`,
+`rand15`, `k3072`; `quant_generic pm1=13/65536`, `quant16_generic
+229/25600`), `matmul` (`matmul_w8a8_m1` `max_abs=0.03125
+max_rel=0.045677`), `matmul_dma` (`ref_4096k` `0.0625/0.273998`) and
+`logits` (`0.0195827/0.273973`) fail, while `smoke pool exp rmsnorm
+rope eltwise embed attn graph` pass. The failing set is qf-only code:
+`quant_row` in `hvx-quant.h` and the W8A8 epilogue `mm_tile` in
+`hvx-matmul.c`, neither of which has an `__HVX_ARCH__` branch (the
+quantizer's only arch-dependent instruction is the exact fp16→fp32
+widening from `hvx-base.h`), while the ops that do take the IEEE
+helpers at `>= 79` pass. Recorded as data for the v79-native
+follow-up (section 9, issue #35), not fixed here. The
+`run_main_on_hexagon` image is picked per `HEX_ARCH` from
+`$DEFAULT_TOOLS_VARIANT` (`run_sim_test.sh` prints `SIM_RUN
+runmain=...`); `HEX_EXTRA_CFLAGS` appends compiler flags to both sim
+and skel builds.
 
 `test_matmul` covers m ∈ {1, 7, 8, 128} at n = 256 plus n = 64, which is
 two tiles over four workers so two of them get an empty range, and the
@@ -510,9 +548,10 @@ gate run, not a measurement — use the three long scenarios
 ### 5.3 Device
 
 ```bash
-source $HEXAGON_SDK_ROOT/setup_sdk_env.source          # + ANDROID_NDK
-HEX_ARCH=v75 ./tools/hexagon/build_skel.sh             # -> build_hexagon/skel/libnntr_htp_skel.so (see section 7)
-./tools/hexagon/build_host_test.sh                     # -> build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
+# builds run in the dev container (SDK mounted, ANDROID_NDK set by the image);
+# the adb steps below run on the workstation with the phone attached
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh   # -> build_hexagon/skel/libnntr_htp_skel.so (see section 7)
+tools/docker/run.sh ./tools/hexagon/build_host_test.sh           # -> build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
 
 ./tools/hexagon/run_device_test.sh [serial]            # RPC_TEST PASS
 python3 tools/hexagon/check_rpc_log.py logs/hexagon/device_test_<stamp>.log
@@ -649,6 +688,21 @@ simulators pass either way, so a device pass is not optional.
    `Vqf32_vmpy_VsfVsf`, `Vsf_equals_Vqf32`, `Vhf_equals_Wqf32` — and the
    device skel is built with **`HEX_ARCH=v75`**, which runs unchanged on
    v79 silicon. The v79-native build remains a to-do.
+   *Update (#23, 2026-09-17, `docs/measurements/23-sdk64-baseline.md`):*
+   a v79-native skel built with hexagon-clang 19.0.04 (SDK 6.4) ran the
+   full 512 / 1024 / 4096 set on the S25 Ultra with no hang, no DSP
+   restart and no FARF fatal, PPL and top-1 tracking the v75 skel at
+   every context (section 8.2) — the inf / all-zero failures above did
+   not reproduce with this toolchain. The same build fails four
+   simulator tests by ±1 LSB (`quant`, `matmul`, `matmul_dma`,
+   `logits`; section 5.2), so on SDK 6.4 the simulator and the silicon
+   disagree in the *opposite* direction from 2026-08. Standing rule
+   from it: a v79 change is judged by **both** gates — a simulator
+   failure confined to ±1 LSB does not predict a device failure, and a
+   device `--eval` match does not clear a failing simulator test.
+   Whether the 2026-08 failures were a toolchain-8.x artefact or still
+   lurk behind the qf path is ledger ④'s question; the shipping skel
+   stays `HEX_ARCH=v75` until it is answered.
 2. **`Vhf_equals_Vqf16` after a qf16 multiply rounds badly** (v75 sim
    probe: correct RNE 57 %, truncation 21 %, worse 21 %) while
    `Vhf_equals_Wqf32` is exact RNE. RMSNORM, SILU_MUL, ROPE, ADD and ATTN
@@ -659,7 +713,11 @@ simulators pass either way, so a device pass is not optional.
    |g| > 250, `exp(-g)` overflowed and the HVX reciprocal turned
    `1/(1+inf)` into NaN instead of 0.
 4. The kernels require `-mhvx-ieee-fp` (toolchain 8.8) for the fp16
-   intrinsics; both build scripts pass it.
+   intrinsics; both build scripts pass it. Since SDK 6.4 the scripts
+   probe the flag on an empty translation unit and print the outcome
+   (`hexagon-clang v75: -mhvx-ieee-fp probe -> -mhvx-ieee-fp`); with
+   HEXAGON_Tools 19.0.04 it is accepted on v75 and v79, so the v75 skel
+   still receives it (#23, 2026-09-17).
 5. **Tiled int8 matmul (M6 P3).** The weight vector is shared across
    tokens and the activation is broadcast with `Q6_V_vsplat_R` of 4
    quantized bytes; `Q6_Vw_vrmpyacc_VwVbVb` (signed × signed) accumulates
@@ -917,6 +975,38 @@ The 4096 row needs an image packed with `--max-seq 4224` (weights
 tokens went 25.2 → 192.1 tok/s prefill and 11.2 → 27.7 tok/s decode,
 1024 tokens 23.2 → 118.2 and 11.3 → 22.9.
 
+The same three contexts re-measured 2026-09-17 after the SDK 6.4 move
+(issue #23, `docs/measurements/23-sdk64-baseline.md`; skels built with
+Hexagon SDK 6.4.0.1 / hexagon-clang 19.0.04 instead of 6.0.0.2 /
+toolchain 8.7.08, kernels unchanged). The P4 rows above are kept rather
+than overwritten, because the two sets were taken on different days and
+the decode figures carry the spread described below:
+
+| context | v75 prefill tok/s | v75 decode tok/s | v75 decode Mcyc | v79 prefill tok/s | v79 decode tok/s | v79 decode Mcyc |
+|---|---|---|---|---|---|---|
+| 512 | 189.0 | 31.92 | 64.3 | 207.4 | 31.36 | 60.1 |
+| 1024 | 117.1 | 23.16 | 84.2 | 131.2 | 25.27 | 76.5 |
+| 4096 | 27.1 | 9.61 | 213.0 | 34.4 | 11.44 | 177.6 |
+
+Two things to read from it. **The SDK move cost nothing**: the v75
+columns match P4 within −1.6 … −0.6 % on prefill and are at or above it
+on decode. **The v79-native skel is 10–27 % faster on the same
+silicon** and the gap grows with context (prefill +9.7 / +12.0 / +26.9 %
+against v75, decode cycles −6.5 / −9.1 / −16.6 %), with PPL and top-1
+tracking v75 at every context — so the `__HVX_ARCH__ >= 79` surface that
+fails four simulator tests (section 5.2) does no device-visible damage.
+Issue #35 should be re-read against these numbers.
+
+Caveat on the decode column at 512, measured from the #23 logs: the
+generation-mode median is taken over 63 steps that are still settling,
+and only the 512 runs drift during them (first-ten → last-ten median
+Mcyc: 512 `67.1 → 64.3`, 1024 `83.6 → 84.8`, 4096 `212.3 → 213.6`).
+Effective DSP clock across the six runs spans 1884 – 2064 MHz. Session
+thermals are not the cause — the same context depth measured in
+teacher-forced mode gives 52.0 Mcyc cold and 51.6 Mcyc ten minutes
+later. Treat the 512 decode pair as ±5 %; a firmer number needs
+repeated medians or an estimator taken from the settled tail.
+
 ### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
 hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
@@ -1120,6 +1210,28 @@ What was re-run is the 8-token `acc` gate
   0.0245416/9.3795, `graph_decode` 0.0241753/10.7802 →
   0.0202219/23.975) for the same reason.
 
+**SDK 6.4 re-run (#23, 2026-09-17).** Same sources (`82eacd7e` kernels),
+rebuilt in `tools/docker/` with SDK 6.4.0.2 / hexagon-clang 19.0.04
+(`toolv19`), `HEX_ARCH=v75`, workers 4, `timing=off`, under Rosetta
+emulation on the Mac: `profile acc` PASS with `profile_prefill_acc STAT
+max_abs=0.077216 max_rel=98.2637` — bit-identical to the P4 value above,
+as are every unit STAT of the 13 tests (`quant_generic 0/65536`,
+`quant16_generic 167/25600`, `matmul_w8a16_m8 0.0078125/0.000974659`,
+`graph_prefill 0.0245416/9.3795`, `graph_decode 0.0202219/23.975`).
+`total_pcycles` 3,454,962 against P4's 3,415,503 (+1.2 %);
+`MATMUL_W8A16` per_call 697,913 against 683,954 (+2.0 %); `MATMUL_W8A8`
+per_call 120,224; ATTN 91,475; `barrier_empty_x1000` 4,121,706. Wall:
+`acc` 10m23s, the 13 tests 4m13s. `HEX_ARCH=v79` on the same build:
+`profile acc` PASS with `profile_prefill_acc STAT max_abs=0.0899355
+max_rel=49.2742` (moved, still inside the 0.1 bound), 13 tests 9 PASS /
+4 FAIL (section 5.2). The v79 simulator model exposes 6 HVX units, so
+that run used `workers=6` (`total_pcycles` 6,105,728,
+`barrier_empty_x1000` 8,319,592) and its pcycles are not comparable with
+the 4-worker v75 rows. The `prefill0` / `prefill512` / `decode512`
+scenarios were not re-run (the device handoff
+`docs/measurements/23-sdk64-baseline.md` is the performance check;
+section 2 of the contract).
+
 The ≤ 25 % share predicate of `06-verification.md` cannot be read off
 this run — it is defined on `prefill512`, which was not re-measured —
 so P4 was judged on the `acc` ratio and on the device instead. VTCM/DMA
@@ -1164,9 +1276,28 @@ here.
   save/load on the DSP (today it forces the CPU path); a second lowered
   architecture would move the `Qwen3ForCausalLM` gate in `main.cpp` into
   a per-model lowering table.
-* **v79-native skel**: find why the IEEE/qf32-chain paths misbehave
-  (section 7) so `HEX_ARCH=v79` can be the default again. This waits on
-  a **Hexagon SDK upgrade to 6.4 or newer**: the pinned 6.0.0.2 carries
-  no v79 QuRT simulator image, which is why the simulator gate is on
-  v75. Neither the P3 tiled kernel nor the P4 int16 one is affected —
-  both use qf-format ops only.
+* **v79-native skel** (ledger ④): the SDK 6.4 upgrade (#23) unblocked
+  the v79 simulator, and its first data point narrows the problem: with
+  hexagon-clang 19.0.04 the v79 build fails `quant`, `matmul`,
+  `matmul_dma` and `logits` on the simulator (section 5.2) — all in
+  qf-only code (`quant_row` in `hvx-quant.h` and the W8A8 epilogue
+  `mm_tile` in `hvx-matmul.c`, neither of which has an `__HVX_ARCH__`
+  branch; the quantizer's only arch-dependent instruction is the exact
+  fp16→fp32 widening) — while `attn`, `eltwise` and `graph`, the ops
+  that do take the IEEE helpers at `>= 79`, pass. The
+  device data point (variant B of
+  `docs/measurements/23-sdk64-baseline.md`, 2026-09-17) came back the
+  other way: the v79 skel matches the v75 skel's PPL / top-1 at 512 /
+  1024 / 4096 and is faster (prefill +9.7 / +12.0 / +26.9 %, decode DSP
+  cycles −6.5 / −9.1 / −16.6 %; section 8.2), with no hang or DSP
+  restart. Next, in order: (a) make the four v79 simulator failures
+  pass or bounded — the tie row of the `>= 79` quantizer branch and the
+  W8A8 epilogue are ±1 LSB off `ref_ops.c`, so either the quantizer's
+  tie rounding is made independent of the qf32 rounding mode (rule 6
+  assumes v75's Von Neumann jam) or the tests get a documented per-arch
+  bound; (b) re-run the device `--eval` on that build;
+  (c) only then flip the `build_skel.sh` default and re-read issue #35
+  ("make v75 the default and fail the build on IEEE helpers at
+  >= v79"), which these numbers argue against. Neither the P3 tiled
+  kernel nor the P4 int16 one is affected — both use qf-format ops
+  only.
