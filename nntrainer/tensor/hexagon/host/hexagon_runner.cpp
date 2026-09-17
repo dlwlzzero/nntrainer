@@ -19,6 +19,10 @@
 
 namespace nntrainer::hexagon {
 
+static_assert(static_cast<uint32_t>(kHexagonBadParm) ==
+                static_cast<uint32_t>(AEE_EBADPARM),
+              "kHexagonBadParm must equal AEE_EBADPARM");
+
 std::unique_ptr<HexagonRunner> HexagonRunner::create() {
   // Best-effort: remote_session_control() may fail on devices/firmwares that
   // do not support unsigned PD requests, but that alone does not mean the DSP

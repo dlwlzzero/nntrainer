@@ -15,6 +15,7 @@
 #include <stdexcept>
 
 #include "hexagon_runner.h"
+#include "nntr_htp_common.h"
 #include "qwen3_lowering.h"
 #include "qwen3_w8cx_bin.h"
 #include "rpcmem_allocator.h"
@@ -50,6 +51,11 @@ HexagonBackend::create(const std::string &w8cx_bin, const HexModelConfig &cfg) {
 
 int HexagonBackend::forward(const int32_t *tokens, uint32_t n_tokens,
                             uint32_t pos, float *logits) {
+  /** Same predicate as the DSP, applied to the whole request before the
+   * first RPC: the DSP rejects per chunk, and the chunks before a bad id
+   * would already sit in KV. */
+  if (!nntr_htp_token_ids_ok(tokens, n_tokens, cfg_.vocab))
+    return kHexagonBadParm;
   while (n_tokens) {
     const uint32_t n = n_tokens < cfg_.max_chunk ? n_tokens : cfg_.max_chunk;
     int err = runner_->forward(tokens, n, pos, logits, cfg_.vocab);

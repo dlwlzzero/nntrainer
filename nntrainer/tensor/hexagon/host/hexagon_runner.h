@@ -19,6 +19,14 @@
 namespace nntrainer::hexagon {
 
 /**
+ * @brief The AEE_EBADPARM value the DSP returns for a rejected argument
+ *        (bad op-list, token count, position or token id). Spelled out so
+ *        SDK-free callers can produce the same code as a DSP rejection;
+ *        hexagon_runner.cpp static_asserts it against AEEStdErr.h.
+ */
+constexpr int kHexagonBadParm = static_cast<int>(0x8000040Eu);
+
+/**
  * @class HexagonRunner
  * @brief One cDSP session. create() returning nullptr means "no usable DSP"
  *        and the caller must take the CPU fallback path.
