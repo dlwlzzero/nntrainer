@@ -2,7 +2,7 @@
 /**
  * @file	qwen3_w8cx_bin.h
  * @date	31 August 2026
- * @brief	Read-only mmap view over an nntr_quantize W8_CX qwen3 checkpoint
+ * @brief	mmap view over a W8_CX qwen3 .bin (tools/hexagon/make_w8cx_bin.py)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -27,9 +27,9 @@ inline const HexModelConfig kQwen3_0_6b = {
 
 /**
  * @class Qwen3W8cxBin
- * @brief Read-only view over an nntr_quantize W8_CX .bin. mmaps the file and
- *        hands out non-owning pointers into it; the object must outlive the
- *        HexModelWeights it returns.
+ * @brief Read-only view over a W8_CX .bin (tools/hexagon/make_w8cx_bin.py).
+ *        mmaps the file and hands out non-owning pointers into it; the object
+ *        must outlive the HexModelWeights it returns.
  *
  * The file is a header-less stream in graph layer order: embedding
  * (int8 [vocab][hidden] + fp32 [vocab]), then per layer attn_norm, wq,

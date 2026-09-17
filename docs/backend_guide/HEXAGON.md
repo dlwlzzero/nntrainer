@@ -291,11 +291,14 @@ on 128 tokens, reference 20.32: all-int8 21.72, down fp32 20.38, wo fp32
 
 ### 2.4 Checkpoint and packed image files
 
-`nntr_quantize` writes the W8_CX `.bin` (header-less, 598,230,528 B for
-qwen3-0.6b): embedding, then per layer `attn_norm, wq, q_norm, wk,
-k_norm, wv, wo, ffn_norm, up, gate, down`, then `output_norm` (2-D
-tensors as int8 `[N][K]` + fp32 `[N]`, norms fp32). `Qwen3W8cxBin` mmaps
-it and hands out non-owning pointers as a `HexModelWeights`.
+`tools/hexagon/make_w8cx_bin.py` writes the W8_CX `.bin` from the
+HuggingFace directory (header-less, 598,230,528 B for qwen3-0.6b; same
+primitive and tensor order as `nntr_quantize --fc_dtype W8_CX` on the
+hvx_m3 branch, which is not on this branch): embedding, then per layer
+`attn_norm, wq, q_norm, wk, k_norm, wv, wo, ffn_norm, up, gate, down`,
+then `output_norm` (2-D tensors as int8 `[N][K]` + fp32 `[N]`, norms
+fp32). `Qwen3W8cxBin` mmaps it and hands out non-owning pointers as a
+`HexModelWeights`.
 
 `nntr_hexpack <bin> <prefix> [--layers N]` writes `<prefix>.hexw` (the
 WEIGHTS image; 172,498,944 B for the 1-layer bring-up image) and
@@ -404,8 +407,11 @@ The DSP skel is **not** part of the meson build (section 5.3).
 The W8_CX checkpoint (`$W8CX.bin` below) is produced from the
 HuggingFace Qwen3-0.6B directory by `tools/hexagon/make_w8cx_bin.py`
 (numpy only; same primitive and tensor order as `nntr_quantize --fc_dtype
-W8_CX` on the hvx_m3 branch, 598,230,528 bytes). `tools/docker/setup_wizard.sh`
-downloads the HF files and runs it.
+W8_CX` on the hvx_m3 branch). For the Qwen3-0.6B snapshot used by the
+#23 baseline the file is 598,230,528 bytes with md5
+`7562313bb4cc70410450d0ab3a4fa563`; another HF snapshot is legitimate
+and only changes the md5, not the size. `tools/docker/setup_wizard.sh`
+downloads the HF files, runs it, and prints the md5.
 
 ```bash
 python3 tools/hexagon/make_w8cx_bin.py $HF_DIR $W8CX.bin      # ~2 min

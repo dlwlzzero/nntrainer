@@ -2,7 +2,7 @@
 /**
  * @file	qwen3_w8cx_bin.cpp
  * @date	31 August 2026
- * @brief	Read-only mmap view over an nntr_quantize W8_CX qwen3 checkpoint
+ * @brief	mmap view over a W8_CX qwen3 .bin (tools/hexagon/make_w8cx_bin.py)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
