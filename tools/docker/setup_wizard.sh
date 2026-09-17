@@ -25,6 +25,7 @@ IMAGE="${NNTR_DOCKER_IMAGE:-nntrainer-hexagon-dev:ubuntu24.04}"
 
 say()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m   ok: %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m   WARN: %s\033[0m\n' "$*"; }
 todo() { printf '\033[1;33m   TODO: %s\033[0m\n' "$*"; }
 ask()  { read -r -p "   $1 [Enter to continue] " _; }
 
@@ -114,6 +115,14 @@ snapshot_download('Qwen/Qwen3-0.6B', local_dir='/work/${MODEL_DIR#$REPO_ROOT/}/h
       "/work/${MODEL_DIR#$REPO_ROOT/}/hf" "/work/${MODEL_DIR#$REPO_ROOT/}/nntr_qwen3_0.6b_w8cx_DEFAULT.bin" | tail -1
   fi
   ok "W8_CX checkpoint present ($(stat -f %z "$bin" 2>/dev/null || stat -c %s "$bin") bytes; expected 598230528)"
+  # The md5 is informational: another HuggingFace snapshot legitimately yields a
+  # different .bin (HEXAGON.md section 5.1). The size line above is the hard gate.
+  local expected_md5=7562313bb4cc70410450d0ab3a4fa563 md5
+  md5="$(md5 -q "$bin" 2>/dev/null || md5sum "$bin" | cut -d' ' -f1)"
+  echo "   md5 $md5"
+  if [ "$md5" != "$expected_md5" ]; then
+    warn "md5 differs from the #23 baseline ($expected_md5): a different HF snapshot, or a stale/partial .bin"
+  fi
 }
 
 step_check() {
