@@ -19,9 +19,17 @@
 
 namespace nntrainer::hexagon {
 
+/**
+ * AEEStdErr.h defines the bare code (AEE_EBADPARM == 14); FastRPC hands a
+ * DSP-originated AEE error to the host offset by the DSP error base
+ * 0x80000400 (the 0x80000406 / 0x80000414 codes in HEXAGON.md and the
+ * device logs are AEE_EUNABLETOLOAD / AEE_EUNSUPPORTED the same way), so
+ * that is the value a caller of forward() sees and the one the host
+ * pre-check must reproduce.
+ */
 static_assert(static_cast<uint32_t>(kHexagonBadParm) ==
-                static_cast<uint32_t>(AEE_EBADPARM),
-              "kHexagonBadParm must equal AEE_EBADPARM");
+                (0x80000400u | static_cast<uint32_t>(AEE_EBADPARM)),
+              "kHexagonBadParm must be AEE_EBADPARM as FastRPC returns it");
 
 std::unique_ptr<HexagonRunner> HexagonRunner::create() {
   // Best-effort: remote_session_control() may fail on devices/firmwares that
