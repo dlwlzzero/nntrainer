@@ -685,6 +685,21 @@ simulators pass either way, so a device pass is not optional.
    `Vqf32_vmpy_VsfVsf`, `Vsf_equals_Vqf32`, `Vhf_equals_Wqf32` — and the
    device skel is built with **`HEX_ARCH=v75`**, which runs unchanged on
    v79 silicon. The v79-native build remains a to-do.
+   *Update (#23, 2026-09-17, `docs/measurements/23-sdk64-baseline.md`):*
+   a v79-native skel built with hexagon-clang 19.0.04 (SDK 6.4) ran the
+   full 512 / 1024 / 4096 set on the S25 Ultra with no hang, no DSP
+   restart and no FARF fatal, PPL and top-1 tracking the v75 skel at
+   every context (section 8.2) — the inf / all-zero failures above did
+   not reproduce with this toolchain. The same build fails four
+   simulator tests by ±1 LSB (`quant`, `matmul`, `matmul_dma`,
+   `logits`; section 5.2), so on SDK 6.4 the simulator and the silicon
+   disagree in the *opposite* direction from 2026-08. Standing rule
+   from it: a v79 change is judged by **both** gates — a simulator
+   failure confined to ±1 LSB does not predict a device failure, and a
+   device `--eval` match does not clear a failing simulator test.
+   Whether the 2026-08 failures were a toolchain-8.x artefact or still
+   lurk behind the qf path is ledger ④'s question; the shipping skel
+   stays `HEX_ARCH=v75` until it is answered.
 2. **`Vhf_equals_Vqf16` after a qf16 multiply rounds badly** (v75 sim
    probe: correct RNE 57 %, truncation 21 %, worse 21 %) while
    `Vhf_equals_Wqf32` is exact RNE. RMSNORM, SILU_MUL, ROPE, ADD and ATTN
@@ -1263,9 +1278,19 @@ here.
   hexagon-clang 19.0.04 the v79 build fails `quant`, `matmul`,
   `matmul_dma` and `logits` on the simulator (section 5.2) — the
   `__HVX_ARCH__ >= 79` branches of `hvx-quant.h` and the W8A8 epilogue
-  of `hvx-matmul.c` — while `attn`, `eltwise` and `graph` pass. Next:
-  the device numbers of the v79 skel from
-  `docs/measurements/23-sdk64-baseline.md` (variant B), then decide
-  whether to force the qf path on those branches or fix them, and only
-  then flip the `build_skel.sh` default. Neither the P3 tiled kernel
-  nor the P4 int16 one is affected — both use qf-format ops only.
+  of `hvx-matmul.c` — while `attn`, `eltwise` and `graph` pass. The
+  device data point (variant B of
+  `docs/measurements/23-sdk64-baseline.md`, 2026-09-17) came back the
+  other way: the v79 skel matches the v75 skel's PPL / top-1 at 512 /
+  1024 / 4096 and is faster (prefill +9.7 / +12.0 / +26.9 %, decode DSP
+  cycles −6.5 / −9.1 / −16.6 %; section 8.2), with no hang or DSP
+  restart. Next, in order: (a) make the four v79 simulator failures
+  pass or bounded — the tie row of the `>= 79` quantizer branch and the
+  W8A8 epilogue are ±1 LSB off `ref_ops.c`, so either the branch takes
+  the qf path (rule 6's magic-constant rounding) or the tests get a
+  documented v79 bound; (b) re-run the device `--eval` on that build;
+  (c) only then flip the `build_skel.sh` default and re-read issue #35
+  ("make v75 the default and fail the build on IEEE helpers at
+  >= v79"), which these numbers argue against. Neither the P3 tiled
+  kernel nor the P4 int16 one is affected — both use qf-format ops
+  only.
