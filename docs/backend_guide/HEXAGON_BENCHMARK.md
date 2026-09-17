@@ -36,18 +36,19 @@ decode median over steps 2–64, host wall time around each RPC
 | nntrainer | W8A8 | 8 Elite (Galaxy S25 Ultra) | NPU, HVX + HMX | 512 | TODO | TODO | needs HexKL (stage 2) |
 | nntrainer | W8A8 | 8 Elite (Galaxy S25 Ultra) | NPU, HVX + HMX | 1024 | TODO | TODO | |
 | nntrainer | W8A8 | 8 Elite (Galaxy S25 Ultra) | NPU, HVX + HMX | 4096 | TODO | TODO | |
-| nntrainer | w4a8 | 8 Elite (Galaxy S25 Ultra) | NPU, HVX + HMX | 512 | TODO | TODO | after stage 2 (u8i4) |
+| nntrainer | w4a8 | 8 Elite (Galaxy S25 Ultra) | NPU, HVX only | 512 / 4096 | TODO | TODO | 4-bit weight stream, issue #51 (HVX widens nibbles to int8 before vrmpy; u8i4 is the HMX format, stage 2) |
 | nntrainer | — | 8 Elite (Galaxy S25 Ultra) | CPU | 512 / 4096 | skipped | skipped | not a current goal |
 
 ## Goals
 
 | Stage | Metric | Now | Goal | Gap | Levers (follow-up ledger numbers) |
 |---|---|---|---|---|---|
-| 1 HVX only | decode @512 | 31.9 (v75, 2026-09-17; v79 skel 31.4) | ≥ 70.3 | 2.2× | ⑫ host logits path (~40 ms/step), ① cross-op prefetch, ⑨ ⑩ chunk / `MM_TB` / `MM16_R` device sweep |
+| 1 HVX only, W8A8 | decode @512 | 31.9 (v75, 2026-09-17; v79 skel 31.4) | ≥ 60 (provisional: the W8 weight-stream bound, replaced by the ceiling the #25 handoff measures) | 1.9× | ⑫ host logits path, ① cross-op prefetch, ⑨ ⑩ chunk / `MM_TB` / `MM16_R` device sweep. 70.3 needs 41.9 GB/s over the whole step with 596 MB of int8 weights (issue #49) |
+| 1 HVX only, w4a8 | decode @512 / @4096 | — | ≥ 70.3 / ≥ 27.5 (the GENIEX_LLAMACPP q4_0 NPU rows) | | 4-bit weight stream (307 MB/step) on HVX, issue #51; after #25 measures the W8 ceiling |
 | 1 HVX only | decode @4096 | 9.6 (v75; v79 skel 11.4) | ≥ 27.5 | 2.9× (v79: 2.4×) | same + P5 attention K^T reuse (only cost that grows with context) |
 | 1 HVX only | prefill @512 | 189.0 (v75; v79 skel 207.4) | 1000 (interim) | 5.3× (v79: 4.8×) | tiled kernel efficiency, P5 attention; 3,409 is out of HVX-only reach |
 | 2 HVX + HMX | prefill @512 | — | ≥ 1000, then chase 3,409 | | HMX u8i8 matmul (specs/hexagon-hmx), needs HexKL |
-| 2 HVX + HMX | decode @512 | — | ≥ 60 | | bandwidth bound ≈ 60 tok/s at 598 MB of int8 weights |
+| 2 HVX + HMX | decode @512 | — | ≥ 60 (W8) | | same weight-stream bound as stage 1; HMX does not change the bytes per step |
 
 Decode and prefill do not move together: decode is weight-bandwidth plus
 host-path bound, prefill is compute bound (HEXAGON.md §8.2). Reaching the
@@ -58,4 +59,5 @@ decode goal says nothing about prefill.
 | Date | Change | Rows touched |
 |---|---|---|
 | 2026-09-16 | Table moved here from the blog draft; goals split into stage 1 / stage 2 (plan 0000) | all |
+| 2026-09-18 | Stage-1 W8A8 decode goal set to the weight-stream bound (≥ 60 provisional) after issue #49's arithmetic; 70.3 / 27.5 become the stage-1 w4a8 row (issue #51) | stage 1 goals, w4a8 row |
 | 2026-09-17 | SDK 6.4 baseline from `docs/measurements/23-sdk64-baseline.md` (#23): v75 rows re-measured, no regression; v79-native skel rows added as ledger ④ data; goal "Now" moved to the v75 re-measurement | nntrainer HVX-only rows, stage 1 goals |

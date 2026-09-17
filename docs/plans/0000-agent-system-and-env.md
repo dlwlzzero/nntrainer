@@ -12,7 +12,7 @@ on a Galaxy S25 (Snapdragon 8 Elite) for Qwen3-0.6B, in two stages:
 
 | Stage | Target | Why this target |
 |---|---|---|
-| 1 (HVX only, W8A8) | decode ≥ 70.3 tok/s @512 and ≥ 27.5 tok/s @4096 (the GENIEX_LLAMACPP NPU rows); prefill interim goal 1000 tok/s @512 | Decode is bandwidth + host-path bound and reachable without new hardware paths (follow-ups ⑫ ① ⑨ ⑩). Prefill is compute bound; the 18× gap to LLAMACPP needs HMX. |
+| 1 (HVX only) | W8A8: decode ≥ 60 tok/s @512 (provisional weight-stream bound, replaced by the ceiling #25 measures; issue #49, 2026-09-18) and ≥ 27.5 @4096; w4a8: decode ≥ 70.3 @512 and ≥ 27.5 @4096 (the GENIEX_LLAMACPP q4_0 NPU rows, issue #51); prefill interim goal 1000 tok/s @512 | Decode is bandwidth + host-path bound: 596 MB of int8 weights per step cannot reach 70.3 within the cDSP DDR ceiling, a 4-bit stream can (follow-ups ⑫ ① ⑨ ⑩, then #51). Prefill is compute bound; the 18× gap to LLAMACPP needs HMX. |
 | 2 (HVX + HMX, after HexKL) | prefill ≥ 1000 tok/s @512, decode ≥ 60 tok/s, then chase the GENIEX_LLAMACPP prefill numbers | HMX is the only lever with that much MAC headroom. HexKL must be obtained first (needs-user). |
 
 Decode reaching its goal does **not** imply prefill follows: they have
