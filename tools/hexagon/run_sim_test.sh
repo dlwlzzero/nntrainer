@@ -1,12 +1,22 @@
 #!/bin/bash
 # tools/hexagon/run_sim_test.sh <test-name> [args...]
+# HEX_ARCH defaults to v79 (must match the build_sim_test.sh arch).
 # SIM_TIMING=1 adds --timing (cycle-accurate core model; slower)
 set -eu
 : "${HEXAGON_SDK_ROOT:?source setup_sdk_env.source first}"
 : "${DEFAULT_HEXAGON_TOOLS_ROOT:?source setup_sdk_env.source first}"
-HEX_ARCH="${HEX_ARCH:-v75}"
+HEX_ARCH="${HEX_ARCH:-v79}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$REPO/build_hexagon/sim"
+# The library is built for one arch (build_sim_test.sh stamps it); running it
+# under the other simulator would pass silently with the wrong helper set.
+if [ -f "$OUT/libnntr_sim_test.arch" ]; then
+  BUILT_ARCH="$(cat "$OUT/libnntr_sim_test.arch")"
+  if [ "$BUILT_ARCH" != "$HEX_ARCH" ]; then
+    echo "run_sim_test.sh: libnntr_sim_test.so was built for $BUILT_ARCH, not $HEX_ARCH; rebuild with HEX_ARCH=$HEX_ARCH" >&2
+    exit 1
+  fi
+fi
 # run_main_on_hexagon ships one image per (toolchain, arch). Use the one built
 # by the toolchain that compiled libnntr_sim_test.so ($DEFAULT_TOOLS_VARIANT from
 # setup_sdk_env.source, e.g. toolv19 for HEXAGON_Tools 19.0.04); a lexical

@@ -5,7 +5,8 @@
 # Output: build_hexagon/generated/ (qaic output), build_hexagon/skel/libnntr_htp_skel.so
 #
 # Prerequisite: source $HEXAGON_SDK_ROOT/setup_sdk_env.source
-# Override target arch: HEX_ARCH=v75 ./tools/hexagon/build_skel.sh
+# Target arch defaults to v79 (the shipping skel since issue #35); the v75
+# fallback, which runs unchanged on v79 silicon: HEX_ARCH=v75 ./tools/hexagon/build_skel.sh
 # Extra compiler flags (appended, so they override): HEX_EXTRA_CFLAGS=-DFOO
 
 set -eu

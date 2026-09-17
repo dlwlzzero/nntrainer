@@ -9,7 +9,8 @@ cumulative: a PR needs 0–4; a single step inside a plan needs the rung the
 plan names.
 
 **Simulator budget (contract §7).** The simulator runs under Rosetta on
-the Mac: `profile acc` ≈ 10 min, the 13 tests ≈ 5 min. So:
+the Mac: on v79 (the default since #35, 6 HVX units so `workers=6`)
+`profile acc` ≈ 17 min and the 13 tests ≈ 6 min; on v75 ≈ 10 / 5 min. So:
 
 * No file under `nntrainer/tensor/hexagon/htp/`, `test/hexagon/sim_*`,
   the packer or the lowering changed → **skip rungs 2 and 3 entirely**.
@@ -19,8 +20,12 @@ the Mac: `profile acc` ≈ 10 min, the 13 tests ≈ 5 min. So:
   before opening the PR.
 * Never run rung 2 or 3 per commit, never with `SIM_TIMING`, never twice
   for the same tree (reuse the log in `logs/hexagon/`).
-* v79 (`HEX_ARCH=v79`) only when the change touches the `__HVX_ARCH__`
-  surface or the issue is about v79, and only at PR time.
+* Rungs 2–4 run on **v79 only** (the primary arch since #35; `HEX_ARCH`
+  unset = v79; the device is the S25 Ultra). v75 is not built or
+  simulated per PR: run it (`HEX_ARCH=v75`, same commands) only when a
+  change touches an `__HVX_ARCH__` branch in `hvx-base.h` or a kernel,
+  or when the user asks, and compare against the "v75 final record" in
+  HEXAGON.md §5.2 / §8.3.
 
 ## 0. Format (every commit)
 
@@ -51,29 +56,32 @@ Reference values live in HEXAGON.md §5.1 (e.g. 512-token local prompt PPL
 ## 2. Simulator, per-task gate (SDK; tens of minutes under emulation)
 
 ```
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh profile acc
+HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh
+HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh profile acc
 ```
 Pass: `SIM_TEST profile PASS` and the 8-token accuracy check within the
-0.1 atol/rtol bound; note the `SIM_PROF` per-kind pcycles in the plan as a
-*relative* signal only.
+0.1 atol/rtol bound, with the STAT bit-identical to HEXAGON.md §8.3's
+v79 record unless the plan says it moves; note the `SIM_PROF` per-kind
+pcycles in the plan as a *relative* signal only (v79 `workers=6` pcycles
+are not comparable with the 4-worker v75 rows).
 
 ## 3. Simulator, full (before a PR)
 
 ```
 for t in smoke pool exp quant matmul matmul_dma rmsnorm rope eltwise embed attn logits graph; do
-  HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh $t || break
+  HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh $t || break
 done
 ```
 Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
-STAT lines within HEXAGON.md §5.2 rates. `HEX_ARCH=v79` only per the
-budget above (⑭ is closed; v79 fails `quant`, `matmul`, `matmul_dma`,
-`logits` by ±1 LSB until #35 lands, which is recorded, not a regression).
+STAT lines within HEXAGON.md §5.2 rates (v79 values). A v75 repeat (only
+per the budget bullet) needs its own `HEX_ARCH=v75 build_sim_test.sh`
+first — the two builds share `build_hexagon/sim/` and `run_sim_test.sh`
+refuses to run a library built for another arch.
 
 ## 4. Skel and host harness compile (SDK + NDK; no device)
 
 ```
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh     # build_hexagon/skel/libnntr_htp_skel.so
+tools/docker/run.sh ./tools/hexagon/build_skel.sh                   # build_hexagon/skel/libnntr_htp_skel.so (v79, shipping)
 tools/docker/run.sh ./tools/hexagon/build_host_test.sh              # build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
 ```
 Pass: both artifacts exist; record `md5sum` of each for the handoff. For
