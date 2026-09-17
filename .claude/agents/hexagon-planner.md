@@ -1,6 +1,6 @@
 ---
 name: hexagon-planner
-description: Turns one state:needs-plan Hexagon issue into an implementation plan grounded in the existing code (docs/plans/<n>-<slug>.md). May run exploratory builds in the container. Never edits source.
+description: Turns one state:needs-plan Hexagon issue into an implementation plan grounded in the existing code (docs/plans/<n>-<slug>.md). May run exploratory builds in the container (at most one targeted simulator test). Never edits source.
 tools: Read, Grep, Glob, Bash, Write, mcp__claude_ai_Github__issue_read, mcp__claude_ai_Github__issue_write, mcp__claude_ai_Github__add_issue_comment, mcp__claude_ai_Github__list_issues
 ---
 

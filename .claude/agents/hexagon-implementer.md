@@ -32,9 +32,11 @@ comments to address). Read the issue and `docs/plans/<issue#>-*.md`.
    the trailer `Co-Authored-By: Claude <noreply@anthropic.com>`. Run
    `tools/docker/run.sh clang-format-14 -i <changed c/cpp/h>` before
    committing.
-5. Before opening a PR: the full 13 sim tests + `profile acc` pass, skel
-   (`HEX_ARCH=v75`) and host harness compile, docs the plan lists are
-   updated, `test/` counts adjusted if tests were added (check_count CI).
+5. Before opening a PR: if DSP bytes changed, the full 13 sim tests +
+   `profile acc` pass, run once (the simulator budget in `hexagon-gates`
+   says when to skip them); skel (`HEX_ARCH=v75`) and host harness
+   compile, docs the plan lists are updated, `test/` counts adjusted if
+   tests were added (check_count CI).
    Then invoke the `code-review` skill on the branch against `hvx_impl` and
    fix what it finds.
 6. Finish in one of two ways:

@@ -97,11 +97,14 @@ Supervision scope is the Hexagon subtree only: `nntrainer/tensor/hexagon/**`,
 `docs/backend_guide/hexagon-guide/**`. Anything in nntrainer core is filed as
 an issue, not touched.
 
-GitHub access: the claude.ai GitHub MCP is used for reads only. It
-returned `403 Resource not accessible by integration` for issue and PR
-creation on this fork (2026-09-16), so every write (issues, labels, PRs)
-goes through the `gh` CLI, which is logged in as the repo owner; every
-role that writes to GitHub has `Bash` for that reason. Labels were created
+GitHub access: the claude.ai GitHub MCP returned `403` for issue and PR
+creation on this fork on 2026-09-16 but wrote issues, comments and labels
+fine on 2026-09-17; either path is acceptable, and the `gh` CLI (logged in
+as the repo owner) is the fallback, so every role that writes to GitHub
+has `Bash`. Work done from a remote claude.ai session lands on a
+`claude/<slug>` branch that can push nowhere else; the next Mac cycle
+re-cuts it into per-issue `hvx/<issue#>-<slug>` branches before any PR
+(2026-09-17 handover, issue #42). Labels were created
 on 2026-09-16; the first queue is issues #23–#28 and PR #22.
 
 All roles inherit the session model. Commits use `git commit -s` in the
@@ -149,9 +152,28 @@ are stable.
 
 ## 7. Verification gates (summary; details in `hexagon-gates`)
 
-x86 ref tests → `profile acc` on the simulator (per task) → all 13 sim
-tests (before PR) → skel + host harness compile (v75, and v79 once ⑭ is
-done) → device numbers only via handoff. clang-format-14 on changed lines.
+x86 ref tests → simulator (only when DSP bytes change, see below) → skel +
+host harness compile (v75, and v79 for any change under the
+`__HVX_ARCH__ >= 79` surface) → device numbers only via handoff.
+clang-format-14 on changed lines.
+
+Simulator budget (agreed 2026-09-17; the Mac runs `hexagon-sim` under
+Rosetta, `profile acc` alone is ~10 min and the 13 tests ~5 min, so sim
+time is the scarcest agent resource after device time):
+
+* A change that touches no file under `nntrainer/tensor/hexagon/htp/`,
+  `test/hexagon/sim_*` or the packer/lowering (host, tools, docs, tests
+  outside the sim harness) runs **no simulator test**. The PR states
+  "no DSP bytes changed" and the skel md5 from rung 4 proves it.
+* A change that touches one op kind runs that kind's sim test per step
+  (`run_sim_test.sh <kind>`, seconds to a minute) and `profile acc` +
+  the 13 tests **once**, right before the PR, never per commit.
+* `profile acc` is a correctness gate (STAT bit-identity), not a timing
+  tool; `SIM_TIMING` is never enabled by an agent.
+* A planner probe on the simulator is limited to one targeted test; if
+  more is needed, it becomes step 1 of the implementation plan.
+* The v79 sweep is run only when the change touches the v79 code surface
+  or the issue is about v79 (#35 lineage), and only at PR time.
 
 ## 8. Fork CI
 

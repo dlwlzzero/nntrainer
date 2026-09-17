@@ -8,6 +8,20 @@ report a rung as passed without its pass line in the output. Rungs are
 cumulative: a PR needs 0–4; a single step inside a plan needs the rung the
 plan names.
 
+**Simulator budget (contract §7).** The simulator runs under Rosetta on
+the Mac: `profile acc` ≈ 10 min, the 13 tests ≈ 5 min. So:
+
+* No file under `nntrainer/tensor/hexagon/htp/`, `test/hexagon/sim_*`,
+  the packer or the lowering changed → **skip rungs 2 and 3 entirely**.
+  Write "no DSP bytes changed, skel md5 <x> unchanged" in the PR instead.
+* One op kind changed → per step run only that kind
+  (`run_sim_test.sh <kind>`); run rung 2 and rung 3 **once**, right
+  before opening the PR.
+* Never run rung 2 or 3 per commit, never with `SIM_TIMING`, never twice
+  for the same tree (reuse the log in `logs/hexagon/`).
+* v79 (`HEX_ARCH=v79`) only when the change touches the `__HVX_ARCH__`
+  surface or the issue is about v79, and only at PR time.
+
 ## 0. Format (every commit)
 
 ```
@@ -52,8 +66,9 @@ for t in smoke pool exp quant matmul matmul_dma rmsnorm rope eltwise embed attn 
 done
 ```
 Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
-STAT lines within HEXAGON.md §5.2 rates. Once follow-up ⑭ (SDK 6.4) is
-closed, repeat with `HEX_ARCH=v79`.
+STAT lines within HEXAGON.md §5.2 rates. `HEX_ARCH=v79` only per the
+budget above (⑭ is closed; v79 fails `quant`, `matmul`, `matmul_dma`,
+`logits` by ±1 LSB until #35 lands, which is recorded, not a regression).
 
 ## 4. Skel and host harness compile (SDK + NDK; no device)
 
