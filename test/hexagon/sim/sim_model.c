@@ -74,8 +74,8 @@ int sim_model_plan_init(struct sim_model_plan *p,
   p->fout = bump(&t, cfg->max_chunk * cfg->hidden * 2u);
   p->atotal = t;
 
-  p->kv_bytes = 2u * cfg->n_layers * cfg->n_kv_heads * cfg->max_seq *
-                cfg->head_dim * 2u;
+  p->kv_bytes =
+    2u * cfg->n_layers * cfg->n_kv_heads * cfg->max_seq * cfg->head_dim * 2u;
   p->n_ops = 1u + 16u * cfg->n_layers + 2u;
   p->oplist_len =
     (uint32_t)(sizeof(struct nntr_htp_oplist_header) +
@@ -155,19 +155,17 @@ static uint32_t f_bits(float f) {
 static struct nntr_htp_tensor_ref R(uint32_t buf, uint32_t off) {
   struct nntr_htp_tensor_ref r = {buf, off};
   return r;
-}
-static struct nntr_htp_tensor_ref W(uint32_t off) {
+} static struct nntr_htp_tensor_ref W(uint32_t off) {
   return R(NNTR_HTP_BUF_WEIGHTS, off);
-}
-static struct nntr_htp_tensor_ref A(uint32_t off) {
+} static struct nntr_htp_tensor_ref A(uint32_t off) {
   return R(NNTR_HTP_BUF_ACT, off);
 }
 
-static void emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags,
-                 uint32_t layer, uint32_t m, uint32_t k, uint32_t n,
-                 struct nntr_htp_tensor_ref in0, struct nntr_htp_tensor_ref in1,
-                 struct nntr_htp_tensor_ref in2, struct nntr_htp_tensor_ref out,
-                 uint32_t param0) {
+static void
+emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags, uint32_t layer,
+     uint32_t m, uint32_t k, uint32_t n, struct nntr_htp_tensor_ref in0,
+     struct nntr_htp_tensor_ref in1, struct nntr_htp_tensor_ref in2,
+     struct nntr_htp_tensor_ref out, uint32_t param0) {
   struct nntr_htp_op_desc *d = (*p)++;
   memset(d, 0, sizeof(*d));
   d->kind = kind;

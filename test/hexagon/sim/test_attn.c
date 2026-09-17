@@ -82,8 +82,8 @@ static int run_step(struct htp_exec_ctx *c, __fp16 *kv_ref, uint32_t kv_halves,
   hvx_op_attn(c, &d);
 
   __fp16 *y_ref = malloc((size_t)m * N_HEADS * HEAD_DIM * sizeof(__fp16));
-  ref_attn(q, k, v, kv_ref, y_ref, m, pos, LAYER, N_LAYERS, N_HEADS,
-           N_KV_HEADS, HEAD_DIM, MAX_SEQ, scale);
+  ref_attn(q, k, v, kv_ref, y_ref, m, pos, LAYER, N_LAYERS, N_HEADS, N_KV_HEADS,
+           HEAD_DIM, MAX_SEQ, scale);
 
   float *ref_f = malloc((size_t)m * N_HEADS * HEAD_DIM * sizeof(float));
   float *got_f = malloc((size_t)m * N_HEADS * HEAD_DIM * sizeof(float));
@@ -109,10 +109,9 @@ static int run_step(struct htp_exec_ctx *c, __fp16 *kv_ref, uint32_t kv_halves,
 int test_attn(void) {
   const uint32_t kv_halves = 2u * N_LAYERS * N_KV_HEADS * MAX_SEQ * HEAD_DIM;
   const float scale = 1.0f / sqrtf((float)HEAD_DIM);
-  const uint32_t act_total = align128(
-    8u * (2u * N_HEADS + 2u * N_KV_HEADS) * HEAD_DIM *
-      (uint32_t)sizeof(__fp16) +
-    3u * 128u);
+  const uint32_t act_total = align128(8u * (2u * N_HEADS + 2u * N_KV_HEADS) *
+                                        HEAD_DIM * (uint32_t)sizeof(__fp16) +
+                                      3u * 128u);
 
   uint8_t *act = memalign(128, act_total);
   uint8_t *kv = memalign(128, kv_halves * sizeof(__fp16));
