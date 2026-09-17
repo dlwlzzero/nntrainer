@@ -5,7 +5,8 @@
  * @brief	Hexagon-sim golden test for the op-list graph executor: a
  *		synthetic 2-layer model (35 ops), prefill then decode compared
  *		against the scalar reference executor, plus negative cases
- *		for init validation and forward runtime-argument checks
+ *		for init validation (header and per-op shape rules) and
+ *		forward runtime-argument checks (counts, position, token ids)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -47,6 +48,17 @@ static struct sim_model_plan P;
 static const struct sim_model_cfg TINY = {
   N_LAYERS, N_HEADS, N_KV_HEADS, HEAD_DIM, HIDDEN, FFN,
   VOCAB,    MAX_SEQ, MAX_CHUNK,  EPS,      1e6f,
+};
+
+/** One per-op mutation of the sim-model op-list that the validator must
+ * refuse (rc 5): which descriptor, which field, and the value to write. */
+enum bad_op_field { F_LAYER, F_M, F_K, F_N, F_IN0_OFF, F_IN2_OFF };
+struct bad_op_case {
+  const char *name;
+  uint32_t op;   /* index into the 35-op list */
+  uint32_t kind; /* expected kind at that index (guards the index map) */
+  enum bad_op_field field;
+  uint32_t value;
 };
 
 int test_graph(void) {
@@ -112,6 +124,80 @@ int test_graph(void) {
     free(bad);
   }
 
+  /** Negative: per-op shape rules no kernel can execute must be rejected
+   * at init. Op indices follow sim_model_build_oplist: 0 EMBED, layer-0 ops
+   * 1..16 (RMSNORM, W8A8 q/k/v, PER_HEAD RMSNORM q/k, ROPE, ATTN, W8A8 o,
+   * ADD, RMSNORM, W8A8 gate/up, SILU_MUL, W8A16, ADD), 33 final RMSNORM,
+   * 34 LOGITS. */
+  {
+    const struct bad_op_case cases[] = {
+      {"attn_layer", 8u, NNTR_HTP_OP_ATTN, F_LAYER, N_LAYERS},
+      {"k0_w8a8", 2u, NNTR_HTP_OP_MATMUL_W8A8, F_K, 0u},
+      {"k0_w8a16", 15u, NNTR_HTP_OP_MATMUL_W8A16, F_K, 0u},
+      {"k0_logits", 34u, NNTR_HTP_OP_MATMUL_LOGITS, F_K, 0u},
+      {"k0_embed", 0u, NNTR_HTP_OP_EMBED, F_K, 0u},
+      {"rmsnorm_n65", 1u, NNTR_HTP_OP_RMSNORM, F_N, 65u},
+      /* a multiple of 64 that is not a multiple of head_dim */
+      {"perhead_n192", 5u, NNTR_HTP_OP_RMSNORM, F_N, HEAD_DIM + 64u},
+      {"add_n65", 10u, NNTR_HTP_OP_ADD, F_N, 65u},
+      {"silu_n65", 14u, NNTR_HTP_OP_SILU_MUL, F_N, 65u},
+      /* one hidden row fits at the end of ACT, MAX_CHUNK rows do not */
+      {"logits_in0_short", 34u, NNTR_HTP_OP_MATMUL_LOGITS, F_IN0_OFF,
+       P.atotal - HIDDEN * 2u},
+      /* ATTN's fresh V rows (MAX_CHUNK * KVDIM halves) past the end of ACT */
+      {"attn_in2_short", 8u, NNTR_HTP_OP_ATTN, F_IN2_OFF, P.atotal - 128u},
+      /* a descriptor-fixed m on any kind but LOGITS */
+      {"fixed_m", 1u, NNTR_HTP_OP_RMSNORM, F_M, MAX_CHUNK},
+    };
+    const uint32_t n_cases = (uint32_t)(sizeof(cases) / sizeof(cases[0]));
+    const uint32_t hdr_len = (uint32_t)sizeof(struct nntr_htp_oplist_header);
+    uint8_t *bad = malloc(OPLIST_LEN);
+    uint32_t ci;
+    for (ci = 0; ci < n_cases && !rc; ++ci) {
+      const struct bad_op_case *bc = &cases[ci];
+      struct nntr_htp_op_desc *ops;
+      memcpy(bad, ol, OPLIST_LEN);
+      ops = (struct nntr_htp_op_desc *)(void *)(bad + hdr_len);
+      if (ops[bc->op].kind != bc->kind) {
+        printf("SIM_TEST graph FAIL %s: op %u is kind %u\n", bc->name,
+               (unsigned)bc->op, (unsigned)ops[bc->op].kind);
+        rc = 1;
+        break;
+      }
+      switch (bc->field) {
+      case F_LAYER:
+        ops[bc->op].layer = bc->value;
+        break;
+      case F_M:
+        ops[bc->op].m = bc->value;
+        break;
+      case F_K:
+        ops[bc->op].k = bc->value;
+        break;
+      case F_N:
+        ops[bc->op].n = bc->value;
+        break;
+      case F_IN0_OFF:
+        ops[bc->op].in0.offset = bc->value;
+        break;
+      case F_IN2_OFF:
+        ops[bc->op].in2.offset = bc->value;
+        break;
+      }
+      /* rc 5 (bad op), not merely nonzero: an older rule must not mask it */
+      {
+        const int irc = htp_graph_init(&g, bad, OPLIST_LEN, w, P.wtotal, kv,
+                                       KV_BYTES, act, P.atotal);
+        if (irc != 5) {
+          printf("SIM_TEST graph FAIL %s: init rc %d, expected 5\n", bc->name,
+                 irc);
+          rc = 1;
+        }
+      }
+    }
+    free(bad);
+  }
+
   if (!rc) {
     if (htp_graph_init(&g, ol, OPLIST_LEN, w, P.wtotal, kv, KV_BYTES, act,
                        P.atotal)) {
@@ -132,6 +218,28 @@ int test_graph(void) {
        htp_graph_forward(&g, prefill_tok, 1, 0, logits, VOCAB - 1u) == 0)) {
     printf("SIM_TEST graph FAIL bad forward args accepted\n");
     rc = 1;
+  }
+
+  /** Negative: a token id >= vocab (a negative id lands there through the
+   * uint32 cast) must be rejected before KV/ACT are touched. Both are still
+   * all-zero here, as are their reference copies. VOCAB - 1 is accepted
+   * below as the last id of prefill_tok. */
+  if (!rc) {
+    static const int32_t id_vocab = (int32_t)VOCAB;
+    static const int32_t id_neg = -1; /* 0xFFFFFFFF as uint32 */
+    int32_t bad_last[MAX_CHUNK];
+    memcpy(bad_last, prefill_tok, sizeof(bad_last));
+    bad_last[MAX_CHUNK - 1u] = (int32_t)VOCAB;
+    if (htp_graph_forward(&g, &id_vocab, 1, 0, logits, VOCAB) == 0 ||
+        htp_graph_forward(&g, &id_neg, 1, 0, logits, VOCAB) == 0 ||
+        htp_graph_forward(&g, bad_last, MAX_CHUNK, 0, logits, VOCAB) == 0) {
+      printf("SIM_TEST graph FAIL bad token id accepted\n");
+      rc = 1;
+    } else if (memcmp(kv, rkv, KV_BYTES) != 0 ||
+               memcmp(act, ract, P.atotal) != 0) {
+      printf("SIM_TEST graph FAIL rejected forward touched KV/ACT\n");
+      rc = 1;
+    }
   }
 
   /* Prefill 8 tokens at pos 0, compare final logits vs the reference. */
