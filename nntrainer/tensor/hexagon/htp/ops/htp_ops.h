@@ -50,10 +50,10 @@ static inline uint8_t *htp_ref_ptr(struct htp_exec_ctx *c,
   return c->buf[r.buf] + r.offset;
 }
 
-/** @brief Op row count: d->m if set, else the current chunk's n_tokens. */
+/** @brief Op row count for this call (nntr_htp_op_rows: d->m or n_tokens). */
 static inline uint32_t htp_m(struct htp_exec_ctx *c,
                              const struct nntr_htp_op_desc *d) {
-  return d->m ? d->m : c->n_tokens;
+  return nntr_htp_op_rows(d, c->n_tokens);
 }
 
 void hvx_op_embed(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d);

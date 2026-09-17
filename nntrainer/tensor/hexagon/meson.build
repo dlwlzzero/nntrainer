@@ -9,6 +9,7 @@ hexagon_host_headers = [
   'host/hexagon_runner.h',
   'host/graph_lowering.h',
   'htp/nntr_htp_common.h',
+  'htp/nntr_htp_rope.h',
 ]
 
 foreach s : hexagon_host_sources

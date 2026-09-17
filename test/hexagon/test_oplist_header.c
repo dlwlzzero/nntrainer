@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "../../nntrainer/tensor/hexagon/htp/nntr_htp_common.h"
+#include "../../nntrainer/tensor/hexagon/htp/nntr_htp_rope.h"
 
 /**
  * @brief Build a valid 2-op list: RMSNORM followed by MATMUL_W8A8.
@@ -253,6 +254,107 @@ int main(void) {
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
     wire.ops[1].in0.offset = 1024u;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+  }
+
+  /** The op extent table the validator, hexagon_ref_run, ref_ops.c and
+   * sim_model.c share, by literal numbers at rows = max_chunk = 4 on the
+   * build_valid header (hidden 128, vocab 32, 2 heads, 2 kv heads, max_seq
+   * 8, head_dim 128). used bit i: in0, in1, in2, out. */
+  {
+    struct nntr_htp_oplist_header h4;
+    struct nntr_htp_op_desc ops[2], d;
+    struct nntr_htp_op_extent e;
+    uint32_t buf_size[NNTR_HTP_BUF_COUNT];
+    build_valid(&h4, ops, buf_size);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_EMBED; /* ids, vocab*k int8, vocab scales, rows*k */
+    d.k = 128u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 16u && e.in1 == 4096u && e.in2 == 128u && e.out == 1024u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_RMSNORM;
+    d.n = 128u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 256u && e.in2 == 0u && e.out == 1024u);
+    assert(e.used == 0xBu && e.out_alias_in0 == 0u);
+    d.flags = NNTR_HTP_FLAG_PER_HEAD; /* gamma stays head_dim long */
+    d.n = 256u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 2048u && e.in1 == 256u && e.in2 == 0u && e.out == 2048u);
+    assert(e.used == 0xBu);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_MATMUL_W8A8;
+    d.k = 128u;
+    d.n = 256u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 32768u && e.in2 == 1024u &&
+           e.out == 2048u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+    d.kind = NNTR_HTP_OP_MATMUL_W8A16; /* same operand layout */
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 32768u && e.in2 == 1024u &&
+           e.out == 2048u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_ROPE; /* q rows, k rows, max_seq-row table */
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 2048u && e.in1 == 2048u && e.in2 == 2048u);
+    assert(e.out == e.in0 && e.out_alias_in0 == 1u && e.used == 0x7u);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_ATTN;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 2048u && e.in1 == 2048u && e.in2 == 2048u &&
+           e.out == 2048u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_SILU_MUL;
+    d.n = 128u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 1024u && e.in2 == 0u && e.out == 1024u);
+    assert(e.used == 0xBu && e.out_alias_in0 == 0u);
+    d.kind = NNTR_HTP_OP_ADD;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 1024u && e.in2 == 0u && e.out == 1024u);
+    assert(e.used == 0xBu && e.out_alias_in0 == 0u);
+
+    memset(&d, 0, sizeof(d));
+    d.kind = NNTR_HTP_OP_MATMUL_LOGITS; /* m is ignored: rows decides in0 */
+    d.m = 1u;
+    d.k = 128u;
+    d.n = 32u;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 4096u && e.in2 == 128u && e.out == 128u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+    assert(nntr_htp_op_extent(&h4, &d, 1u, &e) == 0);
+    assert(e.in0 == 256u && e.out == 128u);
+
+    d.kind = NNTR_HTP_OP_KIND_COUNT;
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 1);
+
+    /* row rule and the two size helpers */
+    memset(&d, 0, sizeof(d));
+    assert(nntr_htp_op_rows(&d, 3u) == 3u);
+    d.m = 1u;
+    assert(nntr_htp_op_rows(&d, 3u) == 1u);
+    assert(nntr_htp_kv_bytes(1u, 2u, 8u, 128u) == 8192u);
+    assert(nntr_htp_oplist_bytes(2u) == 192u);
+  }
+
+  /* RoPE row at p = 0: cos 1, sin 0 for every i, whatever libm does. */
+  {
+    float row[128];
+    uint32_t i;
+    memset(row, 0x7f, sizeof(row));
+    nntr_htp_rope_row_f32(row, 0u, 1e6f);
+    for (i = 0; i < 64u; ++i)
+      assert(row[i] == 1.0f && row[64u + i] == 0.0f);
   }
 
   /* token-id gate: shared by htp_graph.c and HexagonBackend::forward */

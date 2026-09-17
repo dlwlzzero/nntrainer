@@ -15,6 +15,7 @@
  */
 #include "graph_lowering.h"
 #include "nntr_htp_common.h"
+#include "nntr_htp_rope.h"
 
 #include <cmath>
 #include <cstring>
@@ -32,19 +33,18 @@ void write_f16_vec(uint8_t *dst, uint32_t off, const float *src, uint64_t n) {
 
 /**
  * @brief Fill the RoPE table at dst+off: max_seq rows, each row
- *        [cos64||sin64] fp16, angle = p * theta^(-2*i/128).
+ *        [cos64||sin64] fp16 from nntr_htp_rope_row_f32 (the row the
+ *        simulator reference also fills).
  */
 void write_rope_table(uint8_t *dst, uint32_t off, uint32_t max_seq,
                       float theta) {
   uint16_t *out = reinterpret_cast<uint16_t *>(dst + off);
+  float f[128];
   for (uint32_t p = 0; p < max_seq; ++p) {
     uint16_t *row = out + static_cast<uint64_t>(p) * 128u;
-    for (uint32_t i = 0; i < 64u; ++i) {
-      float exponent = -2.0f * static_cast<float>(i) / 128.0f;
-      float angle = static_cast<float>(p) * powf(theta, exponent);
-      row[i] = f32_to_f16_bits(cosf(angle));
-      row[64u + i] = f32_to_f16_bits(sinf(angle));
-    }
+    nntr_htp_rope_row_f32(f, p, theta);
+    for (uint32_t i = 0; i < 128u; ++i)
+      row[i] = f32_to_f16_bits(f[i]);
   }
 }
 

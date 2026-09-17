@@ -148,7 +148,14 @@ int test_profile(void) {
     goto out;
 
   sim_model_fill_weights(&P, w);
-  sim_model_build_oplist(&P, ol);
+  {
+    int vrc = sim_model_build_oplist(&P, ol);
+    if (vrc) {
+      printf("SIM_TEST profile FAIL sim_model validate rc=%d\n", vrc);
+      rc = 1;
+      goto out;
+    }
+  }
   fill_tokens(tok, (FILL_CHUNKS + 1u) * CHUNK, P.cfg.vocab);
   memset(act, 0, P.atotal);
   memset(kv, 0, P.kv_bytes);

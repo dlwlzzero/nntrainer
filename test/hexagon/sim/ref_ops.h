@@ -60,7 +60,9 @@ void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
 
 /** Fills a ROPE cos/sin table: table[p][i] = cos(p*inv_freq_i),
  * table[p][64+i] = sin(p*inv_freq_i), inv_freq_i = theta^(-2i/128),
- * for p in [0,max_seq), i in [0,64). Row stride is 128 halves. */
+ * for p in [0,max_seq), i in [0,64). Row stride is 128 halves. Each row is
+ * nntr_htp_rope_row_f32 (nntr_htp_rope.h, the packer's generator) cast to
+ * fp16 here. */
 void ref_rope_table_fill(__fp16 *table, uint32_t max_seq, float theta);
 
 /** Reference for ROPE: x fp16[m][heads*128] in place, table fp16[*][128]

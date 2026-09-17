@@ -49,7 +49,9 @@ void sim_model_plan_free(struct sim_model_plan *p);
  * scales, gammas near 1, and the real rope table (uses frand()). */
 void sim_model_fill_weights(const struct sim_model_plan *p, uint8_t *w);
 
-/* Writes header + p->n_ops descriptors into buf (>= p->oplist_len B). */
-void sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf);
+/** Writes header + p->n_ops descriptors into buf (>= p->oplist_len B) and
+ * returns nntr_htp_oplist_validate() of the result against the plan's own
+ * WEIGHTS/KV/ACT/TOKENS/LOGITS sizes: 0 ok, else the validator rc. */
+int sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf);
 
 #endif /* SIM_MODEL_H */
