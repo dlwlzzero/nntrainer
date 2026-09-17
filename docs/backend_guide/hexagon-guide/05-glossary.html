@@ -146,7 +146,8 @@
     <dt>stub / skel</dt><dd>Generated glue: the stub runs on the host and marshals the call, the skel runs on the DSP and unmarshals it. "The skel" also names the whole DSP library <code>libnntr_htp_skel.so</code>.</dd>
     <dt>rpcmem / dma-buf / fd</dt><dd>Shared memory both processors can address, allocated by <code>RpcmemBuffer</code>, identified by a file descriptor (fd) and handed to the DSP once (HEXAGON.md §1.1).</dd>
     <dt>HAP_mmap</dt><dd>The DSP call that maps a registered fd for the session.</dd>
-    <dt>AEE codes</dt><dd>The DSP error numbers (<code>AEE_EBADPARM</code>, <code>AEE_EUNSUPPORTED</code>, …) returned unchanged to the host (HEXAGON.md §1.3).</dd>
+    <dt>AEE codes</dt><dd>The DSP error numbers (<code>AEE_EBADPARM</code>, <code>AEE_EUNSUPPORTED</code>, …) from <code>AEEStdErr.h</code>. The DSP returns them as-is (HEXAGON.md §1.3); FastRPC hands them to the host offset by the <code>0x80000400</code> DSP error base, which is why logs show <code>0x80000406</code> / <code>0x80000414</code> (hexagon_runner.cpp).</dd>
+    <dt>AEE_EBADPARM</dt><dd>"Bad parameter", code 14: what <code>init()</code> returns for a rejected op-list (every validator rc but 3) and <code>forward()</code> for a bad token count, position, logits length or token id. Seen on the host as <code>0x8000040E</code>, spelled <code>kHexagonBadParm</code> in hexagon_runner.h so the host-side token-id pre-check can return the identical value (HEXAGON.md §1.4).</dd>
     <dt>ABI</dt><dd>Application binary interface; here the op-list wire format, version 4 (HEXAGON.md §1.4).</dd>
     <dt>op-list</dt><dd>The 64-byte header plus 64-byte op descriptors that tell the DSP what to run.</dd>
     <dt>WEIGHTS / KV / ACT / TOKENS / LOGITS</dt><dd>The five buffer ids an op can reference; the first three are mapped once, the last two are per-call arguments.</dd>
