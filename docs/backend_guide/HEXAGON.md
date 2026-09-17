@@ -486,10 +486,13 @@ with every STAT bit-identical to the P4 record (section 8.3). On
 229/25600`), `matmul` (`matmul_w8a8_m1` `max_abs=0.03125
 max_rel=0.045677`), `matmul_dma` (`ref_4096k` `0.0625/0.273998`) and
 `logits` (`0.0195827/0.273973`) fail, while `smoke pool exp rmsnorm
-rope eltwise embed attn graph` pass — the failing set is the
-`__HVX_ARCH__ >= 79` quantizer / W8A8-epilogue surface of
-`hvx-quant.h` and `hvx-matmul.c` (section 7, rule 1), recorded as data
-for the v79-native follow-up (section 9), not fixed here. The
+rope eltwise embed attn graph` pass. The failing set is qf-only code:
+`quant_row` in `hvx-quant.h` and the W8A8 epilogue `mm_tile` in
+`hvx-matmul.c`, neither of which has an `__HVX_ARCH__` branch (the
+quantizer's only arch-dependent instruction is the exact fp16→fp32
+widening from `hvx-base.h`), while the ops that do take the IEEE
+helpers at `>= 79` pass. Recorded as data for the v79-native
+follow-up (section 9, issue #35), not fixed here. The
 `run_main_on_hexagon` image is picked per `HEX_ARCH` from
 `$DEFAULT_TOOLS_VARIANT` (`run_sim_test.sh` prints `SIM_RUN
 runmain=...`); `HEX_EXTRA_CFLAGS` appends compiler flags to both sim
@@ -1276,9 +1279,12 @@ here.
 * **v79-native skel** (ledger ④): the SDK 6.4 upgrade (#23) unblocked
   the v79 simulator, and its first data point narrows the problem: with
   hexagon-clang 19.0.04 the v79 build fails `quant`, `matmul`,
-  `matmul_dma` and `logits` on the simulator (section 5.2) — the
-  `__HVX_ARCH__ >= 79` branches of `hvx-quant.h` and the W8A8 epilogue
-  of `hvx-matmul.c` — while `attn`, `eltwise` and `graph` pass. The
+  `matmul_dma` and `logits` on the simulator (section 5.2) — all in
+  qf-only code (`quant_row` in `hvx-quant.h` and the W8A8 epilogue
+  `mm_tile` in `hvx-matmul.c`, neither of which has an `__HVX_ARCH__`
+  branch; the quantizer's only arch-dependent instruction is the exact
+  fp16→fp32 widening) — while `attn`, `eltwise` and `graph`, the ops
+  that do take the IEEE helpers at `>= 79`, pass. The
   device data point (variant B of
   `docs/measurements/23-sdk64-baseline.md`, 2026-09-17) came back the
   other way: the v79 skel matches the v75 skel's PPL / top-1 at 512 /
@@ -1286,9 +1292,10 @@ here.
   cycles −6.5 / −9.1 / −16.6 %; section 8.2), with no hang or DSP
   restart. Next, in order: (a) make the four v79 simulator failures
   pass or bounded — the tie row of the `>= 79` quantizer branch and the
-  W8A8 epilogue are ±1 LSB off `ref_ops.c`, so either the branch takes
-  the qf path (rule 6's magic-constant rounding) or the tests get a
-  documented v79 bound; (b) re-run the device `--eval` on that build;
+  W8A8 epilogue are ±1 LSB off `ref_ops.c`, so either the quantizer's
+  tie rounding is made independent of the qf32 rounding mode (rule 6
+  assumes v75's Von Neumann jam) or the tests get a documented per-arch
+  bound; (b) re-run the device `--eval` on that build;
   (c) only then flip the `build_skel.sh` default and re-read issue #35
   ("make v75 the default and fail the build on IEEE helpers at
   >= v79"), which these numbers argue against. Neither the P3 tiled
