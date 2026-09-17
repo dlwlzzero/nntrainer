@@ -65,31 +65,17 @@ uint8_t *alloc128(uint64_t bytes) {
   return static_cast<uint8_t *>(p);
 }
 
-/** Output tensor (buf, offset, bytes) of op d as the DSP would address it. */
+/** Output tensor (buf, offset, bytes) of op d for n_tokens rows, from the
+ * shared extent table (ROPE writes in place on in0). */
 void out_ref(const nntr_htp_oplist_header &h, const nntr_htp_op_desc &d,
              uint32_t n_tokens, uint32_t &buf, uint32_t &off, uint32_t &bytes) {
-  const uint32_t m = d.m ? d.m : n_tokens;
-  buf = d.out.buf;
-  off = d.out.offset;
-  switch (d.kind) {
-  case NNTR_HTP_OP_EMBED:
-    bytes = m * d.k * 2u;
-    break;
-  case NNTR_HTP_OP_ROPE: /* in place on q (in0) */
-    buf = d.in0.buf;
-    off = d.in0.offset;
-    bytes = m * h.n_heads * 128u * 2u;
-    break;
-  case NNTR_HTP_OP_ATTN:
-    bytes = m * h.n_heads * 128u * 2u;
-    break;
-  case NNTR_HTP_OP_MATMUL_LOGITS:
-    bytes = d.n * 4u;
-    break;
-  default:
-    bytes = m * d.n * 2u;
-    break;
-  }
+  struct nntr_htp_op_extent e;
+  if (nntr_htp_op_extent(&h, &d, n_tokens, &e))
+    throw std::runtime_error("unknown op kind");
+  const nntr_htp_tensor_ref &r = e.out_alias_in0 ? d.in0 : d.out;
+  buf = r.buf;
+  off = r.offset;
+  bytes = static_cast<uint32_t>(e.out_alias_in0 ? e.in0 : e.out);
 }
 
 double log_softmax_at(const float *logits, uint32_t n, uint32_t idx) {

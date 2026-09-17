@@ -74,12 +74,10 @@ int sim_model_plan_init(struct sim_model_plan *p,
   p->fout = bump(&t, cfg->max_chunk * cfg->hidden * 2u);
   p->atotal = t;
 
-  p->kv_bytes =
-    2u * cfg->n_layers * cfg->n_kv_heads * cfg->max_seq * cfg->head_dim * 2u;
+  p->kv_bytes = (uint32_t)nntr_htp_kv_bytes(cfg->n_layers, cfg->n_kv_heads,
+                                            cfg->max_seq, cfg->head_dim);
   p->n_ops = 1u + 16u * cfg->n_layers + 2u;
-  p->oplist_len =
-    (uint32_t)(sizeof(struct nntr_htp_oplist_header) +
-               (size_t)p->n_ops * sizeof(struct nntr_htp_op_desc));
+  p->oplist_len = (uint32_t)nntr_htp_oplist_bytes(p->n_ops);
   return 0;
 }
 
@@ -182,9 +180,12 @@ emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags, uint32_t layer,
 }
 
 /** EMBED + 16 ops per layer + final RMSNORM + MATMUL_LOGITS: the op
- * sequence of HEXAGON.md section 2.3. */
-void sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf) {
+ * sequence of HEXAGON.md section 2.3. The result is checked by the shared
+ * validator against the plan's own buffer sizes, so this hand lowering is
+ * bound to the same extent table (nntr_htp_op_extent) as lower_qwen3(). */
+int sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf) {
   const struct sim_model_cfg *c = &p->cfg;
+  uint32_t sizes[NNTR_HTP_BUF_COUNT];
   const uint32_t qdim = c->n_heads * c->head_dim;
   const uint32_t kvdim = c->n_kv_heads * c->head_dim;
   struct nntr_htp_oplist_header *h = (struct nntr_htp_oplist_header *)buf;
@@ -252,4 +253,11 @@ void sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf) {
   /* Tied lm_head: reuse the embedding table and scales. */
   emit(&d, NNTR_HTP_OP_MATMUL_LOGITS, 0, 0, 1, c->hidden, c->vocab, A(p->xn),
        W(p->embed_w), W(p->embed_s), R(NNTR_HTP_BUF_LOGITS, 0), 0);
+
+  sizes[NNTR_HTP_BUF_WEIGHTS] = p->wtotal;
+  sizes[NNTR_HTP_BUF_KV] = p->kv_bytes;
+  sizes[NNTR_HTP_BUF_ACT] = p->atotal;
+  sizes[NNTR_HTP_BUF_TOKENS] = c->max_chunk * 4u;
+  sizes[NNTR_HTP_BUF_LOGITS] = c->vocab * 4u;
+  return nntr_htp_oplist_validate(buf, p->oplist_len, sizes);
 }

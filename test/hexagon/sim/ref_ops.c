@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "nntr_htp_common.h"
+#include "nntr_htp_rope.h"
 
 float ref_quant_row(const __fp16 *x, int8_t *q, uint32_t k) {
   float amax = 0.f;
@@ -119,11 +120,10 @@ void ref_rmsnorm(const __fp16 *x, const __fp16 *gamma, __fp16 *y, uint32_t m,
 void ref_rope_table_fill(__fp16 *table, uint32_t max_seq, float theta) {
   for (uint32_t p = 0; p < max_seq; ++p) {
     __fp16 *row = table + (size_t)p * 128;
-    for (uint32_t i = 0; i < 64; ++i) {
-      float inv_freq = powf(theta, -2.0f * (float)i / 128.0f);
-      row[i] = (__fp16)cosf((float)p * inv_freq);
-      row[64 + i] = (__fp16)sinf((float)p * inv_freq);
-    }
+    float f[128];
+    nntr_htp_rope_row_f32(f, p, theta);
+    for (uint32_t i = 0; i < 128; ++i)
+      row[i] = (__fp16)f[i];
   }
 }
 
@@ -242,7 +242,7 @@ void ref_graph_forward_upto(const uint8_t *oplist, uint8_t *weights,
   const uint32_t n_run = h.n_ops < n_ops_limit ? h.n_ops : n_ops_limit;
   for (uint32_t i = 0; i < n_run; ++i) {
     const struct nntr_htp_op_desc *d = &ops[i];
-    const uint32_t m = d->m ? d->m : n_tokens;
+    const uint32_t m = nntr_htp_op_rows(d, n_tokens);
     uint8_t *p0 = bufs[d->in0.buf] + d->in0.offset;
     uint8_t *p1 = bufs[d->in1.buf] + d->in1.offset;
     uint8_t *p2 = bufs[d->in2.buf] + d->in2.offset;

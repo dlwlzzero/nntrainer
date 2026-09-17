@@ -92,7 +92,14 @@ int test_graph(void) {
   sim_model_fill_weights(&P, w);
   memset(act, 0, P.atotal);
   memset(kv, 0, KV_BYTES);
-  sim_model_build_oplist(&P, ol);
+  {
+    int vrc = sim_model_build_oplist(&P, ol);
+    if (vrc) {
+      printf("SIM_TEST graph FAIL sim_model validate rc=%d\n", vrc);
+      rc = 1;
+      goto out;
+    }
+  }
   memcpy(rw, w, P.wtotal);
   memcpy(ract, act, P.atotal);
   memcpy(rkv, kv, KV_BYTES);
@@ -435,6 +442,7 @@ int test_graph(void) {
     }
   }
 
+out:
   if (inited)
     htp_graph_destroy(&g);
   free(rkv);

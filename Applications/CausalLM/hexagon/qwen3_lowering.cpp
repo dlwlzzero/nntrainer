@@ -108,7 +108,7 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   g.act_size = acur.size();
 
   g.kv_size =
-    2ull * cfg.n_layers * cfg.n_kv_heads * cfg.max_seq * cfg.head_dim * 2ull;
+    nntr_htp_kv_bytes(cfg.n_layers, cfg.n_kv_heads, cfg.max_seq, cfg.head_dim);
 
   const uint32_t eps_bits = f32_bits(cfg.rms_eps);
   const uint32_t inv_sqrt_hd_bits =
@@ -362,7 +362,7 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   header.max_chunk = cfg.max_chunk;
   header.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
 
-  g.oplist.resize(sizeof(header) + ops.size() * sizeof(nntr_htp_op_desc));
+  g.oplist.resize(nntr_htp_oplist_bytes(header.n_ops));
   std::memcpy(g.oplist.data(), &header, sizeof(header));
   if (!ops.empty())
     std::memcpy(g.oplist.data() + sizeof(header), ops.data(),
