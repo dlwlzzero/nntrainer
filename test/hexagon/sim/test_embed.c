@@ -28,7 +28,7 @@ int test_embed(void) {
   int8_t *w = (int8_t *)(wbuf + off_w);
   float *scale = (float *)(wbuf + off_s);
 
-  /* Row-major source repacked tiled32; the kernel output is checked both
+  /** Row-major source repacked tiled32; the kernel output is checked both
    * against ref_embed (tiled reader) and directly against the row-major
    * source, so a reader that disagrees with the packer's traversal is
    * caught (the formula itself is pinned by test_oplist_header). */

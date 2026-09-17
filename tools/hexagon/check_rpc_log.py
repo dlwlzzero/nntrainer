@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    check_rpc_log.py
+# @brief   Verdict for a device_test_*.log from run_device_test.sh
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Verdict for a device_test_*.log from run_device_test.sh.
 
 Usage: python3 tools/hexagon/check_rpc_log.py logs/hexagon/device_test_X.log

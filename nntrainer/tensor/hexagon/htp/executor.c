@@ -181,7 +181,7 @@ AEEResult nntr_htp_forward_debug(remote_handle64 h, const int32 *token_ids,
   if (!src || n_ops_limit > s->graph.cfg.n_ops)
     return AEE_EBADPARM;
 
-  /* A partial run may stop before MATMUL_LOGITS; give it a scratch target
+  /** A partial run may stop before MATMUL_LOGITS; give it a scratch target
    * so the op-list's LOGITS ref stays valid either way. */
   logits = malloc((size_t)s->graph.cfg.vocab * sizeof(float));
   if (!logits)

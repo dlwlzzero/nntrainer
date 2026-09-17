@@ -51,7 +51,7 @@ int32_t ref_dot_i8(const int8_t *w, const int8_t *x, uint32_t k) {
 int32_t ref_dot_i8_tiled(const int8_t *w_base, uint32_t n, const int8_t *x,
                          uint32_t K) {
   int32_t acc = 0;
-  /* Four consecutive k share one tile lane, so index once per 4 (K % 128
+  /** Four consecutive k share one tile lane, so index once per 4 (K % 128
    * == 0 is validated). */
   for (uint32_t k = 0; k < K; k += 4u) {
     const int8_t *w4 = w_base + nntr_htp_tile_off(n, k, K);

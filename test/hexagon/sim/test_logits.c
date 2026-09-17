@@ -31,7 +31,7 @@ int test_logits(void) {
   float *sw = (float *)(act + off_sw);
   float *logits = memalign(128, N * sizeof(float));
 
-  /* Garbage (extreme, non-NaN) in the first M-1 rows: the kernel must only
+  /** Garbage (extreme, non-NaN) in the first M-1 rows: the kernel must only
    * read the last token row, so these would blow up the result if touched. */
   for (uint32_t t = 0; t + 1 < M; ++t)
     for (uint32_t i = 0; i < K; ++i)

@@ -26,7 +26,7 @@
 
 static uint32_t align128(uint32_t n) { return (n + 127u) & ~127u; }
 
-/* The kernel caches K transposed ([hd][max_seq] per layer/head), the
+/** The kernel caches K transposed ([hd][max_seq] per layer/head), the
  * reference keeps rows; V is row-major on both sides. */
 static int kv_equal(const uint16_t *got, const uint16_t *ref) {
   const size_t half = (size_t)N_LAYERS * N_KV_HEADS * MAX_SEQ * HEAD_DIM;
@@ -135,7 +135,7 @@ int test_attn(void) {
   c.buf_size[NNTR_HTP_BUF_KV] = kv_halves * sizeof(__fp16);
   c.cfg = &cfg;
   c.pool = wp_create(0);
-  /* [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
+  /** [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   c.attn_scratch =
     memalign(128, (size_t)wp_size(c.pool) * MAX_SEQ * sizeof(float) + 128u);

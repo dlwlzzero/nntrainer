@@ -43,7 +43,7 @@ static void attn_worker(void *arg, int wid, int nw) {
   __fp16 *kv = (__fp16 *)c->buf[NNTR_HTP_BUF_KV];
   const size_t v_off = (size_t)cfg->n_layers * n_kv * max_seq * hd;
   float *scores = c->attn_scratch + (size_t)wid * max_seq;
-  /* After exp, the fp32 scores are narrowed in place into the first half
+  /** After exp, the fp32 scores are narrowed in place into the first half
    * of the same scratch (block k reads bytes [256k, 256k+256) and writes
    * [128k, 128k+128): never ahead of a pending read). */
   uint16_t *s16 = (uint16_t *)scores;
@@ -75,7 +75,7 @@ static void attn_worker(void *arg, int wid, int nw) {
           (const uint16_t *)(q + ((size_t)t * n_heads + hq) * hd);
         const uint32_t L = pos + t + 1; /* causal: attend to [0, pos+t] */
 
-        /* scores[p] = q . K[p] for 64 positions per vector pair: 128
+        /** scores[p] = q . K[p] for 64 positions per vector pair: 128
          * widening mpyacc of (K^T row d, splat q[d]). Lanes beyond L
          * (up to the 64-multiple; max_seq % 64 == 0 keeps the loads
          * aligned and inside the cache) are computed and ignored. The
@@ -110,7 +110,7 @@ static void attn_worker(void *arg, int wid, int nw) {
           hvx_vmem(s16 + p0) = hvx_vec_f32_to_f16(
             hvx_vmem(scores + p0), hvx_vmem(scores + p0 + VLEN_FP32));
 
-        /* out[t,hq] = sum_p scores[p] * V[h][p], accumulated as two IEEE
+        /** out[t,hq] = sum_p scores[p] * V[h][p], accumulated as two IEEE
          * fp32 vector pairs (V row = 2 hf vectors) through
          * hvx_vec_mpyacc_f32_f16. Chained qf32 adds are not used: they
          * produced inf on v79 (see hvx_dot_fp16), and qf16 adds lose
@@ -124,7 +124,7 @@ static void attn_worker(void *arg, int wid, int nw) {
           a1 = hvx_vec_mpyacc_f32_f16(a1, hvx_vmem(vrow + VLEN_FP16), pv);
         }
 
-        /* 1/sum in fp32, then narrow through hvx_vec_f32_to_f16_shuff
+        /** 1/sum in fp32, then narrow through hvx_vec_f32_to_f16_shuff
          * (keeps the vmpy lane interleave: even lanes from lo, odd from hi). */
         __fp16 *orow = out + ((size_t)t * n_heads + hq) * hd;
         const HVX_Vector iv = hvx_vec_splat_f32(inv);
@@ -143,7 +143,7 @@ static void attn_worker(void *arg, int wid, int nw) {
   }
 }
 
-/* Follow-up: workers split by kv head (8 on qwen3) and every query row
+/** Follow-up: workers split by kv head (8 on qwen3) and every query row
  * re-streams K^T; split by (q head, row block) and reuse each K^T load
  * across rows if prefill ATTN still dominates after this. */
 void hvx_op_attn(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d) {

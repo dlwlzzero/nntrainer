@@ -17,7 +17,7 @@ struct rope_job {
   uint32_t m;
 };
 
-/* Rotate one head_dim=128 slice in place: x0 = lanes [0,64), x1 = [64,128).
+/** Rotate one head_dim=128 slice in place: x0 = lanes [0,64), x1 = [64,128).
  * out0 = x0*cos - x1*sin; out1 = x1*cos + x0*sin. cos/sin are the two
  * halves of the table row for this token's position. */
 static inline void rope_rotate(__fp16 *x, const __fp16 *row) {
@@ -26,7 +26,7 @@ static inline void rope_rotate(__fp16 *x, const __fp16 *row) {
   HVX_Vector cs = hvx_vmem(row);
   HVX_Vector sn = hvx_vmem(row + VLEN_FP16);
 
-  /* Products in qf32 (exact for hf inputs), combine as IEEE sf, narrow to
+  /** Products in qf32 (exact for hf inputs), combine as IEEE sf, narrow to
    * hf once. The qf16 version (Vqf16_vmpy + Vqf16_vadd, Vhf_equals_Vqf16)
    * rounds worse than truncation on ~40% of values (v75 sim probe) and
    * cost ~1% PPL on qwen3-0.6b. */
@@ -61,7 +61,7 @@ static void rope_worker(void *arg, int wid, int nw) {
   __fp16 *k = (__fp16 *)htp_ref_ptr(c, d->in1);
   const __fp16 *table = (const __fp16 *)htp_ref_ptr(c, d->in2);
 
-  /* Flat index space: [0, m*n_heads) is q, [m*n_heads, m*(n_heads+n_kv_heads))
+  /** Flat index space: [0, m*n_heads) is q, [m*n_heads, m*(n_heads+n_kv_heads))
    * is k. Split evenly across workers. */
   const uint64_t q_units = (uint64_t)m * n_heads;
   const uint64_t total = q_units + (uint64_t)m * n_kv_heads;

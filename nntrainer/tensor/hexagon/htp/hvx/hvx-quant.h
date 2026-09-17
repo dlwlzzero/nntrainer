@@ -16,7 +16,7 @@
 
 #include "hvx-base.h"
 
-/* Per-token quantization of one row (k is a multiple of 128, enforced by
+/** Per-token quantization of one row (k is a multiple of 128, enforced by
  * nntr_htp_oplist_validate) into int8 (W8A8) or int16 (W8A16); rows are
  * spread over the worker pool by the caller. Returns scale (absmax / qmax).
  * The scalar definitions this implements are ref_quant_row() (int8) and
@@ -43,7 +43,7 @@
  * reference skips it. */
 static inline __attribute__((always_inline)) float
 quant_row(const __fp16 *x, void *q, uint32_t k, bool i8) {
-  /* absmax: sign-cleared fp16 bits are monotonic in |x|, so an unsigned max
+  /** absmax: sign-cleared fp16 bits are monotonic in |x|, so an unsigned max
    * over them is the fp16 absmax exactly. */
   HVX_Vector vmax = Q6_V_vzero();
   for (uint32_t i = 0; i < k; i += 64u)

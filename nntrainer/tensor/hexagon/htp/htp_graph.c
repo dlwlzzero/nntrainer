@@ -39,7 +39,7 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
     return 1;
   memcpy(&g->cfg, oplist, sizeof(g->cfg));
 
-  /* TOKENS/LOGITS sizes are the forward() contract: at most max_chunk
+  /** TOKENS/LOGITS sizes are the forward() contract: at most max_chunk
    * int32 token ids and exactly vocab fp32 logits. */
   buf_size[NNTR_HTP_BUF_WEIGHTS] = wsize;
   buf_size[NNTR_HTP_BUF_KV] = kvsize;
@@ -62,7 +62,7 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   if (!g->ctx.pool)
     return 1;
 
-  /* Quant scratch sized by the widest matmul k in this op-list; x2 for the
+  /** Quant scratch sized by the widest matmul k in this op-list; x2 for the
    * int16 rows of MATMUL_W8A16. */
   for (i = 0; i < g->cfg.n_ops; ++i)
     if ((g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
@@ -76,7 +76,7 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   }
   g->ctx.prof_op_cycles =
     calloc(g->cfg.n_ops ? g->cfg.n_ops : 1u, sizeof(uint64_t));
-  /* [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
+  /** [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   g->ctx.attn_scratch = memalign(
     128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
@@ -86,7 +86,7 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
     return 1;
   }
 
-  /* Best-effort VTCM: NULL keeps the matmul DDR direct-read fallback and
+  /** Best-effort VTCM: NULL keeps the matmul DDR direct-read fallback and
    * is not an error. */
   {
     compute_res_attr_t rattr;
@@ -124,7 +124,7 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
 
   if (!g || !tokens || !logits)
     return 1;
-  /* Runtime-argument gate: init cannot validate these, and a violation
+  /** Runtime-argument gate: init cannot validate these, and a violation
    * reads past the rope table / writes past the KV cache. */
   if (n_tokens == 0u || n_tokens > g->cfg.max_chunk ||
       (uint64_t)pos + n_tokens > (uint64_t)g->cfg.max_seq)

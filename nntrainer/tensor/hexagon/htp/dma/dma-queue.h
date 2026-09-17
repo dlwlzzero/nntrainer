@@ -20,7 +20,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* hex-profile.h not imported; profiling macros stubbed out (local modification)
+/** hex-profile.h not imported; profiling macros stubbed out (local
+ * modification)
  */
 struct htp_thread_trace;
 #define HTP_TRACE_EVT_DMA 0

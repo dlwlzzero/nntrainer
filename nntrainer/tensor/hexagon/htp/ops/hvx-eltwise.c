@@ -47,7 +47,7 @@ static void add_worker(void *arg, int wid, int nw) {
     for (uint32_t i = 0; i < n; i += VLEN_FP16) {
       HVX_Vector av = hvx_vmem(arow + i);
       HVX_Vector bv = hvx_vmem(brow + i);
-      /* Add in fp32 through qf-format ops only: widen both operands with
+      /** Add in fp32 through qf-format ops only: widen both operands with
        * Wqf32_vmpy_VhfVhf(x, 1.0), add as sf, narrow with Vhf_equals_Wqf32
        * (same lane interleave both ways). Q6_Vqf16_vadd_VhfVhf quantizes
        * near-cancelling residual adds to 2^-8 steps, and the IEEE
@@ -63,7 +63,7 @@ void hvx_op_add(struct htp_exec_ctx *c, const struct nntr_htp_op_desc *d) {
   wp_run(c->pool, add_worker, &j);
 }
 
-/* silu(g) = g / (1 + exp(-g)); y = silu(g) * up. Strip = 64 halves,
+/** silu(g) = g / (1 + exp(-g)); y = silu(g) * up. Strip = 64 halves,
  * widened to two 32-lane fp32 vectors (hvx_vec_f16_to_f32) so the vendor
  * exp/inverse register primitives (hvx-exp.h, hvx-inverse.h) can run in
  * fp32, multiplied by up in fp32, then narrowed back (hvx_vec_f32_to_f16).
@@ -75,7 +75,7 @@ static inline HVX_Vector silu_f32(HVX_Vector g) {
   const HVX_Vector one = hvx_vec_splat_f32(1.0f);
 
   HVX_Vector neg_g = hvx_vec_neg_f32(g);
-  /* Clamp -g to 80 so exp stays finite (5.5e34): a large negative g (seen
+  /** Clamp -g to 80 so exp stays finite (5.5e34): a large negative g (seen
    * in qwen3 layer 27, |g| > 250) otherwise yields exp -> inf and the
    * inverse approximation turns 1/(1+inf) into NaN instead of 0. With the
    * clamp silu(g) underflows to 0, matching the scalar g/(1+expf(-g)). */
@@ -107,7 +107,7 @@ static void silu_mul_worker(void *arg, int wid, int nw) {
       HVX_Vector gv = hvx_vmem(grow + i);
       HVX_Vector uv = hvx_vmem(urow + i);
 
-      /* silu and the product both in fp32; one fp16 rounding at the end
+      /** silu and the product both in fp32; one fp16 rounding at the end
        * (same contract as the scalar reference). */
       HVX_VectorPair g32 = hvx_vec_f16_to_f32(gv);
       HVX_VectorPair u32 = hvx_vec_f16_to_f32(uv);

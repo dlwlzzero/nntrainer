@@ -37,7 +37,7 @@ static void build_valid(struct nntr_htp_oplist_header *h,
   h->weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
 
   memset(ops, 0, 2 * sizeof(*ops));
-  /* op0: RMSNORM, x[ACT@0] * gamma[WEIGHTS@0] -> out[ACT@1024] */
+  /** op0: RMSNORM, x[ACT@0] * gamma[WEIGHTS@0] -> out[ACT@1024] */
   ops[0].kind = NNTR_HTP_OP_RMSNORM;
   ops[0].m = 0;
   ops[0].n = h->hidden;
@@ -48,7 +48,7 @@ static void build_valid(struct nntr_htp_oplist_header *h,
   ops[0].out.buf = NNTR_HTP_BUF_ACT;
   ops[0].out.offset = 1024;
 
-  /* op1: MATMUL_W8A8, X[ACT@1024] x W[WEIGHTS@256] -> out[ACT@2048] */
+  /** op1: MATMUL_W8A8, X[ACT@1024] x W[WEIGHTS@256] -> out[ACT@2048] */
   ops[1].kind = NNTR_HTP_OP_MATMUL_W8A8;
   ops[1].m = 0;
   ops[1].k = h->hidden;
@@ -171,7 +171,7 @@ int main(void) {
     wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W8A16;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
 
-    /* EMBED needs k % 128 == 0 -> 5; k=4u (a multiple of 4, not 128) keeps
+    /** EMBED needs k % 128 == 0 -> 5; k=4u (a multiple of 4, not 128) keeps
      * the vocab*k bounds check from tripping first. */
     build_valid(&wire.h, wire.ops, buf_size);
     wire.ops[1].kind = NNTR_HTP_OP_EMBED;

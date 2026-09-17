@@ -23,7 +23,7 @@ static int8_t q_ref[KQ] __attribute__((aligned(128)));
 static int16_t q16_got[KQ] __attribute__((aligned(128)));
 static int16_t q16_ref[KQ] __attribute__((aligned(128)));
 
-/* Quantize x_row with the kernel and with the scalar reference (esz==1: int8
+/** Quantize x_row with the kernel and with the scalar reference (esz==1: int8
  * into q_got/q_ref; esz==2: int16 into q16_got/q16_ref). scale must always be
  * equal; q must be byte-identical unless pm1_out is given, in which case
  * +/-1 differences are counted there instead (the caller bounds the rate).
@@ -85,7 +85,7 @@ static int test_quant_row(void) {
   memset(x_row, 0, sizeof(x_row));
   fails += check_row("zero", 1024, 1u, NULL);
 
-  /* (c) tie row: x[0] = 127 makes inv exactly 1.0, the rest are +/-(n + 0.5)
+  /** (c) tie row: x[0] = 127 makes inv exactly 1.0, the rest are +/-(n + 0.5)
    * so every element lands on a rounding tie (ties-to-even like lrintf). */
   x_row[0] = (__fp16)127.f;
   for (uint32_t i = 1; i < 1024; ++i)
@@ -107,7 +107,7 @@ static int test_quant_row(void) {
   x_row[1023] = (__fp16)9.5f;
   fails += check_row("last", 1024, 1u, NULL);
 
-  /* (f) generic (non-dyadic) rows: the kernel rounds at a 2^-14 resolution, so
+  /** (f) generic (non-dyadic) rows: the kernel rounds at a 2^-14 resolution, so
    * a true product just above a .5 tie may round to even instead of up. Only
    * the +/-1 rate is bounded here. */
   static const float gamp[4] = {3.7f, 0.013f, 731.f, 2.9e-4f};
@@ -126,7 +126,7 @@ static int test_quant_row(void) {
     ++fails;
   }
 
-  /* (g) int16: zero row and tie row (x[0] = 32767 -> inv = 1.0, rest n + 0.5)
+  /** (g) int16: zero row and tie row (x[0] = 32767 -> inv = 1.0, rest n + 0.5)
    * must be identical; (h) k=128/k=3072; (i) 16 generic rows, +/-1 rate only
    * (the kernel rounds at 2^-6 resolution). */
   memset(x_row, 0, sizeof(x_row));

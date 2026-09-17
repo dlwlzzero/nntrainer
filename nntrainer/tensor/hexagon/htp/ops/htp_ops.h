@@ -32,7 +32,7 @@ struct htp_exec_ctx {
   uint8_t *vtcm;       /**< per-worker weight double buffer for the tiled matmul
                           (hvx-matmul.c) */
   uint32_t vtcm_size;
-  /* Per-op-kind profile, accumulated by htp_graph_forward_upto around each
+  /** Per-op-kind profile, accumulated by htp_graph_forward_upto around each
    * op call; read/cleared through htp_graph_profile_get/reset. Sim-side
    * instrumentation only: not part of the RPC ABI. */
   uint64_t prof_cycles[NNTR_HTP_OP_KIND_COUNT];

@@ -39,7 +39,7 @@ public:
 private:
   HexagonBackend() = default;
   HexModelConfig cfg_{};
-  /* shared_ptr: deleters bind at construction, so this header stays free of
+  /** shared_ptr: deleters bind at construction, so this header stays free of
    * the SDK-dependent definitions (builds without ENABLE_HEXAGON too). */
   std::shared_ptr<RpcmemBuffer> weights_, kv_, act_;
   std::shared_ptr<HexagonRunner> runner_;

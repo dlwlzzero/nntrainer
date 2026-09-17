@@ -59,7 +59,7 @@ struct wp_pool *wp_create(int n_workers) {
   int u = (units >> 8) & 0xFF; /* count of 128B-mode HVX units */
   if (u <= 0)
     u = 1;
-  /* worker_main() locks an HVX unit at thread entry, so a worker beyond the
+  /** worker_main() locks an HVX unit at thread entry, so a worker beyond the
    * unit count would block forever in qurt_hvx_lock() and wp_run() would
    * never return: clamp instead. */
   int n = n_workers;
@@ -96,7 +96,7 @@ struct wp_pool *wp_create(int n_workers) {
                                                    worker_main, &workers[i])
                               : -1;
     if (rc != QURT_EOK) {
-      /* Roll back: shut down and free the i workers already started, then
+      /** Roll back: shut down and free the i workers already started, then
        * this failed one, then the pool itself. */
       free(workers[i].stack);
       qurt_sem_destroy(&workers[i].start_sem);
@@ -120,7 +120,7 @@ struct wp_pool *wp_create(int n_workers) {
 void wp_run(struct wp_pool *p, wp_job_fn fn, void *arg) {
   p->fn = fn;
   p->arg = arg;
-  /* Plain stores to p->fn/p->arg are ordered by the per-worker semaphore
+  /** Plain stores to p->fn/p->arg are ordered by the per-worker semaphore
    * release/acquire (QuRT semantics), no C11 atomics needed. */
   for (int i = 0; i < p->n; ++i)
     qurt_sem_up(&p->workers[i].start_sem);

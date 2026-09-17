@@ -29,7 +29,7 @@ static inline float hvx_sum_sf_pair(HVX_VectorPair acc) {
   return sum;
 }
 
-/* Dot product sum(a_i * b_i) in fp32 (one Vhf vector is VLEN_FP16=64
+/** Dot product sum(a_i * b_i) in fp32 (one Vhf vector is VLEN_FP16=64
  * halves; the widened product pair holds 32+32 fp32 lanes). n must be a
  * multiple of 64 (validator guarantees hidden%64==0 and head_dim=128) and
  * a/b must be 128B aligned. Accumulates in IEEE sf through
@@ -48,7 +48,7 @@ static inline float hvx_sumsq_fp16(const __fp16 *x, uint32_t n) {
   return hvx_dot_fp16(x, x, n);
 }
 
-/* y_i = (fp16)(x_i * r * g_i) computed in fp32: x*g exactly via
+/** y_i = (fp16)(x_i * r * g_i) computed in fp32: x*g exactly via
  * Wqf32_vmpy_VhfVhf, then * r (fp32 splat), narrowed to hf once. The
  * earlier two-step qf16 version (with r rounded to fp16) drifted ~1% on
  * qwen3's large gammas / massive activations versus the fp32 reference.

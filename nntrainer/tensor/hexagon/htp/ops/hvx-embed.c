@@ -15,7 +15,7 @@ struct embed_job {
   uint32_t m;
 };
 
-/* Scalar on purpose: memory-bound gather of at most max_chunk rows x hidden
+/** Scalar on purpose: memory-bound gather of at most max_chunk rows x hidden
  * elements per call; HVX brings nothing here. */
 static void embed_worker(void *arg, int wid, int nw) {
   struct embed_job *j = arg;

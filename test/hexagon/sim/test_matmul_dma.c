@@ -98,7 +98,7 @@ int test_matmul_dma(void) {
   for (uint32_t i = 0; i < m * n; ++i)
     ref_f[i] = (float)y_ref[i];
 
-  /* VTCM/DMA streaming path at three slab sizes: 4 MB (what htp_graph
+  /** VTCM/DMA streaming path at three slab sizes: 4 MB (what htp_graph
    * acquires), 256 KB (64 KB per worker = exactly one double-buffered
    * 32-row tile at k=1024, so every chunk is a single tile and each worker
    * pipelines 24 chunks) and 64 KB (16 KB per worker holds less than two

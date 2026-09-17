@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    summ_prof.py
+# @brief   Summarize SIM_PROF logs from run_sim_test.sh profile runs
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Summarize SIM_PROF logs from run_sim_test.sh profile runs.
 
 Usage: python3 tools/hexagon/summ_prof.py logs/hexagon/sim_prof_*.log

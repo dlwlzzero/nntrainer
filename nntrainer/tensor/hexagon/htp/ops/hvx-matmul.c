@@ -27,7 +27,7 @@
 #include "htp_ops.h"
 #include "hvx-quant.h"
 
-/* Ring depth for the per-worker DMA queue: only ever one chunk in flight
+/** Ring depth for the per-worker DMA queue: only ever one chunk in flight
  * (kick c+1, wait c), but the ring needs room for 2 outstanding slots so
  * the push for c+1 does not collide with the not-yet-popped descriptor
  * for c. Must be a power of two (dma_queue_init rounds up regardless). */
@@ -43,7 +43,7 @@ struct mm_job {
   bool y_is_f32; /* MATMUL_LOGITS writes fp32, W8A8 fp16 */
 };
 
-/* Worker N-range in whole tiles: n0/n1 are multiples of 32 (the validator
+/** Worker N-range in whole tiles: n0/n1 are multiples of 32 (the validator
  * guarantees n % 32 == 0), so rows [n0, n1) of a tiled tensor are the
  * contiguous bytes [n0 * k, n1 * k). */
 static void mm_tile_range(uint32_t n, int wid, int nw, uint32_t *n0,
@@ -55,7 +55,7 @@ static void mm_tile_range(uint32_t n, int wid, int nw, uint32_t *n0,
         NNTR_HTP_TILE_ROWS;
 }
 
-/* One n-tile x tb tokens. wv is the tile's strip: k/4 vectors, since the
+/** One n-tile x tb tokens. wv is the tile's strip: k/4 vectors, since the
  * tiled32 offset kt*4096 + g*128 of k = kt*128 + 4g is 128 * (k/4). swv
  * holds the tile's 32 fp32 scales; xq, sx and y point at the first of the
  * tb token rows. int32 lanes are exact whatever the order, so the sums are
@@ -82,7 +82,7 @@ mm_tile(const HVX_Vector *wv, HVX_Vector swv, const int8_t *xq, const float *sx,
     f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(f, swv));
     f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(f, hvx_vec_splat_f32(sx[u])));
     uint8_t *yu = y + u * y_stride;
-    /* Masked stores: 32 floats = 128 B, 32 halves = 64 B. The fp16 y is
+    /** Masked stores: 32 floats = 128 B, 32 halves = 64 B. The fp16 y is
      * 64 B-aligned (n % 32 == 0), but the fp32 logits buffer comes from the
      * caller with no alignment guarantee, so neither store may assume one. */
     if (y_is_f32)
@@ -92,7 +92,7 @@ mm_tile(const HVX_Vector *wv, HVX_Vector swv, const int8_t *xq, const float *sx,
   }
 }
 
-/* Output rows [n0, n1) (whole tiles) x tokens [0, m). w_n0 is the strip of
+/** Output rows [n0, n1) (whole tiles) x tokens [0, m). w_n0 is the strip of
  * row n0 - the DDR tensor at n0*k, or a DMA'd VTCM slab that starts on that
  * tile; either way strip s of the range sits at w_n0 + s*32*k. */
 static void mm_tiles(const int8_t *w_n0, const float *sw, const int8_t *xq,
@@ -114,7 +114,7 @@ static void mm_tiles(const int8_t *w_n0, const float *sw, const int8_t *xq,
   }
 }
 
-/* VTCM/DMA streaming path for this worker's N-slab. Returns false if the
+/** VTCM/DMA streaming path for this worker's N-slab. Returns false if the
  * slab cannot hold two 32-row tiles, in which case the caller falls back to
  * the DDR path. Activations are not copied: the kernel reads c->xq through
  * the cache (4-byte scalar loads gain nothing from VTCM). */
@@ -125,7 +125,7 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
 #ifdef HTP_MM_NO_VTCM
   return false; /* measurement-only: forces the direct DDR read path */
 #endif
-  /* Per-worker slab rounded down to 128 B so buf[0] is vector-aligned;
+  /** Per-worker slab rounded down to 128 B so buf[0] is vector-aligned;
    * buf[1] = buf[0] + rows_per_buf*k is too, because rows_per_buf % 32 == 0
    * and k % 128 == 0. Whole tiles per chunk keep every DMA'd slab starting
    * on a tile, which mm_tiles relies on. */
@@ -180,7 +180,7 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
   return true;
 }
 
-/* W8A8 and LOGITS worker: per-worker N-slab [n0, n1) of whole tiles, VTCM
+/** W8A8 and LOGITS worker: per-worker N-slab [n0, n1) of whole tiles, VTCM
  * streaming when it fits, DDR direct read otherwise. */
 static void mm_worker(void *arg, int wid, int nw) {
   struct mm_job *j = arg;
@@ -201,7 +201,7 @@ static void mm_worker(void *arg, int wid, int nw) {
            n, n0, n1);
 }
 
-/* Per-token quantization spread over the pool: rows [m*wid/nw, m*(wid+1)/nw).
+/** Per-token quantization spread over the pool: rows [m*wid/nw, m*(wid+1)/nw).
  * Dispatches the HVX routine htp_quant_row_fp16 over the pool, each row
  * quantized by exactly one worker; also used for the single LOGITS row so
  * that no HVX code ever runs on the RPC thread. */
@@ -225,7 +225,7 @@ static void quant_worker(void *arg, int wid, int nw) {
                                   (int8_t *)q->xq + (size_t)t * q->k, q->k);
 }
 
-/* W8A16 block: MM16_R rows x tb tokens. w points at row jn (row-major, k
+/** W8A16 block: MM16_R rows x tb tokens. w points at row jn (row-major, k
  * bytes per row); rows < MM16_R means the last valid row is repeated so the
  * block shape never changes and only 2*rows bytes are stored. Each 128 B of a
  * row is unpacked once to two int16 vectors and multiplied lane-wise against
@@ -270,7 +270,7 @@ mm16_block(const int8_t *w, uint32_t k, uint32_t rows, const int16_t *xq,
     for (uint32_t r = 0; r < MM16_R; ++r)
       s[r] = Q6_Vsf_equals_Vw(
         Q6_Vw_vadd_VwVw(Q6_V_lo_W(acc[r][u]), Q6_V_hi_W(acc[r][u])));
-    /* rows (0,1) and (2,3) interleaved at 4 B, then the two at 8 B: lane
+    /** rows (0,1) and (2,3) interleaved at 4 B, then the two at 8 B: lane
      * 4j + r holds a partial of row r. */
     HVX_VectorPair p01 = Q6_W_vshuff_VVR(s[1], s[0], -4);
     HVX_VectorPair p23 = Q6_W_vshuff_VVR(s[3], s[2], -4);
@@ -287,7 +287,7 @@ mm16_block(const int8_t *w, uint32_t k, uint32_t rows, const int16_t *xq,
   }
 }
 
-/* MATMUL_W8A16 worker: rows [n*wid/nw, n*(wid+1)/nw) in 4-row blocks, tokens
+/** MATMUL_W8A16 worker: rows [n*wid/nw, n*(wid+1)/nw) in 4-row blocks, tokens
  * in 2-token blocks with a 1-token tail; DDR direct read.
  * Follow-up: no VTCM/DMA streaming for this kind - the simulator cannot show
  * its value (no DDR model); decide on the device with an A/B like
@@ -328,7 +328,7 @@ void hvx_op_matmul_w8a16(struct htp_exec_ctx *c,
 
 void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
                         const struct nntr_htp_op_desc *d) {
-  /* validator guarantees this for op-lists; unit tests build descriptors
+  /** validator guarantees this for op-lists; unit tests build descriptors
    * by hand */
   if (d->n % NNTR_HTP_TILE_ROWS != 0u)
     return;
@@ -342,12 +342,12 @@ void hvx_op_matmul_w8a8(struct htp_exec_ctx *c,
 
 void hvx_op_matmul_logits(struct htp_exec_ctx *c,
                           const struct nntr_htp_op_desc *d) {
-  /* validator guarantees this for op-lists; unit tests build descriptors
+  /** validator guarantees this for op-lists; unit tests build descriptors
    * by hand */
   if (d->n % NNTR_HTP_TILE_ROWS != 0u)
     return;
   const uint32_t k = d->k;
-  /* in0 is the full X fp16[n_tokens][k]; only the last token row feeds the
+  /** in0 is the full X fp16[n_tokens][k]; only the last token row feeds the
    * logits. The desc carries m=1, so the row offset comes from the runtime
    * chunk size c->n_tokens, not from htp_m(). Quantization of that single
    * row runs on the worker pool via quant_worker, same as W8A8, so no HVX

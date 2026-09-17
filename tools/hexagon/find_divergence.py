@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    find_divergence.py
+# @brief   Binary-search the first op where the DSP diverges from the x86 reference
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Binary-search the first op where the DSP diverges from the x86 reference.
 
 Both runners execute ops [0, i) for the same chunk at pos=0 and dump the

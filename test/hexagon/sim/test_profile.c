@@ -25,7 +25,7 @@
 #include "sim_test_util.h"
 #include "worker_pool.h"
 
-/* qwen3-0.6b shape with 2 layers and a reduced vocab; only lm_head
+/** qwen3-0.6b shape with 2 layers and a reduced vocab; only lm_head
  * (MATMUL_LOGITS) cycles scale linearly with vocab and are rescaled by
  * summ_prof.py - EMBED is a gather, its cost is O(n_tokens * hidden) and
  * independent of the vocabulary size. */
@@ -37,7 +37,7 @@ static const struct sim_model_cfg QWEN3_2L = {
 #define DECODE_STEPS 8u
 #define ACC_TOKENS 8u /* accuracy check size: scalar ref must stay cheap */
 
-/* Unsized on purpose: the size check below then catches a missing name
+/** Unsized on purpose: the size check below then catches a missing name
  * instead of silently leaving a NULL entry. */
 static const char *const KIND_NAME[] = {
   "EMBED",    "RMSNORM", "MATMUL_W8A8",   "ROPE",         "ATTN",
@@ -66,7 +66,7 @@ static void *xmemalign(const char *what, size_t bytes, int *rc) {
 
 static void fill_tokens(int32_t *t, uint32_t n, uint32_t vocab) {
   for (uint32_t i = 0; i < n; ++i)
-    /* frand() is signed: bias into [0,1) before the unsigned cast, a
+    /** frand() is signed: bias into [0,1) before the unsigned cast, a
      * negative float -> uint32_t conversion is undefined. */
     t[i] = (int32_t)((uint32_t)((frand() * 0.5f + 0.5f) * 65536.f) % vocab);
 }
@@ -87,7 +87,7 @@ static void print_kinds(const char *scenario, int workers, uint32_t tokens,
   }
 }
 
-/* One line per op so q/k/v/o and gate/up can be told apart (the kind
+/** One line per op so q/k/v/o and gate/up can be told apart (the kind
  * table lumps every MATMUL_W8A8 together). Descriptors come from the
  * op-list bytes the graph was built from. */
 static void print_ops(const struct htp_graph *g, const uint8_t *ol,
@@ -139,7 +139,7 @@ int test_profile(void) {
   uint8_t *ol = xmemalign("oplist", P.oplist_len, &rc);
   float *logits = xmemalign("logits", P.cfg.vocab * sizeof(float), &rc);
   int32_t *tok = xmemalign("tokens", (FILL_CHUNKS + 1u) * CHUNK * 4u, &rc);
-  /* Reference executor: weights are read-only so it shares w; it needs its
+  /** Reference executor: weights are read-only so it shares w; it needs its
    * own KV/ACT and logits. */
   uint8_t *ract = xmemalign("ref act", P.atotal, &rc);
   uint8_t *rkv = xmemalign("ref kv", P.kv_bytes, &rc);
@@ -167,7 +167,7 @@ int test_profile(void) {
   uint32_t calls[NNTR_HTP_OP_KIND_COUNT];
 
   if (!strcmp(scenario, "acc") || !strcmp(scenario, "prefill0")) {
-    /* Accuracy first, on a small chunk the scalar reference can afford.
+    /** Accuracy first, on a small chunk the scalar reference can afford.
      * Tolerance matches tools/hexagon/find_divergence.py (atol/rtol 0.1):
      * per-token int8 re-binning amplifies 1-ulp fp16 differences ~2x per
      * layer, and at this shape the 8-token logits (rms ~0.8) reach
@@ -190,7 +190,7 @@ int test_profile(void) {
     if (rc)
       goto out;
 
-    /* acc is gate-only: report the 8-token forward's own profile so the
+    /** acc is gate-only: report the 8-token forward's own profile so the
      * per-kind/per-op lines exist for every scenario. prefill0 measures a
      * 128-token chunk at pos 0 on a clean cache instead. */
     uint32_t tokens = ACC_TOKENS;
@@ -253,7 +253,7 @@ int test_profile(void) {
     }
   }
 
-  /* Fork-join cost: 1000 empty wp_run() calls. 451 ops per forward pay
+  /** Fork-join cost: 1000 empty wp_run() calls. 451 ops per forward pay
    * this once each, so 451 * (this / 1000) is the per-token barrier
    * floor (sim cycles). */
   {

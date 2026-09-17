@@ -33,7 +33,7 @@ static int run_case(uint32_t m, uint32_t k, uint32_t n, int a16) {
 
   for (uint32_t i = 0; i < m * k; ++i)
     x[i] = (__fp16)frand();
-  /* Row-major source, repacked tiled32 for the kernel (a16 == 0 only:
+  /** Row-major source, repacked tiled32 for the kernel (a16 == 0 only:
    * down_proj / W8A16 stays row-major). The reference reads the same
    * tiled buffer; ref_dot_i8 on the row-major source ties it back. */
   int8_t *wrm = malloc((size_t)n * k);
@@ -132,11 +132,11 @@ int test_matmul(void) {
     return 1;
   if (run_case(8, 3072, 256, 1))
     return 1;
-  /* 7 = one 2-token block + tail; n=100 over four workers = 25 rows each,
+  /** 7 = one 2-token block + tail; n=100 over four workers = 25 rows each,
    * so every worker ends on a 1-row tail of the 4-row block. */
   if (run_case(7, 3072, 100, 1))
     return 1;
-  /* k=128 (one 128-byte weight chunk) and n=6: 1- and 2-row tails whatever
+  /** k=128 (one 128-byte weight chunk) and n=6: 1- and 2-row tails whatever
    * the worker count. */
   if (run_case(2, 128, 6, 1))
     return 1;

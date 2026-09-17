@@ -14,7 +14,7 @@
 
 #define N 4096
 
-/* 128-byte aligned buffers: hvx_exp_f32 takes the fast (vector-load) path
+/** 128-byte aligned buffers: hvx_exp_f32 takes the fast (vector-load) path
  * only when both src and dst are VLEN(128)-aligned; unaligned inputs still
  * work via its HVX_UVector fallback path, but alignment is exercised here. */
 static float src[N] __attribute__((aligned(128)));

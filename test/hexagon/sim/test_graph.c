@@ -32,7 +32,7 @@
 #define VOCAB 512u
 #define MAX_SEQ 64u
 #define MAX_CHUNK 8u
-/* Note n_heads*head_dim = 512 != hidden = 256: Q/K/V project hidden ->
+/** Note n_heads*head_dim = 512 != hidden = 256: Q/K/V project hidden ->
  * heads*head_dim and O projects back. */
 #define QDIM (N_HEADS * HEAD_DIM)     /* 512 */
 #define KVDIM (N_KV_HEADS * HEAD_DIM) /* 256 */
@@ -98,7 +98,7 @@ int test_graph(void) {
     free(bad);
   }
 
-  /* Negative: an op-list without the tiled32 weight_layout id (a v3-era
+  /** Negative: an op-list without the tiled32 weight_layout id (a v3-era
    * producer, or an unknown layout) must be rejected at init. */
   {
     uint8_t *bad = malloc(OPLIST_LEN);
@@ -186,7 +186,7 @@ int test_graph(void) {
         rc = 1;
       }
       if (!rc) {
-        /* Per-kind profile: 9 ops ran, their cycles must account for the
+        /** Per-kind profile: 9 ops ran, their cycles must account for the
          * whole loop (the loop's own timer reads are the only slack). */
         uint64_t pk[NNTR_HTP_OP_KIND_COUNT];
         uint32_t ck[NNTR_HTP_OP_KIND_COUNT];
@@ -197,7 +197,7 @@ int test_graph(void) {
           sum += pk[kk];
           calls += ck[kk];
         }
-        /* cut == 9: EMBED, RMSNORM x3 (attn_norm, q_norm, k_norm),
+        /** cut == 9: EMBED, RMSNORM x3 (attn_norm, q_norm, k_norm),
          * MATMUL_W8A8 x3, ROPE, ATTN */
         if (calls != cut || ck[NNTR_HTP_OP_EMBED] != 1u ||
             ck[NNTR_HTP_OP_RMSNORM] != 3u ||
@@ -211,7 +211,7 @@ int test_graph(void) {
                  (unsigned long long)sum, (unsigned long long)pc);
           rc = 1;
         } else {
-          /* Per-op counters: same window, sum equals the per-kind sum, op
+          /** Per-op counters: same window, sum equals the per-kind sum, op
            * `cut` (not run) stays 0, op 0 (EMBED, ran) is non-zero. */
           uint64_t po[N_OPS], osum = 0;
           if (htp_graph_profile_get_ops(&g, po, N_OPS)) {
@@ -247,7 +247,7 @@ int test_graph(void) {
     }
   }
 
-  /* Partial execution: running ops [0, N_OPS) must equal a full run (the
+  /** Partial execution: running ops [0, N_OPS) must equal a full run (the
    * executor keeps no per-call state besides KV), and a truncated run must
    * leave the logits buffer untouched. */
   if (!rc) {
@@ -270,7 +270,7 @@ int test_graph(void) {
       printf("SIM_TEST graph FAIL ref partial execution\n");
   }
 
-  /* Worker-count independence: the same prefill with a forced 2-worker
+  /** Worker-count independence: the same prefill with a forced 2-worker
    * pool must match the reference too (the sim has 4 HVX units; the
    * device count differs, so kernels may not bake either in). */
   if (!rc && inited) {
@@ -303,7 +303,7 @@ int test_graph(void) {
     }
   }
 
-  /* Over-large request must be clamped to the 128B-mode HVX unit count: a
+  /** Over-large request must be clamped to the 128B-mode HVX unit count: a
    * worker without a unit blocks forever in qurt_hvx_lock(). No forward
    * needed, the pool size is the whole check. */
   if (!rc && inited) {

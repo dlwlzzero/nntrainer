@@ -18,11 +18,11 @@
 #define NNTR_HTP_ABI_VERSION                                                   \
   4u /* v4: tiled32 int8 projections, header weight_layout */
 
-/* WEIGHTS layout id carried in the op-list header (v4). The only value the
+/** WEIGHTS layout id carried in the op-list header (v4). The only value the
  * kernels understand; anything else is rejected by the validator. */
 #define NNTR_HTP_WEIGHT_LAYOUT_TILED32 1u
 
-/* tiled32: an int8 [N][K] projection is stored as 4 KB tiles of 32 rows x
+/** tiled32: an int8 [N][K] projection is stored as 4 KB tiles of 32 rows x
  * 128 k, n-tile outer, k-tile inner. Inside a tile, vector g (128 B) holds
  * bytes [4r, 4r+3] = w[nt*32 + r][kt*128 + 4g .. +3], so one vrmpy of
  * vector g against a 4-byte activation splat accumulates a 4-MAC partial
@@ -201,7 +201,7 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
     /* W8A16 accumulates int16 x int8 in int32 lanes: exact for k <= 16384. */
     if (d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 && d.k > 16384u)
       return 5;
-    /* tiled32 projections are whole 32-row tiles; down_proj (W8A16) stays
+    /** tiled32 projections are whole 32-row tiles; down_proj (W8A16) stays
      * row-major and is exempt. EMBED's table has vocab rows. */
     if ((d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
          d.kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS) &&

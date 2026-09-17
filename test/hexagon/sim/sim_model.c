@@ -94,7 +94,7 @@ static void fill_i8(uint8_t *w, uint32_t off, uint32_t count) {
     p[i] = (int8_t)(frand() * 127.f);
 }
 
-/* Scale range keeps every projection roughly magnitude-preserving so the
+/** Scale range keeps every projection roughly magnitude-preserving so the
  * residual stream stays O(1) like a trained model (larger scales blow the
  * activations up per layer and the coarse fp16 ulps then amplify benign
  * HVX-vs-scalar rounding past the golden tolerance). */
@@ -110,7 +110,7 @@ static void fill_gamma(uint8_t *w, uint32_t off, uint32_t count) {
     p[i] = (__fp16)(1.0f + 0.25f * frand());
 }
 
-/* The int8 areas are uniform random bytes, so the same fill is a valid
+/** The int8 areas are uniform random bytes, so the same fill is a valid
  * tiled32 image: kernel and reference both index it with
  * nntr_htp_tile_off, no repack needed here. */
 void sim_model_fill_weights(const struct sim_model_plan *p, uint8_t *w) {
@@ -181,7 +181,7 @@ emit(struct nntr_htp_op_desc **p, uint32_t kind, uint32_t flags, uint32_t layer,
   d->param0 = param0;
 }
 
-/* EMBED + 16 ops per layer + final RMSNORM + MATMUL_LOGITS: the op
+/** EMBED + 16 ops per layer + final RMSNORM + MATMUL_LOGITS: the op
  * sequence of HEXAGON.md section 2.3. */
 void sim_model_build_oplist(const struct sim_model_plan *p, uint8_t *buf) {
   const struct sim_model_cfg *c = &p->cfg;

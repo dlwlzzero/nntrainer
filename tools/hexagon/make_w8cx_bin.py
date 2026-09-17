@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    make_w8cx_bin.py
+# @brief   Build the Qwen3 W8_CX checkpoint (.bin) from a HuggingFace directory
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Build the Qwen3 W8_CX checkpoint (.bin) straight from a HuggingFace directory.
 
 `Qwen3W8cxBin` (Applications/CausalLM/hexagon/qwen3_w8cx_bin.cpp) reads a

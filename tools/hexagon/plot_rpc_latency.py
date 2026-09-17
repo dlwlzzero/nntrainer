@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    plot_rpc_latency.py
+# @brief   Histogram of forward() RPC latency from device_test_*.log files
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Histogram of forward() RPC latency from device_test_*.log files.
 
 Usage: python3 tools/hexagon/plot_rpc_latency.py LOG [LOG ...] [-o out.png]

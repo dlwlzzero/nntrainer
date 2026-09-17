@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    make_tokens.py
+# @brief   Tokenize a text file into an int32 token-id file for the hexagon harnesses
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Tokenize a text file into an int32 LE token-id file for the hexagon harnesses.
 
 Usage: make_tokens.py <model-dir> <text> <out.tokens.i32> [--limit N]

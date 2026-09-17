@@ -26,7 +26,7 @@ struct sim_layer_off {
   uint32_t attn_g, ffn_g, q_g, k_g;
 };
 
-/* Every offset is 128B aligned (bump allocator). WEIGHTS: embed, embed
+/** Every offset is 128B aligned (bump allocator). WEIGHTS: embed, embed
  * scales, rope table, final gamma, then per layer the seven int8 matrices
  * with fp32 scales and four fp16 gammas. ACT: ten slots sized for
  * max_chunk rows, reused by every layer. */
@@ -45,7 +45,7 @@ int sim_model_plan_init(struct sim_model_plan *p,
                         const struct sim_model_cfg *cfg);
 void sim_model_plan_free(struct sim_model_plan *p);
 
-/* Deterministic pseudo-random int8 weights, magnitude-preserving fp32
+/** Deterministic pseudo-random int8 weights, magnitude-preserving fp32
  * scales, gammas near 1, and the real rope table (uses frand()). */
 void sim_model_fill_weights(const struct sim_model_plan *p, uint8_t *w);
 
