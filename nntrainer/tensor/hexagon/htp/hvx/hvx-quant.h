@@ -23,24 +23,29 @@
  * ref_quant_row_i16() (int16) in test/hexagon/sim/ref_ops.c.
  *
  * q = lrintf(x * inv): qf32 product, then round-to-nearest-even, then a
- * saturating pack. Adding the magic (1.5*2^8 for int8, 1.5*2^16 for int16)
- * puts the product p in [2^8, 2^9) or [2^16, 2^17) where one sf ulp is 2^-15
- * or 2^-7, so (sum - magic) read as an integer is p in those units. qf32
- * rounds down to a grid one bit coarser than sf and then reports half of it,
- * so that integer is 2*floor(p*2^sh)+1 and a shift toward zero recovers |p|
- * floored at 2^-sh (toward zero, because the qf32 product itself is half an
- * ulp away from zero), where sh is 14 for int8 and 6 for int16. The integer
- * "+half-1+lsb" step is then ties-to-even like lrintf. The rounding
+ * saturating pack. The product f = sf(qf32(x) * inv) is the only qf32
+ * operation; everything after it is integer arithmetic on the sf bits, so
+ * the result does not depend on how the arch converts qf32 to sf (v75 jams
+ * the low mantissa bit, the v79 simulator gives the IEEE product; HEXAGON.md
+ * §7 rule 6). The decode splits f into sign, exponent and 24-bit significand
+ * m and shifts m right by (150 - sh) - e, which is |f| floored at 2^-sh (sh
+ * = 14 for int8, 6 for int16); the sign is put back on the integer, and the
+ * "+half-1+lsb" step then rounds ties-to-even like lrintf. The shift count
+ * is clamped to [0, 31]: |f| < 2^-22 and 0 give 0, NaN/inf (e = 255) give
+ * the significand itself, which the saturating pack turns into qmax. |f|
+ * never exceeds qmax, so the shifted value fits 32 bits. The rounding
  * resolution is therefore 2^-sh: a true product landing within 2^-sh above a
  * .5 tie rounds to even instead of up, which makes about 3.6e-5 of the int8
  * elements (and about 1% of the int16 elements) differ from the scalar
- * reference by one LSB. The int8 3.6e-5 figure is a modelled/theoretical rate
- * over uniformly random ties; test_quant's frand-generated data is dyadic, so
- * near-ties in that test always land on an odd n and are not truly random,
- * which is why the test's observed pm1=0/65536 is expected rather than a
- * contradiction of the ~3.6e-5 figure. A NaN input also counts as the absmax
- * here (its sign-cleared bits exceed every finite one) while the scalar
- * reference skips it. */
+ * reference by one LSB; the per-arch rounding of the product itself is what
+ * the quant_generic / quant16_generic STAT bounds cover. The int8 3.6e-5
+ * figure is a modelled/theoretical rate over uniformly random ties;
+ * test_quant's frand-generated data is dyadic, so near-ties in that test
+ * always land on an odd n and are not truly random, which is why the test's
+ * observed pm1=0/65536 is expected rather than a contradiction of the
+ * ~3.6e-5 figure. A NaN input also counts as the absmax here (its
+ * sign-cleared bits exceed every finite one) while the scalar reference
+ * skips it. */
 static inline __attribute__((always_inline)) float
 quant_row(const __fp16 *x, void *q, uint32_t k, bool i8) {
   /** absmax: sign-cleared fp16 bits are monotonic in |x|, so an unsigned max
@@ -54,9 +59,14 @@ quant_row(const __fp16 *x, void *q, uint32_t k, bool i8) {
   const float qmax = i8 ? 127.f : 32767.f;
   const float inv = amax > 0.f ? qmax / amax : 0.f;
   const HVX_Vector vinv = hvx_vec_splat_f32(inv);
-  const HVX_Vector magic = Q6_V_vsplat_R(i8 ? 0x43C00000 : 0x47C00000);
+  const int sh = i8 ? 14 : 6;
   const HVX_Vector one = Q6_V_vsplat_R(1);
-  const HVX_Vector half1 = Q6_V_vsplat_R((1 << (i8 ? 13 : 5)) - 1);
+  const HVX_Vector half1 = Q6_V_vsplat_R((1 << (sh - 1)) - 1);
+  const HVX_Vector absmask = Q6_V_vsplat_R(0x7fffffff);
+  const HVX_Vector mantmask = Q6_V_vsplat_R(0x007fffff);
+  const HVX_Vector implicit1 = Q6_V_vsplat_R(0x00800000);
+  const HVX_Vector bias = Q6_V_vsplat_R(150 - sh);
+  const HVX_Vector s31 = Q6_V_vsplat_R(31);
   for (uint32_t i = 0; i < k; i += 128u) {
     HVX_Vector hq[2];
     for (int j = 0; j < 2; ++j) {
@@ -65,9 +75,16 @@ quant_row(const __fp16 *x, void *q, uint32_t k, bool i8) {
       HVX_Vector w[2] = {Q6_V_lo_W(p), Q6_V_hi_W(p)};
       for (int e = 0; e < 2; ++e) {
         HVX_Vector f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(w[e], vinv));
-        f = Q6_Vsf_equals_Vqf32(Q6_Vqf32_vadd_VsfVsf(f, magic));
-        HVX_Vector d = Q6_Vw_vsub_VwVw(f, magic);
-        d = Q6_Vw_vadd_VwVw(Q6_Vw_vasr_VwR(d, 1), Q6_Vuw_vlsr_VuwR(d, 31));
+        /* integer decode: d = sign(f) * floor(|f| * 2^sh) */
+        HVX_Vector sg = Q6_Vw_vasr_VwR(f, 31);
+        HVX_Vector af = Q6_V_vand_VV(f, absmask);
+        HVX_Vector ex = Q6_Vuw_vlsr_VuwR(af, 23);
+        HVX_Vector m = Q6_V_vor_VV(Q6_V_vand_VV(af, mantmask), implicit1);
+        HVX_Vector s = Q6_Vw_vmin_VwVw(
+          Q6_Vw_vmax_VwVw(Q6_Vw_vsub_VwVw(bias, ex), Q6_V_vzero()), s31);
+        HVX_Vector d = Q6_Vw_vlsr_VwVw(m, s);
+        d = Q6_Vw_vsub_VwVw(Q6_V_vxor_VV(d, sg), sg);
+        /* ties-to-even on the 2^-sh grid, then the shift */
         HVX_Vector a = Q6_Vw_vadd_VwVw(d, half1);
         a = Q6_Vw_vadd_VwVw(
           a,
