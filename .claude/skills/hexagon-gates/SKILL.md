@@ -35,7 +35,7 @@ Pass: `git diff --stat` after formatting shows only intended files.
 tools/docker/run.sh ./tools/hexagon/build_host_x86.sh
 tools/docker/run.sh ./build_x86_hexagon/test_lowering        # LOWER_TEST PASS
 tools/docker/run.sh ./build_x86_hexagon/test_w8cx_bin /model/<w8cx>.bin   # W8CX_BIN_TEST PASS
-tools/docker/run.sh bash -c 'gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c && /tmp/t'
+tools/docker/run.sh bash -c 'gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c -lm && /tmp/t'
 ```
 When the packer, lowering or `ref_ops.c` changed, also regenerate the image
 and check the reference perplexity did not move unless the plan says it

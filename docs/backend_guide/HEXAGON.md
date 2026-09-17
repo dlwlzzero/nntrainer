@@ -160,6 +160,11 @@ for `max_chunk` rows; a `MATMUL_LOGITS` `in0` sized for `max_chunk` rows
 (the kernel reads row `n_tokens - 1` whatever `m` says); and every other
 tensor ref bounds-checked for `max_chunk` rows against the real buffer
 sizes (`ROPE`'s `out` is in-place, `== in0`, and not checked separately).
+The byte extents behind every "sized for `max_chunk` rows" clause come
+from one table, `nntr_htp_op_extent()` in `nntr_htp_common.h`, which
+`hexagon_ref_run --list-ops`/`--dump-op`, `ref_graph_forward` and
+`sim_model` share (issue #36), so the four cannot disagree on an operand
+size; the row rule `m ? m : n_tokens` is `nntr_htp_op_rows()` next to it.
 `forward()`
 checks the runtime arguments (token count ≤ `max_chunk`, position +
 count ≤ `max_seq`, logits length) and every token id (`< vocab`; a
@@ -213,7 +218,9 @@ A bump cursor lays out the image with every tensor 128B-aligned:
    `MATMUL_LOGITS` weight;
 2. `embed_scale` — fp32 `[vocab]`;
 3. `rope_table` — fp16 `[max_seq][cos64||sin64]`, angle
-   `p * theta^(-2i/128)`, precomputed on the host;
+   `p * theta^(-2i/128)`, precomputed on the host by
+   `nntr_htp_rope_row_f32` (`nntr_htp_rope.h`), the same fp32 row the
+   simulator reference fills (each side keeps its own fp16 conversion);
 4. `final_norm` — fp16 `[hidden]`;
 5. per layer: `wq/wq_s`, `wk/wk_s`, `wv/wv_s`, `wo/wo_s`, `gate/gate_s`,
    `up/up_s`, `down/down_s`, then `attn_norm/ffn_norm/q_norm/k_norm`.
@@ -346,7 +353,8 @@ CausalLM app packs from the `.bin` at start-up and needs no regeneration.
 nntrainer/tensor/hexagon/
 ├── htp/                      # hexagon-clang (DSP side)
 │   ├── nntr_htp.idl          # FastRPC interface (init/forward/forward_debug)
-│   ├── nntr_htp_common.h     # op-list wire format v4 + validation + tiled32 index (shared with host)
+│   ├── nntr_htp_common.h     # op-list wire format v4 + validation + op extents / row rule / size helpers + tiled32 index (shared with host)
+│   ├── nntr_htp_rope.h       # RoPE cos/sin row, shared by the packer and the sim reference
 │   ├── executor.c            # FastRPC glue -> htp_graph (or n_ops==0 dummy path)
 │   ├── htp_graph.{h,c}       # executor: pool, scratch, VTCM, dispatch, forward_upto
 │   ├── worker_pool.{h,c}     # QuRT worker pool + barrier
@@ -445,7 +453,7 @@ python3 tools/hexagon/make_w8cx_bin.py $HF_DIR $W8CX.bin      # ~2 min
 ./tools/hexagon/build_host_x86.sh        # -> build_x86_hexagon/{test_lowering,test_w8cx_bin,nntr_hexpack,hexagon_ref_run}
 ./build_x86_hexagon/test_lowering                        # LOWER_TEST PASS
 ./build_x86_hexagon/test_w8cx_bin $W8CX.bin              # W8CX_BIN_TEST PASS
-gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c && /tmp/t
+gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c -lm && /tmp/t   # -lm: the shared RoPE row
 ninja -C build_x86 Applications/CausalLM/nntr_hexpack    # same tool via meson
 
 ./build_x86_hexagon/nntr_hexpack $W8CX.bin /tmp/qwen3_full            # ~2 s
@@ -512,6 +520,8 @@ int8 kinds, `n % 64`, PER_HEAD `n % head_dim`, a `MATMUL_LOGITS` `in0`
 or an ATTN `in2` too short for `max_chunk` rows, a fixed `m`) that init
 must refuse with rc 5, and forward calls with a token id `>= vocab` or
 `-1` that must be rejected without touching KV/ACT (section 1.4).
+`graph` (and `profile`) also fail with `sim_model validate rc=N` if
+`sim_model_build_oplist`'s self-validation rejects the hand lowering.
 History: all
 13 passed on v75 and v79 with SDK 6.3.0.0 / toolchain 8.8 (M2), and on
 v75 with SDK 6.0.0.2 / toolchain 8.7.08 through M6 P4. Current
