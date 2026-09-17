@@ -124,7 +124,8 @@ The op-list passed to `init()` is one 64-byte `nntr_htp_oplist_header`
 (magic, version, `n_ops`, model shape — layers/heads/dims/`max_seq`/
 `max_chunk`, and the WEIGHTS layout id (`weight_layout`, v4)) followed by
 `n_ops` × 64-byte `nntr_htp_op_desc` records. Each descriptor names an op
-kind, its m/k/n shape (`m == 0` means "the per-call token count"), and up
+kind, its m/k/n shape (`m` is 0, "the per-call token count", on every
+kind but `MATMUL_LOGITS`, whose kernel ignores it), and up
 to four tensor references — a buffer id (WEIGHTS / KV / ACT / TOKENS /
 LOGITS) plus a 128-byte-aligned offset.
 
@@ -140,10 +141,32 @@ LOGITS) plus a 128-byte-aligned offset.
 | `ADD` | elementwise residual add |
 | `MATMUL_LOGITS` | last-token int8 tiled `vrmpy` matmul → fp32 logits (same kernel, VTCM-streamed) |
 
-`init()` validates everything up front (header, kinds, alignment, every
-tensor ref bounds-checked against the real buffer sizes) and rejects a
-bad list with `AEE_EBADPARM`; `forward()` only checks runtime arguments
-(token count ≤ `max_chunk`, position < `max_seq`, logits length).
+`init()` validates everything up front and rejects a bad list with
+`AEE_EBADPARM` (a version mismatch, rc 3, maps to `AEE_EUNSUPPORTED`
+instead). Header rules (rc 4): `head_dim == 128`, `hidden % 64 == 0`,
+`ffn % 64 == 0`, `n_kv_heads > 0`, `n_heads % n_kv_heads == 0`,
+`max_chunk ≥ 1`, a known `weight_layout`. Per-op rules (rc 5): a known
+kind, valid buffer ids and 128-byte-aligned offsets; `m == 0` on every
+kind but `MATMUL_LOGITS` (a descriptor-fixed row count would bypass the
+`forward()` gates below); `k > 0` and
+`k % 128 == 0` for `MATMUL_W8A8` / `MATMUL_W8A16` / `MATMUL_LOGITS` /
+`EMBED`, plus `k ≤ 16384` for `MATMUL_W8A16`; `n % 32 == 0` for the
+tiled kinds (`MATMUL_W8A8`, `MATMUL_LOGITS`) and `vocab % 32 == 0` for
+`EMBED`; `n % 64 == 0` for `RMSNORM` / `ADD` / `SILU_MUL` (the kernels
+load whole 64-half vectors) and `n % head_dim == 0` for a `FLAG_PER_HEAD`
+`RMSNORM`; `ATTN.layer < n_layers`, `max_seq % 64 == 0`, a KV buffer
+that holds every layer and `in1`/`in2` (the chunk's fresh K/V rows) sized
+for `max_chunk` rows; a `MATMUL_LOGITS` `in0` sized for `max_chunk` rows
+(the kernel reads row `n_tokens - 1` whatever `m` says); and every other
+tensor ref bounds-checked for `max_chunk` rows against the real buffer
+sizes (`ROPE`'s `out` is in-place, `== in0`, and not checked separately).
+`forward()`
+checks the runtime arguments (token count ≤ `max_chunk`, position +
+count ≤ `max_seq`, logits length) and every token id (`< vocab`; a
+negative id fails the same unsigned compare) before any buffer pointer
+or KV row is touched, and rejects with `AEE_EBADPARM`.
+`HexagonBackend::forward` pre-checks the ids of the whole request on the
+host, so a bad id in a later chunk cannot leave the earlier chunks in KV.
 
 v4 additions: `reserved2[0]` became `weight_layout` and must read
 `NNTR_HTP_WEIGHT_LAYOUT_TILED32` (1); any other value is rejected with
@@ -154,7 +177,11 @@ and is exempt. All four (`MATMUL_W8A8`/`MATMUL_W8A16`/`MATMUL_LOGITS`/
 `EMBED`) also require `k % 128 == 0`. Since M6 P4 `MATMUL_W8A16`
 additionally requires `k <= 16384` (rc 5): its int16 × int8 lanes
 accumulate in int32, which is exact only up to that depth (section 7,
-rule 8). A v3 op-list fails the version check as before.
+rule 8). A v3 op-list fails the version check as before. The `m == 0`,
+`k > 0`, `n % 64`, PER_HEAD, `ATTN.layer`, ATTN `in1`/`in2`,
+`MATMUL_LOGITS`-row and token-id rules above were added after the
+2026-09-17 review (issue #33) without an ABI bump: they only refuse lists
+and calls no kernel could have executed safely.
 
 v3 additions: `forward()` returns the DSP cycle count of the op loop
 (`HAP_perf_get_pcycles`), and `forward_debug()` runs ops `[0, n)` only
@@ -472,7 +499,14 @@ prints `SIM_TEST <name> PASS`. The 13 tests (`smoke pool exp quant
 matmul matmul_dma rmsnorm rope eltwise embed attn logits graph`) compare
 each kernel — and `graph`, a full 2-layer prefill/decode plus partial
 execution — against `ref_ops.c` with a mixed bound `|d| <= atol + rtol *
-|ref|`; the integer paths are bit-exact by construction. History: all
+|ref|`; the integer paths are bit-exact by construction. `graph` also
+carries the negatives: corrupted header fields and one mutated copy of
+the op-list per validator shape rule (`ATTN.layer`, `k == 0` on the four
+int8 kinds, `n % 64`, PER_HEAD `n % head_dim`, a `MATMUL_LOGITS` `in0`
+or an ATTN `in2` too short for `max_chunk` rows, a fixed `m`) that init
+must refuse with rc 5, and forward calls with a token id `>= vocab` or
+`-1` that must be rejected without touching KV/ACT (section 1.4).
+History: all
 13 passed on v75 and v79 with SDK 6.3.0.0 / toolchain 8.8 (M2), and on
 v75 with SDK 6.0.0.2 / toolchain 8.7.08 through M6 P4. Current
 toolchain (#23, 2026-09-17): **SDK 6.4.0.2, QuIC LLVM Hexagon Clang
