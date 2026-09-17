@@ -504,8 +504,9 @@ compiled as C++ so `__fp16` can be a conversion struct
 
 ```bash
 # inside tools/docker/run.sh the entrypoint has already sourced setup_sdk_env.source
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh    # -> build_hexagon/sim/libnntr_sim_test.so
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh <name>
+tools/docker/run.sh ./tools/hexagon/build_sim_test.sh    # -> build_hexagon/sim/libnntr_sim_test.so (HEX_ARCH defaults to v79 since #35)
+tools/docker/run.sh ./tools/hexagon/run_sim_test.sh <name>
+# v75 (fallback only, not part of the per-PR gate): HEX_ARCH=v75 on both commands
 ```
 
 `hexagon-sim` boots a QuRT image and dispatches one test by name; a pass
@@ -528,21 +529,30 @@ v75 with SDK 6.0.0.2 / toolchain 8.7.08 through M6 P4. Current
 toolchain (#23, 2026-09-17): **SDK 6.4.0.2, QuIC LLVM Hexagon Clang
 19.0.04 (HEXAGON_Tools 19.0.04, `toolv19`), `run_main_on_hexagon`
 `hexagon_toolv19_v75` / `hexagon_toolv19_v79`**, inside
-`tools/docker/run.sh`. On **v75** all 13 pass and `profile acc` passes
-with every STAT bit-identical to the P4 record (section 8.3). On
-**v79** the same build gives 9 PASS / 4 FAIL: `quant` (tie row
-`x=-1.5` → `-1` instead of `-2`, plus a ±1 element in `rand0`,
-`rand15`, `k3072`; `quant_generic pm1=13/65536`, `quant16_generic
-229/25600`), `matmul` (`matmul_w8a8_m1` `max_abs=0.03125
-max_rel=0.045677`), `matmul_dma` (`ref_4096k` `0.0625/0.273998`) and
-`logits` (`0.0195827/0.273973`) fail, while `smoke pool exp rmsnorm
-rope eltwise embed attn graph` pass. The failing set is qf-only code:
-`quant_row` in `hvx-quant.h` and the W8A8 epilogue `mm_tile` in
-`hvx-matmul.c`, neither of which has an `__HVX_ARCH__` branch (the
-quantizer's only arch-dependent instruction is the exact fp16→fp32
-widening from `hvx-base.h`), while the ops that do take the IEEE
-helpers at `>= 79` pass. Recorded as data for the v79-native
-follow-up (section 9, issue #35), not fixed here. The
+`tools/docker/run.sh`. At #23 the **v75** build passed all 13 with
+every STAT bit-identical to the P4 record while the same sources on
+**v79** gave 9 PASS / 4 FAIL — `quant` (tie row `x=-1.5` → `-1`
+instead of `-2`, ±1 in `rand0`, `rand15`, `k3072`; `quant_generic
+pm1=13/65536`, `quant16_generic 229/25600`), `matmul`
+(`matmul_w8a8_m1` `0.03125/0.045677`), `matmul_dma` (`ref_4096k`
+`0.0625/0.273998`), `logits` (`0.0195827/0.273973`). **Issue #35
+(2026-09-17) traced all four to one decode in `quant_row`** (section
+7, rule 6: the magic-constant rounding assumed v75's qf32 jam and moved
+every negative tie toward zero on v79; the `mm_tile` epilogue was never
+at fault) and replaced it with an integer decode of the sf bits. Since
+then **both arches pass 13/13 and `profile acc`** (section 8.3 has the
+STATs): on v79 `quant_generic pm1=0/65536`, `quant16_generic
+pm1=184/25600` and every `matmul_w8a8_*`, `matmul_dma ref_*` and
+`logits` STAT is `0/0` (the IEEE product on the v79 simulator makes
+the quantiser bit-exact on that data); on v75 — the **v75 final
+record (SDK 6.4 + #35), fallback only**, since v79 is the primary
+arch from 2026-09-17 — the int8 STATs are unchanged from P4 (`quant_generic 0/65536`, `matmul_w8a8_m8
+0.0078125/0.000788644`, `logits 7.62939e-06/2.36832e-07`) while the
+int16 rows moved — `quant16_generic 167 → 162/25600`, `graph_prefill
+0.0245416/9.3795 → 0.0273907/8.00437`, `graph_decode 0.0202219/23.975
+→ 0.0174583/24.125` — because the old magic add rounded positive int16
+near-ties up and negative ones toward zero, which the new decode does
+symmetrically (rule 6). The
 `run_main_on_hexagon` image is picked per `HEX_ARCH` from
 `$DEFAULT_TOOLS_VARIANT` (`run_sim_test.sh` prints `SIM_RUN
 runmain=...`); `HEX_EXTRA_CFLAGS` appends compiler flags to both sim
@@ -558,9 +568,17 @@ one falls back to DDR). `test_quant` requires byte-identity against
 `ref_quant_row` on random, all-zero, tie, negative-only, k=128 and
 k=3072 rows and at most a 2e-4 rate of ±1 differences on 64 generic
 rows, printing `SIM_TEST quant_generic STAT pm1=<n>/<total>`
-(section 7, rule 6). The int16 rows are checked the same way against
-`ref_quant_row_i16`: the zero row and the tie row (`x[0] = 32767`, then
-±(n + 0.5) up to 2047.5) must be byte-identical, and 16 generic rows
+(section 7, rule 6). Two tie rows exist since #35: `tie` (sign
+alternating with i, n = i mod 127; because 127 is odd the sign and the
+parity of n drift out of step every 127 elements, so all four classes
+`±(even).5`, `±(odd).5` occur, unevenly) and `tie2` (sign changing
+every two elements, so each class holds a quarter of the row). Both
+tell ties-to-even from round-half-toward-zero; the pre-#35 v79 build
+failed `tie` at `i=1` (`-1.5 → -1`). The int16 rows are checked the
+same way against
+`ref_quant_row_i16`: the zero row and the tie rows (`i16_tie`,
+`i16_tie2`: `x[0] = 32767`, then ±(n + 0.5) up to 2047.5) must be
+byte-identical, and 16 generic rows
 (k alternating 3072 / 128) may differ by ±1 LSB at a rate under 2 %,
 printing `SIM_TEST quant16_generic STAT pm1=<n>/25600` (section 7,
 rule 8).
@@ -600,7 +618,8 @@ gate run, not a measurement — use the three long scenarios
 ```bash
 # builds run in the dev container (SDK mounted, ANDROID_NDK set by the image);
 # the adb steps below run on the workstation with the phone attached
-HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh   # -> build_hexagon/skel/libnntr_htp_skel.so (see section 7)
+tools/docker/run.sh ./tools/hexagon/build_skel.sh                # -> build_hexagon/skel/libnntr_htp_skel.so (v79, the shipping skel since #35; see section 7)
+HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh   # the v75 fallback (runs unchanged on v79 silicon), on request only
 tools/docker/run.sh ./tools/hexagon/build_host_test.sh           # -> build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
 
 ./tools/hexagon/run_device_test.sh [serial]            # RPC_TEST PASS
@@ -813,24 +832,40 @@ simulators pass either way, so a device pass is not optional.
 6. **Vector per-token quantization (M6 P3).** `htp_quant_row_fp16` takes
    `absmax` as an unsigned integer max over sign-cleared fp16 bits
    (exact — positive fp16 bit patterns are monotone in value), forms the
-   fp32 product with `Vqf32_vmpy_VsfVsf` / `Vsf_equals_Vqf32`, then
-   rounds by adding the magic `1.5*2^8` in qf32 so that the resulting sf
-   bits minus the magic bits read `2*floor(p*2^14) + 1`, shifting that
-   toward zero and finishing with an integer ties-to-even step. A plain
-   magic add does not work here: Qfloat uses Von Neumann rounding (the
-   fraction LSB is an implicit one — V75 HVX PRM §4.6), so every qf32
-   result is truncated onto a 2-ulp grid and biased half a step away
-   from zero before any rounding code runs, and no qf-only kernel can
-   reproduce `lrintf(fl32(x*inv))` for every input. Rounding therefore
-   happens at 2^-14 resolution and differs from the scalar
-   `ref_quant_row` by one int8 step on roughly 3.6e-5 of elements of
-   generic data (modelled; 0/65536 observed on the simulator), which is
-   what `test_quant`'s ±1 rate bound allows (section 5.2). NaN inputs
-   count towards `absmax` here while the scalar skips them. Still to do
-   on the device: run the tie row explicitly. The negative-tie path
-   relies on Qfloat rounding being sign-symmetric, which the PRM does not
-   spell out, and the S25 Ultra `--eval` match (section 8.2) only covers
-   it indirectly.
+   fp32 product with `Vqf32_vmpy_VsfVsf` / `Vsf_equals_Vqf32`, and
+   then — since #35 — decodes the product with integer ops only: sign,
+   exponent and 24-bit significand are split out of the sf bits, the
+   significand is shifted right by `(150 - sh) - e` (clamped to
+   `[0, 31]`), which is `floor(|f| * 2^sh)` with `sh = 14` (int8) or 6
+   (int16), the sign is put back, and an integer `+half-1+lsb` step
+   rounds ties-to-even like `lrintf`. The product is the only qf32
+   operation left, so the result no longer depends on how the arch
+   converts qf32 to sf. That matters because the two simulators differ
+   there: v75 uses Von Neumann rounding (the fraction LSB is an implicit
+   one — V75 HVX PRM §4.6; the #35 probe shows `1.5 → 0x3fc00001`, and
+   the product `p*0.7` one ulp off IEEE on some samples, though not
+   every result is odd), while the v79 simulator returns the IEEE RNE
+   product bit for bit. The previous decode added the magic `1.5*2^8`
+   in qf32 and read `2*floor(p*2^14)+1` back from the sf bits; that
+   held on v75 but on v79's exact products it moved every *negative*
+   tie one 2^-sh unit toward zero (`-1.5 → -1`, `-3.5 → -3`), which was
+   all four v79 simulator failures of #23 (section 5.2), and on v75's
+   int16 path it was not sign-symmetric either (positive `n + 0.51`
+   rounded up, negative toward zero — the caveat this rule used to
+   carry). Rounding still happens at 2^-sh resolution: a true product
+   within 2^-sh above a .5 tie rounds to even instead of up, roughly
+   3.6e-5 of int8 elements on generic data (modelled; 0/65536 observed
+   on both simulators) and about 1 % of int16 ones (v75 162/25600, v79
+   184/25600), which is what `test_quant`'s ±1 rate bounds allow
+   (section 5.2); the per-arch rounding of the product itself is what
+   those rates cover. `tie` and `tie2` (both cover all four sign /
+   parity classes; `tie2` evenly) are byte-identical to the reference
+   on both arches. NaN inputs count
+   towards `absmax` here while the scalar skips them; a NaN/inf product
+   now decodes to the significand and saturates to `qmax`
+   (deterministic). Still to do on the device: the tie rows have no
+   unit-test harness there, so silicon coverage of the tie classes is
+   the `--eval` PPL band only (`docs/measurements/35-v79-skel.md`).
 7. **HVX code may only run on pool workers.** `wp_create` has every
    worker `qurt_hvx_lock` a 128 B unit at thread entry and hold it for
    the session, so no unit is left for the RPC/caller thread: it owns no
@@ -843,12 +878,13 @@ simulators pass either way, so a device pass is not optional.
    device run (or review) catches it.
 8. **int16 activation for `down_proj` (M6 P4).** The SwiGLU output is
    quantized per token to int16 (`absmax / 32767`) by
-   `htp_quant_row_fp16_i16`, the same magic-constant rounding as rule 6
-   through the shared `quant_row(x, q, k, i8)` body but with
-   `1.5*2^16`, so the rounding resolution is 2^-6 of an int16 step and
-   about 1 % of generic elements differ from `ref_quant_row_i16` by one
-   LSB (modelled; `test_quant` observed `quant16_generic
-   STAT pm1=167/25600`). The kernel multiplies int16 × int8 lane-wise
+   `htp_quant_row_fp16_i16`, the same decode as rule 6 through the
+   shared `quant_row(x, q, k, i8)` body but with `sh = 6`, so the
+   rounding resolution is 2^-6 of an int16 step and about 1 % of
+   generic elements differ from `ref_quant_row_i16` by one LSB
+   (modelled; `test_quant` observed `quant16_generic STAT
+   pm1=167/25600` with the P4 magic add, `162/25600` on v75 and
+   `184/25600` on v79 with the #35 integer decode). The kernel multiplies int16 × int8 lane-wise
    with `Q6_Ww_vmpyacc_WwVhVh` after a `Q6_Wh_vunpack_Vb` of each 128
    weight bytes — exact int32, since a lane holds `k/64` products of
    magnitude ≤ 32767 × 127 and lo+hi `2*k/64` of them, which stays
@@ -1461,6 +1497,36 @@ the 4-worker v75 rows. The `prefill0` / `prefill512` / `decode512`
 scenarios were not re-run (the device handoff
 `docs/measurements/23-sdk64-baseline.md` is the performance check;
 section 2 of the contract).
+
+**#35 re-run (2026-09-17), the quantiser decode fixed and v79 the primary
+arch.** Same container / SDK 6.4.0.2, `timing=off`, Rosetta. **v79
+(the gate from here on):** 13/13 PASS and `profile acc` PASS with
+`profile_prefill_acc STAT max_abs=0.0659682 max_rel=92.7791` (#23's
+v79 value with the broken decode was `0.0899355/49.2742`; inside the
+0.1 bound), `workers=6`, `total_pcycles` 6,174,196 (#23 6,105,728,
++1.1 %), `MATMUL_W8A8` per_call 216,272 (#23 212,250), `MATMUL_W8A16`
+1,261,864 (1,252,328), `ATTN` 174,095 (=), `barrier_empty_x1000`
+8,319,592 (=); unit STATs `quant_generic 0/65536`, `quant16_generic
+184/25600`, every `matmul_w8a8_*`, `matmul_dma ref_*` and `logits`
+STAT `0/0`, `attn_prefill 0.000488281/0.208165`, `graph_prefill
+0.0218946/6.88818`, `graph_decode 0.0197323/23.2374`. Wall: the 13
+tests 12 min, `acc` 29 min (both with a second container running).
+**v75 final record (SDK 6.4 + #35), fallback only:** 13/13 PASS,
+`profile acc` PASS with `profile_prefill_acc STAT max_abs=0.0757427
+max_rel=66.5909` (P4 / #23 `0.077216/98.2637`; moved because the int16
+`down_proj` activation is now rounded sign-symmetrically, rule 6),
+`workers=4`, `total_pcycles` 3,488,445 (#23 3,454,962, +1.0 %),
+`MATMUL_W8A8` per_call 121,991, `MATMUL_W8A16` 703,670, `ATTN` 91,475
+(=), `barrier_empty_x1000` 4,121,706 (=); unit STATs `quant_generic
+0/65536`, `quant16_generic 162/25600`, `matmul_w8a8_m8
+0.0078125/0.000788644` (=), `matmul_w8a16_m8 0.0078125/0.000974659`
+(=), `matmul_dma_ref_4096k 0.0078125/0.000714286` (=), `logits
+7.62939e-06/2.36832e-07` (=), `graph_prefill 0.0273907/8.00437`,
+`graph_decode 0.0174583/24.125`. Wall: 13 tests 6 min, `acc` 18 min.
+The v79 build with `-DHTP_FORCE_QF_HELPERS` (handoff variant B2) passes
+`quant matmul attn rmsnorm eltwise` with the v75 `attn` / `rmsnorm`
+STATs and the v79 `quant` / `matmul` STATs, as expected from which
+helpers switch.
 
 The ≤ 25 % share predicate of `06-verification.md` cannot be read off
 this run — it is defined on `prefill512`, which was not re-measured —

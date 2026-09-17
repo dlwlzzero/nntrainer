@@ -155,8 +155,9 @@ are stable.
 ## 7. Verification gates (summary; details in `hexagon-gates`)
 
 x86 ref tests → simulator (only when DSP bytes change, see below) → skel +
-host harness compile (v75, and v79 for any change under the
-`__HVX_ARCH__ >= 79` surface) → device numbers only via handoff.
+host harness compile (v79, the primary arch since #35 — the target is the
+S25 Ultra's v79 silicon; v75 only when a change touches an
+`__HVX_ARCH__` branch, or on request) → device numbers only via handoff.
 clang-format-14 on changed lines.
 
 Simulator budget (agreed 2026-09-17; the Mac runs `hexagon-sim` under
@@ -174,8 +175,11 @@ time is the scarcest agent resource after device time):
   tool; `SIM_TIMING` is never enabled by an agent.
 * A planner probe on the simulator is limited to one targeted test; if
   more is needed, it becomes step 1 of the implementation plan.
-* The v79 sweep is run only when the change touches the v79 code surface
-  or the issue is about v79 (#35 lineage), and only at PR time.
+* Every simulator run is v79 (user decision 2026-09-17, after #35: the
+  device is the S25 Ultra). v75 is neither built nor simulated per PR;
+  its last record is HEXAGON.md §5.2 / §8.3 "v75 final record", and it
+  is run only when a change touches an `__HVX_ARCH__` branch or the
+  user asks.
 
 ## 8. Fork CI
 
