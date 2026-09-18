@@ -1,0 +1,136 @@
+hexagon: init failed (0x80000414), host abi v4, dsp abi v0
+RPC_TEST open ok
+RPC_TEST rpcmem ok (weights fd=6)
+RPC_TEST bad-version rejected ok
+RPC_TEST init ok
+RPC_TEST forward_us 304
+RPC_TEST forward_us 230
+RPC_TEST forward_us 292
+RPC_TEST forward_us 233
+RPC_TEST forward_us 249
+RPC_TEST forward_us 260
+RPC_TEST forward_us 257
+RPC_TEST forward_us 260
+RPC_TEST forward_us 259
+RPC_TEST forward_us 259
+RPC_TEST forward_us 260
+RPC_TEST forward_us 258
+RPC_TEST forward_us 257
+RPC_TEST forward_us 259
+RPC_TEST forward_us 259
+RPC_TEST forward_us 258
+RPC_TEST forward_us 261
+RPC_TEST forward_us 302
+RPC_TEST forward_us 217
+RPC_TEST forward_us 258
+RPC_TEST forward_us 259
+RPC_TEST forward_us 258
+RPC_TEST forward_us 259
+RPC_TEST forward_us 257
+RPC_TEST forward_us 259
+RPC_TEST forward_us 258
+RPC_TEST forward_us 262
+RPC_TEST forward_us 261
+RPC_TEST forward_us 256
+RPC_TEST forward_us 258
+RPC_TEST forward_us 260
+RPC_TEST forward_us 259
+RPC_TEST pattern ok
+RPC_TEST forward_full_us mem=malloc 9237
+RPC_TEST forward_full_us mem=malloc 9006
+RPC_TEST forward_full_us mem=malloc 8726
+RPC_TEST forward_full_us mem=malloc 8820
+RPC_TEST forward_full_us mem=malloc 8883
+RPC_TEST forward_full_us mem=malloc 8627
+RPC_TEST forward_full_us mem=malloc 11454
+RPC_TEST forward_full_us mem=malloc 11579
+RPC_TEST forward_full_us mem=malloc 11529
+RPC_TEST forward_full_us mem=malloc 8933
+RPC_TEST forward_full_us mem=malloc 8776
+RPC_TEST forward_full_us mem=malloc 8899
+RPC_TEST forward_full_us mem=malloc 8778
+RPC_TEST forward_full_us mem=malloc 11379
+RPC_TEST forward_full_us mem=malloc 8929
+RPC_TEST forward_full_us mem=malloc 8909
+RPC_TEST forward_full_us mem=malloc 8937
+RPC_TEST forward_full_us mem=malloc 8612
+RPC_TEST forward_full_us mem=malloc 8860
+RPC_TEST forward_full_us mem=malloc 8955
+RPC_TEST forward_full_us mem=malloc 10587
+RPC_TEST forward_full_us mem=malloc 8140
+RPC_TEST forward_full_us mem=malloc 9929
+RPC_TEST forward_full_us mem=malloc 8144
+RPC_TEST forward_full_us mem=malloc 7848
+RPC_TEST forward_full_us mem=malloc 10605
+RPC_TEST forward_full_us mem=malloc 8137
+RPC_TEST forward_full_us mem=malloc 10748
+RPC_TEST forward_full_us mem=malloc 10104
+RPC_TEST forward_full_us mem=malloc 8134
+RPC_TEST forward_full_us mem=malloc 8045
+RPC_TEST forward_full_us mem=malloc 10589
+RPC_TEST forward_full_us mem=rpcmem 10583
+RPC_TEST forward_full_us mem=rpcmem 10270
+RPC_TEST forward_full_us mem=rpcmem 7888
+RPC_TEST forward_full_us mem=rpcmem 10531
+RPC_TEST forward_full_us mem=rpcmem 8790
+RPC_TEST forward_full_us mem=rpcmem 11314
+RPC_TEST forward_full_us mem=rpcmem 10886
+RPC_TEST forward_full_us mem=rpcmem 8772
+RPC_TEST forward_full_us mem=rpcmem 11306
+RPC_TEST forward_full_us mem=rpcmem 8770
+RPC_TEST forward_full_us mem=rpcmem 11329
+RPC_TEST forward_full_us mem=rpcmem 8772
+RPC_TEST forward_full_us mem=rpcmem 8761
+RPC_TEST forward_full_us mem=rpcmem 10642
+RPC_TEST forward_full_us mem=rpcmem 8766
+RPC_TEST forward_full_us mem=rpcmem 8764
+RPC_TEST forward_full_us mem=rpcmem 10920
+RPC_TEST forward_full_us mem=rpcmem 8783
+RPC_TEST forward_full_us mem=rpcmem 8754
+RPC_TEST forward_full_us mem=rpcmem 8595
+RPC_TEST forward_full_us mem=rpcmem 10535
+RPC_TEST forward_full_us mem=rpcmem 10531
+RPC_TEST forward_full_us mem=rpcmem 10071
+RPC_TEST forward_full_us mem=rpcmem 8128
+RPC_TEST forward_full_us mem=rpcmem 7961
+RPC_TEST forward_full_us mem=rpcmem 8044
+RPC_TEST forward_full_us mem=rpcmem 7761
+RPC_TEST forward_full_us mem=rpcmem 7503
+RPC_TEST forward_full_us mem=rpcmem 7486
+RPC_TEST forward_full_us mem=rpcmem 7553
+RPC_TEST forward_full_us mem=rpcmem 7494
+RPC_TEST forward_full_us mem=rpcmem 7308
+RPC_TEST forward_full_us mem=static 6543
+RPC_TEST forward_full_us mem=static 8802
+RPC_TEST forward_full_us mem=static 6913
+RPC_TEST forward_full_us mem=static 6781
+RPC_TEST forward_full_us mem=static 6767
+RPC_TEST forward_full_us mem=static 6774
+RPC_TEST forward_full_us mem=static 6777
+RPC_TEST forward_full_us mem=static 6369
+RPC_TEST forward_full_us mem=static 6394
+RPC_TEST forward_full_us mem=static 8847
+RPC_TEST forward_full_us mem=static 6366
+RPC_TEST forward_full_us mem=static 6359
+RPC_TEST forward_full_us mem=static 8922
+RPC_TEST forward_full_us mem=static 6445
+RPC_TEST forward_full_us mem=static 6149
+RPC_TEST forward_full_us mem=static 6402
+RPC_TEST forward_full_us mem=static 6355
+RPC_TEST forward_full_us mem=static 6366
+RPC_TEST forward_full_us mem=static 6488
+RPC_TEST forward_full_us mem=static 7008
+RPC_TEST forward_full_us mem=static 6239
+RPC_TEST forward_full_us mem=static 6369
+RPC_TEST forward_full_us mem=static 5676
+RPC_TEST forward_full_us mem=static 8168
+RPC_TEST forward_full_us mem=static 5792
+RPC_TEST forward_full_us mem=static 8172
+RPC_TEST forward_full_us mem=static 5669
+RPC_TEST forward_full_us mem=static 6073
+RPC_TEST forward_full_us mem=static 5675
+RPC_TEST forward_full_us mem=static 5659
+RPC_TEST forward_full_us mem=static 5522
+RPC_TEST forward_full_us mem=static 5371
+RPC_TEST full-logits pattern ok
+RPC_TEST PASS

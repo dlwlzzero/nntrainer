@@ -1,0 +1,81 @@
+09-18 10:18:14.910 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/rpcmem_android.c:210: set up allocator 0xb4000077e0f31bd0 for DMA buf heap system, ION heap system, heap mask 0x2000000, flags 0x1, legacy flags 0x1
+09-18 10:18:14.910 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_config.c:336: Reading configuration file: hexagon_e2e_test.debugconfig
+09-18 10:18:14.910 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_config.c:367: fastrpc_config_init: Couldn't find file hexagon_e2e_test.debugconfig, errno (No such file or directory) at /data/local/tmp/nntr_htp, /vendor/lib64/rfs/dsp, /vendor/lib/rfsa/adsp, 
+09-18 10:18:14.910 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:4957: fastrpc_apps_user_init done  with default domain:3 and &fastrpc_trace:0x79514b9680
+09-18 10:18:14.910 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:5071: multidsplib_env_init: libcdsprpc.so loaded
+09-18 10:18:15.073 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:2890: remote_session_control Unsigned PD enable 1 request for domain 3
+09-18 10:18:15.074 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:2332: Info: remote_get_info capability of attribute 133 for domain 3 is 1
+09-18 10:18:15.074 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3706: close_device_node: closed dev 10 on domain 3
+09-18 10:18:15.074 31526 31526 E hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3868: Error 0xd: open_shell failed for domain 3 search paths used are /usr/lib/dsp/, /vendor/dsp/, /vendor/dsp/xdsp/ (errno Permission denied)
+09-18 10:18:15.074 31526 31526 W libc    : Access denied finding property "persist.vendor.fastrpc.process.attrs"
+09-18 10:18:15.074 31526 31526 W libc    : Access denied finding property "persist.vendor.fastrpc.process.clockvote"
+09-18 10:18:15.075  2390  2407 I cdsprpcd: vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /vendor/dsp/cdsp/fastrpc_shell_unsigned_3
+09-18 10:18:15.099 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3948: Created user PD on domain 3, dbg_trace 0x0, enabled attr=> RPC timeout:0, Dbg Mode:N, CRC:N, Unsigned:Y, Signed:N, Adapt QOS:N, PD dump: (Config:N, Dbg:N), Perf: (Kernel:N, DSP:N), Iregion:N, QTF:N, UAF:N userPD initmem len:0x500000, Log pkt: N
+09-18 10:18:15.100 31526 31526 E hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3903: Error 0xffffffff: fastrpc_enable_kernel_optimizations failed for domain 3 (Bad address)
+09-18 10:18:15.100 31526 31526 E hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:608:Error : Unable to add watcher for folder /vendor/lib64/rfs/dsp : errno is Permission denied
+09-18 10:18:15.100 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/listener_android.c:119: listener thread starting
+09-18 10:18:15.100 31526 31526 E hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:608:Error : Unable to add watcher for folder /vendor/lib/rfsa/adsp : errno is Permission denied
+09-18 10:18:15.100 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_perf.c:292: fastrpc_perf_init: enabled systrace 0x0 and RPC traces (kernel 0, dsp 0) with frequency 1000
+09-18 10:18:15.100 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:2332: Info: remote_get_info capability of attribute 129 for domain 3 is 1
+09-18 10:18:15.100 31526 31531 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:360: file_watcher_thread starting for domain 3
+09-18 10:18:15.102 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/mod_table.c:701: open_mod_table_open_from_static: reverse module apps_mem opened with handle 0x514bc3e8 (idx 0)
+09-18 10:18:15.102 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/mod_table.c:701: open_mod_table_open_from_static: reverse module apps_std opened with handle 0x514bc4e8 (idx 1)
+09-18 10:18:15.103 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:2332: Info: remote_get_info capability of attribute 258 for domain 3 is 1
+09-18 10:18:15.104 31526 31530 D hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:382: apps_std_fopen_fd done for /data/local/tmp/nntr_htp/cdsp/./libnntr_htp_skel.so with       fopen:17us, read:0us, rpc_alloc:0us,       mmap:0us fd 0x0 error_code 0x2
+09-18 10:18:15.104 31526 31530 D hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:382: apps_std_fopen_fd done for /data/local/tmp/nntr_htp/./libnntr_htp_skel.so with       fopen:40us, read:54us, rpc_alloc:54us,       mmap:167us fd 0x13 error_code 0x0
+09-18 10:18:15.104 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1160: Successfully opened file /data/local/tmp/nntr_htp/./libnntr_htp_skel.so
+09-18 10:18:15.104 31526 31531 E hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:206:Found hexagon_e2e_test.farf. adspmsgd enabled 
+09-18 10:18:15.105 31526 31532 V adsprpc : 1137c:884: CDSP0:[SU]: fastrpc_uthread_create done for tidQ 0x6374, tidA 31532 (fr/3002/31532/3), stack 0x00363930 (size 16384), prio 192
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: thread_new_locked done with tidQ 0xf385, stack ptr 0x00369560 for size 8192
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: thread_new_locked done with tidQ 0x11382, stack ptr 0x0036B570 for size 8192
+09-18 10:18:15.105 31526 31532 V adsprpc : f385:884: CDSP0:[SU]: RX VA 0xFFF00000 outside ELF segment
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: no matching pending jobs, collect would deadlock
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: no matching pending jobs, collect would deadlock
+09-18 10:18:15.105 31526 31532 V adsprpc : 11382:884: CDSP0:[SU]: RX VA 0xFFF00000 outside ELF segment
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: no matching pending jobs, collect would deadlock
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: no matching pending jobs, collect would deadlock
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: no matching pending jobs, collect would deadlock
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: PERF:name:./libnntr_htp_skel.so, dl:4580us, load:4399us, n_load:0us, reloc:173us,fopen :1us, hdr_mmap:0us, seg_mmap:43us, unmap:1us, memio_fopen:4294us
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: PERF: name:./libnntr_htp_skel.so, segment:0, fileread:39 us, streamverify:0 us, ctor:1 us, relocate_symbol : 172
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: PERF: name:./libnntr_htp_skel.so, segment:1, fileread:1 us, streamverify:0 us
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: nntr_htp: open, abi v4
+09-18 10:18:15.105 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: open_mod_table_open_dynamic: Module libnntr_htp_skel.so opened with handle 0x2d2fe0
+09-18 10:18:15.106 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: Reset loading vote for libnntr_htp_skel.so
+09-18 10:18:15.106 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:1800: remote_handle64_open: opened handle 0xb4000076f0f3c150 (remote 0x2d2fe0) for file:///libnntr_htp_skel.so?nntr_htp_skel_handle_invoke&_modver=1.0&_dom=cdsp on domain 3 (spawn time 26479 us, load time 5716 us), refs 1
+09-18 10:18:15.109 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: adsp_process_group_mem_map pgid 3002 flags 0x3 fd 6 vaddr 0x769d3f7000 pageSize 16
+09-18 10:18:15.109 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: fastrpc_invoke_static_map_fd_alloc: fd=6, offset=0, start=5dbe00000, size=23ae5000 flags 3
+09-18 10:18:15.115 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: adsp_process_group_mem_map pgid 3002 flags 0x3 fd 7 vaddr 0x768f3f7000 pageSize 16
+09-18 10:18:15.115 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: fastrpc_invoke_static_map_fd_alloc: fd=7, offset=0, start=5cde00000, size=e000000 flags 3
+09-18 10:18:15.116 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: adsp_process_group_mem_map pgid 3002 flags 0x3 fd 8 vaddr 0x768f037000 pageSize 16
+09-18 10:18:15.116 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: fastrpc_invoke_static_map_fd_alloc: fd=8, offset=0, start=5cda00000, size=3c0000 flags 3
+09-18 10:18:15.116 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: fastrpc_invoke_fd_mmap_create: fd 6 flags 0 offset 0 size 23ae4600
+09-18 10:18:15.116 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: fastrpc_invoke_fd_mmap_create: fd 7 flags 0 offset 0 size e000000
+09-18 10:18:15.116 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: fastrpc_invoke_fd_mmap_create: fd 8 flags 0 offset 0 size 3c0000
+09-18 10:18:15.117 31526 31532 V adsprpc : 11384:884: CDSP0:[SU]: adsp_process_group_mem_map pgid 3002 flags 0x1000 fd -1 vaddr 0x768bb56000 pageSize 16
+09-18 10:18:15.118 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: HAP_compute_res_acquire: priority: 192, size 0x400000, pagesize 0x0, HMX 0, Serialize 0, cached 0,
+09-18 10:18:15.118 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: HAP_compute_res_acquire: context 0x74054c30, result 0
+09-18 10:18:15.118 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: nntr_htp: init ok, weights=598623744 kv=234881024 act=3932160 n_ops=451
+09-18 10:18:19.395  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.398  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.399  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.400  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.402  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.404  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.407  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.410  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.413  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.416  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:19.419  1692  1710 I sscrpcd : vendor/qcom/proprietary/adsprpc/src/apps_std_imp.c:1023: Successfully opened file /mnt/vendor/persist/sensors/registry/fstempfile
+09-18 10:18:20.430 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3504: domain_deinit for domain 3: dev 10
+09-18 10:18:20.430 31526 31532 V adsprpc : 10376:884: CDSP0:[SU]: fastrpc_uprocess_listener_exit: waking listener
+09-18 10:18:20.430 31526 31530 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:2332: Info: remote_get_info capability of attribute 257 for domain 3 is 1
+09-18 10:18:20.431 31526 31532 V adsprpc : 10377:884: CDSP0:[SU]: Error 0x8000040d: open_mod_table_handle_invoke failed for handle 0x7, sc 0x6020200
+09-18 10:18:20.431 31526 31531 W hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:394:Warning: file_watcher_thread received exit for domain 3, file hexagon_e2e_test.farf
+09-18 10:18:20.431 31526 31531 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/log_config.c:446: file_watcher_thread exiting for domain 3
+09-18 10:18:20.432 31526 31532 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/adspmsgd.c:91: adspmsgd_reader thread exiting for domain 3
+09-18 10:18:20.432 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/mod_table.c:792: open_mod_table_close: closed reverse module apps_std with handle 0x514bc4e8
+09-18 10:18:20.432 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/mod_table.c:792: open_mod_table_close: closed reverse module apps_mem with handle 0x514bc3e8
+09-18 10:18:20.437 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3706: close_device_node: closed dev 10 on domain 3
+09-18 10:18:20.437 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:3548: domain_deinit: closed device 10 on domain 3 (kill time 4723 us)
+09-18 10:18:20.437 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:1920: remote_handle64_close: closed handle 0xb4000076f0f3c150 remote handle 0x2d2fe0 name libnntr_htp_skel.so, refs 0 domain 3
+09-18 10:18:20.437 31526 31526 I hexagon_e2e_test: vendor/qcom/proprietary/adsprpc/src/fastrpc_apps_user.c:1688: List of open handles on domain 3:
