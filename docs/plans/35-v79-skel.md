@@ -276,7 +276,7 @@ have a v79-specific problem that the v75 skel does not see — record, file, do 
   quantiser on the v79 reference arch) if the supervisor wants it in the ledger.
 * Ledger ④ marked complete where it is cited (`HEXAGON.md:704`, `HEXAGON_BENCHMARK.md:33`).
 * `HEXAGON_BENCHMARK.md`: rows `:33-35` become the shipping rows (note updated with the #35
-  handoff); goals table `:46-48` "Now" moves to the v79 numbers; log line `:61` gets a 
+  handoff); goals table `:46-48` "Now" moves to the v79 numbers; log line `:61` gets a
   successor entry.
 * `.claude/skills/hexagon-gates/SKILL.md`: v79 commands in rungs 2–4, v75 policy in the
   budget bullet (`:22-23`) and rung 3 note (`:69-71`).

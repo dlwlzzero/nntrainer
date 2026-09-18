@@ -165,7 +165,7 @@ static inline HVX_Vector hvx_vec_f32_to_f16(HVX_Vector v0, HVX_Vector v1) {
   return Q6_Vh_vdeal_Vh(hvx_vec_f32_to_f16_shuff(v0, v1));
 }
 
-/* HTP_FORCE_QF_HELPERS (local change, issue #35): build the >= 79 target
+/** HTP_FORCE_QF_HELPERS (local change, issue #35): build the >= 79 target
  * with the qf-format helpers below instead of the IEEE Vsf/Vhf ones, so a
  * v79 skel can be compared against the same kernels on the same silicon
  * with only the helper set changed (HEXAGON.md section 7, rule 1). Never
