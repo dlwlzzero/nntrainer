@@ -165,6 +165,19 @@ right before opening it. **The smallest thing that produces a device number is S
 | S3 | **Full 4-bit image + decode path + H2** (two PRs): (a) `w4cx` for `embed` / `LOGITS` (tiled32-nibble for the HVX gather / stream kernels) and `down` (row-major nibbles, int16 activation — #51 PR 3's kernel, per-channel scale); (b) the m=1 HVX W4A8 kernel reading **WH tiles** through the permutation `test_hmx` printed (a fixed intra-512 B shuffle: `vdelta` / `vrdelta` or a `vlut` per tile, cheap on a DMA-bound path) and the `m == 1 → HVX` dispatch — built only if H1's `mm4(B) − mm4(C) > 2 Mcyc` (G3); if the WH permutation is not expressible in ≤ 4 vector ops per tile, decode stays on HMX and the two-copy alternative goes to `needs-user` | sim: `logits` / `embed` / `matmul` W4 cases `0/0` on the integer paths, `matmul_dma` W4 strips at 4 MB / 256 KB / 64 KB with DDR = DMA `memcmp`; x86 `--eval` of `w4cx` within the S1 band; **handoff H2**: A = H1's B, B = full `w4cx` (+ HVX m=1 if built), C = B stream-only; gates G5 (stream phase ≤ 0.55 × W8 control, B − C ≤ 1 Mcyc on `mm4`), decode / prefill rows at 512 / 1024 / 4096, `--eval` per variant; benchmark rows filled |
 | S4 | **Prefill toward 8,207** (new issues filed from H1's D split, not this plan's gate): (i) dequant / HMX overlap (two result tiles, pool dequants strip i while worker 0 issues i+1; PR doc 35 ceiling 1.3–1.6× on the HMX phase); (ii) u8 op boundaries between fused ops (skip fp16 round trips where the consumer is another W4A8 op); (iii) `down` on HMX with u8 activation *if* an x86 sweep shows the int16 requirement is per-token-outlier and a per-token u8 + int16 fallback split holds the band; (iv) attention on HMX (PR `hexkl_attn_u8` + KV quant) after #26 measures the prefill ATTN share | each its own plan; device handoffs at 512 only |
 
+**S0 outcome (#68, 2026-09-18, branch `hvx/65-s0-hmx-build`).** hexagon-sim **executes HMX**: the
+plain `-mv79` core is `v79na_1` (HMX v3 coprocessor), HexKL's own `examples/hexkl_micro_hmx_mm_u8i4_i32`
+passes bit-exact on it, and `run_sim_test.sh hmx` → `SIM_TEST hmx PASS` with `lock rc=0 acc_layout
+usable=1 base=0 row_stride=32`, `hmx_mm_copy` / `hmx_mm_inplace` / `hmx_mm_reloc` STAT `max_abs=0`,
+`wh_reloc bytes_same=1`; so the "links and skips" degrade and the device-only §7 rule are **not** needed
+(the acc-layout line is still re-read on the device in H1, §5 risk 1). The simulator grants 8 MB VTCM
+(4 MB HVX + 4 MB arena; `cfg_off` 4177920, result tiles at 4161536 / 4169728, 4161536 B free for S2).
+HexKL is **1.0.0-beta1 hexagon v79**. The WH bake is a pure bit permutation of the tile index: element
+`(k, n)` of a 32×32 int4 tile lands at byte `128·(k>>3) + 4·n + (k&3)`, nibble `(k>>2)&1` (`n → dst bits
+3..7`, `k → bits 1, 2, 0, 8, 9`) — S3 (b)'s reader is a fixed intra-128 B shuffle, expressible in
+≤ 4 vector ops per tile. `profile acc` STAT and every unit STAT bit-identical to the #25 `hvx_impl`
+record; the `-DHTP_HMX=0` build is object-identical to `hvx_impl` (12/12 DSP objects, `dsp_obj_md5.sh`).
+
 Device measurements are unavoidable at **S2 (H1)** and **S3 (H2)**; S0 and S1 need none. Handoff
 rules: artifacts with md5 + commit, `--eval` columns on every row, reference numbers in the table
 (A: 54.6 Mcyc / 41.4947 / 162 at 512), B's `E2E gen` md5 recorded, 4096 rows only as A/B inside one

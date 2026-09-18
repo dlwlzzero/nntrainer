@@ -53,12 +53,14 @@ graph LR
     ops["9 HVX op kernels (ops/, hvx/)"]
     wp["QuRT worker pool"]
     vtcm["VTCM + user-DMA"]
+    hmx["HMX unit + HexKL arena (HTP_HMX, #65)"]
     hmap["HAP_mmap view"]
     skel --> exec
     exec --> graphx
     graphx --> ops
     ops --- wp
     ops --- vtcm
+    graphx --- hmx
     exec --- hmap
   end
   stub -->|FastRPC| skel
@@ -86,10 +88,13 @@ The host side is arm64 Android; the DSP side is hexagon v75/v79.
   mapping.
 * **`htp_graph`** (DSP) owns what the kernels share: validates the
   op-list once at `init()`, sizes quantization/attention scratch from an
-  op scan, acquires VTCM best-effort (DDR fallback), and per call
+  op scan, acquires VTCM best-effort (DDR fallback) — with HexKL linked
+  (`-DHTP_HMX=1`, issue #65 S0) 8 MB plus the HMX unit, the HexKL arena
+  laid above the HVX kernels' unchanged 4 MB (section 2.2) — and per call
   dispatches the ops sequentially through the kind table. Each kernel
   fans out over the **QuRT worker pool** (one worker per HVX unit) and
-  returns at a barrier.
+  returns at a barrier. HMX instructions are issued by worker 0 only,
+  under a lock that thread takes lazily (`hmx/htp_hmx.c`).
 
 ### 1.1 Buffer strategy: hand off once, map forever
 
@@ -338,6 +343,34 @@ use VTCM and is skipped by the prefetch chain (ledger ⑬, issue #59). The quant
 W8A8/LOGITS, int16 rows for W8A16 — and `k_max` now includes the W8A16
 `k` (3072).
 
+**HMX arena (issue #65 S0, `-DHTP_HMX=1` builds only).** With
+`libhexkl_micro.a` linked, `init` asks the compute-resource manager for
+**8 MB** of VTCM (`HAP_compute_res_attr_set_vtcm_param_v2`, 4 MB floor)
+**plus the HMX unit** (`HAP_compute_res_attr_set_hmx_param`) in one
+context. The HVX tiled kernels keep exactly the first 4 MB and their
+slab geometry above, so their outputs are unchanged by construction
+(the #68 `profile acc` STAT is bit-identical to #25's); `hmx/htp_hmx.c`
+lays HexKL's arena over the rest — the config region
+(`hexkl_micro_hmx_config_size()`, 256-aligned) at the top, two 8 KB
+int32 result tiles below it, and `[0, free_off)` free for S2's
+activation tiles and weight strips, every offset 2048-aligned
+(`HEXKL_HMX_ACTIVATION_ALIGNMENT`). A 4 MB grant carves only the arena's
+fixed part (config + two tiles + slack, ≈ 20 KB) off the HVX region; a
+refused HMX attribute falls back to the plain 4 MB acquire and
+`ctx.hmx.base` stays NULL, which S2's `MATMUL_W4A8` rejects at `init`
+rather than running on HVX silently. The HMX lock is per thread
+(`HAP_compute_res_hmx_lock`): worker 0 takes it on its first HMX section
+(`htp_hmx_worker_acquire`, which also runs `setup_acc_read_int32` once)
+and `htp_graph_destroy` releases it from worker 0 in a `wp_run` job
+before the context goes back. The worker DMA queues are initialised with
+the whole VTCM range (HVX + arena) so a descriptor into the arena
+carries the bypass bit. `init` logs `nntr_htp: hexkl <version> hmx=<0|1>
+vtcm_hvx=<B> hmx_arena=<B>` (HexKL 1.0.0-beta1 hexagon v79 in the
+container; the v79 simulator grants 8 MB: 4 MB + 4 MB). A
+`-DHTP_HMX=0` build (or no addon on the mount) compiles none of this:
+every DSP object is md5-identical to `hvx_impl`'s
+(`tools/hexagon/dsp_obj_md5.sh`).
+
 ### 2.3 Op sequence
 
 `lower_qwen3()` emits `1 + 16 * n_layers + 2` ops (451 for qwen3-0.6b):
@@ -405,7 +438,8 @@ nntrainer/tensor/hexagon/
 │   │   └── hvx-eltwise.c     # ADD + SILU_MUL
 │   ├── hvx/                  # vector helpers: f16 math, per-token int8/int16 quantization (HVX); exp/inverse from ggml-hexagon
 │   ├── hex/                  # scalar utils (ggml-hexagon)
-│   └── dma/                  # user-DMA queue (ggml-hexagon)
+│   ├── dma/                  # user-DMA queue (ggml-hexagon)
+│   └── hmx/                  # HMX (issue #65, -DHTP_HMX=1 only): htp_hmx.{h,c} arena / worker-0 lock / version; hexkl_acc_tile.{h,c} acc-layout probe ported from PR nntrainer#4327. hexkl_micro.h is not copied: -I $HEXKL_ADDON_ROOT/include
 ├── host/                     # NDK clang, part of libnntrainer (enable-hexagon)
 │   ├── rpcmem_allocator.{h,cpp}
 │   ├── hexagon_runner.{h,cpp}
@@ -431,12 +465,14 @@ test/hexagon/
     ├── ref_fp16_x86.h        # __fp16 stand-in for gcc < 12 on x86
     ├── sim_model.{h,c}       # parameterized hand lowering (qwen3 op sequence, any shape)
     ├── test_profile.c        # per-op-kind pcycle profile at qwen3 shape (SIM_PROF lines)
+    ├── test_hmx.c            # the 14th test: HMX acquire, acc-layout probe, micro-mm, WH relocate, WH permutation (HTP_HMX builds; else "SKIP", rc 2)
     └── test_*.c              # one file per test
 
 tools/hexagon/
 ├── build_host_x86.sh         # x86 tests + nntr_hexpack + hexagon_ref_run (no SDK)
-├── build_skel.sh             # qaic + hexagon-clang -> libnntr_htp_skel.so
+├── build_skel.sh             # qaic + hexagon-clang -> libnntr_htp_skel.so (+ HexKL when mounted: -DHTP_HMX=1)
 ├── build_sim_test.sh / run_sim_test.sh
+├── dsp_obj_md5.sh            # per-object md5 of the skel sources (the "no DSP bytes changed" proof; the linked .so is not comparable)
 ├── build_host_test.sh        # NDK cross-build: hexagon_rpc_test + hexagon_e2e_test
 ├── run_device_test.sh / check_rpc_log.py / plot_rpc_latency.py   # M1 round-trip
 ├── run_e2e_test.sh           # push image + harness, run, pull dumps, capture FARF
@@ -564,6 +600,29 @@ must refuse with rc 5, and forward calls with a token id `>= vocab` or
 `-1` that must be rejected without touching KV/ACT (section 1.4).
 `graph` (and `profile`) also fail with `sim_model validate rc=N` if
 `sim_model_build_oplist`'s self-validation rejects the hand lowering.
+Since issue #68 (#65 S0) a **14th test, `hmx`**, exists in builds with
+HexKL on the addon mount (`build_sim_test.sh` prints `HexKL: … (HTP_HMX=1)`):
+a header-only graph session acquires VTCM + HMX, and on worker 0 under
+its lazy lock the test probes the int32 accumulator layout (`SIM_TEST
+hmx lock rc=0 acc_layout usable=1 base=0 row_stride=32` on the
+simulator), runs one 64×32 u8 × 32×32 i4 micro-mm against a scalar
+int32 reference read both in place and through HexKL's vendor copy
+(`hmx_mm_copy` / `hmx_mm_inplace` STAT `max_abs=0`), relocates the
+baked WH weight tile VTCM → DDR → DMA → VTCM and re-runs the mm on the
+copy (`wh_reloc bytes_same=1`, `hmx_mm_reloc 0`), and bakes three
+nibble-field ramps through `hexkl_micro_hmx_rm_to_wh_i4` to print the
+WH permutation: element `(k, n)` of a 32×32 int4 tile lands at byte
+`128·(k>>3) + 4·n + (k&3)`, nibble `(k>>2)&1` — a pure bit permutation
+of the index (`n → bits 3..7`, `k → bits 1, 2, 0, 8, 9`), which is the
+input to S3's HVX reader of WH tiles. **The plain `-mv79` simulator core
+is `v79na_1` with an HMX v3 coprocessor and executes HMX**: HexKL's own
+`examples/hexkl_micro_hmx_mm_u8i4_i32` passes bit-exact on it, so the
+`hmx` numeric gates are simulator gates, not device-only ones; what the
+simulator cannot vouch for is the accumulator layout the silicon uses
+(the PR's device probe found the same affine shape; `test_hmx`'s
+`acc_layout` line is re-read on the device in S2's handoff). Without
+HexKL the test prints `SIM_TEST hmx SKIP: built without HTP_HMX` and
+returns 2, never a pass.
 History: all
 13 passed on v75 and v79 with SDK 6.3.0.0 / toolchain 8.8 (M2), and on
 v75 with SDK 6.0.0.2 / toolchain 8.7.08 through M6 P4. Current
@@ -668,6 +727,8 @@ gate run, not a measurement — use the three long scenarios
 # builds run in the dev container (SDK mounted, ANDROID_NDK set by the image);
 # the adb steps below run on the workstation with the phone attached
 tools/docker/run.sh ./tools/hexagon/build_skel.sh                # -> build_hexagon/skel/libnntr_htp_skel.so (v79, the shipping skel since #35; see section 7)
+                                                                 #    prints "HexKL: /opt/qcom/hexkl_addon/lib/hexagon_toolv19_v79/libhexkl_micro.a (HTP_HMX=1)" when the addon is mounted (#65 S0)
+HEX_EXTRA_CFLAGS=-DHTP_HMX=0 tools/docker/run.sh ./tools/hexagon/build_skel.sh   # the HVX-only skel with HexKL present: object-identical to a tree without hmx/ (tools/hexagon/dsp_obj_md5.sh)
 HEX_ARCH=v75 tools/docker/run.sh ./tools/hexagon/build_skel.sh   # the v75 fallback (runs unchanged on v79 silicon), on request only
 tools/docker/run.sh ./tools/hexagon/build_host_test.sh           # -> build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
 
@@ -718,7 +779,11 @@ outputs are garbage, and the skel prints `nntr_htp: stream
 bytes/step=595984384` after `init ok`), `HTP_PROF_FARF` (one
 `nntr_htp: prof n=… kcyc=… mm8=… mm16=… lg=… attn=… rest=…` line per
 forward call with this call's per-kind pcycle split, summarised by
-`tools/hexagon/summ_farf_prof.py` over the `device_farf_*.log`), and the
+`tools/hexagon/summ_farf_prof.py` over the `device_farf_*.log`),
+`HTP_HMX=0` (since #68: the HVX-only build even with HexKL on the mount —
+no `hmx/` object, no HexKL symbol, the plain 4 MB VTCM acquire; the
+default with the addon mounted is `HTP_HMX=1`, which the build scripts
+set themselves), and the
 kernel constants `MM_TB` and `MM16_TB` (`#ifndef` defaults 4 / 2,
 overridable for a sweep; `MM16_R` is also guarded but pinned to 4 by a
 static check, because the W8A16 epilogue's shuffle tree reduces exactly
