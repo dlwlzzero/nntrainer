@@ -9,6 +9,7 @@ M6에서 만들지 않지만 설계 근거를 남긴다. ①②는 decode 대역
 - 문제: 각 matmul이 자기 첫 스트립 DMA를 op 진입 후 kick하고 기다린다. ATTN·RMSNORM·eltwise가 도는 동안 DDR은 idle.
 - 설계: `htp_graph_forward_upto`가 op i를 실행하기 전에 op i+1..i+2 중 matmul의 첫 청크(워커별 buf[0])를 미리 kick. 워커 슬랩의 buf[0]을 "다음 op 전용"으로 예약하면 현재 op의 더블버퍼와 충돌하지 않는다(현재 op는 buf[1], buf[2] 사용 → 슬랩을 3분할). `dma_queue`를 op 수명이 아니라 그래프 수명으로 승격(현재는 op마다 memalign/free).
 - 기대: decode에서 matmul 사이 non-matmul 시간(P1 프로파일의 ATTN+RMSNORM+ROPE+ADD+SILU 합)만큼 DMA가 앞서 감. sim에서는 효과 측정 불가.
+- **구현 (#25, 2026-09-18, `docs/plans/25-decode-prefetch.md`)**: 설계는 위 스케치와 다르다 — 슬랩 3분할·buf[0] 예약 대신 **free-buffer handover**: 워커별 `dma_queue`를 그래프 수명으로 승격(`htp_graph_dma_init`, 파괴 전 워커에서 flush)하고, 마지막 청크 DMA를 pop한 뒤 비어 있는 반쪽 슬랩에 다음 타일 matmul(`ctx.next_mm`, init 때 만든 `next_mm[]` 표, 부분 실행 한계로 클립)의 청크 0을 kick해 `ctx.pf[wid]`에 기록; 다음 op 진입 시 포인터 동일성으로 hit, 불일치·DDR fallback은 flush. 3분할은 decode의 1청크 op를 2청크로 만들고 LOGITS 아래 VTCM 1/3을 놀리므로 기각. 출력은 구성상 bit-identical (`test_matmul_dma` (a)–(d), `graph` STAT 불변). 디바이스 판정은 `docs/measurements/25-decode-prefetch.md` (A `HTP_MM_NO_PREFETCH` 대 B, pass 2 Mcyc 비, 게이트 ≤ 0.90).
 
 ## ② op 퓨전 (배리어 수 감소, ABI v5)
 
@@ -54,9 +55,13 @@ HEXAGON.md §7. IEEE hf·qf32 체인 오동작 원인 규명 후 `HEX_ARCH=v79` 
 
 `mm_worker_vtcm`의 청크는 슬랩 절반에 맞는 최대 타일 수(max-fit)라 decode(m=1, n=1024)는 워커당 청크 1개 = DMA 후 계산의 직렬 구조다. 스트립(32행) 단위 등 작은 청크와의 비교는 DDR 지연을 모델링하는 디바이스에서만 가능 — ① cross-op prefetch와 함께 판정. P3 이후 decode는 W8A16 지배(37 %)라 우선순위는 낮다.
 
+- **#25 (2026-09-18)**: `HTP_MM_CHUNK_ROWS=<n>` 빌드 플래그(0 = max-fit)로 변형 D(64행)를 같은 handoff에서 ①의 B와 비교(D 규칙: 512 decode Mcyc 2 % 이상 낮고 prefill이 B 이상이면 기본값).
+
 ## ⑩ `MM_TB` 디바이스 재측정
 
 sim에서 `MM_TB 4`의 per-shape W8A8 이득은 1.3~3.7 %에 그쳤다(시뮬레이터가 가중치 대역폭을 제대로 과금하지 않기 때문). 디바이스에서 `MM_TB` 1/2/4/8을 재측정해 기본값을 확정한다.
+
+- **#25 (2026-09-18)**: `MM_TB`·`MM16_R`·`MM16_TB`를 `#ifndef` 기본값으로 바꿔 `HEX_EXTRA_CFLAGS=-DMM_TB=8u`로 변형을 빌드한다. `MM_TB`는 m=1에서 inert(`mm_tiles`가 m < MM_TB이면 tb=1 꼬리만 탄다)라 prefill 전용 노브; H1(prefetch) 판정 뒤 H2 handoff(`MM_TB 2/8`, `MM16_R 2/8`, 512 토큰, pass 2 Mcyc 최저값, < 2 %면 현행 유지)로 기본값 확정.
 
 P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 sim만 보고 정한 값이다(레지스터 압박 대 재사용의 절충). 디바이스에서 `MM16_R` 2/4/8 × `MM16_TB` 1/2/4 스윕을 decode(m=1)와 prefill(m=128) 양쪽에서 돌려 기본값을 확정한다 — m=1에서는 TB 블로킹이 무효라 R만 의미가 있다. ⑬(VTCM 스트리밍)과 같은 세션에서 함께 측정하는 것이 효율적이다.
 
