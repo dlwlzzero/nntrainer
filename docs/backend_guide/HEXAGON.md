@@ -751,8 +751,31 @@ simulators pass either way, so a device pass is not optional.
    failure confined to ±1 LSB does not predict a device failure, and a
    device `--eval` match does not clear a failing simulator test.
    Whether the 2026-08 failures were a toolchain-8.x artefact or still
-   lurk behind the qf path is ledger ④'s question; the shipping skel
-   stays `HEX_ARCH=v75` until it is answered.
+   lurk behind the qf path was ledger ④'s question.
+   *Closed (#35, 2026-09-18, `docs/measurements/35-v79-skel.md`, unit
+   `R3CY10WM83Y`, SDK 6.4.0.1 / hexagon-clang 19.0.04).* The four
+   simulator failures were one sign bug in the quantiser decode (rule
+   6), not the IEEE helpers; with it fixed both simulators pass 13/13.
+   On silicon, a v79 skel built with the IEEE helpers (B1) and the same
+   tree built with `-DHTP_FORCE_QF_HELPERS` (B2, the qf-format helpers
+   forced on the `>= 79` target) give **the same PPL and top-1 digit for
+   digit** on both 512 prompts (32.4497 / 184 and 41.4947 / 162) and are
+   within 0.5 % prefill / 0.1 % DSP cycles of each other, with no hang,
+   SSR or FARF fatal in 15 runs. So the 2026-08 inf / all-zero failures
+   were a toolchain-8.x artefact: with 19.0.04 the IEEE-format HVX float
+   path is neither a correctness nor a speed difference on this part.
+   **`HEX_ARCH=v79` is the shipping build** (user decision 2026-09-17:
+   the S25 Ultra's cDSP is v79 silicon; #23 measured it 10–27 % faster
+   than v75 there; #35 removed the only known v79 simulator
+   discrepancy); v75 stays a fallback that is built only when a change
+   touches an `__HVX_ARCH__` branch or on request. The standing rule
+   ("both gates") remains: a v79 change still needs the v79 simulator
+   sweep at PR time *and* a device `--eval`. What the B1 = B2 identity
+   does **not** explain is why the v79 skel sits 1.7 % *below* the x86
+   reference on the P4 prompt where the v75 skel with the same decode
+   sits +0.03 % above it (section 8.2, #35 block) — that difference is
+   somewhere in the v79 build outside the helpers (worker count, codegen)
+   and belongs to the layer-0 bisection of issue #26 (ledger ⑮).
 2. **`Vhf_equals_Vqf16` after a qf16 multiply rounds badly** (v75 sim
    probe: correct RNE 57 %, truncation 21 %, worse 21 %) while
    `Vhf_equals_Wqf32` is exact RNE. RMSNORM, SILU_MUL, ROPE, ADD and ATTN
@@ -851,10 +874,12 @@ simulators pass either way, so a device pass is not optional.
    an environment gap, plan 0000 §2).** The P3 / P4 / #24 unit
    `R3CY10WM83Y` holds 1905–1915 MHz (`pcycles_per_us`) through the
    generation loop; the #23 unit `R3CY205ZMND` held 2054. With the same
-   v75 skel (md5 `cc0f1725…`) the DSP Mcycles per decode step agree
-   across the two units within ~1 % (512: 65.1 vs 64.3; 1024: 85.0 vs
-   84.2; 4096: 225.9 vs 213.0 after 168 s of sustained load) while tok/s
-   differ by −8 / −1 / −5 %. So the P4 → #23 512-token decode "gain"
+   v75 kernels (#24's skel `cc0f1725…` is a build of the #33 tree; its
+   DSP diff against #23's `81dcaab4…` is comments, clang-format and one
+   per-call token-id check) the DSP Mcycles per decode step agree
+   across the two units within ~1 % at 512 and 1024 (65.1 vs 64.3; 85.0
+   vs 84.2) but not at 4096 (225.9 vs 213.0, +6 %, after 168 s of
+   sustained load) while tok/s differ by −8 / −1 / −5 %. So the P4 → #23 512-token decode "gain"
    (27.7 → 31.9 tok/s) was the unit, not the SDK: on `R3CY10WM83Y` P4
    ran 68.9 Mcyc in 36.1 ms (1.91 GHz) and #24 65.1 Mcyc in 34.0 ms.
    Rules: (a) every handoff and every benchmark row names the unit
@@ -867,7 +892,21 @@ simulators pass either way, so a device pass is not optional.
    `forward_full_us` of an `hexagon_rpc_test` group ~20 % high), so an
    A/B at the sub-ms level is run twice with the variant order reversed
    and the second pass is read. The teacher-forced `--eval` loop on the
-   same unit runs at 1167–1178 MHz (issue #41).
+   same unit runs at 1167–1178 MHz (issue #41). (e) **The 4096 row on
+   `R3CY10WM83Y` is offset from every other 4096 reference (#35,
+   2026-09-18, issue #53).** The v79 shipping skel read 188.0 / 186.8
+   Mcyc (first run / cooled re-run) and 32.1 / 32.7 prefill tok/s
+   against #23 B's 177.6 / 34.4 on the other unit — +5.9 / +5.2 % and
+   −6.6 / −4.9 % — while its 512 and 1024 rows sit within 2 % of #23 B;
+   #24's v75 row missed by the same +6.0 % / −6.3 % the day before, and
+   P4 on this same unit (SDK 6.0.0.2) had matched #23's 4096 cells
+   within 2 %. The offset is not #35's per-element decode and the DSP
+   source diff since #23 does not contain a context-proportional
+   change, so until #53 runs #23's exact v79 binary on this unit the
+   4096 cell is compared **only within one unit and session**, every
+   handoff that gates on 4096 states which reference session it uses,
+   and a ±5 % 4096 gate against a cross-session reference is read as
+   inconclusive rather than as a fail.
 
 ---
 
@@ -1147,6 +1186,57 @@ clock, not transport. Ledger ⑫ is closed: the 151,936-logit return is
 not a decode lever; the decode budget belongs to the weight stream
 (#25, then #51) and to #41.
 
+**v79 shipping skel (#35, ledger ④; plan `docs/plans/35-v79-skel.md`,
+measurement `docs/measurements/35-v79-skel.md`, 2026-09-18).** #35
+replaced the quantiser's qf32 magic-add decode with an integer decode
+of the sf bits (section 7, rule 6), which makes the v79 simulator pass
+13/13 and the v75 int16 rounding sign-symmetric, and flipped
+`build_skel.sh` / the simulator gates to `HEX_ARCH=v79`. The handoff
+ran three skels on the P4 unit `R3CY10WM83Y` (1.91 GHz, rule 9), all
+rebuilt on the workstation with SDK 6.4.0.1 (the container's 6.4.0.2
+skels are 192 B smaller, same `toolv19`): B1 = v79 (the gate, md5
+`8d8cdb26…`), B2 = v79 with `-DHTP_FORCE_QF_HELPERS` (`627480ca…`), A =
+v75 with the same decode (`aff2fb88…`). `RPC_TEST PASS`; no hang, SSR or
+FARF fatal in 15 runs.
+
+| variant | ctx | prefill tok/s (#23 same-arch ref) | decode host ms | decode tok/s | DSP Mcyc/step (ref) |
+|---|---|---|---|---|---|
+| B1 v79 | 512 | 198.7 (207.4, −4.2 %) | 32.39 | 30.87 | 61.2 (60.1, +1.8 %) |
+| B1 v79 | 1024 | 131.1 (131.2, −0.1 %) | 40.23 | 24.86 | 77.8 (76.5, +1.7 %) |
+| B1 v79 | 4096 | 32.14 (34.4, −6.6 %) | 92.27 | 10.84 | 188.0 (177.6, +5.9 %) |
+| B1 v79, cooled re-run | 4096 | 32.71 (−4.9 %) | 89.10 | 11.22 | 186.8 (+5.2 %) |
+| B2 v79qf | 512 | 197.7 (B1 −0.5 %) | 32.40 | 30.87 | 61.1 (B1 −0.1 %) |
+| A v75 | 512 | 185.1 (189.0, −2.0 %) | 33.88 | 29.51 | 64.3 (64.3) |
+
+| variant | prompt | `--eval` PPL / top-1 | x86 reference | gap |
+|---|---|---|---|---|
+| B1 v79 | `t512_23.i32` | 41.4947 / 162 | 41.5466 / 164 (this workstation, gcc) | −0.12 % |
+| B1 v79 | `t512.i32` (P4 prompt) | **32.4497 / 184** | 33.0195 / 184 | **−1.73 %**, top-1 exact |
+| B1 v79 | `t1024.i32` / `t4096.i32` | 5.8595 / 692, 1.5623 / 3759 | (#23 B: 5.9509 / 692, 1.5687 / 3758) | — |
+| B2 v79qf | both 512 prompts | = B1 digit for digit | | |
+| A v75 | `t512.i32` (P4 prompt) | 33.0295 / 188 | 33.0195 / 184 | +0.03 % (#23 A 33.0884 / 189) |
+
+Verdict (supervisor, 2026-09-18). **The v79 flip stands and the
+benchmark's `nntrainer` "Now" moves to the B1 rows.** 512 and 1024
+pass the ±5 % speed gate and the `t512_23` accuracy gate. The 4096
+cells miss by 5–7 % in the same direction and size as #24's v75 row on
+this unit the day before, while P4 on this unit and #23 on the other
+had agreed at 4096; the DSP source diff since #23's build is comments,
+clang-format and one per-call token-id check, and #35's decode is
+per-element — so the miss is attributed to the unit / session, not to
+the branch, and tracked as issue #53 (rule 9(e)) rather than holding
+the flip. Read within the unit and the day, v79 is still 17 % fewer
+decode cycles and 29 % more prefill than v75 at 4096 (#24 225.9 Mcyc /
+25.4 tok/s). The P4-prompt band 33.07–33.45 was set from v75 records
+only (#23 B never ran that prompt); the v79 skel lands 1.73 % *below*
+x86 with the top-1 count exactly x86's, matches #23 B at 1024 and 4096,
+and the v75 skel with the identical decode lands at +0.03 %, so
+**32.4497 / 184 is the v79 accuracy record** and the v79 band for later
+handoffs is ±0.3 % of it (32.35–32.55) with top-1 184 ± 4; the v75 band
+is unchanged for the fallback. The 1.7 % v79-vs-v75 offset is not the
+IEEE helpers (B2 = B1 digit for digit; rule 1 closed) and goes to the
+layer-0 bisection of #26 (ledger ⑮) with a v79-vs-v75 `--dump-op` pair.
+
 ### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
 hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
@@ -1425,28 +1515,18 @@ here.
   save/load on the DSP (today it forces the CPU path); a second lowered
   architecture would move the `Qwen3ForCausalLM` gate in `main.cpp` into
   a per-model lowering table.
-* **v79-native skel** (ledger ④): the SDK 6.4 upgrade (#23) unblocked
-  the v79 simulator, and its first data point narrows the problem: with
-  hexagon-clang 19.0.04 the v79 build fails `quant`, `matmul`,
-  `matmul_dma` and `logits` on the simulator (section 5.2) — all in
-  qf-only code (`quant_row` in `hvx-quant.h` and the W8A8 epilogue
-  `mm_tile` in `hvx-matmul.c`, neither of which has an `__HVX_ARCH__`
-  branch; the quantizer's only arch-dependent instruction is the exact
-  fp16→fp32 widening) — while `attn`, `eltwise` and `graph`, the ops
-  that do take the IEEE helpers at `>= 79`, pass. The
-  device data point (variant B of
-  `docs/measurements/23-sdk64-baseline.md`, 2026-09-17) came back the
-  other way: the v79 skel matches the v75 skel's PPL / top-1 at 512 /
-  1024 / 4096 and is faster (prefill +9.7 / +12.0 / +26.9 %, decode DSP
-  cycles −6.5 / −9.1 / −16.6 %; section 8.2), with no hang or DSP
-  restart. Next, in order: (a) make the four v79 simulator failures
-  pass or bounded — the tie row of the `>= 79` quantizer branch and the
-  W8A8 epilogue are ±1 LSB off `ref_ops.c`, so either the quantizer's
-  tie rounding is made independent of the qf32 rounding mode (rule 6
-  assumes v75's Von Neumann jam) or the tests get a documented per-arch
-  bound; (b) re-run the device `--eval` on that build;
-  (c) only then flip the `build_skel.sh` default and re-read issue #35
-  ("make v75 the default and fail the build on IEEE helpers at
-  >= v79"), which these numbers argue against. Neither the P3 tiled
-  kernel nor the P4 int16 one is affected — both use qf-format ops
-  only.
+* **v79-native skel — done (ledger ④, issue #35, device 2026-09-18).**
+  The four v79 simulator failures of #23 were one quantiser decode
+  (section 7, rule 6) and are fixed; `build_skel.sh` and the simulator
+  gates default to v79; the device run (section 8.2, "#35") passed at
+  512 / 1024, closed rule 1's IEEE-vs-qf question (B2 = B1 digit for
+  digit) and set the v79 accuracy record 32.4497 / 184 on the P4
+  prompt. What it left open: (a) the 4096 row on `R3CY10WM83Y` reads
+  +6 % cycles / −6 % prefill against every earlier 4096 reference, on
+  v75 (#24) and v79 (#35) alike — **issue #53**, a same-unit run of
+  #23's exact v79 binary to split unit from code before #25 / #26 gate
+  on 4096; (b) the v79 skel's −1.7 % P4-prompt PPL against v75's
+  +0.03 % with the same decode — a v79-vs-v75 layer-0 `--dump-op` pair
+  added to #26's ⑮ bisection; (c) the full-precision quantiser (way
+  (iii) of the #35 plan: round the sf product at bit 0 instead of the
+  2^-sh grid) as a later accuracy issue.
