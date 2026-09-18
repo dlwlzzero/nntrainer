@@ -7,7 +7,8 @@
  * @brief  Derives the int32 accumulator tile's VTCM layout at runtime
  * @see    https://github.com/nntrainer/nntrainer
  * @see    https://github.com/nntrainer/nntrainer/pull/4327 (ported as-is from
- *         nntrainer/tensor/htp_backend/hmx/ of that PR, issue #65 S0)
+ *         nntrainer/tensor/htp_backend/hmx/ of that PR, issue #65 S0; one
+ *         change: a failed vendor copy no longer latches the probe)
  * @author SeungHui Lee <shsh1004.lee@samsung.com>
  * @bug    No known bugs except for NYI items
  */
@@ -35,7 +36,6 @@ const hexkl_acc_layout *hexkl_acc_layout_get(uint8_t *vtcm_base,
   if (g_layout.probed) {
     return &g_layout;
   }
-  g_layout.probed = 1;
   g_layout.usable = 0;
 
   /** The ramp is the trick: after the copy, g_probe_dst[r][c] holds the index
@@ -45,11 +45,14 @@ const hexkl_acc_layout *hexkl_acc_layout_get(uint8_t *vtcm_base,
     tile[i] = (int32_t)i;
   }
 
+  /** nntrainer #68: a failed vendor copy is not latched (the PR cached it
+   * as usable=0 for the rest of the process); only a copy that ran decides. */
   if (hexkl_micro_hmx_copy_32b_to_submatrix(
         vtcm_base, result_off, g_probe_dst, 0u, 0u, HEXKL_ACC_TILE_ROWS,
         HEXKL_ACC_TILE_COLS) != AEE_SUCCESS) {
     return &g_layout;
   }
+  g_layout.probed = 1;
 
   base = g_probe_dst[0];
   stride = g_probe_dst[HEXKL_ACC_TILE_COLS] - base; /* destination row 1 */
