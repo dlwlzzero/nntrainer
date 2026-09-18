@@ -44,6 +44,14 @@ HexagonBackend::create(const std::string &w8cx_bin, const HexModelConfig &cfg) {
         b->runner_->init(g.oplist.data(), (uint32_t)g.oplist.size(),
                          *b->weights_, *b->kv_, *b->act_) != 0)
       return nullptr;
+    /** #24: map the logits buffer once (FASTRPC_MAP_STATIC) so forward()
+     * reuses the remote mapping instead of mapping the fd per call — 2.5 ms
+     * less per isolated call, < 0.1 ms inside a real decode step. Not
+     * fatal: an SDK without the flag, or a failed mmap, leaves the plain
+     * rpcmem (fd per call) path, which returns the same bytes. */
+    if (b->runner_->register_static(*b->logits_) != 0)
+      std::fprintf(stderr, "hexagon: logits buffer stays on the per-call "
+                           "rpcmem path\n");
   } catch (const std::exception &e) {
     std::fprintf(stderr, "hexagon: %s, CPU fallback\n", e.what());
     return nullptr;

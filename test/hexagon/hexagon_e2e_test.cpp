@@ -15,8 +15,10 @@
  *
  * --logits-mem picks where the host keeps the logits the DSP returns (#24):
  * malloc = the FastRPC staging copy of 607,744 B per call, rpcmem = the
- * buffer's fd is passed instead (default), static = rpcmem mapped once
- * with FASTRPC_MAP_STATIC. The DSP writes the same bytes in every case.
+ * buffer's fd is passed instead, static = rpcmem mapped once with
+ * FASTRPC_MAP_STATIC (default, what HexagonBackend does; measured 6381 vs
+ * 8771 / 8919 us per isolated call, within 70 us of the others inside a
+ * real decode step). The DSP writes the same bytes in every case.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -44,7 +46,7 @@ using namespace nntrainer::hexagon;
 namespace {
 
 struct Opts {
-  std::string prefix, tokens, dump_out, logits_mem = "rpcmem";
+  std::string prefix, tokens, dump_out, logits_mem = "static";
   uint32_t chunk = 0, steps = 0;
   uint32_t dump_op = 0, dump_buf = 0, dump_off = 0, dump_bytes = 0;
   bool eval = false, dump = false;
