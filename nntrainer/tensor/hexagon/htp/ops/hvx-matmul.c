@@ -33,8 +33,23 @@
  * for c. Must be a power of two (dma_queue_init rounds up regardless). */
 #define MM_DMA_QUEUE_CAP 4
 
-/* Tokens per weight-vector load: one vload feeds MM_TB vrmpyacc. */
+/** Tokens per weight-vector load: one vload feeds MM_TB vrmpyacc. Guarded
+ * so a device sweep can build a variant with HEX_EXTRA_CFLAGS=-DMM_TB=8u
+ * (HEXAGON.md section 8.2, issue #25); inert at m=1 (decode). */
+#ifndef MM_TB
 #define MM_TB 4u
+#endif
+
+/** Measurement-only knobs (HEXAGON.md section 5.3), all off by default:
+ * HTP_MM_NO_VTCM forces the direct DDR read path; HTP_MM_CHUNK_ROWS=<n>
+ * caps the DMA chunk at n rows (0 = as many whole tiles as fit in half the
+ * slab, the shipping behaviour; ledger (9)). */
+#ifndef HTP_MM_CHUNK_ROWS
+#define HTP_MM_CHUNK_ROWS 0u
+#endif
+typedef char
+  htp_mm_chunk_rows_check[(HTP_MM_CHUNK_ROWS % NNTR_HTP_TILE_ROWS) == 0u ? 1
+                                                                         : -1];
 
 struct mm_job {
   struct htp_exec_ctx *c;
@@ -132,6 +147,8 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
   size_t slab_sz = (c->vtcm_size / (uint32_t)nw) & ~(size_t)127;
   uint32_t rows_per_buf =
     (uint32_t)(slab_sz / 2 / k) & ~(NNTR_HTP_TILE_ROWS - 1u);
+  if (HTP_MM_CHUNK_ROWS != 0u && rows_per_buf > HTP_MM_CHUNK_ROWS)
+    rows_per_buf = HTP_MM_CHUNK_ROWS;
   if (rows_per_buf < NNTR_HTP_TILE_ROWS)
     return false;
   uint8_t *buf[2];
@@ -238,8 +255,12 @@ static void quant_worker(void *arg, int wid, int nw) {
  * vror folds in qf32 -> lanes 0..3 hold the four dots; scale in the
  * reference order ((float)dot * sw[n]) * sx[t], narrow with
  * hvx_vec_f32_to_f16 and store 2*rows bytes (HEXAGON.md section 7, rule 8). */
+#ifndef MM16_R
 #define MM16_R 4u
+#endif
+#ifndef MM16_TB
 #define MM16_TB 2u
+#endif
 
 static inline __attribute__((always_inline)) void
 mm16_block(const int8_t *w, uint32_t k, uint32_t rows, const int16_t *xq,

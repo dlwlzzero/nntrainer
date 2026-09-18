@@ -11,6 +11,9 @@
  */
 #include <HAP_compute_res.h>
 #include <HAP_perf.h>
+#ifdef HTP_PROF_FARF
+#include <HAP_farf.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -144,6 +147,11 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   g->ctx.n_tokens = n_tokens;
   g->ctx.pos = pos;
 
+#ifdef HTP_PROF_FARF
+  uint64_t prof0[NNTR_HTP_OP_KIND_COUNT];
+  memcpy(prof0, g->ctx.prof_cycles, sizeof(prof0));
+#endif
+
   t0 = HAP_perf_get_pcycles();
   for (i = 0; i < n_ops_limit; ++i) {
     const uint32_t kind = g->ops[i].kind;
@@ -156,6 +164,32 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   }
   if (pcycles)
     *pcycles = HAP_perf_get_pcycles() - t0;
+#ifdef HTP_PROF_FARF
+  /** Device profile (measurement builds only, HEXAGON.md section 5.3): this
+   * call's per-kind split in kilo-pcycles, so a handoff can read the
+   * matmul / non-matmul share off logcat without an IDL change. "rest" is
+   * every kind that is not one of the four named. */
+  {
+    const uint64_t loop = HAP_perf_get_pcycles() - t0;
+    uint64_t d[NNTR_HTP_OP_KIND_COUNT], rest = 0;
+    uint32_t kk;
+    for (kk = 0; kk < (uint32_t)NNTR_HTP_OP_KIND_COUNT; ++kk) {
+      d[kk] = g->ctx.prof_cycles[kk] - prof0[kk];
+      rest += d[kk];
+    }
+    rest -= d[NNTR_HTP_OP_MATMUL_W8A8] + d[NNTR_HTP_OP_MATMUL_W8A16] +
+            d[NNTR_HTP_OP_MATMUL_LOGITS] + d[NNTR_HTP_OP_ATTN];
+    FARF(ALWAYS,
+         "nntr_htp: prof n=%u pos=%u ops=%u kcyc=%u mm8=%u mm16=%u lg=%u "
+         "attn=%u rest=%u",
+         (unsigned)n_tokens, (unsigned)pos, (unsigned)n_ops_limit,
+         (unsigned)(loop / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_W8A8] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_W8A16] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_LOGITS] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_ATTN] / 1000u), (unsigned)(rest / 1000u));
+  }
+#endif
   return 0;
 }
 
