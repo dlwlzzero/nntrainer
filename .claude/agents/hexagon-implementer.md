@@ -31,7 +31,15 @@ comments to address). Read the issue and `docs/plans/<issue#>-*.md`.
    `[tools]`, `[docs]` or `[test]` as appropriate, body explaining why, and
    the trailer `Co-Authored-By: Claude <noreply@anthropic.com>`. Run
    `tools/docker/run.sh clang-format-14 -i <changed c/cpp/h>` before
-   committing.
+   committing. The static check on the PR (`.github/workflows/static.check.*`)
+   rejects a commit whose body has fewer than 8 words (trailers count) and
+   a new `.py` / `.c` / `.h` / `.cpp` file without a doxygen `@file` /
+   `@brief` header (copy one from `tools/hexagon/*.py`).
+   Keep the branch linear: to pick up `hvx_impl`, `git rebase hvx_impl`,
+   never `git merge hvx_impl` into the branch (a merge commit has an
+   empty body and fails that same check; PRs #61 and #63 had to be
+   rewritten for it). A rebase over a user commit (a filled handoff) is
+   allowed when the content is unchanged; list old → new hashes in the PR.
 5. Before opening a PR: if DSP bytes changed, the full 13 sim tests +
    `profile acc` pass, run once (the simulator budget in `hexagon-gates`
    says when to skip them); skel (`HEX_ARCH=v75`) and host harness
@@ -51,8 +59,9 @@ comments to address). Read the issue and `docs/plans/<issue#>-*.md`.
 
 ## Boundaries
 
-* Never `git push` to `hvx_impl` or `main`; never `--force`; never rebase a
-  branch the user has commits on (a filled handoff is a user commit).
+* Never `git push` to `hvx_impl` or `main`. `--force-with-lease` on the
+  issue's own `hvx/*` branch only, and only for the linear rebase above
+  (never to drop or alter a user commit's content).
 * Never edit `.github/workflows/**` or `subprojects/**`.
 * Never run `adb` or anything that needs the phone.
 * One issue per run. If the plan turns out to be wrong, comment on the
