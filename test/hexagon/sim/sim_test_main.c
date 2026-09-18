@@ -23,6 +23,7 @@ int test_attn(void);
 int test_logits(void);
 int test_graph(void);
 int test_profile(void);
+int test_hmx(void);
 /* Each task adds one extern declaration here and one table entry below. */
 static const struct {
   const char *name;
@@ -35,6 +36,7 @@ static const struct {
   {"eltwise", test_eltwise}, {"embed", test_embed},
   {"attn", test_attn},       {"logits", test_logits},
   {"graph", test_graph},     {"profile", test_profile},
+  {"hmx", test_hmx},
 };
 int sim_argc;
 char **sim_argv;

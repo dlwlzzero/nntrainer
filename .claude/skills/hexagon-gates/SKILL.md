@@ -79,7 +79,19 @@ for t in smoke pool exp quant matmul matmul_dma rmsnorm rope eltwise embed attn 
 done
 ```
 Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
-STAT lines within HEXAGON.md §5.2 rates (v79 values). A v75 repeat (only
+STAT lines within HEXAGON.md §5.2 rates (v79 values). Since #68 (#65 S0)
+a build with HexKL on the addon mount (`build_sim_test.sh` prints
+`HexKL: … (HTP_HMX=1)`) also runs `run_sim_test.sh hmx` → `SIM_TEST hmx
+PASS`; the plain v79 simulator core executes HMX, so its STATs are real
+gates (`acc_layout usable=1`, every `hmx_mm_*` STAT `max_abs=0`,
+`wh_reloc bytes_same=1`). Without HexKL the test returns 2 with
+`SKIP: built without HTP_HMX` and is not counted. A change that touches
+only `hmx/` or `test_hmx.c` runs `hmx` per step and the 13 + `hmx` once
+before the PR like any other kind. The "no DSP bytes changed" object
+proof is `tools/hexagon/dsp_obj_md5.sh <tree> [out]` on both trees
+(same `HEX_EXTRA_CFLAGS`; add `-ffile-prefix-map=<other tree>=/work`
+when the other tree is a worktree, because FARF embeds `__FILE__`).
+A v75 repeat (only
 per the budget bullet) needs its own `HEX_ARCH=v75 build_sim_test.sh`
 first — the two builds share `build_hexagon/sim/` and `run_sim_test.sh`
 refuses to run a library built for another arch or with other
