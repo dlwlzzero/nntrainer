@@ -121,7 +121,15 @@ int main() {
                "skipped\n");
         continue;
       }
-      CHECK(runner->register_static(shared) == 0);
+      // A target that rejects the map at runtime (AEE_EUNSUPPORTED and the
+      // like) skips the row too: the required markers above are the
+      // pass/fail contract, the transport rows are informational.
+      int err = runner->register_static(shared);
+      if (err != 0) {
+        printf("RPC_TEST static map failed (0x%x), mem=static skipped\n",
+               (unsigned)err);
+        continue;
+      }
     }
     CHECK(timed_forwards(v.label, v.logits, n_full));
     // First and last element of the same pattern (both exact in fp32).

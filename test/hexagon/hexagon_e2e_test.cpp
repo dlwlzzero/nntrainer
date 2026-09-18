@@ -16,9 +16,12 @@
  * --logits-mem picks where the host keeps the logits the DSP returns (#24):
  * malloc = the FastRPC staging copy of 607,744 B per call, rpcmem = the
  * buffer's fd is passed instead, static = rpcmem mapped once with
- * FASTRPC_MAP_STATIC (default, what HexagonBackend does; measured 6381 vs
- * 8771 / 8919 us per isolated call, within 70 us of the others inside a
- * real decode step). The DSP writes the same bytes in every case.
+ * FASTRPC_MAP_STATIC (what HexagonBackend does; measured 6381 vs 8771 /
+ * 8919 us per isolated call, within 70 us of the others inside a real
+ * decode step). Without the flag the default is static, falling back to
+ * rpcmem when the build or the target lacks the static map; an explicit
+ * --logits-mem static is a measurement variant and fails instead. The
+ * DSP writes the same bytes in every case.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -46,7 +49,7 @@ using namespace nntrainer::hexagon;
 namespace {
 
 struct Opts {
-  std::string prefix, tokens, dump_out, logits_mem = "static";
+  std::string prefix, tokens, dump_out, logits_mem; /* empty = default */
   uint32_t chunk = 0, steps = 0;
   uint32_t dump_op = 0, dump_buf = 0, dump_off = 0, dump_bytes = 0;
   bool eval = false, dump = false;
@@ -160,6 +163,9 @@ int main(int argc, char **argv) {
   }
   if (o.tokens.empty() || (o.dump && (o.dump_out.empty() || !o.dump_bytes)))
     return usage(argv[0]);
+  const bool mem_explicit = !o.logits_mem.empty();
+  if (!mem_explicit)
+    o.logits_mem = HexagonRunner::static_map_supported() ? "static" : "rpcmem";
   if (o.logits_mem != "malloc" && o.logits_mem != "rpcmem" &&
       o.logits_mem != "static")
     return usage(argv[0]);
@@ -216,13 +222,19 @@ int main(int argc, char **argv) {
     const uint32_t chunk = o.chunk ? o.chunk : cfg.max_chunk;
     if (chunk > cfg.max_chunk)
       throw std::runtime_error("--chunk exceeds max_chunk of the image");
-    std::printf("E2E logits_mem %s\n", o.logits_mem.c_str());
     if (o.logits_mem == "static") {
       int err = runner->register_static(*logits_rpc);
-      if (err != 0)
+      if (err != 0 && mem_explicit)
         throw std::runtime_error("register_static failed (" + hex_err(err) +
                                  ")");
+      if (err != 0) { /* default: the per-call rpcmem path, same bytes */
+        std::printf("E2E static map failed (%s), logits stay on the "
+                    "per-call rpcmem path\n",
+                    hex_err(err).c_str());
+        o.logits_mem = "rpcmem";
+      }
     }
+    std::printf("E2E logits_mem %s\n", o.logits_mem.c_str());
 
     /** Decode bookkeeping for the `E2E decode ...` summary: every forward
      * made while `decoding` (the generation loop after the prompt, or the
