@@ -8,17 +8,20 @@ restating it.
 ## 1. Goal
 
 Fill the `nntrainer` rows of [HEXAGON_BENCHMARK.md](../backend_guide/HEXAGON_BENCHMARK.md)
-on a Galaxy S25 (Snapdragon 8 Elite) for Qwen3-0.6B, in two stages:
+on a Galaxy S25 (Snapdragon 8 Elite) for Qwen3-0.6B, in three stages:
 
 | Stage | Target | Why this target |
 |---|---|---|
 | 1 (HVX only) | W8A8: decode ≥ 60 tok/s @512 (provisional weight-stream bound, replaced by the ceiling #25 measures; issue #49, 2026-09-18) and ≥ 27.5 @4096; w4a8: decode ≥ 70.3 @512 and ≥ 27.5 @4096 (the GENIEX_LLAMACPP q4_0 NPU rows, issue #51); prefill interim goal 1000 tok/s @512 | Decode is bandwidth + host-path bound: 596 MB of int8 weights per step cannot reach 70.3 within the cDSP DDR ceiling, a 4-bit stream can (follow-ups ⑫ ① ⑨ ⑩, then #51). Prefill is compute bound; the 18× gap to LLAMACPP needs HMX. |
 | 2 (HVX + HMX, after HexKL) | prefill ≥ 1000 tok/s @512, decode ≥ 60 tok/s, then chase the GENIEX_LLAMACPP prefill numbers | HMX is the only lever with that much MAC headroom. HexKL must be obtained first (needs-user). |
+| 3 (W4 on HMX via upstream PR nntrainer#4327; **the top goal since the user decisions of 2026-09-18**, issue #65 with stage sub-issues #68 #69 #70 #71) | prefill / decode at 512 / 1024 / 4096 read against GENIEX_QAIRT w4a16 on the Galaxy S25 (8,207 / 121, 7,503 / 112, 3,546 / 57.6), floor = the #60 CPU `Q4_0-FP16` row | The A8W8 HVX-only line (stages 1–2) ends with the issues already filed (#26 #41 #57 #58 #59 #60); HMX for it comes later. A per-channel int4 stream halves the decode bytes and HMX u8×i4 gives prefill the MAC headroom; HexKL beta1 is installed (`~/Qualcomm/hexkl_addon`). #51 is folded into #65 S1 + S3. |
 
 Decode reaching its goal does **not** imply prefill follows: they have
 different bottlenecks (see HEXAGON.md §8.2 and the benchmark doc).
 
-The `nntrainer` CPU rows are skipped for now.
+The `nntrainer` CPU rows are no longer skipped: issue #60 measures
+Qwen3-0.6B on the S25 Ultra CPU from `main` at `Q4_0-FP16` (user decision
+2026-09-18) and every NPU goal cell is read as a multiple of that row.
 
 ## 2. Machines and the measurement loop
 

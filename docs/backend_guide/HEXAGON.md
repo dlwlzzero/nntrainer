@@ -1788,6 +1788,21 @@ here.
 
 ## 9. Planned work
 
+* **Direction (user decisions 2026-09-18, evening): the top goal is W4 on
+  HMX — issue #65.** The A8W8 HVX-only line (stages 1–2 of the benchmark
+  goals) ends with the issues already filed (#26 #41 #57 #58 #59 #60); HMX
+  for that line comes later. #65 ports upstream PR nntrainer#4327's u8×i4
+  HMX path into this executor (`docs/plans/65-w4-htp-port.md`) in four
+  stage sub-issues — #68 S0 build + HexKL link + `test_hmx` simulator
+  probe, #69 S1 per-channel `w4cx` producer / image / ABI v5 / x86 PPL band
+  (≤ 1.10 × W8), #70 S2 the HMX kernel for the six projections + handoff
+  H1, #71 S3 the full 4-bit image (+ an HVX m=1 WH-tile kernel if H1 says
+  so) + handoff H2 — read against GENIEX_QAIRT w4a16 (8,207 / 121 at 512)
+  with the #60 CPU `Q4_0-FP16` row as the floor. #51 (HVX `w4g128`
+  stream) is folded in as S1 + S3 and closes when #71 merges; its
+  group-scale format returns only if S1's band fails. The bullets below
+  are the A8W8 line and stay valid; #59 and #57 re-target their gates to
+  the `w4cx` rows after S3, #26 is planned against H1's prefill split.
 * **Performance (first): decode attention — issue #58.** #25
   (section 8.2, 2026-09-18) finished the W8 weight stream at 512 (the
   W8A8 MACs hide behind a 37 GB/s DMA; ceiling 54 tok/s) and its FARF
