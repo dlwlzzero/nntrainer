@@ -1601,8 +1601,13 @@ here.
 * **Left out of P4, still open**: VTCM/DMA streaming for the W8A16
   weight rows, which only a device A/B can decide because the simulator
   does not model DDR bandwidth; an `MM16_R` / `MM16_TB` sweep on the
-  device for the same reason; and tiling `down` so the image carries
-  one weight layout.
+  device for the same reason — with one correction from #25
+  (2026-09-18): `mm16_block`'s epilogue folds exactly four rows, so a
+  build with `MM16_R` other than 4 returned wrong `down_proj` rows
+  silently; #25 pins `MM16_R` to 4 with a static check and issue #57
+  generalises the fold (R ∈ {2, 4, 8}, one simulator case per value)
+  before the `MM16_R` half of that sweep can run; and tiling `down` so
+  the image carries one weight layout.
 * **`engine="htp"` follow-ups**: route host-side `hexagon:` messages
   into the nntrainer logger instead of stderr; system-prompt KV
   save/load on the DSP (today it forces the CPU path); a second lowered
