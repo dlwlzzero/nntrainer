@@ -142,8 +142,10 @@ is processed before anything else. A PR that merges closes its issue
    one `in-progress`), take the top `state:planned`, implement through the
    gates (`.claude/skills/hexagon-gates`), then either open a PR
    (`state:review`) or write a handoff (`state:needs-measurement`).
-4. Guide writer: on `--guide`, or when a PR merged since the last guide
-   update, refresh `docs/backend_guide/hexagon-guide/`.
+4. Guide writer: on `--guide`, when a PR merged since the last guide
+   update, or when a measurement handoff was filled since then, refresh
+   `docs/backend_guide/hexagon-guide/`; every device measurement lands in
+   the guide's `06-performance.html` (history table + chart).
 5. The cycle ends and prints the user's to-do when only
    `needs-measurement`, `review` or `needs-user` issues remain.
 

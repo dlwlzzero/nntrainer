@@ -29,6 +29,29 @@ note the discrepancy in your report.
 * `04-measure-and-debug.html` — how to read a measurement handoff, the
   3-way accuracy comparison, `find_divergence.py`, the FARF log.
 * `05-glossary.html` — every acronym used above, one line each.
+* `06-performance.html` — **the performance record, built from device
+  measurements**. Sources, in this order: every filled handoff under
+  `docs/measurements/*.md` (the orchestrator may name extra files on other
+  branches; read them with `git show <ref>:<path>`), the `nntrainer` rows and
+  "Goals" of HEXAGON_BENCHMARK.md, HEXAGON.md §8. Contents:
+  1. *Latest* box: the newest measured decode/prefill tok/s at 512 / 1024 /
+     4096 next to the goals, with the date, issue number, device unit serial,
+     skel (v75/v79) and SDK — the same numbers as HEXAGON_BENCHMARK.md
+     "Goals → Now".
+  2. *History* table, one row per measurement handoff, newest first: date,
+     issue, what changed (one clause), unit, skel/SDK, context, prefill
+     tok/s, decode tok/s, DSP Mcycles per decode step, PPL / top-1 from
+     `--eval`, and the measurement file path. Every `nntrainer` row of
+     HEXAGON_BENCHMARK.md must appear here; a handoff that only confirmed
+     "no change" is still a row (say so in "what changed").
+  3. One inline-SVG chart: decode tok/s at 512 and at 4096 over measurement
+     date, with the two goal lines. DSP Mcycles per step is the number to
+     compare across device units (HEXAGON_BENCHMARK.md "Method"); say so
+     under the chart.
+  4. *What each measurement decided*: one paragraph per handoff, the
+     conclusion the supervisor drew (e.g. "#24: the logits return is not a
+     lever; ledger ⑫ closed").
+  `index.html`'s status box links here and holds only the *Latest* box.
 
 ## Rules
 
@@ -38,5 +61,9 @@ note the discrepancy in your report.
   `<style>` block verbatim). Use the design vocabulary of the existing
   `docs/superpowers/specs/hexagon-hvx-optimization/02-tiled-weight-layout-why.html`.
 * Every number carries its source section (e.g. "HEXAGON.md §8.2, M6 P4").
+* Whenever a measurement handoff has been filled since the guide's last
+  commit, `06-performance.html` and the `index.html` status box are
+  refreshed first, before any other page. A measurement that is not in the
+  guide is a defect; report it if a source number could not be placed.
 * Do not touch any file outside `docs/backend_guide/hexagon-guide/`.
 * Do not commit; report the files changed.

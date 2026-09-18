@@ -31,8 +31,13 @@ say what is uncommitted.
    review comments, spawn the implementer on it instead.
 5. If `--guide` was given, or a PR into `hvx_impl` merged since the last
    guide commit (compare `git log -1 -- docs/backend_guide/hexagon-guide`
-   with merges on `hvx_impl`): spawn `hexagon-guide-writer`. Wait. Commit
-   its output on a `hvx/guide-<date>` branch and open a PR (docs only).
+   with merges on `hvx_impl`), **or a measurement handoff was filled since
+   that commit** (an issue moved to `state:measured` this cycle, or a
+   `docs/measurements/*.md` newer than the guide commit, on `hvx_impl` or
+   on the issue's `hvx/*` branch): spawn `hexagon-guide-writer`. Name the
+   measurement files (with `<branch>:<path>` for ones not yet on
+   `hvx_impl`) so `06-performance.html` records them. Wait. Commit its
+   output on a `hvx/guide-<date>` branch and open a PR (docs only).
 6. Final report to the user, in this shape and nothing more:
    * what each subagent did (one line each, issue numbers and PR links),
    * **Your to-do**: every `needs-measurement` handoff (path + estimated
