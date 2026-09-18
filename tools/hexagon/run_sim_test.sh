@@ -1,6 +1,7 @@
 #!/bin/bash
 # tools/hexagon/run_sim_test.sh <test-name> [args...]
-# HEX_ARCH defaults to v79 (must match the build_sim_test.sh arch).
+# HEX_ARCH and HEX_EXTRA_CFLAGS default to v79 / empty and must match the
+# build_sim_test.sh values that produced build_hexagon/sim/libnntr_sim_test.so.
 # SIM_TIMING=1 adds --timing (cycle-accurate core model; slower)
 set -eu
 : "${HEXAGON_SDK_ROOT:?source setup_sdk_env.source first}"
@@ -8,12 +9,15 @@ set -eu
 HEX_ARCH="${HEX_ARCH:-v79}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$REPO/build_hexagon/sim"
-# The library is built for one arch (build_sim_test.sh stamps it); running it
-# under the other simulator would pass silently with the wrong helper set.
+# The library is built for one arch and one set of extra flags
+# (build_sim_test.sh stamps "<arch> <HEX_EXTRA_CFLAGS>"); running it under the
+# other simulator, or running a -DHTP_FORCE_QF_HELPERS build as the plain gate,
+# would pass silently with the wrong helper set.
 if [ -f "$OUT/libnntr_sim_test.arch" ]; then
-  BUILT_ARCH="$(cat "$OUT/libnntr_sim_test.arch")"
-  if [ "$BUILT_ARCH" != "$HEX_ARCH" ]; then
-    echo "run_sim_test.sh: libnntr_sim_test.so was built for $BUILT_ARCH, not $HEX_ARCH; rebuild with HEX_ARCH=$HEX_ARCH" >&2
+  BUILT="$(sed -e 's/[[:space:]]*$//' "$OUT/libnntr_sim_test.arch")"
+  WANT="$(printf '%s' "$HEX_ARCH ${HEX_EXTRA_CFLAGS:-}" | sed -e 's/[[:space:]]*$//')"
+  if [ "$BUILT" != "$WANT" ]; then
+    echo "run_sim_test.sh: libnntr_sim_test.so was built with '$BUILT', not '$WANT'; rebuild with HEX_ARCH=$HEX_ARCH HEX_EXTRA_CFLAGS='${HEX_EXTRA_CFLAGS:-}'" >&2
     exit 1
   fi
 fi

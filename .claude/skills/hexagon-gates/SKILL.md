@@ -76,7 +76,8 @@ Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
 STAT lines within HEXAGON.md §5.2 rates (v79 values). A v75 repeat (only
 per the budget bullet) needs its own `HEX_ARCH=v75 build_sim_test.sh`
 first — the two builds share `build_hexagon/sim/` and `run_sim_test.sh`
-refuses to run a library built for another arch.
+refuses to run a library built for another arch or with other
+`HEX_EXTRA_CFLAGS` (the stamp carries both).
 
 ## 4. Skel and host harness compile (SDK + NDK; no device)
 
