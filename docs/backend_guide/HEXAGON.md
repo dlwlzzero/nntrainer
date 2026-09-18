@@ -1002,21 +1002,47 @@ simulators pass either way, so a device pass is not optional.
    pass 1 alone would have been 0.84 instead of 0.88; any verdict tighter
    than ±10 % needs the reversed double pass, not a warm-up run. The
    teacher-forced `--eval` loop on the
-   same unit runs at 1167–1178 MHz (issue #41). (e) **The 4096 row on
-   `R3CY10WM83Y` is offset from every other 4096 reference (#35,
-   2026-09-18, issue #53).** The v79 shipping skel read 188.0 / 186.8
-   Mcyc (first run / cooled re-run) and 32.1 / 32.7 prefill tok/s
-   against #23 B's 177.6 / 34.4 on the other unit — +5.9 / +5.2 % and
-   −6.6 / −4.9 % — while its 512 and 1024 rows sit within 2 % of #23 B;
-   #24's v75 row missed by the same +6.0 % / −6.3 % the day before, and
-   P4 on this same unit (SDK 6.0.0.2) had matched #23's 4096 cells
-   within 2 %. The offset is not #35's per-element decode and the DSP
-   source diff since #23 does not contain a context-proportional
-   change, so until #53 runs #23's exact v79 binary on this unit the
-   4096 cell is compared **only within one unit and session**, every
-   handoff that gates on 4096 states which reference session it uses,
-   and a ±5 % 4096 gate against a cross-session reference is read as
-   inconclusive rather than as a fail.
+   same unit runs at 1167–1178 MHz (issue #41). (e) **The 4096 row
+   moves with the unit and the session, not with the code (#35 →
+   #53, 2026-09-18, `docs/measurements/53-4096-unit-split.md`).** The
+   v79 shipping skel read 188.0 / 186.8 Mcyc (first run / cooled
+   re-run) and 32.1 / 32.7 prefill tok/s on `R3CY10WM83Y` against #23
+   B's 177.6 / 34.4 on `R3CY205ZMND` — +5.9 / +5.2 % and −6.6 / −4.9 %
+   — while its 512 and 1024 rows sat within 2 % of #23 B, and #24's v75
+   row had missed by the same +6.0 % the day before. #53 ran #23 B's
+   *exact* binary (`aba0126e…`, `--eval` digit-identical to #23 B's
+   1.5687 / 3758) next to `hvx_impl`'s skel (`1ab00865…`, `--eval` =
+   #35 B1) on `R3CY10WM83Y`, two mirrored orders after ≥ 20 min idle
+   each. Findings: (i) inside one order the two skels are
+   indistinguishable — 197.285 vs 197.092 and 192.905 vs 192.897 Mcyc
+   (0.10 / 0.004 %), same 64 generated tokens — so there is **no
+   code or build regression between `e086248a` and `hvx_impl` at
+   4096** and the planned bisection (`1bbd8d53` → #35 / #50 / #33) is
+   not opened; (ii) #23 B's own binary reads **+8.6 %** over its
+   `R3CY205ZMND` number on this unit, which is the whole #24 / #35
+   offset; (iii) the drift is *per order*, not per slot: slot 1 and
+   slot 2 agree to 0.1 % inside an order, the two orders 25 min apart
+   differ by 2.2 % for both skels, and the four-run mean (195.0) sits
+   4.4 % above the same unit's #35 B1 cooled re-run from the same
+   morning — the rule 9(d) cold-first-run effect did **not** appear
+   after an idle without a push, so slot-matching across orders
+   inherits the drift instead of cancelling it. The phone was on USB
+   and charging throughout (28.5 → 32.9 °C per order); #23 B's and #35
+   B1's charge state is not on record, so charge / DCVS / DDR thermal
+   state is the surviving cause and is not further split. Rules: a
+   4096 verdict is an **A/B inside one order** (both skels run
+   back-to-back after the same idle; one order resolves 0.1 %, two
+   orders are needed only to show the drift), never a 4096 cell against
+   another sitting's row; a 4096 handoff records `dumpsys battery`
+   temperature (tenths of °C) and `status` (charging or not) before
+   each order and the idle minutes, and states which sitting is its
+   reference; the between-sitting spread on one unit is ±5 % and the
+   cross-unit offset at 4096 is ≈ +9 % (`R3CY10WM83Y` over
+   `R3CY205ZMND`) with identical bytes, so #23 B's 4096 cells are not
+   re-baselined — they stay the other unit's numbers and every 4096 goal
+   check is read on the unit that runs it. A skel's *size* is not a tree
+   fingerprint (S2 landed 32 B under a prediction made on another
+   tree); the `--eval` PPL / top-1 digits are.
 
 ---
 
@@ -1337,7 +1363,7 @@ had agreed at 4096; the DSP source diff since #23's build is comments,
 clang-format and one per-call token-id check, and #35's decode is
 per-element — so the miss is attributed to the unit / session, not to
 the branch, and tracked as issue #53 (rule 9(e)) rather than holding
-the flip. Read within the unit and the day, v79 is still 17 % fewer
+the flip — confirmed by #53 below. Read within the unit and the day, v79 is still 17 % fewer
 decode cycles and 29 % more prefill than v75 at 4096 (#24 225.9 Mcyc /
 25.4 tok/s). The P4-prompt band 33.07–33.45 was set from v75 records
 only (#23 B never ran that prompt); the v79 skel lands 1.73 % *below*
@@ -1348,6 +1374,49 @@ handoffs is ±0.3 % of it (32.35–32.55) with top-1 184 ± 4; the v75 band
 is unchanged for the fallback. The 1.7 % v79-vs-v75 offset is not the
 IEEE helpers (B2 = B1 digit for digit; rule 1 closed) and goes to the
 layer-0 bisection of #26 (ledger ⑮) with a v79-vs-v75 `--dump-op` pair.
+
+**The 4096 offset on `R3CY10WM83Y` is the unit and the session, not
+the code (#53, `docs/plans/53-4096-unit-split.md`,
+`docs/measurements/53-4096-unit-split.md`, 2026-09-18, v79, SDK
+6.4.0.1 workstation builds, separate sitting 30 min after #25 H1).**
+Two skels with no source change between them beyond `e086248a` →
+`hvx_impl`: S1 = #23 B's stored binary `aba0126e…` (50,920 B), S2 =
+`hvx_impl`'s tree `1ab00865…` (50,952 B; DSP sources identical to
+`202278a4`). Four 4096 speed runs (`--chunk 128 --steps 64`,
+`qwen3_full4k`, `t4096.i32`) in two mirrored orders, ≥ 20 min idle
+before each order, battery °C before each run, then one 4096 `--eval`
+per skel.
+
+| order / slot | skel | idle min | battery °C at start | prefill tok/s | decode host ms | DSP Mcyc/step | `pcycles_per_us` | first-ten / last-ten Mcyc |
+|---|---|---|---|---|---|---|---|---|
+| O1 / 1 | S1 (#23 B) | 20 | 28.5 | 30.15 | 96.503 | **197.285** | 2044 | 196.5 / 198.0 |
+| O1 / 2 | S2 (`hvx_impl`) | 0 | 31.1 | 30.40 | 96.248 | **197.092** | 2048 | 196.4 / 197.8 |
+| O2 / 1 | S2 (`hvx_impl`) | 22 | 28.5 | 30.85 | 94.437 | **192.897** | 2043 | 192.2 / 193.3 |
+| O2 / 2 | S1 (#23 B) | 0 | 30.8 | 30.83 | 93.885 | **192.905** | 2055 | 191.1 / 193.4 |
+
+`--eval` at 4096: S1 **1.5687 / 3758** (= #23 B digit for digit), S2
+**1.5623 / 3759** (= #35 B1) — the tree fingerprint that the 32 B size
+miss on S2 could not give. All four speed runs produced the same 64
+`E2E gen` tokens; no DSP restart, no FARF error; the phone was on USB
+and charging for the whole sitting.
+
+Reading: inside an order the skels differ by 0.10 % (O1) and 0.004 %
+(O2); between the orders every run moved by −2.2 %; the four-run mean
+195.0 Mcyc is +4.4 % over #35 B1's cooled re-run (186.753, same unit,
+same morning) and **+9.8 % over #23 B's 177.6** — with S1 alone at
++8.6 %. Slot-matched, the plan's outcome-1 gate (`|Δ| ≤ 2 %` in both
+slots) misses at −2.22 % / +2.17 % with opposite signs, which is the
+per-order drift, so by the letter the verdict is outcome 3; in
+substance outcome 2 (code / build) is excluded and outcome 1's cause
+(unit / session) is the only one left. Verdict (supervisor,
+2026-09-18): **#53 closed as completed — no bisection, no
+re-baseline.** A second-day pair would only buy a re-baselined #23
+4096 cell that no open verdict needs: #58's 4096 gate (ATTN halved) is
+an A/B inside one order, and the decode @4096 goal is 2.5× away, far
+outside the ±5 % session spread. Rule 9(e) carries the standing rules
+(4096 A/B inside one order; battery °C and charge state before each
+order; no cross-sitting 4096 cell); the +9 % cross-unit offset with
+identical bytes stays a documented property of `R3CY10WM83Y`.
 
 **Cross-op weight prefetch and the W8 weight-stream ceiling (#25,
 ledger ① ⑨; plan `docs/plans/25-decode-prefetch.md`, measurement
@@ -1408,7 +1477,9 @@ moves 352.3 MB in 9.5 ms (**37.0 GB/s**), the lm_head 155.6 MB in 4.8 ms
 DMAs the row-major rows without the up→q handover; the shipping kernel
 reads them straight from DDR in 8.59 Mcyc). `mm8`+`mm16` is flat with
 context (23.8 / 25.9 / 26.4 Mcyc), so the ceiling is ≈ 54–57 tok/s at
-every depth (the 1024 / 4096 `lg` column is a #25 read-back item). Two
+every depth (≈ 54.5 / 56.3 at 1024 / 4096 with `lg` derived from the
+step total at the #25 read-back — the FARF logs are on the
+workstation; reading them with `summ_farf_prof.py` is a user to-do). Two
 consequences: the provisional ≥ 60 tok/s W8A8 goal is above the
 ceiling and HEXAGON_BENCHMARK.md carries its replacement as a user
 decision; and the 4-bit stream of #51 (≈ 307 MB) buys 8.3–9.6 ms/step
@@ -1725,7 +1796,8 @@ here.
   decode @4096 goal (≥ 27.5 = 36 ms/step) needs ATTN ≤ 36 Mcyc against
   38 Mcyc of everything else; #58 balances the 8 kv heads over the 6
   workers and shares K^T across the GQA pair at m=1, gate: ATTN halved
-  at 4096. Prefill K^T reuse across query rows (`Follow-up:` note in
+  at 4096, read as an A/B inside one order of one sitting (rule 9(e),
+  #53). Prefill K^T reuse across query rows (`Follow-up:` note in
   `hvx-attn.c`) stays P5 / #26. After #58: the 4-bit weight stream (#51,
   whose tok/s targets need both), then `down` on the DMA ring (#59,
   ledger ⑬, 21 → 37 GB/s).
@@ -1784,11 +1856,13 @@ here.
   gates default to v79; the device run (section 8.2, "#35") passed at
   512 / 1024, closed rule 1's IEEE-vs-qf question (B2 = B1 digit for
   digit) and set the v79 accuracy record 32.4497 / 184 on the P4
-  prompt. What it left open: (a) the 4096 row on `R3CY10WM83Y` reads
+  prompt. What it left open: (a) the 4096 row on `R3CY10WM83Y` read
   +6 % cycles / −6 % prefill against every earlier 4096 reference, on
-  v75 (#24) and v79 (#35) alike — **issue #53**, a same-unit run of
-  #23's exact v79 binary to split unit from code before #25 / #26 gate
-  on 4096; (b) the v79 skel's −1.7 % P4-prompt PPL against v75's
+  v75 (#24) and v79 (#35) alike — **closed by #53** (2026-09-18,
+  section 8.2): #23's exact v79 binary reads the same +8.6 % on this
+  unit and is indistinguishable from `hvx_impl`'s skel in one sitting,
+  so it is unit / session state (rule 9(e)) and every 4096 gate from
+  here on is an A/B inside one order; (b) the v79 skel's −1.7 % P4-prompt PPL against v75's
   +0.03 % with the same decode — a v79-vs-v75 layer-0 `--dump-op` pair
   added to #26's ⑮ bisection; (c) the full-precision quantiser (way
   (iii) of the #35 plan: round the sf product at bit 0 instead of the
