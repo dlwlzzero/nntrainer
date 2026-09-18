@@ -113,9 +113,10 @@
   <a href="03-kernels.html">03 Kernels</a>
   <a class="here" href="04-measure-and-debug.html">04 Measure and debug</a>
   <a href="05-glossary.html">05 Glossary</a>
+  <a href="06-performance.html">06 Performance</a>
 </nav>
 <h1>04 · Measure and debug: reading the numbers, and finding the op that lies</h1>
-<p class="sub">Four skills: turn a filled measurement file into tok/s you can trust; compare accuracy three ways so a kernel bug cannot hide behind quantization noise; bisect a divergence to one op with <code>find_divergence.py</code>; and read the DSP's own log (FARF) when something fails before any number appears.</p>
+<p class="sub">Four skills: turn a filled measurement file into tok/s you can trust (and know which phone it came from); compare accuracy three ways so a kernel bug cannot hide behind quantization noise; bisect a divergence to one op with <code>find_divergence.py</code>; and read the DSP's own log (FARF) when something fails before any number appears. The numbers themselves are collected on <a href="06-performance.html">06 · Performance</a>.</p>
 
 <div class="panel">
   <h2>1 · The loop a measurement travels</h2>
@@ -153,7 +154,7 @@
     <tr><td>Why</td><td>The question and the decision hanging on it; which variants decide pass/fail and which are "recorded only".</td><td>A = v75 skel decides #23; B = v79 is data for ledger ④.</td></tr>
     <tr><td>Artifacts</td><td>Every row has a path, an md5 and the commit it was built from. The result table must repeat the md5 of the skel that <em>actually ran</em> (<code>adb shell md5sum</code>), not the one expected. Same-size images with different bytes are the classic trap.</td><td>v75 skel <code>81dcaab4…</code>, v79 <code>aba0126e…</code>; the image <code>5abf61be…</code>; the device md5 read back after B was the v79 one.</td></tr>
     <tr><td>Steps</td><td>One screen of commands, in the order that never loses the baseline (run the reference variant first). Expected log lines are written out.</td><td><code>run_device_test.sh</code> → <code>RPC_TEST PASS</code>; six <code>run_e2e_test.sh</code> per variant at 512 / 1024 / 4096, each once in generation mode and once <code>--eval</code>.</td></tr>
-    <tr><td>Results</td><td>Each cell next to its reference and a pass band. Speed <em>and</em> accuracy columns, always.</td><td>Pass band for A: DSP Mcyc/tok within ±3 %, tok/s within ±5 % of the P4 row; accuracy inside the +0.16 … +1.29 % band on the P4 prompt.</td></tr>
+    <tr><td>Results</td><td>Each cell next to its reference and a pass band. Speed <em>and</em> accuracy columns, always.</td><td>Pass band for A: DSP Mcyc/tok within ±3 %, tok/s within ±5 % of the P4 row; accuracy inside the +0.16 … +1.29 % band on the P4 prompt. (Since #35 the v79 accuracy band is ±0.3 % of 32.4497 with top-1 184 ± 4; the v75 band is unchanged for the fallback — HEXAGON.md §8.2 "#35" verdict.)</td></tr>
     <tr><td>Notes</td><td>Anything odd: thermal, warm-up, DSP restarts, stale pushes, benign log lines.</td><td>No restart in 13 runs; the three benign <code>adsprpc</code> permission lines and the pre-handshake <code>dsp abi v0</code> probe appear in every log.</td></tr>
   </table>
   <p><b>Turning <code>E2E</code> lines into numbers</b> (23-sdk64-baseline.md step 3; HEXAGON.md §8.2 "Throughput by context"):</p>
@@ -161,10 +162,42 @@
     <li>Each chunk or step prints <code>E2E step &lt;i&gt; pos=&lt;p&gt; n=&lt;n&gt; pcycles=&lt;c&gt; us=&lt;t&gt; top1=&lt;id&gt;</code>; <code>us</code> is host wall time around the one RPC, <code>pcycles</code> is the DSP's own cycle count of the op loop.</li>
     <li><b>prefill tok/s</b> = prompt tokens ÷ (sum of <code>us</code> over the <code>n=128</code> steps ÷ 1e6).</li>
     <li><b>decode ms/tok</b> = median host <code>us</code> over the 63 <code>n=1</code> steps ÷ 1000; <b>decode tok/s</b> = 1000 ÷ that.</li>
-    <li><b>DSP Mcyc/tok</b> = median <code>pcycles</code> of the same steps ÷ 1e6. Effective clock = <code>pcycles ÷ us</code>; the S25 Ultra runs at about 2.09 GHz under load (HEXAGON.md §8.2), 1884–2064 MHz across the six #23 runs.</li>
+    <li><b>DSP Mcyc/tok</b> = median <code>pcycles</code> of the same steps ÷ 1e6. Effective clock = <code>pcycles ÷ us</code> (the harness prints it as <code>pcycles_per_us</code>); the nominal top corner is 2.09 GHz, but which S25 Ultra unit you hold decides what you actually see — 1884–2064 MHz across the six #23 runs on one unit, 1905–1915 MHz in the generation loop on the other (section 2a below).</li>
     <li>For <code>--eval</code>: <code>E2E ppl &lt;x&gt; steps 511 top1 &lt;n&gt; wall_ms &lt;w&gt;</code> — teacher-forced perplexity over the prompt and how many next tokens the top-1 prediction got right.</li>
   </ul>
   <p><b>Two caveats you will meet.</b> The 512-token decode median is taken over 63 steps that are still settling after prefill (first-ten vs last-ten median Mcyc 67.1 → 64.3 at 512, flat at 1024 and 4096), so treat that pair as ±5 % by construction; a firmer figure needs repeated medians or a settled-tail estimator. And host wall time can move for host-side reasons the DSP did not cause (P3 → P4 host fell 76.4 → 31.2 ms while the DSP fell 35 → 28.5 ms), so <b>the DSP pcycles are the comparable number</b> between kernel versions (HEXAGON.md §8.2).</p>
+</div>
+
+<div class="panel warn">
+  <h2>2a · Two phones, two clocks: HEXAGON.md §7 rule 9</h2>
+  <svg viewBox="0 0 760 200" role="img" aria-label="Two S25 Ultra units run the same skel: same DSP cycles per step, different clock, therefore different tok/s; compare cycles across units">
+    <rect x="20" y="30" width="330" height="110" rx="10" fill="none" stroke="var(--grid)"/>
+    <text x="34" y="52" font-size="12" font-weight="600">unit R3CY10WM83Y (P3, P4, #24, #35)</text>
+    <text x="34" y="74" font-size="11" class="t2">decode loop 1905–1915 MHz · --eval loop 1167–1178 MHz</text>
+    <rect x="34" y="88" width="300" height="40" rx="6" fill="var(--x-light)"/>
+    <text x="44" y="105" font-size="11">v75, 512: 65.1 Mcyc in 34.0 ms = 29.4 tok/s (#24)</text>
+    <text x="44" y="121" font-size="11">v79, 512: 61.2 Mcyc in 32.4 ms = 30.9 tok/s (#35)</text>
+    <rect x="410" y="30" width="330" height="110" rx="10" fill="none" stroke="var(--grid)"/>
+    <text x="424" y="52" font-size="12" font-weight="600">unit R3CY205ZMND (#23)</text>
+    <text x="424" y="74" font-size="11" class="t2">decode loop 2054 MHz</text>
+    <rect x="424" y="88" width="300" height="40" rx="6" fill="var(--x-light)"/>
+    <text x="434" y="105" font-size="11">v75, 512: 64.3 Mcyc in 31.3 ms = 31.9 tok/s (#23 A)</text>
+    <text x="434" y="121" font-size="11">v79, 512: 60.1 Mcyc in 31.9 ms = 31.4 tok/s (#23 B)</text>
+    <line x1="350" y1="108" x2="410" y2="108" stroke="var(--w)" stroke-width="2"/>
+    <text x="380" y="100" font-size="10" text-anchor="middle" class="t2">cycles: +1.2 %</text>
+    <text x="380" y="124" font-size="10" text-anchor="middle" class="t2">tok/s: −8 %</text>
+    <text x="380" y="170" font-size="11" text-anchor="middle">Same kernels, same cycles, a slower clock: the tok/s gap is the phone, not the change.</text>
+    <text x="380" y="188" font-size="10" text-anchor="middle" class="t2">HEXAGON.md §7 rule 9; 24-host-logits.md "Notes"; 35-v79-skel.md B1 rows; 23-sdk64-baseline.md "Results"</text>
+  </svg>
+  <p>Two Galaxy S25 Ultra units have been used, and their cDSP holds different clocks in the decode loop. #24 (2026-09-18) found it: with the same v75 kernels as #23 (its skel's DSP diff against #23's is comments, clang-format and one per-call token-id check) the DSP cycles per step agreed within ~1 % at 512 and 1024 (65.1 vs 64.3; 85.0 vs 84.2 Mcyc) while tok/s came out −8 / −1 %. The P4 → #23 512-token "gain" (27.7 → 31.9 tok/s) was therefore the unit, not the SDK: on <code>R3CY10WM83Y</code> P4 ran 68.9 Mcyc in 36.1 ms and #24 65.1 Mcyc in 34.0 ms, both at 1.91 GHz. The rules that came out of it (HEXAGON.md §7 rule 9):</p>
+  <ul>
+    <li><b>(a) Name the unit.</b> Every handoff and every benchmark row carries the serial (<code>adb devices</code>; #23's own file did not, which is why its unit is inferred from the clock — see the footnote on <a href="06-performance.html">06</a>).</li>
+    <li><b>(b) Across units compare DSP Mcycles per step</b>; tok/s bands only within one unit. That makes Mcyc/step the column to read first on the performance page.</li>
+    <li><b>(c) Read a host-vs-DSP gap against the run's own clock</b>, never the nominal 2090 MHz. At 1.91 GHz a 34.0 ms / 65.1 Mcyc step is a ≈ 0 ms gap, though the nominal formula prints 2.85 ms — this is what kept #24 from opening a DSP top-k method. The same goes for the <code>pcycles_per_us ≥ 2.05</code> bar.</li>
+    <li><b>(d) The first e2e run after a push is cold</b>: about 3 % host wall and 5 % DSP cycles high, and the first 16 <code>forward_full_us</code> of an <code>hexagon_rpc_test</code> group about 20 % high. A sub-millisecond A/B is run twice with the variant order reversed and the second pass is read (#24 measured malloc → rpcmem → static, then static → rpcmem → malloc; pass 1 spread 1.8 ms, pass 2 spread 70 µs). The teacher-forced <code>--eval</code> loop on the same unit runs at 1167–1178 MHz because the host spends ~10 ms between RPCs (issue #41).</li>
+    <li><b>(e) The 4096 row on <code>R3CY10WM83Y</code> is offset</b> from every other 4096 reference: #35's v79 skel read 188.0 / 186.8 Mcyc (first run / cooled re-run) and 32.1 / 32.7 prefill tok/s against #23 B's 177.6 / 34.4 on the other unit (+5.9 / +5.2 %, −6.6 / −4.9 %) while its 512 and 1024 rows sat within 2 %; #24's v75 row missed by the same +6.0 % the day before; P4 on this unit had matched #23 within 2 %. Until issue #53 runs #23's exact v79 binary on this unit, the 4096 cell is compared only within one unit and session, a handoff that gates on 4096 says which reference session it uses, and a ±5 % 4096 gate against a cross-session reference is read as inconclusive rather than as a fail.</li>
+  </ul>
+  <p><b>And the 512 caveat again, because it bites here too.</b> The 512 decode median is ±5 % by construction (the 63 steps are still settling), so #35's 512 gate was passed on cycles (+1.8 %) and 1024 / 4096 were read first; a 512 tok/s difference of a few percent between two runs on the same unit says nothing (23-sdk64-baseline.md "Results"; 35-v79-skel.md "Results").</p>
 </div>
 
 <div class="panel">
@@ -190,7 +223,7 @@
   </svg>
   <ul>
     <li><b>x86 reference vs simulator</b> — per kernel, on the simulator, with a mixed bound <code>|d| ≤ atol + rtol·|ref|</code>; the integer paths (W8A8, LOGITS, EMBED, the int16 accumulate) must be bit-exact, the float epilogues are allowed one fp16 ulp (2e-3 / 1e-3), the quantizers a bounded ±1 LSB rate. The 8-token <code>profile acc</code> uses the looser 0.1 / 0.1 bound because per-token int8 re-binning amplifies a 1-ulp fp16 difference roughly 2× per layer (HEXAGON.md §5.2).</li>
-    <li><b>Simulator vs device</b> — the same compiled skel, so a difference is silicon behaviour, a context-ownership bug the simulator cannot see (§7 rule 7), or a stale artifact. This is where the 2026-08 IEEE failures and the 2026-09-17 v79 surprise both showed up (HEXAGON.md §7 rule 1).</li>
+    <li><b>Simulator vs device</b> — the same compiled skel, so a difference is silicon behaviour, a context-ownership bug the simulator cannot see (§7 rule 7), or a stale artifact. This is where the 2026-08 IEEE failures and the 2026-09-17 v79 surprise both showed up; #35 then showed the four v79 simulator failures were a quantiser sign bug and the 2026-08 failures a toolchain artefact (HEXAGON.md §7 rule 1). The standing rule survives both: a v79 change needs the v79 simulator sweep <em>and</em> a device <code>--eval</code>.</li>
     <li><b>x86 reference vs device, model level</b> — <code>--eval</code> perplexity on the same image and tokens. On <code>eval.txt</code> (387 tokens) the DSP scored 20.2802 against 20.2718 reference (+0.04 %); with the P4 kernels the gap on the local prompts is +0.16 … +1.29 %, one band, not a regression. Fake-quant W8_CX itself costs about +3.4 % over fp32; that is the design's activation-quantization price, not a kernel error (HEXAGON.md §8.1, §8.2).</li>
     <li><b>Three traps.</b> Short-text logit gates between two <em>correct</em> implementations swing by several percent (HEXAGON.md §8.1 first bullet) — judge at the model level. The reference figure depends on the host compiler that built <code>hexagon_ref_run</code> (0.75 % spread between the container's clang and the workstation's gcc on one prompt) — quote the build (HEXAGON.md §5.1). And the perplexity on these prompts responds by ~1 % to sub-1e-3 perturbations, so a 1 % PPL move alone does not identify a bad kernel (HEXAGON.md §8.2).</li>
   </ul>
@@ -235,7 +268,7 @@
   </table>
   <ul>
     <li><b>Benign lines in every device log</b> (23-sdk64-baseline.md "Notes"): three <code>adsprpc</code> permission warnings (<code>open_shell failed for domain 3</code>, <code>fastrpc_enable_kernel_optimizations failed</code>, <code>Unable to add watcher for /vendor/lib64/rfs/dsp</code>) and the host line <code>hexagon: init failed (0x80000414), host abi v4, dsp abi v0</code> from the stub's first probe before the version handshake — the "v0" is the rule that output parameters are not copied back on failure (HEXAGON.md §1.3).</li>
-    <li><b>What a real failure looks like:</b> a hang, a DSP restart (SSR) or a fatal FARF line; the handoff asks the runner to note the last <code>E2E step</code> line and the FARF tail, <code>adb reboot</code>, and continue (23-sdk64-baseline.md step 4). None occurred in the 13 runs of #23.</li>
+    <li><b>What a real failure looks like:</b> a hang, a DSP restart (SSR) or a fatal FARF line; the handoff asks the runner to note the last <code>E2E step</code> line and the FARF tail, <code>adb reboot</code>, and continue (23-sdk64-baseline.md step 4). None occurred in the 13 runs of #23, the 11 e2e runs of #24 or the 15 runs of #35. One line that looks alarming but is not: <code>remote_handle64_invoke failed … (user err 0x80000414)</code> in the <code>rpc_test</code> log is that test's own ABI-mismatch case and is followed by <code>RPC_TEST PASS</code> (35-v79-skel.md "Notes").</li>
     <li><b>Host-side messages</b> from the app go to stderr as <code>hexagon: …</code> (e.g. <code>open failed (0x80000406), CPU fallback</code>); routing them into the nntrainer logger is planned work (HEXAGON.md §5.4, §9).</li>
     <li><b>What a rejection looks like on the host.</b> A DSP <code>AEE_EBADPARM</code> reaches the host as <code>0x8000040E</code>: the bare code 14 plus the <code>0x80000400</code> DSP error base FastRPC adds (the same offset makes <code>AEE_EUNABLETOLOAD</code> / <code>AEE_EUNSUPPORTED</code> appear as <code>0x80000406</code> / <code>0x80000414</code>). <code>HexagonBackend::forward</code> pre-checks all token ids of a request on the host and returns that same value, <code>kHexagonBadParm</code>, without any RPC (hexagon_runner.h, static-asserted in hexagon_runner.cpp; hexagon_backend.cpp). Mid-generation the app throws <code>hexagon: forward failed (0x…)</code> — note that causal_lm.cpp formats the number with <code>std::to_string</code>, so this code prints as the decimal <code>-2147482610</code> after the <code>0x</code>, not as <code>8000040E</code> (causal_lm.cpp; HEXAGON.md §1.4, §5.2).</li>
   </ul>
@@ -246,6 +279,6 @@
   <p><code>run_sim_test.sh profile &lt;acc|prefill0|prefill512|decode512&gt; [n_workers]</code> lowers the qwen3 shape with 2 layers and a 4096 vocabulary and prints <code>SIM_PROF</code> lines: per-op-kind pcycles, one line per op, and the cost of 1000 empty barriers. <code>python3 tools/hexagon/summ_prof.py logs/hexagon/sim_prof_*.log</code> rescales to 28 layers and the full vocabulary and prints a sim-derived ms/token at 2.09 GHz. Those are simulator cycles: the simulator does not model DDR bandwidth, so they rank bottlenecks but never decide a performance question (HEXAGON.md §5.2, §8.3). Example of the ranking they gave: after P3, <code>MATMUL_W8A16</code> was 55.4 % of simulated prefill at position 512, which made it P4's target; after P4, attention is the largest cost that grows with context (HEXAGON.md §8.3, §9).</p>
 </div>
 
-<p class="note">Hexagon backend beginner guide · sources: docs/backend_guide/HEXAGON.md, HEXAGON_BENCHMARK.md, docs/measurements/23-sdk64-baseline.md, nntrainer/tensor/hexagon/, Applications/CausalLM/hexagon/, tools/docker/, docs/superpowers/specs/hexagon-hvx-optimization/. Written 2026-09-17 against commit 539c3604.</p>
+<p class="note">Hexagon backend beginner guide · sources: docs/backend_guide/HEXAGON.md, HEXAGON_BENCHMARK.md, docs/measurements/ (#23; #24 and #35 on their branches), nntrainer/tensor/hexagon/, Applications/CausalLM/hexagon/, tools/docker/, docs/superpowers/specs/hexagon-hvx-optimization/. Written 2026-09-17, refreshed 2026-09-18 against hvx_impl commit 4b39062f.</p>
 </body>
 </html>

@@ -113,6 +113,7 @@
   <a href="03-kernels.html">03 Kernels</a>
   <a href="04-measure-and-debug.html">04 Measure and debug</a>
   <a class="here" href="05-glossary.html">05 Glossary</a>
+  <a href="06-performance.html">06 Performance</a>
 </nav>
 <h1>05 · Glossary</h1>
 <p class="sub">Every acronym and project word used in this guide, one line each. Where a term has a precise definition in the project, the section is given.</p>
@@ -127,14 +128,17 @@
     <dt>HVX</dt><dd>Hexagon Vector eXtensions: 128-byte vector registers and instructions; "HVX only" means no HMX (HEXAGON_BENCHMARK.md).</dd>
     <dt>HMX</dt><dd>Hexagon Matrix eXtensions: a matrix unit reachable through HexKL; stage 2 of the goals, not used yet.</dd>
     <dt>HexKL</dt><dd>Qualcomm's kernel library that exposes HMX; must be obtained from Qualcomm (plan 0000 §3).</dd>
-    <dt>v75 / v79</dt><dd>Hexagon architecture versions. The S25's cDSP is v79; the shipping skel is built for v75 and runs on it (HEXAGON.md §7 rule 1).</dd>
+    <dt>v75 / v79</dt><dd>Hexagon architecture versions. The S25 Ultra's cDSP is v79; since #35 (2026-09-18) the shipping skel is built <code>HEX_ARCH=v79</code>, and a v75 build, which runs unchanged on v79 silicon, is the fallback (HEXAGON.md §7 rule 1, §9).</dd>
+    <dt>unit / serial</dt><dd>One physical phone, named by its <code>adb</code> serial. Two S25 Ultra units are on record, <code>R3CY10WM83Y</code> (1.91 GHz in the decode loop) and <code>R3CY205ZMND</code> (2.05 GHz); tok/s is compared only within a unit (HEXAGON.md §7 rule 9).</dd>
+    <dt>pcycles_per_us</dt><dd>The DSP's effective clock in MHz during a run, printed by the harness; read gaps and bars against it, not against the nominal 2090 (HEXAGON.md §7 rule 9 (c)).</dd>
+    <dt>SSR</dt><dd>Subsystem restart: the DSP crashing and rebooting; a real failure, unlike the benign adsprpc permission lines (23-sdk64-baseline.md "Notes").</dd>
     <dt>8 Elite / SM8750</dt><dd>The Snapdragon 8 Elite chip of the Galaxy S25 / S25 Ultra (HEXAGON.md §8).</dd>
     <dt>VTCM</dt><dd>Vector Tightly Coupled Memory: small, fast memory local to the DSP; 4 MB requested best-effort (HEXAGON.md §2.2).</dd>
     <dt>DMA</dt><dd>Direct memory access: an engine that copies memory (DDR → VTCM) while the vector unit computes.</dd>
     <dt>DDR</dt><dd>The phone's main memory, shared by CPU and DSP.</dd>
     <dt>QuRT</dt><dd>The real-time OS on the DSP; provides threads, HVX locking and the simulator boot image.</dd>
     <dt>PD (unsigned PD)</dt><dd>Protection domain, a process on the DSP; "unsigned" avoids per-device signing (HEXAGON.md §1.2).</dd>
-    <dt>pcycles / Mcyc</dt><dd>DSP processor cycles as counted by <code>HAP_perf_get_pcycles</code>; Mcyc = millions of them per token.</dd>
+    <dt>pcycles / Mcyc</dt><dd>DSP processor cycles as counted by <code>HAP_perf_get_pcycles</code>; Mcyc = millions of them per token. Mcyc per decode step is the number to compare across device units (HEXAGON_BENCHMARK.md "Method").</dd>
   </dl>
 </div>
 <div class="panel">
@@ -225,7 +229,12 @@
   <dl class="gl">
     <dt>M1 … M6</dt><dd>Milestones of the backend: M1 round-trip, M4/M5 attention kernels, M6 the HVX optimisation series.</dd>
     <dt>P1 … P5</dt><dd>Phases inside M6: P1 profile baseline, P2 tiled layout (ABI v4), P3 tiled vrmpy matmul, P4 int16 down_proj, P5 attention (planned).</dd>
-    <dt>ledger ①–⑮</dt><dd>The follow-up list in <code>docs/superpowers/specs/hexagon-hvx-optimization/07-follow-ups.md</code>; e.g. ④ v79-native skel, ⑫ host logits path, ⑭ SDK 6.4, ⑮ upstream qf32 drift.</dd>
+    <dt>ledger ①–⑮</dt><dd>The follow-up list in <code>docs/superpowers/specs/hexagon-hvx-optimization/07-follow-ups.md</code>; e.g. ④ v79-native skel (done, #35), ⑫ host logits path (closed, #24: not a lever), ⑭ SDK 6.4 (closed, #23), ⑮ upstream qf32 drift (open, #26).</dd>
+    <dt>issues #23 / #24 / #35 / #41 / #53</dt><dd>The device measurements (#23 SDK 6.4 baseline, #24 host logits, #35 v79 skel) and two follow-ups they opened: #41 DSP clock during host idle gaps, #53 the 4096 drift on unit <code>R3CY10WM83Y</code>. See <a href="06-performance.html">06 · Performance</a>.</dd>
+    <dt>W8A8 / w4a8 / w4a16 / q4_0</dt><dd>Weight and activation bit widths: 8-bit weights with 8-bit activations (this backend); 4-bit weights with 8-bit activations (the stage-1 goal row, issue #51); the Qualcomm AI Hub rows' formats (HEXAGON_BENCHMARK.md).</dd>
+    <dt>weight-stream bound</dt><dd>The decode ceiling set by reading every weight byte once per token: 596 MB of int8 weights per step; ≥ 60 tok/s is the provisional W8A8 goal, 70.3 would need 41.9 GB/s (HEXAGON_BENCHMARK.md "Goals", issue #49).</dd>
+    <dt>cold run / reversed double run</dt><dd>The first e2e run after a push is slower (≈ 3 % host, 5 % DSP cycles); a sub-ms A/B is run twice with the order reversed and the second pass is read (HEXAGON.md §7 rule 9 (d)).</dd>
+    <dt>FASTRPC_MAP_STATIC</dt><dd>A FastRPC mapping flag that maps a host rpcmem buffer once for the session instead of per call; used for the logits buffer since #24 (HEXAGON.md §1.1, §8.2 "Host path"; the code is on PR #52, not yet on hvx_impl).</dd>
     <dt>handoff</dt><dd>A <code>docs/measurements/&lt;issue#&gt;-&lt;slug&gt;.md</code> file a person executes on the phone and fills in.</dd>
     <dt>gate / rung</dt><dd>One level of the verification ladder in the <code>hexagon-gates</code> skill; rungs 0–4 in the container, 5 on the phone.</dd>
     <dt>state:* labels</dt><dd>The issue state machine: needs-plan → planned → in-progress → review, with needs-measurement → measured on the side (plan 0000 §5).</dd>
@@ -237,6 +246,6 @@
 </div>
 </div>
 
-<p class="note">Hexagon backend beginner guide · sources: docs/backend_guide/HEXAGON.md, HEXAGON_BENCHMARK.md, docs/measurements/23-sdk64-baseline.md, nntrainer/tensor/hexagon/, Applications/CausalLM/hexagon/, tools/docker/, docs/superpowers/specs/hexagon-hvx-optimization/. Written 2026-09-17 against commit 539c3604.</p>
+<p class="note">Hexagon backend beginner guide · sources: docs/backend_guide/HEXAGON.md, HEXAGON_BENCHMARK.md, docs/measurements/ (#23; #24 and #35 on their branches), nntrainer/tensor/hexagon/, Applications/CausalLM/hexagon/, tools/docker/, docs/superpowers/specs/hexagon-hvx-optimization/. Written 2026-09-17, refreshed 2026-09-18 against hvx_impl commit 4b39062f.</p>
 </body>
 </html>
