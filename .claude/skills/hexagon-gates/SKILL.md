@@ -13,7 +13,13 @@ the Mac: `profile acc` ≈ 10 min, the 13 tests ≈ 5 min. So:
 
 * No file under `nntrainer/tensor/hexagon/htp/`, `test/hexagon/sim_*`,
   the packer or the lowering changed → **skip rungs 2 and 3 entirely**.
-  Write "no DSP bytes changed, skel md5 <x> unchanged" in the PR instead.
+  Write "no DSP bytes changed" in the PR with the proof: `git diff
+  <base> --stat -- nntrainer/tensor/hexagon/htp` empty, or the md5 of each
+  DSP **object** (compile every `build_skel.sh` source with `-c`) equal on
+  both trees. The linked `libnntr_htp_skel.so` md5 is **not** that proof:
+  hexagon-link embeds its command line with random `/tmp/<src>-xxxxxx.o`
+  names and orders PLT entries after them, so two builds of one tree
+  differ (#24: `64196878…` vs `431695e2…`, 11/11 objects identical).
 * One op kind changed → per step run only that kind
   (`run_sim_test.sh <kind>`); run rung 2 and rung 3 **once**, right
   before opening the PR.

@@ -11,8 +11,10 @@
 #ifndef __HEXAGON_RUNNER_H__
 #define __HEXAGON_RUNNER_H__
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "rpcmem_allocator.h"
 
@@ -47,8 +49,34 @@ public:
            const RpcmemBuffer &weights, const RpcmemBuffer &kv,
            const RpcmemBuffer &act);
 
-  /** @return 0 on success. Exactly one RPC per call. */
-  /** @param dsp_pcycles optional out: DSP cycles spent in the op loop */
+  /**
+   * @brief Map an rpcmem buffer on the DSP once, with FASTRPC_MAP_STATIC, so
+   *        every later forward() that passes a pointer inside it as the
+   *        logits argument reuses the same remote mapping (the driver still
+   *        does the cache maintenance around each call). Optional: a plain
+   *        rpcmem logits buffer already takes the fd (zero-copy) path; this
+   *        only removes the per-call map/unmap. The runner remembers what it
+   *        mapped and unmaps it in the destructor, before closing the
+   *        session, so the buffer must outlive the runner (declare it
+   *        first, as the harnesses do with WEIGHTS/KV/ACT).
+   * @return 0 on success (also for a buffer this runner already mapped),
+   *         AEE_EUNSUPPORTED when the build has no FASTRPC_MAP_STATIC
+   *         (build_host_test.sh and meson probe remote.h and define
+   *         NNTR_HAVE_FASTRPC_MAP_STATIC), the fastrpc_mmap error otherwise
+   *         — including AEE_EALREADY for an fd mapped by someone else.
+   */
+  int register_static(const RpcmemBuffer &buf);
+
+  /** @return true when register_static() can succeed on this build */
+  static bool static_map_supported();
+
+  /**
+   * @brief Exactly one RPC per call. logits may point anywhere the caller
+   *        likes; inside an RpcmemBuffer the FastRPC library passes the
+   *        buffer's fd instead of staging a copy of the n_logits floats.
+   * @param dsp_pcycles optional out: DSP cycles spent in the op loop
+   * @return 0 on success
+   */
   int forward(const int32_t *token_ids, uint32_t n_tokens, uint32_t pos,
               float *logits, uint32_t n_logits,
               uint64_t *dsp_pcycles = nullptr);
@@ -68,6 +96,13 @@ public:
 private:
   HexagonRunner() = default;
   uint64_t handle_ = 0;
+  /** what register_static() mapped; unmapped in the destructor */
+  struct StaticMap {
+    int fd;
+    void *data;
+    size_t size;
+  };
+  std::vector<StaticMap> static_maps_;
 };
 
 } // namespace nntrainer::hexagon

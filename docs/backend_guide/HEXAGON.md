@@ -20,9 +20,18 @@ int16 `down_proj` kernel takes that further: on the same S25 Ultra
 decode runs at **32.0 tok/s** host wall in generation mode (59.5 M
 pcycles/step) and a 128-token prefill chunk at **478 ms**, with the
 remaining PPL gap to the x86 reference explained in section 8.2. The
-app-level numbers in section 5.4 predate P3 and P4. What now limits decode on
-the device is the host side — RPC plus the 151,936-float logits copy and
-argmax, ~40 ms per generation step (section 9). The standalone
+app-level numbers in section 5.4 predate P3 and P4. The "~40 ms of host
+time per generation step" once read out of the P3 logs does not survive
+the #23 re-measurement: in the harness's own method the host wall of a
+decode step is within 0.5–3 ms of the DSP op loop (31.3 ms vs 64.3 M
+pcycles at 2.09 GHz at 512 tokens; section 8.2, "Host path"), so the
+decode levers are the weight path (ledger ① ⑨ ⑩), not the logits
+return. #24 keeps the host logits buffer in rpcmem mapped once with
+`FASTRPC_MAP_STATIC`, so the FastRPC library passes its fd instead of
+staging a copy of the 607,744 B, and measured what that return costs:
+8919 µs (malloc) / 8771 µs (rpcmem) / 6381 µs (static) per isolated
+call, 32-call warm medians, and < 0.1 ms inside a real 34 ms decode
+step — ledger ⑫ closed, not a lever. The standalone
 harnesses in section 5.3 remain the measurement/debug entry points.
 
 ---
@@ -87,7 +96,23 @@ The host side is arm64 Android; the DSP side is hexagon v75/v79.
 WEIGHTS / KV / ACT cross the boundary **once**, at `init()`, as dma-buf
 fds; the DSP maps them with `HAP_mmap` for the session lifetime.
 `forward()` carries only `token_ids` in and `logits` out — the FastRPC
-driver manages coherency for those small sequence arguments.
+driver manages coherency for those sequence arguments. The logits
+(151,936 fp32 = 607,744 B per call) are a `rout sequence<float>` whose
+host memory decides the path: a `malloc` buffer goes through the
+library's staging copy, while a pointer inside an `rpcmem_alloc` buffer
+is recognised by libadsprpc and passed as its dma-buf fd, the driver
+doing the cache maintenance around the call. Since #24 both the CausalLM
+backend (`HexagonBackend::logits_`) and the harness (`--logits-mem`,
+default `static`) keep that buffer in rpcmem and map it once with
+`FASTRPC_MAP_STATIC` (`HexagonRunner::register_static`) so the per-call
+map/unmap disappears too; `--logits-mem rpcmem` (fd, mapped per call)
+and `--logits-mem malloc` (staging copy) remain as the measurement
+baselines. Measured cost of the 607,744 B return per path (32-call warm
+medians of `hexagon_rpc_test`'s dummy path): malloc 8919 µs, rpcmem
+8771 µs, static 6381 µs — and < 0.1 ms inside a real 34 ms decode step,
+where the three are within 70 µs of each other (section 8.2, "Host
+path"). No DSP, IDL or image change is involved: the kernel writes the
+same bytes wherever the pointer lands.
 
 Two non-obvious mechanics, both learned during bring-up:
 
@@ -1021,7 +1046,9 @@ is being read. That closes the silicon question for the tiled kernel,
 DSP decode time fell 2.5–2.8×, but ~40 ms of every generation step is
 host-side — the RPC round trip plus copying and argmax-ing 151,936
 floats of logits — so on the device the decode bottleneck is now the
-host/RPC path, not the DSP (section 9). The two decode rows differ
+host/RPC path, not the DSP (section 9; re-read in #24, see "Host path"
+at the end of this section: the P4 and #23 logs no longer show that
+gap). The two decode rows differ
 because `--eval` is teacher-forced (no sampling, no KV divergence) while
 `--steps` generates; the warm-up is not explained yet.
 

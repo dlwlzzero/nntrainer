@@ -299,6 +299,17 @@ if get_option('enable-hexagon')
     input: 'nntrainer' / 'tensor' / 'hexagon' / 'htp' / 'nntr_htp.idl',
     output: 'nntr_htp.idl.tracked', copy: true)
   extra_defines += '-DENABLE_HEXAGON=1'
+  # HexagonRunner::register_static() needs FASTRPC_MAP_STATIC, an enumerator
+  # of remote.h the preprocessor cannot test for; the same grep as in
+  # tools/hexagon/build_host_test.sh so the app build and the harness agree.
+  if run_command('grep', '-q', 'FASTRPC_MAP_STATIC',
+                 hvx_sdk_root / 'incs' / 'remote.h', check: false).returncode() == 0
+    extra_defines += '-DNNTR_HAVE_FASTRPC_MAP_STATIC=1'
+    message('Hexagon: remote.h has FASTRPC_MAP_STATIC, static logits map enabled')
+  else
+    extra_defines += '-DNNTR_HAVE_FASTRPC_MAP_STATIC=0'
+    message('Hexagon: remote.h lacks FASTRPC_MAP_STATIC, static logits map disabled')
+  endif
   message('Hexagon HVX backend enabled, SDK: ' + hvx_sdk_root)
 endif
 

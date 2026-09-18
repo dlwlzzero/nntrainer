@@ -30,7 +30,11 @@ public:
   static std::unique_ptr<HexagonBackend> create(const std::string &w8cx_bin,
                                                 const HexModelConfig &cfg);
 
-  /** Runs n_tokens at sequence position pos in max_chunk pieces.
+  /** Runs n_tokens at sequence position pos in max_chunk pieces. The DSP
+   *  writes into the backend's own rpcmem logits buffer (the FastRPC library
+   *  passes its fd, no staging copy of the 600 KB); the result is then
+   *  copied into the caller's buffer so ownership on the app side is
+   *  unchanged.
    *  @param logits cfg.vocab floats of the last token
    *  @return 0 on success, the FastRPC/DSP error otherwise */
   int forward(const int32_t *tokens, uint32_t n_tokens, uint32_t pos,
@@ -41,7 +45,7 @@ private:
   HexModelConfig cfg_{};
   /** shared_ptr: deleters bind at construction, so this header stays free of
    * the SDK-dependent definitions (builds without ENABLE_HEXAGON too). */
-  std::shared_ptr<RpcmemBuffer> weights_, kv_, act_;
+  std::shared_ptr<RpcmemBuffer> weights_, kv_, act_, logits_;
   std::shared_ptr<HexagonRunner> runner_;
 };
 

@@ -31,6 +31,19 @@ INCS=(-I "$GEN" -I "$HOST_DIR" -I "$HTP_DIR" -I "$APP_DIR"
       -isystem "$HEXAGON_SDK_ROOT/incs/stddef"
       -isystem "$HEXAGON_SDK_ROOT/ipc/fastrpc/rpcmem/inc")
 
+# HexagonRunner::register_static() needs FASTRPC_MAP_STATIC, an enumerator
+# of remote.h that the preprocessor cannot test for. Probe the header
+# instead of assuming it so an SDK without the flag still builds (the
+# `--logits-mem static` variant then reports itself unsupported); the
+# outcome is printed so every build log records which way it went. The
+# same grep lives in the top-level meson.build for the app build. The
+# array is never empty: "${DEFS[@]}" under `set -u` is an error on bash < 4.4.
+DEFS=(-DNNTR_HAVE_FASTRPC_MAP_STATIC=0)
+if grep -q "FASTRPC_MAP_STATIC" "$HEXAGON_SDK_ROOT/incs/remote.h"; then
+  DEFS=(-DNNTR_HAVE_FASTRPC_MAP_STATIC=1)
+fi
+echo "remote.h: FASTRPC_MAP_STATIC probe -> ${DEFS[*]}"
+
 "$TC/aarch64-linux-android${API}-clang" -c -O2 -fPIC -Wall \
     "${INCS[@]}" "$GEN/nntr_htp_stub.c" -o "$OUT/host/nntr_htp_stub.o"
 
@@ -39,7 +52,7 @@ INCS=(-I "$GEN" -I "$HOST_DIR" -I "$HTP_DIR" -I "$APP_DIR"
 build() { # <output name> <sources...>
   local out="$1"; shift
   "$TC/aarch64-linux-android${API}-clang++" -std=c++17 -O2 -Wall -Werror \
-      -static-libstdc++ "${INCS[@]}" \
+      -static-libstdc++ "${INCS[@]}" "${DEFS[@]}" \
       "$HOST_DIR/rpcmem_allocator.cpp" "$HOST_DIR/hexagon_runner.cpp" "$@" \
       "$OUT/host/nntr_htp_stub.o" -L "$CDSPRPC_DIR" -lcdsprpc \
       -o "$OUT/host/$out"
