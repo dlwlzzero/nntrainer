@@ -58,6 +58,10 @@ after this measurement (contract §7 budget); #33 and #35 touch disjoint DSP fil
 
 ## 2. Artifacts (built in the container, SDK 6.4.0.2 / hexagon-clang 19.0.04 `toolv19`, @ `305c51f1`)
 
+> **Not the artifacts of the 2026-09-18 run.** That run rebuilt all five on the workstation with SDK
+> 6.4.0.1 (same `toolv19`); the md5s actually measured are in the result table, the sizes and the reason
+> in the Notes. The table below is kept as the container record.
+
 | file | md5 (size) | built with |
 |---|---|---|
 | build_hexagon/skel/libnntr_htp_skel.v79.so (**B1**) | `af69e880d9b2181113030e0427117778` (50,728 B) | `HEX_ARCH=v79 ./tools/hexagon/build_skel.sh` |
@@ -117,7 +121,7 @@ steps / 1e6); decode ms/tok = median host `us` over the 63 `n=1` steps ÷ 1000; 
 2. `git add docs/measurements/35-v79-skel.md logs/hexagon/ && git commit -s -m "[docs] Fill the #35 v79-skel measurement (<phone>, SDK <ver>)" && git push`
 3. `gh issue edit 35 -R dlwlzzero/nntrainer --remove-label state:needs-measurement --add-label state:measured`
 
-## Results (fill in)
+## Results (run 2026-09-18, S25 Ultra `R3CY10WM83Y`, skels rebuilt on the workstation — see Notes)
 Reference in brackets: B1 and B2 against #23 variant B (v79 skel, same silicon), A against #23 variant A
 (`docs/measurements/23-sdk64-baseline.md`). v79 is the primary arch; A is the optional last v75 row. **Pass (B1 only)**: prefill tok/s within ±5 % of 207.4 /
 131.2 / 34.4 and decode DSP Mcyc/tok within ±5 % of 60.1 / 76.5 / 177.6 at 512 / 1024 / 4096; `--eval`
@@ -128,23 +132,40 @@ spread by construction (#23 Notes), so read the 1024 / 4096 rows first.
 
 | variant | skel md5 (from `md5sum` before the run) | ctx | image | prefill tok/s (ref) | decode median host ms (ref) | decode tok/s (ref) | DSP Mcyc/tok (ref) |
 |---|---|---|---|---|---|---|---|
-| B1 (v79) | | 512 | qwen3_full | (207.4) | (31.9) | (31.36) | (60.1) |
-| B1 (v79) | | 1024 | qwen3_full | (131.2) | (39.6) | (25.27) | (76.5) |
-| B1 (v79) | | 4096 | qwen3_full4k | (34.4) | (87.4) | (11.44) | (177.6) |
-| B2 (v79qf) | | 512 | qwen3_full | (207.4, B1's row is the closer reference) | (31.9) | (31.36) | (60.1) |
-| A (v75, optional) | | 512 | qwen3_full | (189.0) | (31.3) | (31.92) | (64.3) |
+| B1 (v79) | `8d8cdb2668a64223ec3b89cacea32efa` | 512 | qwen3_full | **198.7** (207.4) −4.2 % | **32.391** (31.9) | **30.87** (31.36) | **61.200** (60.1) +1.8 % |
+| B1 (v79) | `8d8cdb26…` | 1024 | qwen3_full | **131.1** (131.2) −0.1 % | **40.227** (39.6) | **24.86** (25.27) | **77.781** (76.5) +1.7 % |
+| B1 (v79) | `8d8cdb26…` | 4096 | qwen3_full4k | **32.14** (34.4) −6.6 % | **92.274** (87.4) | **10.84** (11.44) | **188.029** (177.6) +5.9 % |
+| B1 (v79) rerun, cooled | `8d8cdb26…` | 4096 | qwen3_full4k | **32.71** (34.4) −4.9 % | **89.103** (87.4) | **11.22** (11.44) | **186.753** (177.6) +5.2 % |
+| B2 (v79qf) | `627480caa6a015b32148a64e16171b98` | 512 | qwen3_full | **197.7** (B1 198.7) −0.5 % | **32.395** (B1 32.391) | **30.87** (B1 30.87) | **61.133** (B1 61.200) −0.1 % |
+| A (v75, optional) | `aff2fb88af73a47584392fa08f7aa889` | 512 | qwen3_full | **185.1** (189.0) −2.0 % | **33.882** (31.3) | **29.51** (31.92) | **64.256** (64.3) −0.1 % |
 
 | variant | ctx | token file (md5) | --eval PPL (ref) | top-1 (ref) | x86 ref PPL / top-1 | gap % |
 |---|---|---|---|---|---|---|
-| B1 (v79) | 512 | t512_23.i32 (10bb428f…) | (41.2623) | (161) | 41.5466 / 164 (workstation gcc) or your own line | |
-| B1 (v79) | 512 | t512.i32 (P4 prompt, if present) | (—, #23 B did not run it) | | 33.0195 / 184 | |
-| B1 (v79) | 1024 | t1024.i32 | (5.9509) | (692) | — | |
-| B1 (v79) | 4096 | t4096.i32 | (1.5687) | (3758) | — | |
-| B2 (v79qf) | 512 | t512_23.i32 | (B1's value) | | same as above | |
-| A (v75, optional) | 512 | t512_23.i32 | (40.7596) | (162) | same as above | |
-| A (v75, optional) | 512 | t512.i32 (P4 prompt, if present) | (33.0884) | (189) | 33.0195 / 184 | |
+| B1 (v79) | 512 | t512_23.i32 (10bb428f…) | **41.4947** (41.2623) | **162** (161) | 41.5466 / 164 (this workstation, gcc, rebuilt and re-run today) | **−0.12 %** |
+| B1 (v79) | 512 | t512.i32 (P4 prompt) | **32.4497** (—, #23 B did not run it) | **184** | 33.0195 / 184 | **−1.73 %** |
+| B1 (v79) | 1024 | t1024.i32 | **5.8595** (5.9509) | **692** (692) | — | — |
+| B1 (v79) | 4096 | t4096.i32 | **1.5623** (1.5687) | **3759** (3758) | — | — |
+| B2 (v79qf) | 512 | t512_23.i32 | **41.4947** (= B1, digit for digit) | **162** (= B1) | 41.5466 / 164 | −0.12 % |
+| B2 (v79qf) | 512 | t512.i32 (P4 prompt) | **32.4497** (= B1, digit for digit) | **184** (= B1) | 33.0195 / 184 | −1.73 % |
+| A (v75, optional) | 512 | t512_23.i32 | **41.0253** (40.7596) | **167** (162) | 41.5466 / 164 | −1.25 % |
+| A (v75, optional) | 512 | t512.i32 (P4 prompt) | **33.0295** (33.0884) | **188** (189) | 33.0195 / 184 | **+0.03 %** |
 
-`adb shell md5sum` after the last run: ______ (expected `9b50b2c2…` after B2, `83182a7c…` if A ran).
+`adb shell md5sum` after the last run: `aff2fb88af73a47584392fa08f7aa889` (the A / v75 skel — A was run last,
+then B1 was re-pushed for the 4096 re-run; the re-run log shows `8d8cdb26…`).
+
+### Verdict against the pass rules
+
+| rule | result |
+|---|---|
+| prefill within ±5 % of 207.4 / 131.2 / 34.4 | 512 −4.2 % PASS · 1024 −0.1 % PASS · **4096 −6.6 % / −4.9 % (re-run) FAIL** |
+| decode DSP Mcyc within ±5 % of 60.1 / 76.5 / 177.6 | 512 +1.8 % PASS · 1024 +1.7 % PASS · **4096 +5.9 % / +5.2 % (re-run) FAIL** |
+| P4 `--eval` inside 33.07–33.45 against x86 33.0195 / 184 | **32.4497 FAIL (below the band)**; top-1 **184 = x86 exactly** |
+| `t512_23` within +0.3 % of this box's `hexagon_ref_run` | 41.4947 vs 41.5466 = −0.12 % PASS |
+| no hang / SSR / FARF fatal | PASS |
+
+So **B1 does not pass as written**: the two 4096 speed cells and the P4 PPL band are missed. Both misses
+point away from a defect and toward stale reference cells — see the Notes — but the re-baseline is a
+supervisor call, not a measurement call.
 
 Reading B2 (HEXAGON.md §7 rule 1): B2 = B1 in PPL / top-1 and speed within noise → the 2026-08 v79
 failures were a toolchain-8.x artefact, rule 1 closes; B2 correct but slower → the IEEE helpers are a
@@ -152,7 +173,52 @@ genuine v79 speed source; B2 wrong → the qf helpers have a v79-specific proble
 see: record, file, do not block.
 
 ## Notes from the run
-<phone model / serial, SDK version, x86 reference line, thermal, warm-up, FARF errors, stale-file pushes>
+
+* **Phone / host.** Galaxy S25 Ultra `SM-S938N`, serial `R3CY10WM83Y` (the documented HVX baseline unit),
+  USB, single device attached. Host: the Linux workstation, not the container.
+* **Environment gap — SDK point release.** The container built the artifacts with SDK **6.4.0.2**; this
+  workstation only has **6.4.0.1**, same `HEXAGON_Tools 19.0.04` / `toolv19`, and the Docker image is not
+  reachable from this account (no `docker` group, no passwordless sudo). All three skels and both host
+  binaries were therefore **rebuilt here** from the branch tip, so the md5s in §2 do not apply — the md5s
+  actually run are in the result table above and were read back with `adb shell md5sum`. The host binaries
+  match §2's sizes **exactly** (`hexagon_rpc_test` 524,984 B, `hexagon_e2e_test` 1,262,128 B); the skels
+  are a uniform **+192 B** (v79 / v79qf 50,920 vs 50,728; v75 46,824 vs 46,632), which is the 6.4.0.1 ↔
+  6.4.0.2 runtime/header delta, not a source difference. `-mhvx-ieee-fp` probed accepted on both arches.
+* **x86 reference, re-measured today** on the branch tree (`build_host_x86.sh`, gcc): `t512_23.i32` →
+  `PPL 41.5466 steps 511 top1 164`, `t512.i32` (P4) → `PPL 33.0195 steps 511 top1 184`. Both reproduce the
+  documented lines digit for digit, so the reference side of the accuracy table is current, not inherited.
+* **`RPC_TEST PASS`** on B1 before the sweep (`device_test_20260918_103233.log`).
+* **The 4096 miss is reproducible and scales with context.** Against #23 variant B the decode DSP cost is
+  +1.1 Mcyc at 512, +1.3 at 1024 and **+10.4 at 4096 (+9.2 on the cooled re-run)**; a second 4096 run after a ~7 min idle (the x86
+  reference run) recovered only ~0.7 %, so it is not mainly thermal. A context-proportional cost cannot
+  come from #35's quantiser decode, which is per-element and context-independent — and indeed 512 / 1024
+  are inside the band. The branch was rebased onto `hvx_impl` `1bbd8d53` **after** #23 was measured, i.e.
+  it now carries PRs #43–#46 including #33's per-op bounds validation and KV/attention changes in
+  `htp_graph.c`; the 6.4.0.1 build is the other uncontrolled variable. This run does **not** isolate which.
+  Suggested follow-up (cheap, one device sitting): the same 4096 speed pair on a v79 skel built from
+  `1bbd8d53` itself, which splits "#35 cost" from "merged-since-#23 cost".
+* **The P4 PPL miss is a band applied across arches.** The 33.07–33.45 band was derived from v75 P4
+  records; #23 variant B never ran the P4 prompt, so there has never been a v79 P4 number to set it from.
+  Evidence that 32.4497 is not a defect: top-1 is **184, exactly the x86 value**, and the same skel is
+  −0.12 % on `t512_23` and matches the #23 B PPLs at 1024 (5.8595 vs 5.9509, top-1 692 = 692) and 4096
+  (1.5623 vs 1.5687, top-1 3759 vs 3758). The v75 skel with the *same* new decode lands at 33.0295 /
+  188, i.e. **+0.03 %** of x86 — so the −1.7 % is a v79-vs-v75 numerics difference in the IEEE-helper
+  paths, consistent across both 512 prompts, and in the lower-perplexity direction.
+* **B2 = B1 exactly.** `-DHTP_FORCE_QF_HELPERS` changes the binary (different md5, same size) and the
+  simulator STATs, but on silicon it reproduces B1's PPL and top-1 **digit for digit** on both 512 prompts
+  and sits within 0.5 % prefill / 0.1 % DSP-cycle noise. Per the reading rule below: the 2026-08 v79
+  failures were a **toolchain-8.x artefact**; the IEEE helpers are neither a correctness nor a measurable
+  speed source on v79 silicon. §7 rule 1 can close on this row.
+* **FARF.** No SSR, no DSP fatal, no hang in any of the 15 runs. Every log carries the routine
+  `open_shell failed for domain 3 … (errno Permission denied)` / `fastrpc_enable_kernel_optimizations
+  failed for domain 3 (Bad address)` search-path noise that is present in passing runs too. The single
+  `remote_handle64_invoke failed … (user err 0x80000414)` line appears only in the `rpc_test` log, which
+  still printed `RPC_TEST PASS` — it is that test's own error-path case.
+* **Thermal / order.** B1 (512 → 1024 → 4096, speed + eval) → B2 (512) → A (512) → B1 4096 re-run after
+  the ~7 min x86 reference run. ~21 min wall end to end, of which ~14 min on the device. No warm-up
+  run was discarded; the 512 decode column carries its documented ±5 %-class spread.
+* **Logs.** `logs/hexagon/e2e_20260918_1032*–1052*.log` (+ matching `device_farf_*`), 15 runs, in this
+  worktree.
 
 ## Simulator record for these artifacts (container, SDK 6.4.0.2, Rosetta; relative signal only)
 * v79 (B1 sources): 13/13 PASS; `profile acc` PASS, `profile_prefill_acc STAT max_abs=0.0659682
