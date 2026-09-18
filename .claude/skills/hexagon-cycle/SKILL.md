@@ -38,6 +38,12 @@ say what is uncommitted.
    measurement files (with `<branch>:<path>` for ones not yet on
    `hvx_impl`) so `06-performance.html` records them. Wait. Commit its
    output on a `hvx/guide-<date>` branch and open a PR (docs only).
+   Also publish the guide: GitHub Pages serves the `htp_html` branch's
+   `/docs`, so whenever `hvx_impl`'s `docs/backend_guide/hexagon-guide/`
+   differs from `htp_html`'s, copy it onto `htp_html` (in a separate
+   `git worktree`, `git checkout hvx_impl -- docs/backend_guide/hexagon-guide`)
+   and push one `[html]` commit. Then it is live at
+   `https://dlwlzzero.github.io/nntrainer/backend_guide/hexagon-guide/`.
 6. Final report to the user, in this shape and nothing more:
    * what each subagent did (one line each, issue numbers and PR links),
    * **Your to-do**: every `needs-measurement` handoff (path + estimated
@@ -45,4 +51,5 @@ say what is uncommitted.
    * whether another cycle would do anything right now (yes/no and why).
 
 Never run `adb`, never push to `hvx_impl` except the docs-only commits in
-steps 2 and 5, never edit `.github/workflows`.
+steps 2 and 5, never push to `htp_html` except the guide copy in step 5,
+never edit `.github/workflows`.
