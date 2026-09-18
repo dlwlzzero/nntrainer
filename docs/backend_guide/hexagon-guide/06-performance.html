@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hexagon backend guide — 06 Performance record</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --panel: #f3f3f1;
+    --text-1: #0b0b0b;
+    --text-2: #52514e;
+    --grid: #d9d8d3;
+    --w: #2a78d6;      /* weights  (slot 1 blue)   */
+    --w-light: #cde2fb;
+    --x: #eb6834;      /* activations (slot 2 orange) */
+    --x-light: #fbd9cc;
+    --acc: #1baf7a;    /* accumulator / output (slot 3 aqua) */
+    --acc-light: #cdeee0;
+    --dim: #b7b6b0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --panel: #242423;
+      --text-1: #ffffff;
+      --text-2: #c3c2b7;
+      --grid: #3a3a38;
+      --w: #3987e5;
+      --w-light: #1c3a5e;
+      --x: #d95926;
+      --x-light: #5a2a17;
+      --acc: #199e70;
+      --acc-light: #16442f;
+      --dim: #5a5a57;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 24px 48px;
+    background: var(--surface); color: var(--text-1);
+    font: 15px/1.55 -apple-system, "Segoe UI", "Noto Sans KR", Roboto, sans-serif;
+    max-width: 1240px; margin-inline: auto;
+  }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  .sub { color: var(--text-2); margin: 0 0 28px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 28px; }
+  @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border-radius: 10px; padding: 18px 18px 14px;
+  }
+  .panel p { color: var(--text-2); margin: 6px 0 0; font-size: 14px; }
+  .panel .verdict { margin-top: 10px; font-size: 14px; color: var(--text-1); }
+  svg { width: 100%; height: auto; display: block; }
+  text { font-family: inherit; fill: var(--text-1); }
+  .t2 { fill: var(--text-2); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); margin: 0 0 22px; }
+  .legend span::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    margin-right: 6px; vertical-align: -2px; background: var(--c);
+  }
+  .ctrl { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text-2); margin: 6px 0 4px; }
+  .ctrl input[type=range] { width: 160px; accent-color: var(--w); }
+  .ctrl button {
+    border: 1px solid var(--grid); background: var(--surface); color: var(--text-1);
+    border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; white-space: nowrap;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 4px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--text-2); font-weight: 600; }
+  td:first-child { color: var(--text-2); white-space: nowrap; }
+  .note { color: var(--text-2); font-size: 13px; margin-top: 18px; }
+  .tip {
+    position: fixed; pointer-events: none; background: var(--text-1); color: var(--surface);
+    padding: 6px 9px; border-radius: 6px; font-size: 12px; line-height: 1.4;
+    opacity: 0; transition: opacity .08s; white-space: nowrap; z-index: 10;
+  }
+</style>
+<style>
+  /* guide additions: identical on every page of hexagon-guide/ */
+  nav.guide { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin: 0 0 24px; padding: 10px 0; border-block: 1px solid var(--grid); }
+  nav.guide a { color: var(--text-2); text-decoration: none; }
+  nav.guide a.here { color: var(--text-1); font-weight: 600; }
+  nav.guide a:hover { color: var(--w); }
+  a { color: var(--w); }
+  .panel { margin-bottom: 24px; }
+  .panel ul, .panel ol { color: var(--text-2); font-size: 14px; margin: 6px 0 0; padding-left: 22px; }
+  .panel li { margin: 3px 0; }
+  .panel li b, .panel p b { color: var(--text-1); }
+  pre { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-x: auto; margin: 8px 0; color: var(--text-1); white-space: pre; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.93em; }
+  .src { color: var(--text-2); font-size: 12px; }
+  .status { border-left: 4px solid var(--acc); }
+  .warn { border-left: 4px solid var(--x); }
+  .step { counter-increment: step; }
+  .kv td:first-child { white-space: normal; }
+  dl.gl { margin: 0; font-size: 14px; }
+  dl.gl dt { font-weight: 600; margin-top: 10px; }
+  dl.gl dd { margin: 2px 0 0; color: var(--text-2); }
+  td, th { word-break: break-word; }
+  td:first-child { white-space: normal; }
+</style>
+</head>
+<body>
+<nav class="guide">
+  <a href="index.html">Overview</a>
+  <a href="01-run-it.html">01 Run it</a>
+  <a href="02-architecture.html">02 Architecture</a>
+  <a href="03-kernels.html">03 Kernels</a>
+  <a href="04-measure-and-debug.html">04 Measure and debug</a>
+  <a href="05-glossary.html">05 Glossary</a>
+  <a class="here" href="06-performance.html">06 Performance</a>
+</nav>
+<h1>06 · Performance record: every device measurement, newest first</h1>
+<p class="sub">This page is built only from numbers a person read off a Galaxy S25 Ultra. Sources, in order: the filled measurement handoffs (<code>docs/measurements/23-sdk64-baseline.md</code> on <code>hvx_impl</code>; <code>24-host-logits.md</code> on branch <code>hvx/24-host-logits</code>, PR #52; <code>35-v79-skel.md</code> on branch <code>hvx/35-v79-skel</code>, PR pending), the <code>nntrainer</code> rows and "Goals" of <code>HEXAGON_BENCHMARK.md</code>, and <code>HEXAGON.md</code> §8.2. Model: Qwen3-0.6B, W8A8 (int8 per-channel weights, per-token int8 activations, int16 activation for <code>down_proj</code>). Every number names its source.</p>
+
+<div class="legend">
+  <span style="--c: var(--w)">decode at 512 tokens of context</span>
+  <span style="--c: var(--x)">decode at 4096 tokens of context</span>
+  <span style="--c: var(--dim)">goal lines</span>
+</div>
+
+<div class="panel status">
+  <h2>Latest — measurement #35, 2026-09-18 (HEXAGON_BENCHMARK.md "Goals → Now")</h2>
+  <p>Unit <code>R3CY10WM83Y</code> (Galaxy S25 Ultra SM-S938N, Snapdragon 8 Elite / SM8750, cDSP v79), <b>v79 shipping skel</b> (<code>HEX_ARCH=v79</code>, md5 <code>8d8cdb26…</code>), rebuilt on the workstation with Hexagon SDK 6.4.0.1 / hexagon-clang 19.0.04 (<code>toolv19</code>). Harness <code>hexagon_e2e_test --chunk 128 --steps 64</code>; decode = 1000 ÷ median host wall over the 63 single-token steps, prefill = prompt tokens ÷ host wall of the prefill chunks (35-v79-skel.md "Results", B1 rows; HEXAGON.md §8.2 "#35" block).</p>
+  <table>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcycles / decode step</th><th>Goal (decode)</th><th>Gap</th></tr>
+    <tr><td>512</td><td><b>198.7</b></td><td><b>30.9</b></td><td>61.2</td><td>≥ 60 W8A8 stage-1 (provisional, the int8 weight-stream bound); ≥ 70.3 for the w4a8 row</td><td>1.9× to 60</td></tr>
+    <tr><td>1024</td><td><b>131.1</b></td><td><b>24.9</b></td><td>77.8</td><td>— (no goal row)</td><td>—</td></tr>
+    <tr><td>4096</td><td><b>32.7</b></td><td><b>11.2</b></td><td>186.8</td><td>≥ 27.5 (the stage-1 HVX-only decode @4096 row, and the w4a8 row's 4096 goal; the 4096 cell carries a ±6 % cross-session spread until issue #53 settles it)</td><td>2.5×</td></tr>
+  </table>
+  <p>Prefill goal at 512: 1000 tok/s interim (gap 5.0×); 3,409 is out of HVX-only reach and belongs to stage 2 (HVX + HMX). Accuracy on the same runs: <code>--eval</code> on the P4 prompt <b>32.4497 / 184</b> against x86 33.0195 / 184 (−1.73 %, top-1 exact) — the v79 accuracy record; <code>t512_23.i32</code> 41.4947 / 162 vs x86 41.5466 / 164 (−0.12 %).</p>
+  <p class="src">HEXAGON_BENCHMARK.md "Goals" (Now / Goal / Gap columns, log entries 2026-09-18) and the three "v79 shipping skel" rows of its comparison table; HEXAGON.md §8.2 "#35" table and verdict; 35-v79-skel.md B1 rows (the 4096 cell is the cooled re-run, first run 32.1 / 10.8 / 188.0 Mcyc).</p>
+</div>
+
+<div class="panel">
+  <h2>How to read the rows (method)</h2>
+  <ul>
+    <li><b>One harness, one recipe.</b> Every row is <code>hexagon_e2e_test --chunk 128 --steps 64</code> on a packed <code>qwen3_full</code> image (<code>qwen3_full4k</code>, packed with <code>--max-seq 4224</code>, for the 4096 row). Decode tok/s is 1000 ÷ the median host wall time (µs around one RPC) over the 63 single-token steps after the prompt; prefill tok/s is prompt tokens ÷ the summed wall time of the 128-token chunks; DSP Mcycles per step is the median of the DSP's own cycle counter over the same 63 steps (HEXAGON_BENCHMARK.md "Method"; HEXAGON.md §8.2 "Throughput by context").</li>
+    <li><b>Two phones, two clocks.</b> Two S25 Ultra units have been used. <code>R3CY10WM83Y</code> (P3, P4, #24, #35) holds 1905–1915 MHz in the generation loop; the #23 unit <code>R3CY205ZMND</code> held 2054 MHz. With the same kernels the DSP cycles per step agree within ~1 % at 512 and 1024, while tok/s differ by −8 / −1 %. So <b>tok/s is compared only within one unit; DSP Mcycles per step is the number to compare across units</b> (HEXAGON.md §7 rule 9 (a)–(b); HEXAGON_BENCHMARK.md "Method").</li>
+    <li><b>The 512 decode figure is ±5 % by construction.</b> Its median is taken over 63 steps that are still settling after the prefill (first-ten vs last-ten step median 67.1 → 64.3 Mcyc at 512, flat at 1024 and 4096), so treat a 512 decode difference under 5 % as noise (23-sdk64-baseline.md "Results"; HEXAGON.md §8.2 caveat paragraph).</li>
+    <li><b>The 4096 cell on <code>R3CY10WM83Y</code> is offset</b> from every other 4096 reference by about +6 % cycles / −6 % prefill, on v75 (#24) and v79 (#35) alike, while P4 on the same unit had matched #23's 4096 cells within 2 %. Until issue #53 runs #23's exact binary on this unit, a 4096 comparison across sessions is read as inconclusive, not as a fail (HEXAGON.md §7 rule 9 (e)).</li>
+    <li><b>PPL / top-1</b> come from <code>hexagon_e2e_test --eval</code>: teacher-forced perplexity over the prompt and the count of next tokens the top-1 prediction got right. Two 512-token prompts exist: the P4 prompt <code>t512.i32</code> (x86 reference 33.0195 / 184, the accuracy gate) and <code>t512_23.i32</code> (x86 41.5466 / 164 with the workstation's gcc build, 41.2365 / 161 with the container's clang build — quote the build). The 1024 / 4096 prompts have no x86 reference (23-sdk64-baseline.md "Accuracy"; HEXAGON.md §5.1).</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h2>History — one block per measurement, newest first</h2>
+  <p>Each block header gives the date, the issue, what changed in one clause, the unit, the skel and SDK, and the measurement file; the rows under it are the three contexts. Every <code>nntrainer</code> row of HEXAGON_BENCHMARK.md's comparison table appears here (the two "HVX + HMX" and the "w4a8" rows are TODO there and have no device number yet).</p>
+
+  <table>
+    <tr><th colspan="5"><b>2026-09-18 · #35 · v79 becomes the shipping skel</b> — quantiser decode rewritten as an integer decode of the sf bits (fixes the four ±1-LSB v79 simulator failures; both simulators 13/13); the first v79 rows on this unit. Unit <code>R3CY10WM83Y</code>; v79 skel <code>8d8cdb26…</code>, SDK 6.4.0.1 / hexagon-clang 19.0.04, rebuilt on the workstation from branch <code>hvx/35-v79-skel</code> @ <code>305c51f1</code>. File: <code>docs/measurements/35-v79-skel.md</code> (branch <code>hvx/35-v79-skel</code>). In the benchmark as the three "v79 shipping skel" rows — the current "Now".</th></tr>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcyc / step</th><th>PPL / top-1 (<code>--eval</code>)</th></tr>
+    <tr><td>512</td><td>198.7</td><td>30.9 (32.39 ms)</td><td>61.2</td><td><code>t512_23</code> 41.4947 / 162 (x86 41.5466 / 164, −0.12 %); P4 prompt <b>32.4497 / 184</b> (x86 33.0195 / 184, −1.73 %)</td></tr>
+    <tr><td>1024</td><td>131.1</td><td>24.9 (40.23 ms)</td><td>77.8</td><td>5.8595 / 692</td></tr>
+    <tr><td>4096</td><td>32.7 (first run 32.1)</td><td>11.2 (first run 10.8; 89.10 / 92.27 ms)</td><td>186.8 (first run 188.0)</td><td>1.5623 / 3759</td></tr>
+    <tr><td colspan="5" class="src">Recorded in the same handoff, not benchmark rows: <b>B2</b>, the same tree built with <code>-DHTP_FORCE_QF_HELPERS</code> (qf-format helpers forced on the v79 target, md5 <code>627480ca…</code>): 512 → 197.7 / 30.9 / 61.1 Mcyc, PPL and top-1 identical to B1 digit for digit on both 512 prompts. <b>A</b>, the v75 skel with the same new decode (<code>aff2fb88…</code>): 512 → 185.1 / 29.5 / 64.3 Mcyc, <code>t512_23</code> 41.0253 / 167, P4 prompt 33.0295 / 188 (+0.03 %). 15 runs, no hang, SSR or fatal FARF line (35-v79-skel.md "Results", "Notes").</td></tr>
+  </table>
+
+  <table>
+    <tr><th colspan="5"><b>2026-09-18 · #24 · host-side logits buffer moved to rpcmem + <code>FASTRPC_MAP_STATIC</code></b> — no DSP byte changed; a control row on the P4 unit that also exposed the unit-clock difference. Unit <code>R3CY10WM83Y</code>; v75 skel <code>cc0f1725…</code> built from the #33 tree (its DSP diff against #23's <code>81dcaab4…</code> is comments, clang-format and one per-call token-id check), harnesses SDK 6.4.0.1 / NDK r26d. File: <code>docs/measurements/24-host-logits.md</code> (branch <code>hvx/24-host-logits</code>, PR #52). In the benchmark as the three "unit <code>R3CY10WM83Y</code>" v75 rows.</th></tr>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcyc / step</th><th>PPL / top-1 (<code>--eval</code>)</th></tr>
+    <tr><td>512</td><td>185.5 (malloc, pass 2; static 182.5, rpcmem 184.7)</td><td>29.4 (34.00–34.07 ms; the three host memories within 70 µs)</td><td>65.1 (static; rpcmem 64.8, malloc 64.9)</td><td>P4 prompt 33.0884 / 189 with malloc and with rpcmem — identical to #23 A (x86 33.0195 / 184)</td></tr>
+    <tr><td>1024</td><td>114.5</td><td>23.0 (43.42 ms)</td><td>85.0</td><td>—</td></tr>
+    <tr><td>4096</td><td>25.4</td><td>9.1 (110.04 ms)</td><td>225.9 (+6 % vs #23 after 168 s of sustained load, not repeated)</td><td>—</td></tr>
+    <tr><td colspan="5" class="src">Also measured: the logits return in isolation (<code>hexagon_rpc_test</code>, 32 calls, warm): malloc 8919 µs, rpcmem 8771 µs, rpcmem + static <b>6381 µs</b> (−2538 µs), against a 259 µs 8-float call. Generated ids byte-identical across the three memories and to #23's logs at 512, 1024 and 4096. The <code>--eval</code> loop ran the DSP at 1167–1178 MHz against 1905–1915 in the generation loop (issue #41's opening number) (24-host-logits.md "Results" (i)–(iii)).</td></tr>
+  </table>
+
+  <table>
+    <tr><th colspan="5"><b>2026-09-17 · #23 · variant B: the same sources built <code>HEX_ARCH=v79</code></b> — first silicon numbers for the v79-native skel (pre-#35 quantiser decode; the four ±1-LSB v79 simulator failures were still present). Unit <code>R3CY205ZMND</code>*; v79 skel <code>aba0126e…</code>, SDK 6.4.0.1 / hexagon-clang 19.0.04, workstation build @ <code>e086248a</code>. File: <code>docs/measurements/23-sdk64-baseline.md</code>. In the benchmark as the three "unit <code>R3CY205ZMND</code>, v79-native skel" rows; kept as the v79 reference on that unit.</th></tr>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcyc / step</th><th>PPL / top-1 (<code>--eval</code>)</th></tr>
+    <tr><td>512</td><td>207.4</td><td>31.4 (31.9 ms)</td><td>60.1</td><td><code>t512_23</code> 41.2623 / 161 (x86 41.5466 / 164, −0.68 %); P4 prompt not run</td></tr>
+    <tr><td>1024</td><td>131.2</td><td>25.3 (39.6 ms)</td><td>76.5</td><td>5.9509 / 692</td></tr>
+    <tr><td>4096</td><td>34.4</td><td>11.4 (87.4 ms)</td><td>177.6</td><td>1.5687 / 3758</td></tr>
+  </table>
+
+  <table>
+    <tr><th colspan="5"><b>2026-09-17 · #23 · variant A: the P4 kernels rebuilt with SDK 6.4</b> — toolchain moved from SDK 6.0.0.2 / toolchain 8.7.08 to SDK 6.4.0.1 / hexagon-clang 19.0.04, kernels unchanged since <code>82eacd7e</code>; the question was "did the SDK move cost anything" (ledger ⑭). Unit <code>R3CY205ZMND</code>*; v75 skel <code>81dcaab4…</code>. File: <code>docs/measurements/23-sdk64-baseline.md</code>. In the benchmark as the three "v75 skel rebuilt with SDK 6.4.0.1" rows.</th></tr>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcyc / step</th><th>PPL / top-1 (<code>--eval</code>)</th></tr>
+    <tr><td>512</td><td>189.0</td><td>31.9 (31.3 ms)</td><td>64.3</td><td><code>t512_23</code> 40.7596 / 162; P4 prompt 33.0884 / 189 (x86 33.0195 / 184, +0.21 %)</td></tr>
+    <tr><td>1024</td><td>117.1</td><td>23.2 (43.2 ms)</td><td>84.2</td><td>5.9141 / 698</td></tr>
+    <tr><td>4096</td><td>27.1</td><td>9.6 (104.1 ms)</td><td>213.0</td><td>1.5662 / 3763</td></tr>
+  </table>
+
+  <table>
+    <tr><th colspan="5"><b>2026-09-16 · M6 P4 · int16 activation for <code>down_proj</code></b> (<code>MATMUL_W8A16</code> lane-wise kernel) on top of P3's tiled <code>vrmpy</code> matmul and vector quantizer — the first record of the current kernel set and the baseline #23 re-measured. Unit <code>R3CY10WM83Y</code>; v75 skel built at <code>82eacd7e</code>, SDK 6.0.0.2 / toolchain 8.7.08. No measurement file (predates <code>docs/measurements/</code>): HEXAGON.md §8.2 "M6 P4 on device" and "Throughput by context". In the benchmark as the three "M6 P4" rows.</th></tr>
+    <tr><th>Context</th><th>Prefill tok/s</th><th>Decode tok/s</th><th>DSP Mcyc / step</th><th>PPL / top-1 (<code>--eval</code>)</th></tr>
+    <tr><td>512</td><td>192.1</td><td>27.7 (36.1 ms)</td><td>68.9</td><td>P4 prompt 33.3132 / 189 (x86 33.0195 / 184, +0.89 %); 387-token local prompt 37.6413 / 138 (x86 37.1629 / 134, +1.29 %)</td></tr>
+    <tr><td>1024</td><td>118.2</td><td>22.9 (43.7 ms)</td><td>85.2</td><td>—</td></tr>
+    <tr><td>4096</td><td>27.3</td><td>9.4 (106.1 ms)</td><td>216.9</td><td>—</td></tr>
+  </table>
+  <p class="src">* Which unit ran #23: the handoff's own "Results" heading says <code>R3CY10WM83Y</code>, and its step 2 notes that the drafts quoted the two serials inconsistently and passed none to <code>adb</code>. #24 read back a different serial the next day and a different generation-loop clock (1.91 vs 2.05 GHz) with cycle counts that match, so HEXAGON_BENCHMARK.md and HEXAGON.md §7 rule 9 assign #23 to <code>R3CY205ZMND</code>; this page follows that ruling.</p>
+</div>
+
+<div class="panel">
+  <h2>Before the benchmark table: the records the P4 rows replaced</h2>
+  <p>Earlier device numbers use a different harness state or prompt and are not comparable cell for cell; they show the shape of the climb. All from HEXAGON.md §8.2.</p>
+  <table>
+    <tr><th>Record</th><th>What it was</th><th>Decode</th><th>Prefill</th></tr>
+    <tr><td>M4 → M5 (attention kernel vectorised)</td><td>Galaxy S25 (HEXAGON.md §8 header: SM-S931N, SDK 6.3.0.0), v75 skel; scalar-score vs vectorised attention, same session</td><td>512: 9.8 → 11.2 tok/s (211 → 185 Mcyc); 1024: 7.3 → 11.3 tok/s</td><td>512: 21.1 → 25.2 tok/s; 1024: 16.8 → 23.2 tok/s</td></tr>
+    <tr><td>M6 P3 (tiled <code>vrmpy</code> matmul, vector quantizer), 2026-09-16</td><td>S25 Ultra <code>R3CY10WM83Y</code>, v75 skel @ <code>343653a5</code>, local 387-token prompt</td><td><code>--steps 64</code> steady ~73 Mcyc, host 76.4 ms (13.1 tok/s); <code>--eval</code> 55.9 Mcyc, host 45.8 ms (21.8 tok/s)</td><td>128-token chunk at pos 0: 1,413 Mcyc / 736 ms</td></tr>
+    <tr><td>M6 P4, same prompt as P3</td><td>same phone, skel @ <code>82eacd7e</code></td><td><code>--steps 64</code> steady 59.5 Mcyc, host 31.2 ms (32.0 tok/s); <code>--eval</code> 43.3 Mcyc, host 38.0 ms (26.3 tok/s)</td><td>871.9 Mcyc / 478 ms</td></tr>
+    <tr><td>Before M6, per-op HexKL path</td><td>—</td><td>~0.16 tok/s</td><td>—</td></tr>
+  </table>
+  <p class="src">HEXAGON.md §8.2: M4 → M5 table, "M6 P3 on device", "M6 P4 on device" (the P3/P4 host figures are marked not comparable there — "the DSP pcycles are the comparable number").</p>
+</div>
+
+<div class="panel">
+  <h2>Decode tok/s over measurement date, 512 and 4096, with the goal lines</h2>
+  <svg viewBox="0 0 760 380" role="img" aria-label="Decode tokens per second at 512 and at 4096 tokens of context for the five device measurements between 2026-09-16 and 2026-09-18, with goal lines at 70.3, 60 and 27.5">
+    <!-- grid and y axis: 0..80 tok/s over y = 300..30 (3.375 px per tok/s) -->
+    <g font-size="10" class="t2">
+      <line x1="90" y1="300" x2="700" y2="300" stroke="var(--grid)"/>
+      <line x1="90" y1="232.5" x2="700" y2="232.5" stroke="var(--grid)"/>
+      <line x1="90" y1="165" x2="700" y2="165" stroke="var(--grid)"/>
+      <line x1="90" y1="97.5" x2="700" y2="97.5" stroke="var(--grid)"/>
+      <line x1="90" y1="30" x2="700" y2="30" stroke="var(--grid)"/>
+      <text x="82" y="304" text-anchor="end">0</text>
+      <text x="82" y="236" text-anchor="end">20</text>
+      <text x="82" y="169" text-anchor="end">40</text>
+      <text x="82" y="101" text-anchor="end">60</text>
+      <text x="82" y="34" text-anchor="end">80</text>
+      <text x="20" y="20" font-size="11">decode tok/s</text>
+      <text x="180" y="322" text-anchor="middle">2026-09-16</text>
+      <text x="395" y="322" text-anchor="middle">2026-09-17</text>
+      <text x="610" y="322" text-anchor="middle">2026-09-18</text>
+      <text x="180" y="336" text-anchor="middle">M6 P4 · R3CY10WM83Y</text>
+      <text x="395" y="336" text-anchor="middle">#23 A v75 · #23 B v79 · R3CY205ZMND</text>
+      <text x="610" y="336" text-anchor="middle">#24 v75 · #35 v79 · R3CY10WM83Y</text>
+    </g>
+    <!-- goal lines -->
+    <g stroke="var(--dim)" stroke-width="1.5" stroke-dasharray="6 4">
+      <line x1="90" y1="62.7" x2="700" y2="62.7"/>
+      <line x1="90" y1="97.5" x2="700" y2="97.5"/>
+      <line x1="90" y1="207.2" x2="700" y2="207.2"/>
+    </g>
+    <g font-size="10" class="t2">
+      <text x="94" y="59">70.3 · w4a8 goal @512</text>
+      <text x="94" y="94">60 · W8A8 stage-1 goal @512 (provisional)</text>
+      <text x="696" y="203" text-anchor="end">27.5 · w4a8 goal @4096</text>
+    </g>
+    <!-- 512 series: blue circles. v75 solid connector, v79 dashed connector -->
+    <polyline points="180,206.5 375,192.3 590,200.8" fill="none" stroke="var(--w)" stroke-width="2"/>
+    <polyline points="415,194.0 630,195.7" fill="none" stroke="var(--w)" stroke-width="2" stroke-dasharray="5 4"/>
+    <g stroke="var(--panel)" stroke-width="2">
+      <circle cx="180" cy="206.5" r="5" fill="var(--panel)" stroke="var(--w)"><title>M6 P4, 2026-09-16, v75, 512: 27.7 tok/s, 68.9 Mcyc</title></circle>
+      <circle cx="375" cy="192.3" r="5" fill="var(--panel)" stroke="var(--w)"><title>#23 A, 2026-09-17, v75, 512: 31.9 tok/s, 64.3 Mcyc</title></circle>
+      <circle cx="415" cy="194.0" r="5" fill="var(--w)"><title>#23 B, 2026-09-17, v79, 512: 31.4 tok/s, 60.1 Mcyc</title></circle>
+      <circle cx="590" cy="200.8" r="5" fill="var(--panel)" stroke="var(--w)"><title>#24, 2026-09-18, v75, 512: 29.4 tok/s, 65.1 Mcyc</title></circle>
+      <circle cx="630" cy="195.7" r="5" fill="var(--w)"><title>#35 B1, 2026-09-18, v79, 512: 30.9 tok/s, 61.2 Mcyc</title></circle>
+    </g>
+    <g font-size="10">
+      <text x="180" y="222" text-anchor="middle">27.7</text>
+      <text x="368" y="184" text-anchor="end">31.9</text>
+      <text x="422" y="184">31.4</text>
+      <text x="583" y="214" text-anchor="end">29.4</text>
+      <text x="637" y="190">30.9</text>
+    </g>
+    <!-- 4096 series: orange squares -->
+    <polyline points="180,268.3 375,267.6 590,269.3" fill="none" stroke="var(--x)" stroke-width="2"/>
+    <polyline points="415,261.5 630,262.2" fill="none" stroke="var(--x)" stroke-width="2" stroke-dasharray="5 4"/>
+    <g stroke-width="2">
+      <rect x="175" y="263.3" width="10" height="10" fill="var(--panel)" stroke="var(--x)"><title>M6 P4, 2026-09-16, v75, 4096: 9.4 tok/s, 216.9 Mcyc</title></rect>
+      <rect x="370" y="262.6" width="10" height="10" fill="var(--panel)" stroke="var(--x)"><title>#23 A, 2026-09-17, v75, 4096: 9.6 tok/s, 213.0 Mcyc</title></rect>
+      <rect x="410" y="256.5" width="10" height="10" fill="var(--x)" stroke="var(--panel)"><title>#23 B, 2026-09-17, v79, 4096: 11.4 tok/s, 177.6 Mcyc</title></rect>
+      <rect x="585" y="264.3" width="10" height="10" fill="var(--panel)" stroke="var(--x)"><title>#24, 2026-09-18, v75, 4096: 9.1 tok/s, 225.9 Mcyc</title></rect>
+      <rect x="625" y="257.2" width="10" height="10" fill="var(--x)" stroke="var(--panel)"><title>#35 B1, 2026-09-18, v79, 4096: 11.2 tok/s, 186.8 Mcyc (cooled re-run)</title></rect>
+    </g>
+    <g font-size="10">
+      <text x="180" y="290" text-anchor="middle">9.4</text>
+      <text x="368" y="290" text-anchor="end">9.6</text>
+      <text x="424" y="255">11.4</text>
+      <text x="583" y="290" text-anchor="end">9.1</text>
+      <text x="639" y="256">11.2</text>
+    </g>
+    <!-- legend -->
+    <g font-size="11">
+      <circle cx="100" cy="360" r="5" fill="var(--panel)" stroke="var(--w)" stroke-width="2"/><text x="110" y="364">512, v75 skel</text>
+      <circle cx="205" cy="360" r="5" fill="var(--w)"/><text x="215" y="364">512, v79 skel</text>
+      <rect x="305" y="355" width="10" height="10" fill="var(--panel)" stroke="var(--x)" stroke-width="2"/><text x="320" y="364">4096, v75 skel</text>
+      <rect x="420" y="355" width="10" height="10" fill="var(--x)"/><text x="435" y="364">4096, v79 skel</text>
+      <line x1="530" y1="360" x2="560" y2="360" stroke="var(--dim)" stroke-width="1.5" stroke-dasharray="6 4"/><text x="566" y="364">goal line</text>
+    </g>
+  </svg>
+  <p><b>Read the chart with the unit in mind.</b> The 2026-09-17 points are from unit <code>R3CY205ZMND</code> (2.05 GHz in the decode loop); the 09-16 and 09-18 points are from <code>R3CY10WM83Y</code> (1.91 GHz). A tok/s step between those columns is mostly the clock: with the same v75 kernels, #24 and #23 A differ by −8 % tok/s at 512 but only +1.2 % in DSP cycles (65.1 vs 64.3 Mcyc). <b>DSP Mcycles per decode step is the number to compare across device units</b>; tok/s only within a unit (HEXAGON_BENCHMARK.md "Method"; HEXAGON.md §7 rule 9 (b)). In cycles the record reads: 512 → 68.9 (P4) → 64.3 (#23 A) → 60.1 (#23 B) → 65.1 (#24) → 61.2 (#35); 4096 → 216.9 → 213.0 → 177.6 → 225.9 → 186.8. The 09-16 → 09-17 512 "gain" of 27.7 → 31.9 tok/s was the unit, not the SDK (HEXAGON.md §7 rule 9). Hover a point for its Mcyc.</p>
+  <p class="src">Points: the History blocks above. Goal lines: HEXAGON_BENCHMARK.md "Goals" — stage 1 W8A8 decode @512 ≥ 60 (provisional, the int8 weight-stream bound, to be replaced by the ceiling #25 measures); stage 1 w4a8 ≥ 70.3 @512 / ≥ 27.5 @4096 (the GENIEX_LLAMACPP q4_0 NPU rows).</p>
+</div>
+
+<div class="panel">
+  <h2>What each measurement decided</h2>
+  <p><b>M6 P4 (2026-09-16) — the kernel set is complete and exact to its definition.</b> The int16 <code>down_proj</code> kernel matched a reference recomputed from the DSP's own input to one fp16 ulp (rel-RMS 1.6e-4); the DSP-vs-x86 perplexity gap of +0.16 … +1.29 % across prompts was isolated to the upstream ATTN/W8A8 qf32 chain, not to the new kernels, and became the accuracy band later handoffs gate on. Decode time on the DSP fell 2.5–2.8× against P3; the host wall fell further than the DSP did for reasons not investigated, which is where the rule "the DSP pcycles are the comparable number" comes from (HEXAGON.md §8.2 "M6 P4 on device").</p>
+  <p><b>#23 (2026-09-17) — no SDK regression; v79 is data, not a default.</b> Variant A (v75, SDK 6.4.0.1) matched P4 within −1.6 … −0.6 % on prefill and at or above it on decode, with the P4 prompt at +0.21 % against x86, so ledger ⑭ (SDK 6.4) closed. The 512 decode pair was found to be ±5 % by construction, which became a standing caveat. Variant B (v79-native skel) ran the full set with no hang, no DSP restart and no fatal FARF line, 10–27 % faster than v75 with PPL and top-1 tracking A at every context — while the same build failed four simulator tests by ±1 LSB. Standing rule from it: a v79 change is judged by <em>both</em> gates; the shipping skel stayed v75 until ledger ④ was answered, and issue #35 was told to re-read its plan against these numbers (23-sdk64-baseline.md "Results", "Accuracy"; HEXAGON.md §7 rule 1 update, §8.2).</p>
+  <p><b>#24 (2026-09-18) — the logits return is not a lever; ledger ⑫ closed.</b> The 607,744-byte logits return costs about 2.5 ms in an empty call (removed by mapping the rpcmem buffer once with <code>FASTRPC_MAP_STATIC</code>) and less than 0.1 ms inside a real 34 ms decode step, where malloc, rpcmem and static land within 70 µs of each other with byte-identical generated ids and PPL. The harness and <code>HexagonBackend</code> ship the static path on the strength of the isolated number; no DSP top-k / argmax method (ABI v5) is opened, because its trigger had been written against the nominal 2090 MHz clock and the same-minute malloc run showed the gap to be this unit's 1.91 GHz clock. Two by-products: the two-unit / two-clock rule (HEXAGON.md §7 rule 9, with "compare Mcycles across units" and "run sub-ms A/Bs twice with reversed order, read the second pass") and issue #41's opening number (1.17 GHz under <code>--eval</code>). The decode budget was sent to the weight stream (#25, then #51) and to #41 (24-host-logits.md "What the rules yield"; HEXAGON.md §8.2 "Host path" verdict, §9).</p>
+  <p><b>#35 (2026-09-18) — the v79 flip is accepted; §7 rule 1 closed; the 4096 drift goes to issue #53.</b> B1 (v79 shipping skel) passed the ±5 % speed gate at 512 and 1024 and the <code>t512_23</code> accuracy gate, and "Now" in the benchmark moved to its rows. B2 (qf helpers forced on v79) reproduced B1's PPL and top-1 digit for digit within 0.5 % speed, so the 2026-08 IEEE-helper failures were a toolchain-8.x artefact and rule 1's open question closed. Two misses were ruled not to hold the flip: the 4096 cells (+5.9 / +5.2 % cycles, −6.6 / −4.9 % prefill against #23 B on the other unit) repeat #24's v75 miss on this unit the day before with a DSP diff of comments and one token-id check, so they are attributed to unit / session and tracked as issue #53 (rule 9 (e)); and the P4-prompt band 33.07–33.45 had been set from v75 records only, so <b>32.4497 / 184 is re-baselined as the v79 accuracy record</b> (band ±0.3 %, top-1 184 ± 4), with the 1.7 % v79-vs-v75 offset sent to the layer-0 bisection of #26 (ledger ⑮). Read within the unit and the day, v79 is still 17 % fewer decode cycles and 29 % more prefill than v75 at 4096 (35-v79-skel.md "Verdict", "Notes"; HEXAGON.md §7 rule 1 "Closed", §8.2 "#35" verdict, §9).</p>
+</div>
+
+<div class="panel warn">
+  <h2>What is open after these measurements</h2>
+  <ul>
+    <li><b>#53</b> — run #23's exact v79 binary on <code>R3CY10WM83Y</code> to split "unit / session" from "code" at 4096 before #25 / #26 gate on that context (HEXAGON.md §7 rule 9 (e), §9).</li>
+    <li><b>#25</b> — cross-op prefetch and the chunk / <code>MM_TB</code> / <code>MM16_R</code> device sweep; it measures the W8 decode ceiling that replaces the provisional ≥ 60 goal (HEXAGON_BENCHMARK.md "Goals", levers ① ⑨ ⑩).</li>
+    <li><b>#41</b> — DSP clock during host idle gaps: 1.17 GHz under <code>--eval</code> vs 1.91 GHz in the generation loop on the same unit; matters for the <code>engine="htp"</code> app, which does host work between steps (HEXAGON.md §9).</li>
+    <li><b>#51</b> — the 4-bit weight stream (307 MB per step) on HVX, the path to the 70.3 / 27.5 w4a8 goals; issue #49's arithmetic says 70.3 at W8 would need 41.9 GB/s over the whole step with 596 MB of int8 weights (HEXAGON_BENCHMARK.md "Goals").</li>
+    <li><b>Ledger ⑮ / #26</b> — the upstream qf32 chain behind the DSP-vs-x86 PPL band, now with a v79-vs-v75 <code>--dump-op</code> pair to explain the −1.7 % offset (HEXAGON.md §9).</li>
+  </ul>
+</div>
+
+<p class="note">Hexagon backend beginner guide · sources: docs/measurements/23-sdk64-baseline.md, docs/measurements/24-host-logits.md (branch hvx/24-host-logits), docs/measurements/35-v79-skel.md (branch hvx/35-v79-skel), docs/backend_guide/HEXAGON_BENCHMARK.md, docs/backend_guide/HEXAGON.md §7 rule 9 and §8.2. Written 2026-09-18 against hvx_impl commit 4b39062f.</p>
+</body>
+</html>
