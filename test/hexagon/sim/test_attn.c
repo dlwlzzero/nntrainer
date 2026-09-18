@@ -195,15 +195,19 @@ static void env_free(struct attn_env *e) {
  * tail) and 100 (L = 101, one full block plus a 37-lane block). The
  * kernel's split (nb blocks per kv head) follows the worker count, so the
  * same cases on a 5-worker pool exercise the remainder rotation. */
-static int run_long(int n_workers, const char *suffix, uint64_t *pc1024) {
+static int run_long(int n_workers, uint64_t *pc1024) {
   const struct attn_shape *s = &SHAPE_LONG;
   const float scale = 1.0f / sqrtf((float)s->hd);
   static const uint32_t POS[3] = {1024u, 1087u, 100u};
   struct attn_env e;
-  char tag[64];
+  char tag[64], suffix[16] = "";
   int rc = 0;
 
   env_init(&e, s, 1u, n_workers);
+  /** wp_create clamps to the HVX unit count, so the tag carries the pool
+   * the cases actually ran on (v79: _w5; a 4-unit part would say _w4). */
+  if (n_workers > 0)
+    snprintf(suffix, sizeof(suffix), "_w%d", wp_size(e.c.pool));
   kv_prefill(s, (__fp16 *)e.kv, e.kv_ref);
   for (int i = 0; i < 3 && !rc; ++i) {
     snprintf(tag, sizeof(tag), "attn_decode_p%u%s", (unsigned)POS[i], suffix);
@@ -227,9 +231,9 @@ int test_attn(void) {
   env_free(&e);
 
   if (!rc)
-    rc = run_long(0, "", &pc1024);
+    rc = run_long(0, &pc1024);
   if (!rc)
-    rc = run_long(5, "_w5", NULL);
+    rc = run_long(5, NULL);
 
   if (rc)
     return 1;
