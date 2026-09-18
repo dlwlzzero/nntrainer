@@ -226,6 +226,6 @@ met by the old `malloc` path and is met by all three. Close ⑫ and put the deco
     with thermal drift; it was not repeated.
   - No FARF errors in any `device_farf_*.log` from this session; no stale-file pushes (device
     md5 read-back matches the step-1 build for both skel and harness).
-- logs from this session (all under `logs/hexagon/`, committed with this file):
+- logs from this session (all under `logs/hexagon/` on the workstation and on branch `hvx/24-host-logits-v2` @ `b6d73420`; not in this PR, `*.log` is gitignored and the device FARF lines carry trailing whitespace that fails the CI whitespace check):
   `device_test_20260918_101728`, `device_test_20260918_102446`, and
   `e2e_20260918_{101738,101746,101753,101816,101843,101926,101944,102352,102411,102419,102427}`.
