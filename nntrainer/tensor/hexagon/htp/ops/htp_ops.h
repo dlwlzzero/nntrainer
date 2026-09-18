@@ -15,6 +15,26 @@
 #include "nntr_htp_common.h"
 #include "worker_pool.h"
 
+struct dma_queue_s; /* dma-queue.h; only hvx-matmul.c and htp_graph.c use it */
+
+/** Ring depth of each worker's DMA queue (graph lifetime, one per worker):
+ * at most the in-op "chunk c+1" kick plus one cross-op prefetch are ever
+ * outstanding, so the 3 usable slots of a 4-deep ring suffice. Must be a
+ * power of two (dma_queue_init rounds up regardless). */
+#define HTP_MM_DMA_QUEUE_CAP 4u
+
+/**
+ * @brief Per-worker record of a weight chunk kicked ahead of its op (the
+ *        cross-op prefetch of hvx-matmul.c, issue #25).
+ */
+struct htp_mm_prefetch {
+  const struct nntr_htp_op_desc *desc; /**< op whose chunk 0 is in flight,
+                                          NULL = nothing pending */
+  uint8_t *buf;                        /**< VTCM half-slab the chunk lands in */
+  uint32_t rows;                       /**< rows in flight */
+  uint32_t hits; /**< diagnostics: ops that found their chunk 0 in flight */
+};
+
 /**
  * @brief Per-forward-call execution state passed to every op kernel.
  */
@@ -32,6 +52,15 @@ struct htp_exec_ctx {
   uint8_t *vtcm;       /**< per-worker weight double buffer for the tiled matmul
                           (hvx-matmul.c) */
   uint32_t vtcm_size;
+  struct dma_queue_s **dmaq;  /**< [n_workers] graph-lifetime DMA queues,
+                                 NULL when VTCM is absent
+                                 (htp_graph_dma_init) */
+  void *dmaq_mem;             /**< one block backing every queue */
+  struct htp_mm_prefetch *pf; /**< [n_workers] pending cross-op prefetch */
+  const struct nntr_htp_op_desc *next_mm; /**< the next tiled matmul
+                                  (W8A8 / LOGITS) after the running op in
+                                  this call, NULL if none; set per op by
+                                  htp_graph_forward_upto */
   /** Per-op-kind profile, accumulated by htp_graph_forward_upto around each
    * op call; read/cleared through htp_graph_profile_get/reset. Sim-side
    * instrumentation only: not part of the RPC ABI. */

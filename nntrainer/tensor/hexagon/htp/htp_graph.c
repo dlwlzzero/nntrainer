@@ -11,9 +11,13 @@
  */
 #include <HAP_compute_res.h>
 #include <HAP_perf.h>
+#ifdef HTP_PROF_FARF
+#include <HAP_farf.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
+#include "dma-queue.h"
 #include "htp_graph.h"
 
 const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
@@ -23,6 +27,51 @@ const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
 };
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
+
+int htp_graph_dma_init(struct htp_exec_ctx *c, int n_workers) {
+  const size_t align = dma_queue_alignof();
+  const size_t one =
+    (dma_queue_sizeof(HTP_MM_DMA_QUEUE_CAP) + align - 1u) & ~(align - 1u);
+  int i;
+
+  if (!c || n_workers <= 0)
+    return 1;
+  c->dmaq = calloc((size_t)n_workers, sizeof(*c->dmaq));
+  c->pf = calloc((size_t)n_workers, sizeof(*c->pf));
+  c->dmaq_mem = memalign(align, one * (size_t)n_workers);
+  if (!c->dmaq || !c->pf || !c->dmaq_mem) {
+    htp_graph_dma_destroy(c);
+    return 1;
+  }
+  for (i = 0; i < n_workers; ++i)
+    c->dmaq[i] = dma_queue_init((uint8_t *)c->dmaq_mem + one * (size_t)i,
+                                HTP_MM_DMA_QUEUE_CAP, (uintptr_t)c->vtcm,
+                                c->vtcm_size, NULL);
+  return 0;
+}
+
+static void dma_flush_job(void *arg, int wid, int nw) {
+  struct htp_exec_ctx *c = arg;
+  (void)nw;
+  dma_queue_flush(c->dmaq[wid]);
+  c->pf[wid].desc = NULL;
+}
+
+void htp_graph_dma_flush(struct htp_exec_ctx *c) {
+  if (c && c->dmaq && c->pool)
+    wp_run(c->pool, dma_flush_job, c);
+}
+
+void htp_graph_dma_destroy(struct htp_exec_ctx *c) {
+  if (!c)
+    return;
+  free(c->dmaq);
+  free(c->pf);
+  free(c->dmaq_mem);
+  c->dmaq = NULL;
+  c->pf = NULL;
+  c->dmaq_mem = NULL;
+}
 
 int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
                       uint8_t *weights, uint32_t wsize, uint8_t *kv,
@@ -65,23 +114,38 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   /** Quant scratch sized by the widest matmul k in this op-list; x2 for the
    * int16 rows of MATMUL_W8A16. */
   for (i = 0; i < g->cfg.n_ops; ++i)
-    if ((g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
-         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
-         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16) &&
-        g->ops[i].k > k_max)
-      k_max = g->ops[i].k;
+    if (g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
+        g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
+        g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16) {
+      if (g->ops[i].k > k_max)
+        k_max = g->ops[i].k;
+      g->stream_bytes += (uint64_t)g->ops[i].n * g->ops[i].k;
+    }
   if (k_max) {
     g->ctx.xq = memalign(128, (size_t)g->cfg.max_chunk * k_max * 2u);
     g->ctx.xq_scale = malloc((size_t)g->cfg.max_chunk * sizeof(float));
   }
   g->ctx.prof_op_cycles =
     calloc(g->cfg.n_ops ? g->cfg.n_ops : 1u, sizeof(uint64_t));
+  /** next_mm[i]: the first tiled matmul after op i, walked once backwards.
+   * The forward loop clips it to n_ops_limit so a partial run never kicks
+   * a chunk for an op it will not execute. */
+  g->next_mm = malloc((g->cfg.n_ops ? g->cfg.n_ops : 1u) * sizeof(uint32_t));
+  if (g->next_mm) {
+    uint32_t nx = UINT32_MAX;
+    for (i = g->cfg.n_ops; i-- > 0u;) {
+      g->next_mm[i] = nx;
+      if (g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
+          g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS)
+        nx = i;
+    }
+  }
   /** [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   g->ctx.attn_scratch = memalign(
     128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
   if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale)) || !g->ctx.attn_scratch ||
-      !g->ctx.prof_op_cycles) {
+      !g->ctx.prof_op_cycles || !g->next_mm) {
     htp_graph_destroy(g);
     return 1;
   }
@@ -104,6 +168,13 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
         HAP_compute_res_release(id);
       }
     }
+  }
+  /** The matmul streaming path needs one DMA queue per worker for the
+   * session (chunks are kicked ahead across ops, so the queue cannot live
+   * inside an op call any more). Without VTCM the queues are not needed. */
+  if (g->ctx.vtcm && htp_graph_dma_init(&g->ctx, wp_size(g->ctx.pool))) {
+    htp_graph_destroy(g);
+    return 1;
   }
   return 0;
 }
@@ -144,10 +215,17 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   g->ctx.n_tokens = n_tokens;
   g->ctx.pos = pos;
 
+#ifdef HTP_PROF_FARF
+  uint64_t prof0[NNTR_HTP_OP_KIND_COUNT];
+  memcpy(prof0, g->ctx.prof_cycles, sizeof(prof0));
+#endif
+
   t0 = HAP_perf_get_pcycles();
   for (i = 0; i < n_ops_limit; ++i) {
     const uint32_t kind = g->ops[i].kind;
     const uint64_t s = HAP_perf_get_pcycles();
+    g->ctx.next_mm =
+      g->next_mm[i] < n_ops_limit ? &g->ops[g->next_mm[i]] : NULL;
     htp_op_table[kind](&g->ctx, &g->ops[i]);
     const uint64_t dt = HAP_perf_get_pcycles() - s;
     g->ctx.prof_cycles[kind] += dt;
@@ -156,6 +234,32 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   }
   if (pcycles)
     *pcycles = HAP_perf_get_pcycles() - t0;
+#ifdef HTP_PROF_FARF
+  /** Device profile (measurement builds only, HEXAGON.md section 5.3): this
+   * call's per-kind split in kilo-pcycles, so a handoff can read the
+   * matmul / non-matmul share off logcat without an IDL change. "rest" is
+   * every kind that is not one of the four named. */
+  {
+    const uint64_t loop = HAP_perf_get_pcycles() - t0;
+    uint64_t d[NNTR_HTP_OP_KIND_COUNT], rest = 0;
+    uint32_t kk;
+    for (kk = 0; kk < (uint32_t)NNTR_HTP_OP_KIND_COUNT; ++kk) {
+      d[kk] = g->ctx.prof_cycles[kk] - prof0[kk];
+      rest += d[kk];
+    }
+    rest -= d[NNTR_HTP_OP_MATMUL_W8A8] + d[NNTR_HTP_OP_MATMUL_W8A16] +
+            d[NNTR_HTP_OP_MATMUL_LOGITS] + d[NNTR_HTP_OP_ATTN];
+    FARF(ALWAYS,
+         "nntr_htp: prof n=%u pos=%u ops=%u kcyc=%u mm8=%u mm16=%u lg=%u "
+         "attn=%u rest=%u",
+         (unsigned)n_tokens, (unsigned)pos, (unsigned)n_ops_limit,
+         (unsigned)(loop / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_W8A8] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_W8A16] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_MATMUL_LOGITS] / 1000u),
+         (unsigned)(d[NNTR_HTP_OP_ATTN] / 1000u), (unsigned)(rest / 1000u));
+  }
+#endif
   return 0;
 }
 
@@ -206,12 +310,17 @@ const uint8_t *htp_graph_buf_ref(const struct htp_graph *g, uint32_t buf,
 void htp_graph_destroy(struct htp_graph *g) {
   if (!g)
     return;
+  /** Drain every worker's DMA queue on the workers before the VTCM the
+   * descriptors write into goes away. */
+  htp_graph_dma_flush(&g->ctx);
   if (g->vtcm_ctx_id)
     HAP_compute_res_release(g->vtcm_ctx_id);
+  htp_graph_dma_destroy(&g->ctx);
   free(g->ctx.xq);
   free(g->ctx.xq_scale);
   free(g->ctx.attn_scratch);
   free(g->ctx.prof_op_cycles);
+  free(g->next_mm);
   if (g->ctx.pool)
     wp_destroy(g->ctx.pool);
   memset(g, 0, sizeof(*g));

@@ -4,11 +4,13 @@
 
 M6에서 만들지 않지만 설계 근거를 남긴다. ①②는 decode 대역폭·배리어 계열로 **디바이스 측정이 가능해진 뒤** 별 마일스톤으로, ③④는 환경 작업, ⑤⑥은 수치가 바뀌는 선택이라 사용자 결정이 필요하다.
 
-## ① cross-op weight prefetch (decode 대역폭)
+## ① cross-op weight prefetch (decode 대역폭) — **완료 (#25, 디바이스 확인 2026-09-18)**
 
 - 문제: 각 matmul이 자기 첫 스트립 DMA를 op 진입 후 kick하고 기다린다. ATTN·RMSNORM·eltwise가 도는 동안 DDR은 idle.
 - 설계: `htp_graph_forward_upto`가 op i를 실행하기 전에 op i+1..i+2 중 matmul의 첫 청크(워커별 buf[0])를 미리 kick. 워커 슬랩의 buf[0]을 "다음 op 전용"으로 예약하면 현재 op의 더블버퍼와 충돌하지 않는다(현재 op는 buf[1], buf[2] 사용 → 슬랩을 3분할). `dma_queue`를 op 수명이 아니라 그래프 수명으로 승격(현재는 op마다 memalign/free).
 - 기대: decode에서 matmul 사이 non-matmul 시간(P1 프로파일의 ATTN+RMSNORM+ROPE+ADD+SILU 합)만큼 DMA가 앞서 감. sim에서는 효과 측정 불가.
+- **구현 (#25, 2026-09-18, `docs/plans/25-decode-prefetch.md`)**: 설계는 위 스케치와 다르다 — 슬랩 3분할·buf[0] 예약 대신 **free-buffer handover**: 워커별 `dma_queue`를 그래프 수명으로 승격(`htp_graph_dma_init`, 파괴 전 워커에서 flush)하고, 마지막 청크 DMA를 pop한 뒤 비어 있는 반쪽 슬랩에 다음 타일 matmul(`ctx.next_mm`, init 때 만든 `next_mm[]` 표, 부분 실행 한계로 클립)의 청크 0을 kick해 `ctx.pf[wid]`에 기록; 다음 op 진입 시 포인터 동일성으로 hit, 불일치·DDR fallback은 flush. 3분할은 decode의 1청크 op를 2청크로 만들고 LOGITS 아래 VTCM 1/3을 놀리므로 기각. 출력은 구성상 bit-identical (`test_matmul_dma` (a)–(d), `graph` STAT 불변). 디바이스 판정은 `docs/measurements/25-decode-prefetch.md` (A `HTP_MM_NO_PREFETCH` 대 B, pass 2 Mcyc 비, 게이트 ≤ 0.90).
+- **완료 (2026-09-18, S25 Ultra `R3CY10WM83Y`, v79, SDK 6.4.0.2, `docs/measurements/25-decode-prefetch.md` pass 2)**: B(prefetch) / A(`HTP_MM_NO_PREFETCH`) = 54.575 / 61.735 Mcyc = **0.884**(−11.6 %; `mm8` 24.35 → 16.05 Mcyc, −34 %, stream-only skel의 순수 DMA 대기보다 0.5 Mcyc 아래 — W8A8 MAC은 스트림 뒤에 완전히 숨음). A는 #35 B1 +0.9 %(env PASS), `--eval` 41.4947 / 162와 `E2E gen`이 A/B 양 pass에서 byte-identical(G3 PASS). **prefetch가 기본값**(`HTP_MM_NO_PREFETCH`는 opt-out). 1024 / 4096에서는 B = C(stream-only) 0.1 % / 1.2 % 안 — 그 위 decode 레버는 ATTN(#58). W8 스트림 상한: `mm8`+`mm16`+`lg` = 32.2 Mcyc = 18.5 ms @1743 MHz = 32.3 GB/s → **54 tok/s @512**(HEXAGON_BENCHMARK.md 목표 셀, #51 입력).
 
 ## ② op 퓨전 (배리어 수 감소, ABI v5)
 
@@ -50,13 +52,19 @@ HEXAGON.md §7. IEEE hf·qf32 체인 오동작 원인 규명 후 `HEX_ARCH=v79` 
 - **NaN 처리 차이**: 벡터 absmax는 NaN을 absmax 후보로 세고 스칼라 `ref_quant_row`는 건너뛴다. 실모델 활성화에 NaN이 없어 방치했다.
 - **정확 일치가 필요해지면**: 정수 가수 곱 커널(fp16 가수를 정수로 꺼내 `Vw` 곱 → 시프트). 리뷰어 추정 ~20 vector ops / 32 lane으로 여전히 §7 한계(qf 포맷 연산만) 안에 들어간다. 현재 ±1 비율 3.6e-5(모델, sim 실측 0/65536)가 문제되지 않는 한 불필요.
 
-## ⑨ W8A8 DMA 청크 크기
+## ⑨ W8A8 DMA 청크 크기 — **완료 (#25, 2026-09-18: max-fit 유지)**
 
 `mm_worker_vtcm`의 청크는 슬랩 절반에 맞는 최대 타일 수(max-fit)라 decode(m=1, n=1024)는 워커당 청크 1개 = DMA 후 계산의 직렬 구조다. 스트립(32행) 단위 등 작은 청크와의 비교는 DDR 지연을 모델링하는 디바이스에서만 가능 — ① cross-op prefetch와 함께 판정. P3 이후 decode는 W8A16 지배(37 %)라 우선순위는 낮다.
 
-## ⑩ `MM_TB` 디바이스 재측정
+- **#25 (2026-09-18)**: `HTP_MM_CHUNK_ROWS=<n>` 빌드 플래그(0 = max-fit)로 변형 D(64행)를 같은 handoff에서 ①의 B와 비교(D 규칙: 512 decode Mcyc 2 % 이상 낮고 prefill이 B 이상이면 기본값).
+- **완료 (2026-09-18, 같은 handoff pass 2)**: D(64행) 59.993 vs B(max-fit) 54.575 Mcyc = **+9.9 %**, prefill도 낮음(181.4 vs 191.1 tok/s); D의 `mm8` 20.66 vs B 16.05 Mcyc — 작은 청크는 decode의 1청크 op를 여러 청크로 쪼개 청크마다 DMA 지연을 낸다. **max-fit 유지**, `HTP_MM_CHUNK_ROWS`는 기본값 없는 측정 플래그로 남김.
+
+## ⑩ `MM_TB` 디바이스 재측정 — **#57로 이관 (2026-09-18)**
 
 sim에서 `MM_TB 4`의 per-shape W8A8 이득은 1.3~3.7 %에 그쳤다(시뮬레이터가 가중치 대역폭을 제대로 과금하지 않기 때문). 디바이스에서 `MM_TB` 1/2/4/8을 재측정해 기본값을 확정한다.
+
+- **#25 (2026-09-18)**: `MM_TB`·`MM16_TB`를 `#ifndef` 기본값으로 바꿔 `HEX_EXTRA_CFLAGS=-DMM_TB=8u`로 변형을 빌드한다. `MM_TB`는 m=1에서 inert(`mm_tiles`가 m < MM_TB이면 tb=1 꼬리만 탄다)라 prefill 전용 노브; H1(prefetch) 판정 뒤 H2 handoff(`MM_TB 2/8`, `MM16_TB 1/4`, 512 토큰, pass 2 Mcyc 최저값, < 2 %면 현행 유지)로 기본값 확정. **`MM16_R`은 4로 고정**(static check): `mm16_block` 에필로그의 shuffle 트리가 정확히 4행만 접으므로 다른 값은 컴파일되지만 잘못된 행을 낸다(code review, 2026-09-18) — 스윕하려면 에필로그 일반화(값별 sim 게이트)가 먼저다.
+- **#57로 이관 (supervisor 2026-09-18)**: #25의 H2 sweep은 쓰지 않았다 — `MM_TB`·`MM16_TB`는 m=1에서 inert이고 decode `mm8`은 이미 순수 DMA 대기 아래라 H2는 prefill(m=128)만 움직일 수 있는데, prefill은 목표에서 5×이고 그 레버는 HMX다. `MM_TB 2/8` + `MM16_TB 1/4` sweep과 `MM16_R` 에필로그 일반화(2/4/8)는 **#57**의 디바이스 세션에서 함께 판정한다. ⑩은 #57 아래에서 열려 있다.
 
 P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 sim만 보고 정한 값이다(레지스터 압박 대 재사용의 절충). 디바이스에서 `MM16_R` 2/4/8 × `MM16_TB` 1/2/4 스윕을 decode(m=1)와 prefill(m=128) 양쪽에서 돌려 기본값을 확정한다 — m=1에서는 TB 블로킹이 무효라 R만 의미가 있다. ⑬(VTCM 스트리밍)과 같은 세션에서 함께 측정하는 것이 효율적이다.
 
@@ -73,9 +81,11 @@ P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 s
 - 2026-09-17, `docs/plans/24-host-logits.md` / 브랜치 `hvx/24-host-logits`: #23 로그(하네스는 RPC만 계측, argmax·`log_softmax_at`은 구간 밖)를 다시 읽으면 생성 모드의 host−DSP 간격은 512/1024/4096에서 0.5 / 2.9 / 2.2 ms(host 31.3 / 43.2 / 104.1 ms vs DSP 64.3 / 84.2 / 213.0 Mcyc @ 2.09 GHz)로, "~40 ms"는 P3 생성 모드(비교 불가로 이미 표시)와 teacher-forced `--eval` 행(`pcycles÷us` 1.15 GHz — 호스트가 151,936개 `exp()`에 ~10 ms를 쓰는 동안 DSP가 반클록으로 내려가는 idle-gap/DCVS 효과)에서 온 값이다. 구현은 (c)의 최소형: ABI·IDL·이미지 무변경, 호스트 logits 버퍼만 rpcmem(`HexagonBackend::logits_`, 하네스 `--logits-mem malloc|rpcmem|static`, `static`은 `FASTRPC_MAP_STATIC` 1회 매핑). `hexagon_rpc_test`가 8-float 대비 151,936-float 반환 비용을 메모리 종류별로 측정하고(`forward_full_us mem=…`), 하네스가 `E2E decode steps= median_us= median_pcycles= pcycles_per_us=` 요약을 찍는다. (a)/(b)는 static 반환이 8-float 대비 ≥ 2 ms일 때만 필요. 디바이스 수치: `docs/measurements/24-host-logits.md`.
 - 2026-09-18 측정(S25 Ultra `R3CY10WM83Y`, v75 skel `cc0f1725…`), **⑫ 종결**: 빈 호출(`hexagon_rpc_test` dummy path, 32회 warm median)에서 151,936 float 반환은 malloc 8919 / rpcmem 8771 / rpcmem+`FASTRPC_MAP_STATIC` 6381 µs — 1회 매핑이 2.5 ms를 없애고, fd 경로만으로는 0.15 ms. 실제 decode step @512(`--chunk 128 --steps 64`, 역순 2회)에서는 static 34.00 / rpcmem 34.06 / malloc 34.07 ms로 세 경로가 70 µs(0.2 %) 안 — 호스트 wall은 이 유닛 클록(1.91 GHz)의 DSP op loop 그 자체이고, 명목 2090 MHz로 계산한 2.85 ms "gap"은 유닛 클록이지 전송이 아니다(HEXAGON.md §7 rule 9(c)). `--eval` PPL 33.0884 / top-1 189, 생성 id는 세 경로와 #23 로그에 대해 byte-identical. 하네스와 `HexagonBackend`의 기본은 `static`; (a)/(b) DSP top-k/argmax(ABI v5)는 열지 않는다. 남은 호스트 측 항목은 idle-gap 동안의 DSP 클록(#41: `--eval` 1167–1178 vs 생성 루프 1905–1915 pcycles/µs), decode 예산은 weight stream(#25, #51).
 
-## ⑬ W8A16 VTCM/DMA 스트리밍 (P4에서 제외, D3)
+## ⑬ W8A16 VTCM/DMA 스트리밍 (P4에서 제외, D3) — **#59 (2026-09-18)**
 
 P4의 int16 lanewise `down_proj` 커널은 DDR 직접 읽기(행 4개 × 3 KB 동시 스트림)다. sim은 DDR/DMA를 모델링하지 않아 스트리밍의 이득을 판정할 수 없어 제외했다. 디바이스에서 `HTP_MM_NO_VTCM`식 A/B(같은 세션, decode·prefill 모두)로 판정하고, 이득이 있으면 `mm_worker_vtcm`의 청킹(`rows_per_buf`를 `MM16_R` 배수로)을 row-major용으로 일반화한다. `hvx-matmul.c`의 `Follow-up:` 노트가 자리다.
+
+- **숫자가 생겼다 (#25, 2026-09-18)**: stream-only skel C의 FARF 분할에서 `down`(row-major, 88.1 MB/step)은 `mm16` 7.23 Mcyc = 4.15 ms에 움직여 **21.2 GB/s**, 타일 DMA 링(q/k/v/o/gate/up 352.3 MB, 9.51 ms)은 **37.0 GB/s**. shipping 커널의 `mm16` 8.59 Mcyc(B의 15.7 %)는 스트림 대기보다 1.35 Mcyc 위일 뿐이라 큰 레버는 커널이 아니라 `down`을 DMA 링에 올리는 것(21 → 37 GB/s, ≈ 3 Mcyc/step) — **issue #59**(p2). `mm_worker_vtcm`의 청킹을 row-major용으로 일반화(`rows_per_buf`를 `MM16_R` 배수로)하는 설계는 위 그대로.
 
 ## ⑭ Hexagon SDK 6.0.0.2 → 6.4 이상 상향 — **사용자 요청(2026-09-16)** — **완료(#23, 디바이스 확인 2026-09-17)**
 

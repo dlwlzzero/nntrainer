@@ -129,6 +129,14 @@ AEEResult nntr_htp_init(remote_handle64 h, const uint8 *oplist, int oplistLen,
   }
   FARF(ALWAYS, "nntr_htp: init ok, weights=%d kv=%u act=%u n_ops=%u",
        weightsLen, kv_size, act_size, hdr.n_ops);
+#ifdef HTP_MM_STREAM_ONLY
+  /** The weight-stream ceiling build (HEXAGON.md section 5.3): print the
+   * exact byte count a step streams so GB/s is not hand-derived. */
+  if (s->graph_ready)
+    FARF(ALWAYS,
+         "nntr_htp: stream bytes/step=%u (STREAM_ONLY, outputs are garbage)",
+         (unsigned)s->graph.stream_bytes);
+#endif
   return AEE_SUCCESS;
 }
 

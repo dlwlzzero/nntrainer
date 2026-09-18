@@ -309,15 +309,31 @@ positions per vector; V is `[max_seq][head_dim]`. The validator requires
 
 **VTCM (4 MB requested best-effort at `init`).** `MATMUL_W8A8` /
 `MATMUL_LOGITS` split it evenly per worker (rounded down to 128 B) and
-use each slab as a two-chunk double buffer of whole 32-row tiles
-(`rows_per_buf & ~31`; `buf[1] = buf[0] + rows_per_buf*k` stays
-vector-aligned because `rows_per_buf % 32 == 0` and `k % 128 == 0`).
-Activations are not copied into VTCM: the kernel reads the quantized
-rows `xq` through the cache with 4-byte scalar loads, for which VTCM
-brings nothing. A slab that cannot hold two tiles (or `HTP_MM_NO_VTCM`)
-falls back to direct DDR reads with bit-identical output
-(`test_matmul_dma` checks 4 MB, 256 KB and 64 KB). `MATMUL_W8A16` does
-not use VTCM (a follow-up, section 9). The quant scratch `xq` is
+use each slab as two fixed half-slabs, each a DMA target of whole 32-row
+tiles (`rows_per_buf = (half / k) & ~31`; both halves are 128 B-aligned,
+so every chunk starts on a tile). The halves are op-independent on
+purpose — since #25 `buf[1]` is `buf[0] + half`, not `buf[0] +
+rows_per_buf*k` — because of the **cross-op prefetch** (ledger ①): each
+worker owns one DMA queue for the session (`htp_graph_dma_init`, one
+`HTP_MM_DMA_QUEUE_CAP`-deep ring per worker, drained on the workers
+before VTCM is released), and once its last chunk of an op has landed
+it kicks chunk 0 of the *next* tiled matmul (`ctx.next_mm`, from the
+graph's `next_mm[]` table, clipped to a partial run's limit) into the
+half its last chunk does not occupy, recording `{desc, buf, rows}` in
+`ctx.pf[wid]`. The next `mm_worker_vtcm` finds the record (pointer
+identity on the op array) and starts with chunk 0 in flight; a record
+for another op, or a DDR fallback, is drained first, and a prefetch is
+only kicked when the next op streams for this worker. The DDR keeps
+streaming through ROPE / ATTN / ADD / RMSNORM / SILU_MUL, which run on
+the same worker threads; the same bytes land in the same VTCM bytes, so
+the output is bit-identical by construction. `HTP_MM_CHUNK_ROWS=<n>`
+caps the chunk (default 0 = max-fit). Activations are not copied into
+VTCM: the kernel reads the quantized rows `xq` through the cache with
+4-byte scalar loads, for which VTCM brings nothing. A slab whose half
+cannot hold one tile (or `HTP_MM_NO_VTCM`) falls back to direct DDR
+reads with bit-identical output (`test_matmul_dma` checks 4 MB, 256 KB
+and 64 KB and the prefetch chain, section 5.2). `MATMUL_W8A16` does not
+use VTCM and is skipped by the prefetch chain (ledger ⑬, issue #59). The quant scratch `xq` is
 `2 × max_chunk × k_max` bytes since M6 P4 — int8 rows for
 W8A8/LOGITS, int16 rows for W8A16 — and `k_max` now includes the W8A16
 `k` (3072).
@@ -589,7 +605,15 @@ W8A16 cases m ∈ {1, 8} at n = 256 plus `(m, k, n) = (7, 3072, 100)`
 (row and token tails together) and `(2, 128, 6)` (k = 128, the 1- and
 2-row tails independently of the worker count);
 `test_matmul_dma` runs the VTCM path at 4 MB / 256 KB / 64 KB (the last
-one falls back to DDR). `test_quant` requires byte-identity against
+one falls back to DDR; with the v79 simulator's 6 workers the 256 KB
+case falls back too) on an X (k=1024, n=3072) → Y (k=2048, n=1024)
+chain with `ctx.next_mm` set, and since #25 checks the cross-op
+prefetch: (a) at 4 MB every worker finds its Y chunk 0 in flight
+(`SIM_TEST matmul_dma prefetch hits=6 workers=6`), (b) X after X drains
+the mismatched record, (c) a pending prefetch that meets the 64 KB DDR
+fallback is drained, (d) the three-size sweep with the prefetch on —
+every run bit-identical (`memcmp`) to the DDR path and X within the
+reference bound. `test_quant` requires byte-identity against
 `ref_quant_row` on random, all-zero, tie, negative-only, k=128 and
 k=3072 rows and at most a 2e-4 rate of ±1 differences on 64 generic
 rows, printing `SIM_TEST quant_generic STAT pm1=<n>/<total>`
@@ -679,6 +703,26 @@ weights[0]` (proving host-written data is visible), and 32 timed
 round-trips. `hexagon_e2e_test` mirrors `hexagon_ref_run`'s modes so
 the two outputs compare 1:1; every line starts with `E2E ` and each step
 reports DSP pcycles and host wall time.
+
+**Measurement-only skel flags** (`HEX_EXTRA_CFLAGS=-D…`, all off in the
+shipping build; the handoffs in `docs/measurements/` name which one a
+row ran): `HTP_MM_NO_VTCM` (direct DDR reads, M6), `HTP_FORCE_QF_HELPERS`
+(qf-format helpers on v79, #35), and since #25 `HTP_MM_NO_PREFETCH`
+(the cross-op prefetch compiled out, the A/B control), `HTP_MM_CHUNK_ROWS=<n>`
+(fixed DMA chunk, ledger ⑨), `HTP_MM_STREAM_ONLY` (every weight byte is
+DMA'd — the tiled ops skip `mm_tiles` after each chunk lands and
+`MATMUL_W8A16` DMAs its rows into the half-slabs instead of multiplying —
+and nothing is computed: the step time is the weight stream plus the
+non-matmul ops, the ceiling the W8A8 decode goal is stated against;
+outputs are garbage, and the skel prints `nntr_htp: stream
+bytes/step=595984384` after `init ok`), `HTP_PROF_FARF` (one
+`nntr_htp: prof n=… kcyc=… mm8=… mm16=… lg=… attn=… rest=…` line per
+forward call with this call's per-kind pcycle split, summarised by
+`tools/hexagon/summ_farf_prof.py` over the `device_farf_*.log`), and the
+kernel constants `MM_TB` and `MM16_TB` (`#ifndef` defaults 4 / 2,
+overridable for a sweep; `MM16_R` is also guarded but pinned to 4 by a
+static check, because the W8A16 epilogue's shuffle tree reduces exactly
+four rows — sweeping it needs that tree generalised first).
 
 ### 5.4 The CausalLM app (`engine="htp"`)
 
@@ -1641,6 +1685,26 @@ The v79 build with `-DHTP_FORCE_QF_HELPERS` (handoff variant B2) passes
 `quant matmul attn rmsnorm eltwise` with the v75 `attn` / `rmsnorm`
 STATs and the v79 `quant` / `matmul` STATs, as expected from which
 helpers switch.
+
+**#25 re-run (2026-09-18), the cross-op prefetch tree (`7d318718`,
+the last DSP-byte change of `hvx/25-decode-prefetch`; the later
+`MM16_R` static check leaves all 11 DSP objects identical), v79 only,
+`logs/hexagon/sim_v79_25_full.log`.** `profile acc` PASS with
+`profile_prefill_acc STAT max_abs=0.0659682 max_rel=92.7791` —
+bit-identical to the #35 v79 record above, as expected: the prefetch
+moves the same bytes into the same VTCM bytes and the simulator does not
+model DDR, so nothing may move. `workers=6`, `total_pcycles` 6,158,964
+(#35 6,174,196, −0.2 %), `MATMUL_W8A8` per_call 215,153 (216,272),
+`MATMUL_W8A16` 1,261,864 (=), `ATTN` 174,287 (174,095),
+`MATMUL_LOGITS` 113,504, `barrier_empty_x1000` 8,319,592 (=). 13/13
+PASS with every unit STAT equal to the #35 v79 record (`quant_generic
+0/65536`, `quant16_generic 184/25600`, every `matmul_w8a8_*` /
+`matmul_dma_ref_*` / `logits` `0/0`, `graph_prefill 0.0218946/6.88818`,
+`graph_decode 0.0197323/23.2374`, `graph_prefill_2workers
+0.0218946/6.88818`) plus the new `SIM_TEST matmul_dma prefetch hits=6
+workers=6` line (section 5.2). The per-kind pcycles are a relative
+signal only; the −11.6 % of the prefetch exists only on the device
+(section 8.2, "#25").
 
 The ≤ 25 % share predicate of `06-verification.md` cannot be read off
 this run — it is defined on `prefill512`, which was not re-measured —
