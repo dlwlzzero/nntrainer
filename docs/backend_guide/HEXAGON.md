@@ -333,7 +333,7 @@ VTCM: the kernel reads the quantized rows `xq` through the cache with
 cannot hold one tile (or `HTP_MM_NO_VTCM`) falls back to direct DDR
 reads with bit-identical output (`test_matmul_dma` checks 4 MB, 256 KB
 and 64 KB and the prefetch chain, section 5.2). `MATMUL_W8A16` does not
-use VTCM and is skipped by the prefetch chain (ledger ⑬). The quant scratch `xq` is
+use VTCM and is skipped by the prefetch chain (ledger ⑬, issue #59). The quant scratch `xq` is
 `2 × max_chunk × k_max` bytes since M6 P4 — int8 rows for
 W8A8/LOGITS, int16 rows for W8A16 — and `k_max` now includes the W8A16
 `k` (3072).
@@ -1685,6 +1685,26 @@ The v79 build with `-DHTP_FORCE_QF_HELPERS` (handoff variant B2) passes
 `quant matmul attn rmsnorm eltwise` with the v75 `attn` / `rmsnorm`
 STATs and the v79 `quant` / `matmul` STATs, as expected from which
 helpers switch.
+
+**#25 re-run (2026-09-18), the cross-op prefetch tree (`7d318718`,
+the last DSP-byte change of `hvx/25-decode-prefetch`; the later
+`MM16_R` static check leaves all 11 DSP objects identical), v79 only,
+`logs/hexagon/sim_v79_25_full.log`.** `profile acc` PASS with
+`profile_prefill_acc STAT max_abs=0.0659682 max_rel=92.7791` —
+bit-identical to the #35 v79 record above, as expected: the prefetch
+moves the same bytes into the same VTCM bytes and the simulator does not
+model DDR, so nothing may move. `workers=6`, `total_pcycles` 6,158,964
+(#35 6,174,196, −0.2 %), `MATMUL_W8A8` per_call 215,153 (216,272),
+`MATMUL_W8A16` 1,261,864 (=), `ATTN` 174,287 (174,095),
+`MATMUL_LOGITS` 113,504, `barrier_empty_x1000` 8,319,592 (=). 13/13
+PASS with every unit STAT equal to the #35 v79 record (`quant_generic
+0/65536`, `quant16_generic 184/25600`, every `matmul_w8a8_*` /
+`matmul_dma_ref_*` / `logits` `0/0`, `graph_prefill 0.0218946/6.88818`,
+`graph_decode 0.0197323/23.2374`, `graph_prefill_2workers
+0.0218946/6.88818`) plus the new `SIM_TEST matmul_dma prefetch hits=6
+workers=6` line (section 5.2). The per-kind pcycles are a relative
+signal only; the −11.6 % of the prefetch exists only on the device
+(section 8.2, "#25").
 
 The ≤ 25 % share predicate of `06-verification.md` cannot be read off
 this run — it is defined on `prefill512`, which was not re-measured —

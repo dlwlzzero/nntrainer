@@ -26,7 +26,7 @@ to 4 until the W8A16 epilogue is generalised) runs on B or D.
 | build_hexagon/skel/libnntr_htp_skel.B.so | `208b25a23c4b308d5d8eb0eec8a4d103` (55,208 B) | `-DHTP_PROF_FARF` | **B prefetch**: G1 |
 | build_hexagon/skel/libnntr_htp_skel.C.so | `853af711a5772852b440ef45a22cfaf3` (51,112 B) | `-DHTP_PROF_FARF -DHTP_MM_STREAM_ONLY` | **C ceiling**: G1' (GB/s, ceiling tok/s at 512 / 1024 / 4096). Outputs are garbage by construction |
 | build_hexagon/skel/libnntr_htp_skel.D.so | `2da2a4f9217ae904bf11c9bd99825f9b` (55,208 B) | `-DHTP_PROF_FARF -DHTP_MM_CHUNK_ROWS=64u` | **D chunk**: ledger ⑨ on top of B |
-| build_hexagon/skel/libnntr_htp_skel.so (default, not run) | `7dc42f5981cf000393d2d23c3c181314` (55,208 B) | (none) | the shipping build = B without the FARF line |
+| build_hexagon/skel/libnntr_htp_skel.so (default, not run) | `7dc42f5981cf000393d2d23c3c181314` (55,208 B) — **read-back 2026-09-18: this row was a `-DHTP_PROF_FARF` build** (its size equals B's; a clean default build of the same tree is **50,984 B**, md5 `811182a82a0f39359981b0945b6c7c4c` in the container, and the link is not byte-reproducible so only the size and the object md5s are the proof — see the Simulator record below) | (none) | the shipping build = B without the FARF line; prefetch on, `HTP_PROF_FARF` off |
 | build_hexagon/host/hexagon_e2e_test | `88996fee9a57113cf47793d877e4ae19` | `./tools/hexagon/build_host_test.sh` (host sources unchanged since #24) | |
 | build_hexagon/host/hexagon_rpc_test | `dd05aaab4cbe916c2efabfb9b6757678` | same | |
 | /tmp/qwen3_full.hexw / .hexcfg | `5abf61bef086368559423daa3bea9a99` / `5926be5703f85531c9c46c1978c25287` | packer unchanged since P4 (#23 / #35 tables) | |
@@ -138,13 +138,37 @@ Mcyc column on D (lowest host ms of pass 2, highest Mcyc of B/C/D) — rule 9 re
 | C ceiling | 1024 | qwen3_full | 186.6 | 38.156 | 26.21 | 73.809 | 1934.4 | 15.62 GB/s, 26.21 tok/s | 133817 |
 | C ceiling | 4096 | qwen3_full4k | 33.60 | 91.791 | 10.89 | 186.884 | 2036.0 | 6.49 GB/s, 10.89 tok/s | 133828 |
 
-**The step-level GB/s of C is not the DDR ceiling above 512**, because the stream-only skel still runs ATTN,
-LOGITS and the eltwise ops: its FARF split is `mm8`+`mm16` (pure DMA wait) 23.8 Mcyc of 53.0 at 512, 25.9 of
-73.8 at 1024, 26.4 of 186.9 at 4096 — the rest is `attn` (16.7 / 34.2 / 146.6 Mcyc). Taking the matmul phase
-alone, 595,984,384 B moves in 13.7 ms at 512, 13.4 ms at 1024 and 13.0 ms at 4096 → **43.6 / 44.6 / 46.0 GB/s,
-i.e. a weight-stream-only ceiling of ≈ 74 tok/s** (13.4 ms/step). B's own matmul phase at 512 is 24.6 Mcyc =
-13.4 ms at 44.4 GB/s, i.e. **the matmul compute is already fully hidden behind the stream** and what remains
-above the ceiling is ATTN + LOGITS + eltwise (26.0 Mcyc at 512, 55.0 at 1024, 168.0 at 4096).
+**The step-level GB/s of C is not the DDR ceiling**, because the stream-only skel still runs ATTN and the
+eltwise ops. The stream phase of C is `mm8`+`mm16`+`lg` — `HTP_MM_STREAM_ONLY` drops `mm_tiles` inside
+`mm_worker_vtcm`, which serves `MATMUL_LOGITS` as well as `MATMUL_W8A8`, and the printed
+`stream bytes/step=595,984,384` is exactly 28 × 15,728,640 B of layer weights + 151,936 × 1024 B of lm_head, so
+`lg` is DMA wait as much as `mm8` is. (An earlier version of this section took `mm8`+`mm16` alone as "the
+matmul phase" and derived ≈ 74 tok/s / 43.6–46.0 GB/s; that left out the lm_head's 26 % of the bytes.
+Corrected at the read-back, supervisor comment of 2026-09-18.)
+
+| ctx | `mm8` | `mm16` | `lg` | stream Mcyc | `pcycles_per_us` | stream ms | GB/s | **ceiling tok/s** | rest of the step (`attn` + `rest`) |
+|---|---|---|---|---|---|---|---|---|---|
+| 512 | 16.583 | 7.233 | 8.345 | **32.16** | 1743.4 | 18.45 | **32.3** | **54.2** | 16.65 + 4.13 = 20.8 Mcyc |
+| 1024 | 25.9 (`mm8`+`mm16`) | | ≈ 9.6 (derived) | ≈ 35.5 | 1934.4 | ≈ 18.3 | ≈ 32.5 | **≈ 54.5** | 34.2 + ≈ 4.1 |
+| 4096 | 26.4 (`mm8`+`mm16`) | | ≈ 9.8 (derived) | ≈ 36.2 | 2036.0 | ≈ 17.8 | ≈ 33.6 | **≈ 56.3** | 146.6 + ≈ 4.1 |
+
+The 512 row is read from the pass-2 FARF median (stamp 132851). The 1024 / 4096 `lg` cells are **derived, not
+read**: the `device_farf_133817.log` / `_133828.log` files live on the workstation (`logs/hexagon/` is
+git-ignored and the Mac never had them), so `lg` = step Mcyc − `mm8`+`mm16` − `attn` − `rest` with `rest`
+taken as C's 512 value (4.13 Mcyc): 73.809 − 25.9 − 34.2 − 4.13 and 186.884 − 26.4 − 146.6 − 4.13. Even with
+`rest` = 0 the stream phase is ≤ 39.6 / 40.3 Mcyc, i.e. the ceiling is ≥ 48.8 / 50.5 tok/s at 1024 / 4096;
+with the derived `lg` it is 54–56 tok/s, **flat with context**, as expected for a weight stream whose bytes do
+not depend on the position. Running `python3 tools/hexagon/summ_farf_prof.py logs/hexagon/device_farf_1338{17,28}.log`
+on the workstation replaces the two derived cells with read ones (expected `lg` ≈ 9–10 Mcyc).
+
+Per path at 512 (from C's pass-2 split): the tiled q/k/v/o/gate/up DMA moves 352.3 MB in `mm8` 9.51 ms =
+**37.0 GB/s**; the lm_head 155.6 MB in `lg` 4.79 ms = **32.5 GB/s**; `down` 88.1 MB in `mm16` 4.15 ms =
+**21.2 GB/s** (the C build DMAs the row-major rows in slab-sized pieces without the up → q handover; the
+shipping kernel reads them straight from DDR in 8.59 Mcyc, issue #59). B's own stream phase at 512 is
+`mm8`+`mm16`+`lg` = 16.052 + 8.588 + 8.955 = 33.6 Mcyc, within 4 % of C's 32.2 — **the matmul compute is
+already fully hidden behind the stream** — and what remains above the ceiling is ATTN + eltwise
+(`attn` + `rest` = 20.9 Mcyc at 512, ≈ 38.3 at 1024 and ≈ 150.7 at 4096 with C's `rest`; ATTN alone is 32 / 46 / 79 % of the step,
+issue #58).
 
 ### Accuracy (`--eval`, both passes; C is `n/a (stream only)`)
 
@@ -172,7 +196,7 @@ All six 512 speed runs (A / B / D, both passes) have a **byte-identical** 63-ste
 |---|---|---|
 | env | A pass 2 within ±5 % of 61.2 Mcyc (`R3CY10WM83Y`) or 60.1 (`R3CY205ZMND`) at 512 | **PASS** — 61.735 Mcyc = +0.9 % of 61.2 on `R3CY10WM83Y` |
 | G1 | `Mcyc(B) ≤ 0.90 × Mcyc(A)` at 512, pass 2 → prefetch **on** by default; 0.90–0.97 partial (adopt, record); > 0.97 no lever (keep the graph-lifetime queue, prefetch compiled in but off) | **PASS** — 54.575 / 61.735 = **0.884** (−11.6 %); `mm8` 24.347 → 16.052 Mcyc (−34 %). Prefetch **on** by default |
-| G1' | C: GB/s and ceiling tok/s at 512 / 1024 / 4096 → the stage-1 W8A8 goal cell in HEXAGON_BENCHMARK.md and the #51 input | **MEASURED** — step-level 19.61 / 15.62 / 6.49 GB/s = 32.90 / 26.21 / 10.89 tok/s; the stream-phase-only ceiling is **43.6–46.0 GB/s ≈ 74 tok/s** (13.4 ms/step). The provisional `≥ 60 tok/s` stage-1 goal is reachable only if ATTN + LOGITS shrink: at 512 they are 26.0 Mcyc on top of a 13.4 ms stream |
+| G1' | C: GB/s and ceiling tok/s at 512 / 1024 / 4096 → the stage-1 W8A8 goal cell in HEXAGON_BENCHMARK.md and the #51 input | **MEASURED** — stream phase `mm8`+`mm16`+`lg` = **32.2 Mcyc = 18.5 ms at 1743 MHz = 32.3 GB/s, ceiling 54 tok/s at 512**; ≈ 54.5 / ≈ 56.3 at 1024 / 4096 (derived `lg`, see the stream table), flat with context. Per path: tiled DMA 37.0 GB/s, lm_head 32.5, row-major `down` 21.2. The step-level C figures (19.61 / 15.62 / 6.49 GB/s = 32.90 / 26.21 / 10.89 tok/s) still run ATTN + eltwise. The provisional `≥ 60 tok/s` stage-1 goal is **above the ceiling** and is withdrawn in HEXAGON_BENCHMARK.md (replacement ≥ 40 proposed, needs-user); the earlier "≈ 74 tok/s" reading counted `mm8`+`mm16` only |
 | D rule | D ≥ 2 % below B at 512 decode (Mcyc, pass 2) **and** D prefill tok/s ≥ B → `HTP_MM_CHUNK_ROWS 64` becomes the default; else keep max-fit | **FAIL → keep max-fit** — D is **+9.9 %** above B (59.993 vs 54.575 Mcyc) and its prefill is lower (181.4 vs 191.1 tok/s); D's `mm8` 20.662 vs B 16.052 Mcyc |
 | G3 | A, B, D: PPL / top-1 equal to the digit across variants and passes, and `E2E gen` byte-identical to A pass 2 | **PASS** — 41.4947 / 162 in all six 512 `--eval` runs; 1024 5.8595 / 692 and 4096 1.5623 / 3759 equal the #35 B1 cells; `top1=` and `E2E gen` md5-identical across A / B / D, both passes |
 | no hang / SSR / FARF fatal | all 14 runs | **PASS** — 14/14 completed, no DSP restart (the only `Reset` line is the benign `Reset loading vote for libnntr_htp_skel.so`); the `E` lines are the usual fastrpc `open_shell` / `log_config` permission noise present since #23. No > 2× step after the prefill chunks in any B / D run |
@@ -214,3 +238,14 @@ record; `workers=6`, `total_pcycles` 6,158,964 (#35 6,174,196, −0.2 %), `MATMU
 0.0197323/23.2374`, `graph_prefill_2workers 0.0218946/6.88818`), plus the new `SIM_TEST matmul_dma prefetch hits=6
 workers=6`. Rung 1: `LOWER_TEST PASS`, `W8CX_BIN_TEST PASS`, oplist header `PASS`. Rung 4: default skel
 `7dc42f5981cf000393d2d23c3c181314` (55,208 B) + both harnesses build; the four variants above.
+
+**Read-back (2026-09-18, container SDK 6.4.0.2, v79, tree = the PR head).** All 11 DSP objects of the PR
+head (`executor.c`, `worker_pool.c`, `htp_graph.c`, `dma-queue.c`, the six `ops/*.c`, the generated
+`nntr_htp_skel.c`, each compiled with `-c` at the same path) have md5s identical to `7d318718`'s — no DSP byte
+changed after the tree the simulator record and the device run used (the `MM16_R` pin is a static check
+only). The default build's `hvx-matmul.c.o` differs from a `-DHTP_MM_NO_PREFETCH` build and its
+`htp_graph.c.o` from a `-DHTP_PROF_FARF` build, i.e. **the shipping build has the prefetch on and the FARF
+line off**. Rebuilt in the container from the PR head: A `51,112 B`, B `55,208 B` (the sizes of the artifact
+table), default `50,984 B` (md5 `811182a8…`; the artifact table's 55,208 B "default" was a FARF-on build).
+Rung 1 on the PR head: `LOWER_TEST PASS`, `W8CX_BIN_TEST PASS`, oplist header `PASS`; `hexagon_rpc_test` /
+`hexagon_e2e_test` rebuilt with the artifact table's md5s (`dd05aaab…` / `88996fee…`, host sources unchanged).
