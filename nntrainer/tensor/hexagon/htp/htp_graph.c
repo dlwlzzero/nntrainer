@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dma-queue.h"
 #include "htp_graph.h"
 
 const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
@@ -26,6 +27,51 @@ const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
 };
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
+
+int htp_graph_dma_init(struct htp_exec_ctx *c, int n_workers) {
+  const size_t align = dma_queue_alignof();
+  const size_t one =
+    (dma_queue_sizeof(HTP_MM_DMA_QUEUE_CAP) + align - 1u) & ~(align - 1u);
+  int i;
+
+  if (!c || n_workers <= 0)
+    return 1;
+  c->dmaq = calloc((size_t)n_workers, sizeof(*c->dmaq));
+  c->pf = calloc((size_t)n_workers, sizeof(*c->pf));
+  c->dmaq_mem = memalign(align, one * (size_t)n_workers);
+  if (!c->dmaq || !c->pf || !c->dmaq_mem) {
+    htp_graph_dma_destroy(c);
+    return 1;
+  }
+  for (i = 0; i < n_workers; ++i)
+    c->dmaq[i] = dma_queue_init((uint8_t *)c->dmaq_mem + one * (size_t)i,
+                                HTP_MM_DMA_QUEUE_CAP, (uintptr_t)c->vtcm,
+                                c->vtcm_size, NULL);
+  return 0;
+}
+
+static void dma_flush_job(void *arg, int wid, int nw) {
+  struct htp_exec_ctx *c = arg;
+  (void)nw;
+  dma_queue_flush(c->dmaq[wid]);
+  c->pf[wid].desc = NULL;
+}
+
+void htp_graph_dma_flush(struct htp_exec_ctx *c) {
+  if (c && c->dmaq && c->pool)
+    wp_run(c->pool, dma_flush_job, c);
+}
+
+void htp_graph_dma_destroy(struct htp_exec_ctx *c) {
+  if (!c)
+    return;
+  free(c->dmaq);
+  free(c->pf);
+  free(c->dmaq_mem);
+  c->dmaq = NULL;
+  c->pf = NULL;
+  c->dmaq_mem = NULL;
+}
 
 int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
                       uint8_t *weights, uint32_t wsize, uint8_t *kv,
@@ -107,6 +153,13 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
         HAP_compute_res_release(id);
       }
     }
+  }
+  /** The matmul streaming path needs one DMA queue per worker for the
+   * session (chunks are kicked ahead across ops, so the queue cannot live
+   * inside an op call any more). Without VTCM the queues are not needed. */
+  if (g->ctx.vtcm && htp_graph_dma_init(&g->ctx, wp_size(g->ctx.pool))) {
+    htp_graph_destroy(g);
+    return 1;
   }
   return 0;
 }
@@ -240,8 +293,12 @@ const uint8_t *htp_graph_buf_ref(const struct htp_graph *g, uint32_t buf,
 void htp_graph_destroy(struct htp_graph *g) {
   if (!g)
     return;
+  /** Drain every worker's DMA queue on the workers before the VTCM the
+   * descriptors write into goes away. */
+  htp_graph_dma_flush(&g->ctx);
   if (g->vtcm_ctx_id)
     HAP_compute_res_release(g->vtcm_ctx_id);
+  htp_graph_dma_destroy(&g->ctx);
   free(g->ctx.xq);
   free(g->ctx.xq_scale);
   free(g->ctx.attn_scratch);

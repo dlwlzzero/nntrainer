@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "htp_graph.h"
 #include "htp_ops.h"
 #include "ref_ops.h"
 #include "sim_test_util.h"
@@ -90,6 +91,17 @@ int test_matmul_dma(void) {
     return 1;
   }
   c.vtcm = (uint8_t *)vtcm;
+  c.vtcm_size = 4u << 20;
+  /* The same per-worker graph-lifetime queues htp_graph_init_ex allocates. */
+  if (htp_graph_dma_init(&c, wp_size(c.pool))) {
+    printf("SIM_TEST matmul_dma dma init fail\n");
+    HAP_compute_res_release(ctx_id);
+    free(c.xq);
+    free(c.xq_scale);
+    wp_destroy(c.pool);
+    free(act);
+    return 1;
+  }
 
   __fp16 *y_ref = malloc((size_t)m * n * sizeof(__fp16));
   ref_matmul_w8a8(x, w, sw, y_ref, m, k, n);
@@ -125,7 +137,9 @@ int test_matmul_dma(void) {
       rc = 1;
     }
   }
+  htp_graph_dma_flush(&c);
   HAP_compute_res_release(ctx_id);
+  htp_graph_dma_destroy(&c);
 
   free(ref_f);
   free(got_f);

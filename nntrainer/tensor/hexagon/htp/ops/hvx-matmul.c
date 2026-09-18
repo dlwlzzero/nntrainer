@@ -27,12 +27,6 @@
 #include "htp_ops.h"
 #include "hvx-quant.h"
 
-/** Ring depth for the per-worker DMA queue: only ever one chunk in flight
- * (kick c+1, wait c), but the ring needs room for 2 outstanding slots so
- * the push for c+1 does not collide with the not-yet-popped descriptor
- * for c. Must be a power of two (dma_queue_init rounds up regardless). */
-#define MM_DMA_QUEUE_CAP 4
-
 /** Tokens per weight-vector load: one vload feeds MM_TB vrmpyacc. Guarded
  * so a device sweep can build a variant with HEX_EXTRA_CFLAGS=-DMM_TB=8u
  * (HEXAGON.md section 8.2, issue #25); inert at m=1 (decode). */
@@ -129,10 +123,46 @@ static void mm_tiles(const int8_t *w_n0, const float *sw, const int8_t *xq,
   }
 }
 
+/** Push one weight chunk (rows x k bytes, contiguous in both DDR and VTCM)
+ * onto the worker's queue. Under the ring invariants (at most the in-op
+ * "chunk c+1" kick plus one cross-op prefetch outstanding,
+ * HTP_MM_DMA_QUEUE_CAP) the push cannot fail; if it ever does, drain the ring
+ * and retry rather than silently skip the chunk (the compute would read stale
+ * VTCM). */
+static void mm_dma_push(dma_queue_t q, uint8_t *dst, const int8_t *src,
+                        uint32_t k, uint32_t rows) {
+  if (!dma_queue_push_ddr_to_vtcm(q, dma_make_ptr(dst, src), k, k, rows)) {
+    dma_queue_flush(q);
+    (void)dma_queue_push_ddr_to_vtcm(q, dma_make_ptr(dst, src), k, k, rows);
+  }
+}
+
+/** Worker slab geometry for an op with row length k: the per-worker slab
+ * (VTCM / nw, rounded down to 128 B) is split into two fixed halves, each a
+ * DMA target of whole 32-row tiles. The halves are op-independent on purpose
+ * (buf[1] is not buf[0] + rows*k) so that a chunk of the *next* op can be
+ * kicked into the half the current op's last chunk does not occupy. Returns
+ * false when a half cannot hold one tile: the caller uses the DDR path. */
+static bool mm_slab(const struct htp_exec_ctx *c, uint32_t k, int wid, int nw,
+                    uint8_t *buf[2], uint32_t *rows_per_buf) {
+  const size_t slab_sz = (c->vtcm_size / (uint32_t)nw) & ~(size_t)127;
+  const size_t half = (slab_sz / 2u) & ~(size_t)127;
+  uint32_t rows = (uint32_t)(half / k) & ~(NNTR_HTP_TILE_ROWS - 1u);
+  if (HTP_MM_CHUNK_ROWS != 0u && rows > HTP_MM_CHUNK_ROWS)
+    rows = HTP_MM_CHUNK_ROWS;
+  if (rows < NNTR_HTP_TILE_ROWS)
+    return false;
+  buf[0] = c->vtcm + (size_t)wid * slab_sz;
+  buf[1] = buf[0] + half;
+  *rows_per_buf = rows;
+  return true;
+}
+
 /** VTCM/DMA streaming path for this worker's N-slab. Returns false if the
  * slab cannot hold two 32-row tiles, in which case the caller falls back to
  * the DDR path. Activations are not copied: the kernel reads c->xq through
- * the cache (4-byte scalar loads gain nothing from VTCM). */
+ * the cache (4-byte scalar loads gain nothing from VTCM). The queue is the
+ * worker's graph-lifetime one (c->dmaq[wid], htp_graph_dma_init). */
 static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
                            const float *sw, uint8_t *y, bool y_is_f32,
                            uint32_t m, uint32_t k, uint32_t n, uint32_t n0,
@@ -140,35 +170,18 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
 #ifdef HTP_MM_NO_VTCM
   return false; /* measurement-only: forces the direct DDR read path */
 #endif
-  /** Per-worker slab rounded down to 128 B so buf[0] is vector-aligned;
-   * buf[1] = buf[0] + rows_per_buf*k is too, because rows_per_buf % 32 == 0
-   * and k % 128 == 0. Whole tiles per chunk keep every DMA'd slab starting
-   * on a tile, which mm_tiles relies on. */
-  size_t slab_sz = (c->vtcm_size / (uint32_t)nw) & ~(size_t)127;
-  uint32_t rows_per_buf =
-    (uint32_t)(slab_sz / 2 / k) & ~(NNTR_HTP_TILE_ROWS - 1u);
-  if (HTP_MM_CHUNK_ROWS != 0u && rows_per_buf > HTP_MM_CHUNK_ROWS)
-    rows_per_buf = HTP_MM_CHUNK_ROWS;
-  if (rows_per_buf < NNTR_HTP_TILE_ROWS)
-    return false;
   uint8_t *buf[2];
-  buf[0] = c->vtcm + (size_t)wid * slab_sz;
-  buf[1] = buf[0] + (size_t)rows_per_buf * k;
-
-  void *qmem =
-    memalign(dma_queue_alignof(), dma_queue_sizeof(MM_DMA_QUEUE_CAP));
-  if (!qmem)
+  uint32_t rows_per_buf;
+  if (!c->dmaq || !mm_slab(c, k, wid, nw, buf, &rows_per_buf))
     return false;
-  dma_queue_t q = dma_queue_init(qmem, MM_DMA_QUEUE_CAP, (uintptr_t)c->vtcm,
-                                 c->vtcm_size, NULL);
+  dma_queue_t q = c->dmaq[wid];
 
   uint32_t total_rows = n1 - n0;
   uint32_t n_chunks = (total_rows + rows_per_buf - 1) / rows_per_buf;
 
   /* Kick the first chunk before entering the pipeline. */
   uint32_t rows0 = rows_per_buf < total_rows ? rows_per_buf : total_rows;
-  dma_queue_push_ddr_to_vtcm(q, dma_make_ptr(buf[0], w + (size_t)n0 * k), k, k,
-                             rows0);
+  mm_dma_push(q, buf[0], w + (size_t)n0 * k, k, rows0);
 
   for (uint32_t ci = 0; ci < n_chunks; ++ci) {
     uint32_t row0 = ci * rows_per_buf;
@@ -181,9 +194,8 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
       uint32_t next_rows = rows_per_buf;
       if (next_row0 + next_rows > total_rows)
         next_rows = total_rows - next_row0;
-      dma_queue_push_ddr_to_vtcm(
-        q, dma_make_ptr(buf[(ci + 1) & 1], w + (size_t)(n0 + next_row0) * k), k,
-        k, next_rows);
+      mm_dma_push(q, buf[(ci + 1) & 1], w + (size_t)(n0 + next_row0) * k, k,
+                  next_rows);
     }
 
     dma_queue_pop(q); /* wait for this chunk's DMA (kicked one iteration ago) */
@@ -191,9 +203,6 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
     mm_tiles((const int8_t *)buf[ci & 1], sw, c->xq, c->xq_scale, y, y_is_f32,
              m, k, n, n0 + row0, n0 + row0 + rows);
   }
-
-  dma_queue_free(q);
-  free(qmem);
   return true;
 }
 
