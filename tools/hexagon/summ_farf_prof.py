@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+##
+# @file    summ_farf_prof.py
+# @brief   Summarise the per-call DSP profile lines of an HTP_PROF_FARF skel
+# @author  dlwlzzero <dlwlzzero@gmail.com>
 """Summarise the per-call DSP profile lines of an HTP_PROF_FARF skel.
 
 run_e2e_test.sh captures logcat into logs/hexagon/device_farf_<stamp>.log;
