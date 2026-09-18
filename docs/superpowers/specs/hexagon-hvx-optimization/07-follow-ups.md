@@ -61,7 +61,7 @@ HEXAGON.md §7. IEEE hf·qf32 체인 오동작 원인 규명 후 `HEX_ARCH=v79` 
 
 sim에서 `MM_TB 4`의 per-shape W8A8 이득은 1.3~3.7 %에 그쳤다(시뮬레이터가 가중치 대역폭을 제대로 과금하지 않기 때문). 디바이스에서 `MM_TB` 1/2/4/8을 재측정해 기본값을 확정한다.
 
-- **#25 (2026-09-18)**: `MM_TB`·`MM16_R`·`MM16_TB`를 `#ifndef` 기본값으로 바꿔 `HEX_EXTRA_CFLAGS=-DMM_TB=8u`로 변형을 빌드한다. `MM_TB`는 m=1에서 inert(`mm_tiles`가 m < MM_TB이면 tb=1 꼬리만 탄다)라 prefill 전용 노브; H1(prefetch) 판정 뒤 H2 handoff(`MM_TB 2/8`, `MM16_R 2/8`, 512 토큰, pass 2 Mcyc 최저값, < 2 %면 현행 유지)로 기본값 확정.
+- **#25 (2026-09-18)**: `MM_TB`·`MM16_TB`를 `#ifndef` 기본값으로 바꿔 `HEX_EXTRA_CFLAGS=-DMM_TB=8u`로 변형을 빌드한다. `MM_TB`는 m=1에서 inert(`mm_tiles`가 m < MM_TB이면 tb=1 꼬리만 탄다)라 prefill 전용 노브; H1(prefetch) 판정 뒤 H2 handoff(`MM_TB 2/8`, `MM16_TB 1/4`, 512 토큰, pass 2 Mcyc 최저값, < 2 %면 현행 유지)로 기본값 확정. **`MM16_R`은 4로 고정**(static check): `mm16_block` 에필로그의 shuffle 트리가 정확히 4행만 접으므로 다른 값은 컴파일되지만 잘못된 행을 낸다(code review, 2026-09-18) — 스윕하려면 에필로그 일반화(값별 sim 게이트)가 먼저다.
 
 P4에서 같은 이유로 W8A16의 `MM16_R`(현재 4) / `MM16_TB`(현재 2)도 sim만 보고 정한 값이다(레지스터 압박 대 재사용의 절충). 디바이스에서 `MM16_R` 2/4/8 × `MM16_TB` 1/2/4 스윕을 decode(m=1)와 prefill(m=128) 양쪽에서 돌려 기본값을 확정한다 — m=1에서는 TB 블로킹이 무효라 R만 의미가 있다. ⑬(VTCM 스트리밍)과 같은 세션에서 함께 측정하는 것이 효율적이다.
 

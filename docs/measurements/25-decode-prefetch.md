@@ -1,7 +1,7 @@
 # Measurement 25 (H1): cross-op weight prefetch A/B, the W8 weight-stream ceiling, and the 64-row chunk
 
-Branch `hvx/25-decode-prefetch` @ `7d318718` (the last commit that changes DSP sources; later commits on
-the branch are tools/docs only) — estimated device time: **30 min** (8 runs at 512 ≈ 10 min, four
+Branch `hvx/25-decode-prefetch` @ `7d318718` (the last commit that changes DSP bytes; the later `MM16_R`
+pin commit adds a static check only — all 11 DSP object md5s are identical — and the rest is tools/docs) — estimated device time: **30 min** (8 runs at 512 ≈ 10 min, four
 1024 / 4096 runs ≈ 10 min, the 4096 image push ≈ 3 min if absent, md5 checks; the H2 kernel sweep is a
 separate, later handoff).
 
@@ -15,7 +15,8 @@ session and lets each matmul kick the *next* matmul's chunk 0 into its idle half
 say what that buys; the same run measures the **weight-stream ceiling** (a skel that streams every
 weight byte but multiplies nothing) that replaces the provisional `≥ 60 tok/s` goal and gates #51, and
 the 64-row chunk of ledger ⑨. Decisions that hang on it: the prefetch default (on / compiled-in-but-off),
-the chunk default, the stage-1 W8A8 goal cell, and whether H2 (`MM_TB` / `MM16_R`) runs on B or D.
+the chunk default, the stage-1 W8A8 goal cell, and whether H2 (`MM_TB` / `MM16_TB`; `MM16_R` is pinned
+to 4 until the W8A16 epilogue is generalised) runs on B or D.
 
 ## Artifacts (built in the container, SDK 6.4.0.2 / hexagon-clang 19.0.04 `toolv19`, `HEX_ARCH=v79`, @ `7d318718`)
 

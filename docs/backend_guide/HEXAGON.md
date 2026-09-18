@@ -719,8 +719,10 @@ bytes/step=595984384` after `init ok`), `HTP_PROF_FARF` (one
 `nntr_htp: prof n=… kcyc=… mm8=… mm16=… lg=… attn=… rest=…` line per
 forward call with this call's per-kind pcycle split, summarised by
 `tools/hexagon/summ_farf_prof.py` over the `device_farf_*.log`), and the
-kernel constants `MM_TB`, `MM16_R`, `MM16_TB` (`#ifndef` defaults 4 / 4 / 2,
-overridable for a sweep).
+kernel constants `MM_TB` and `MM16_TB` (`#ifndef` defaults 4 / 2,
+overridable for a sweep; `MM16_R` is also guarded but pinned to 4 by a
+static check, because the W8A16 epilogue's shuffle tree reduces exactly
+four rows — sweeping it needs that tree generalised first).
 
 ### 5.4 The CausalLM app (`engine="htp"`)
 

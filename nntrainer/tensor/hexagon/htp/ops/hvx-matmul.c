@@ -391,6 +391,12 @@ static void quant_worker(void *arg, int wid, int nw) {
 #ifndef MM16_TB
 #define MM16_TB 2u
 #endif
+/** The epilogue below reduces exactly four rows (rows (0,1) and (2,3)
+ * interleaved at 4 B, then at 8 B, three vror folds, lanes 0..3 stored):
+ * another MM16_R would compile and silently produce wrong rows, so it is
+ * pinned until that tree is generalised (a kernel change with its own
+ * simulator gate per value). MM16_TB is free. */
+typedef char mm16_r_check[MM16_R == 4u ? 1 : -1];
 
 static inline __attribute__((always_inline)) void
 mm16_block(const int8_t *w, uint32_t k, uint32_t rows, const int16_t *xq,
