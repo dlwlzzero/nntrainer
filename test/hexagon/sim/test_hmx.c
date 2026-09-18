@@ -135,7 +135,7 @@ static void hmx_job(void *arg, int wid, int nw) {
         j->got_inplace[r * NN + c] = tile[r * lay->row_stride + c];
   }
 
-  /* 3. WH relocate round trip: VTCM -> DDR (memcpy) -> VTCM (DMA, worker
+  /** 3. WH relocate round trip: VTCM -> DDR (memcpy) -> VTCM (DMA, worker
    * 0's graph-lifetime queue) -> the same mm on the copy */
   memcpy(j->ddr_tile, h->base + OFF_W, HTP_HMX_W4_TILE_BYTES);
   memset(h->base + OFF_W_RELOC, 0, HTP_HMX_W4_TILE_BYTES);
@@ -157,7 +157,7 @@ static void hmx_job(void *arg, int wid, int nw) {
     return;
   }
 
-  /* 4. WH permutation: three ramps carry bits [0,4), [4,8), [8,10) of the
+  /** 4. WH permutation: three ramps carry bits [0,4), [4,8), [8,10) of the
    * source index k*32+n; the destination nibble (byte*2 + high) then
    * reads back the full source index. */
   memset(j->perm, 0, sizeof(j->perm));
