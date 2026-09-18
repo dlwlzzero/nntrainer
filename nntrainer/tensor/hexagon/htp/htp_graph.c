@@ -140,10 +140,9 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
         nx = i;
     }
   }
-  /** [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
-   * reads one whole unaligned vector starting at the last elements. */
-  g->ctx.attn_scratch = memalign(
-    128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
+  /** Score rows and decode partials of hvx-attn.c (htp_ops.h). */
+  g->ctx.attn_scratch =
+    memalign(128, htp_attn_scratch_bytes(wp_size(g->ctx.pool), &g->cfg));
   if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale)) || !g->ctx.attn_scratch ||
       !g->ctx.prof_op_cycles || !g->next_mm) {
     htp_graph_destroy(g);

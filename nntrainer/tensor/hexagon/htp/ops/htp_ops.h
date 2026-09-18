@@ -10,6 +10,7 @@
 #ifndef NNTR_HTP_OPS_H
 #define NNTR_HTP_OPS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "nntr_htp_common.h"
@@ -48,7 +49,8 @@ struct htp_exec_ctx {
                           W8A8/LOGITS or int16 [max_chunk][k_max] for W8A16
                           (allocated 2*max_chunk*k_max bytes) */
   float *xq_scale;     /**< [max_chunk] */
-  float *attn_scratch; /**< [n_workers][max_seq] fp32 scores */
+  float *attn_scratch; /**< score rows + decode partials, laid out by
+                          htp_attn_scratch_bytes (issue #58) */
   uint8_t *vtcm;       /**< per-worker weight double buffer for the tiled matmul
                           (hvx-matmul.c) */
   uint32_t vtcm_size;
@@ -77,6 +79,33 @@ typedef void (*htp_op_fn)(struct htp_exec_ctx *c,
 static inline uint8_t *htp_ref_ptr(struct htp_exec_ctx *c,
                                    struct nntr_htp_tensor_ref r) {
   return c->buf[r.buf] + r.offset;
+}
+
+/**
+ * @brief Bytes of the ATTN score rows: [n_workers][group][max_seq] fp32, +128
+ *        B (hvx_exp_f32's tail path reads one whole unaligned vector starting
+ *        at the last elements), rounded up to 128 B so the partials that
+ *        follow stay vector aligned.
+ */
+static inline size_t
+htp_attn_scratch_rows_bytes(int nw, const struct nntr_htp_oplist_header *cfg) {
+  const size_t group = cfg->n_kv_heads ? cfg->n_heads / cfg->n_kv_heads : 1u;
+  const size_t rows = (size_t)nw * group * cfg->max_seq * sizeof(float) + 128u;
+  return (rows + 127u) & ~(size_t)127u;
+}
+
+/**
+ * @brief Bytes of ctx->attn_scratch (issue #58): the score rows above, then
+ *        the decode partials of the position-split SDPA — o
+ *        [n_heads][n_workers][head_dim] fp32 (512 B each, 128-B aligned by
+ *        construction) and (m, l) [n_heads][n_workers][2] fp32. The graph
+ *        and the sim tests size the buffer through this one function.
+ */
+static inline size_t
+htp_attn_scratch_bytes(int nw, const struct nntr_htp_oplist_header *cfg) {
+  return htp_attn_scratch_rows_bytes(nw, cfg) +
+         (size_t)cfg->n_heads * (size_t)nw * (cfg->head_dim + 2u) *
+           sizeof(float);
 }
 
 /** @brief Op row count for this call (nntr_htp_op_rows: d->m or n_tokens). */
