@@ -847,6 +847,27 @@ simulators pass either way, so a device pass is not optional.
    `Q6_W_vshuff_VVR` fold are the instructions P4 first exercises on
    silicon, which rule 1 makes worth stating; the 1-ulp isolation in
    section 8.2 is what shows they behave.
+9. **Two S25 Ultra units, two decode clocks (#24, 2026-09-18;
+   an environment gap, plan 0000 §2).** The P3 / P4 / #24 unit
+   `R3CY10WM83Y` holds 1905–1915 MHz (`pcycles_per_us`) through the
+   generation loop; the #23 unit `R3CY205ZMND` held 2054. With the same
+   v75 skel (md5 `cc0f1725…`) the DSP Mcycles per decode step agree
+   across the two units within ~1 % (512: 65.1 vs 64.3; 1024: 85.0 vs
+   84.2; 4096: 225.9 vs 213.0 after 168 s of sustained load) while tok/s
+   differ by −8 / −1 / −5 %. So the P4 → #23 512-token decode "gain"
+   (27.7 → 31.9 tok/s) was the unit, not the SDK: on `R3CY10WM83Y` P4
+   ran 68.9 Mcyc in 36.1 ms (1.91 GHz) and #24 65.1 Mcyc in 34.0 ms.
+   Rules: (a) every handoff and every benchmark row names the unit
+   serial; (b) across units compare DSP Mcycles, tok/s bands only within
+   a unit; (c) a host-vs-DSP gap and the `pcycles_per_us ≥ 2.05` bar are
+   read against the run's own generation-loop clock, never the nominal
+   2090 MHz — at 1.91 GHz a 34.0 ms / 65.1 Mcyc step is a ≈ 0 ms gap,
+   though the nominal formula prints 2.85 ms; (d) the first e2e run after
+   a push is cold (3 % host wall and 5 % DSP cycles high, the first 16
+   `forward_full_us` of an `hexagon_rpc_test` group ~20 % high), so an
+   A/B at the sub-ms level is run twice with the variant order reversed
+   and the second pass is read. The teacher-forced `--eval` loop on the
+   same unit runs at 1167–1178 MHz (issue #41).
 
 ---
 
@@ -1056,6 +1077,75 @@ thermals are not the cause — the same context depth measured in
 teacher-forced mode gives 52.0 Mcyc cold and 51.6 Mcyc ten minutes
 later. Treat the 512 decode pair as ±5 %; a firmer number needs
 repeated medians or an estimator taken from the settled tail.
+
+**Host path (#24, ledger ⑫; plan `docs/plans/24-host-logits.md`,
+measurement `docs/measurements/24-host-logits.md`, 2026-09-18).** The
+harness times only the RPC (`t0 … runner->forward … us`); argmax and
+`log_softmax_at` sit outside the timed region. Read that way, the #23
+v75 logs already put the host-vs-DSP gap per decode step at 0.5 / 2.9 /
+2.2 ms for 512 / 1024 / 4096 (31.3 ms vs 64.3 Mcyc at 2.054 GHz, and so
+on), not the ~40 ms the P3 paragraph above quotes: that figure was P3
+generation mode (already marked not comparable) plus the teacher-forced
+`--eval` rows, where `pcycles ÷ µs` reads ≈ 1.15 G because the DSP
+downclocks while the host spends ~10 ms between RPCs in 151,936 double
+`exp()` calls. #24 therefore changed only the host memory of the logits
+(rpcmem, optionally `FASTRPC_MAP_STATIC`; section 1.1), no DSP byte, and
+measured the 607,744 B return three ways on the P4 unit `R3CY10WM83Y`
+(v75 skel `cc0f1725…`, SDK 6.4.0.1 harnesses; rule 9 of section 7 on
+why this unit reads 1.91 GHz).
+
+(i) In isolation, `hexagon_rpc_test` dummy path (n_ops == 0), 32 calls
+per memory kind, warm run:
+
+| host memory of the logits | median `forward_full_us` | − malloc |
+|---|---|---|
+| malloc (staging copy) | 8919 | 0 |
+| rpcmem (fd, mapped per call) | 8771 | −148 µs |
+| rpcmem + `FASTRPC_MAP_STATIC` (mapped once) | **6381** | **−2538 µs** |
+| 8-float `forward_us` reference | 259 | — |
+
+The dummy path's 151,936-float fill is a scalar loop with a software
+modulo and reports no pcycles, so the absolute rows contain it; the
+differences are the transport. The one-time mapping is what removes the
+cost; the per-call fd path alone buys almost nothing (plan §3 rule 4
+nearly fired; `remote_register_buf_attr` on the plain rpcmem path is the
+untried variant, worth ≤ 0.07 ms on the next table's evidence).
+
+(ii) In the real step, `--chunk 128 --steps 64`, each variant run twice
+with the order reversed (pass 2 read, pass 1 was cold):
+
+| host memory | ctx | prefill tok/s | median host ms | DSP Mcyc | pcycles/µs | decode tok/s | `E2E gen` |
+|---|---|---|---|---|---|---|---|
+| static | 512 | 182.5 | **34.00** | 65.1 | 1915 | **29.4** | = malloc = rpcmem |
+| rpcmem | 512 | 184.7 | 34.06 | 64.8 | 1902 | 29.4 | same |
+| malloc | 512 | 185.5 | 34.07 | 64.9 | 1906 | 29.4 | same |
+| static | 1024 | 114.5 | 43.42 | 85.0 | 1957 | 23.0 | = #23 `111108` |
+| static | 4096 | 25.4 | 110.04 | 225.9 | 2053 | 9.1 | = #23 `111217` |
+
+The three memories are within 70 µs (0.2 %) of each other on a 34 ms
+step: the 2.5 ms that `static` saves in an empty call does not survive
+inside a real step, whose host wall is the DSP op loop at this unit's
+clock plus ≈ 0 ms. Pass 1's 1.8 ms spread was warm-up (its first run
+carried 68.3 Mcyc, DSP-side, so not a host copy).
+
+(iii) Accuracy, `--eval` on the P4 prompt (reference #23 A 33.0884 /
+189, x86 33.0195 / 184): malloc **33.0884 / 189**, rpcmem **33.0884 /
+189**; generated ids byte-identical across the three memories and to
+#23's logs at 512 (re-run of the `t512_23.i32` command), 1024 and 4096.
+The `--eval` runs' `pcycles_per_us` is **1167 / 1178** against 1905–1915
+in the generation loop on the same unit (0.61×) — the opening number of
+issue #41 (DSP clock during host idle gaps), independent of the host
+memory kind.
+
+Verdict (plan §3 rules, supervisor 2026-09-18): the harness and
+`HexagonBackend` ship the `static` path (2.4 ms better than rpcmem in
+(i) in both runs, never worse in (ii); the changelog says the end-to-end
+gain is ≤ 0.07 ms). The DSP top-k / argmax method (ABI v5) is **not**
+opened: its trigger was written against the nominal-clock gap (2.85 ms),
+which the same-minute malloc run and rule 9(c) show to be the unit's
+clock, not transport. Ledger ⑫ is closed: the 151,936-logit return is
+not a decode lever; the decode budget belongs to the weight stream
+(#25, then #51) and to #41.
 
 ### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
@@ -1304,11 +1394,20 @@ here.
   the DSP's own input (section 8.2). That ATTN/W8A8 qf32 chain, not the
   kernels, is what sets the 0.16–1.29 % DSP-vs-reference PPL band, and
   it should be looked at together with the P5 attention work.
-* **The host/RPC decode path**, which after M6 P3 costs more than the
-  DSP does: ~40 ms of every generation step is the RPC round trip plus
-  copying and argmax-ing 151,936 floats of logits (section 8.2). Return
-  a top-k slice, or do the argmax on the DSP, instead of the whole
-  logits vector.
+* **The host/RPC decode path — closed (#24, ledger ⑫, 2026-09-18).**
+  Measured in section 8.2, "Host path": the 151,936-float logits return
+  costs ≈ 2.5 ms in an empty call and < 0.1 ms inside a real 34 ms decode
+  step; the harness and the backend keep the buffer in rpcmem with
+  `FASTRPC_MAP_STATIC`, no ABI change, and no DSP top-k / argmax method
+  is planned. What remains on the host side is the **DSP clock during
+  host idle gaps** (issue #41): the same unit runs at 1.17 GHz under
+  teacher-forced `--eval` against 1.91 GHz in the generation loop, so a
+  caller that does host work between steps (`engine="htp"` sampling,
+  tokenizer, printing) loses up to 39 % of the DSP clock — a
+  `HAP_power` / DCVS vote sized for gapped decode, judged on the app
+  path, not the harness. The decode budget itself belongs to the weight
+  stream: cross-op prefetch and the `MM_TB` / `MM16_R` / chunk device
+  sweep (#25), then the 4-bit weight stream (#51).
 * **Device re-measurement of the rest**: section 5.4's app numbers and
   the section 8.2 M5 tables predate P3 and P4, `MM_TB`'s real effect
   (the simulator showed only 1–4 %) is unmeasured on silicon, and the
