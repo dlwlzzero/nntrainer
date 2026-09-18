@@ -125,12 +125,25 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
   }
   g->ctx.prof_op_cycles =
     calloc(g->cfg.n_ops ? g->cfg.n_ops : 1u, sizeof(uint64_t));
+  /** next_mm[i]: the first tiled matmul after op i, walked once backwards.
+   * The forward loop clips it to n_ops_limit so a partial run never kicks
+   * a chunk for an op it will not execute. */
+  g->next_mm = malloc((g->cfg.n_ops ? g->cfg.n_ops : 1u) * sizeof(uint32_t));
+  if (g->next_mm) {
+    uint32_t nx = UINT32_MAX;
+    for (i = g->cfg.n_ops; i-- > 0u;) {
+      g->next_mm[i] = nx;
+      if (g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
+          g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS)
+        nx = i;
+    }
+  }
   /** [n_workers][max_seq] fp32 scores, +128B pad: hvx_exp_f32's tail path
    * reads one whole unaligned vector starting at the last elements. */
   g->ctx.attn_scratch = memalign(
     128, (size_t)wp_size(g->ctx.pool) * g->cfg.max_seq * sizeof(float) + 128u);
   if ((k_max && (!g->ctx.xq || !g->ctx.xq_scale)) || !g->ctx.attn_scratch ||
-      !g->ctx.prof_op_cycles) {
+      !g->ctx.prof_op_cycles || !g->next_mm) {
     htp_graph_destroy(g);
     return 1;
   }
@@ -209,6 +222,8 @@ int htp_graph_forward_upto(struct htp_graph *g, const int32_t *tokens,
   for (i = 0; i < n_ops_limit; ++i) {
     const uint32_t kind = g->ops[i].kind;
     const uint64_t s = HAP_perf_get_pcycles();
+    g->ctx.next_mm =
+      g->next_mm[i] < n_ops_limit ? &g->ops[g->next_mm[i]] : NULL;
     htp_op_table[kind](&g->ctx, &g->ops[i]);
     const uint64_t dt = HAP_perf_get_pcycles() - s;
     g->ctx.prof_cycles[kind] += dt;
@@ -303,6 +318,7 @@ void htp_graph_destroy(struct htp_graph *g) {
   free(g->ctx.xq_scale);
   free(g->ctx.attn_scratch);
   free(g->ctx.prof_op_cycles);
+  free(g->next_mm);
   if (g->ctx.pool)
     wp_destroy(g->ctx.pool);
   memset(g, 0, sizeof(*g));

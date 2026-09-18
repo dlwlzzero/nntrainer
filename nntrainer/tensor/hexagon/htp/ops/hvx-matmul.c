@@ -158,12 +158,65 @@ static bool mm_slab(const struct htp_exec_ctx *c, uint32_t k, int wid, int nw,
   return true;
 }
 
+/** Drop this worker's pending cross-op prefetch: the op it was kicked for
+ * is not the one running (a partial forward_upto run, a re-init, a unit
+ * test), or the running op takes the DDR path. Waits for the descriptor
+ * rather than abandoning it - VTCM must not be written by a forgotten DMA. */
+static void mm_pf_drop(struct htp_exec_ctx *c, int wid) {
+  if (c->pf && c->pf[wid].desc) {
+    dma_queue_flush(c->dmaq[wid]);
+    c->pf[wid].desc = NULL;
+  }
+}
+
+/** Tail of a streamed op (issue #25, ledger (1)): once the last chunk's DMA
+ * has landed, the other half-slab is idle for the rest of this op and for
+ * every op until the next tiled matmul, so this worker's chunk 0 of that
+ * matmul (c->next_mm: same (wid, nw) split, same slab geometry for its k)
+ * is kicked into it now and recorded in c->pf[wid]. The DDR keeps
+ * streaming while ATTN / RMSNORM / eltwise run on these same worker
+ * threads, and the next mm_worker_vtcm starts with the chunk in flight.
+ * Skipped when the next op would take the DDR path for this worker (a half
+ * cannot hold a tile of its k, or an empty tile range): the fallback must
+ * never find a descriptor pending. Compiled out by HTP_MM_NO_PREFETCH (the
+ * A/B control of the device handoff). */
+static void mm_pf_kick(struct htp_exec_ctx *c, uint8_t *free_buf, int wid,
+                       int nw) {
+#ifdef HTP_MM_NO_PREFETCH
+  (void)c;
+  (void)free_buf;
+  (void)wid;
+  (void)nw;
+#else
+  const struct nntr_htp_op_desc *nx = c->next_mm;
+  uint8_t *nbuf[2];
+  uint32_t rows_per_buf, n0, n1, rows;
+  if (!nx || nx->n % NNTR_HTP_TILE_ROWS != 0u ||
+      !mm_slab(c, nx->k, wid, nw, nbuf, &rows_per_buf))
+    return;
+  mm_tile_range(nx->n, wid, nw, &n0, &n1);
+  if (n0 == n1)
+    return;
+  rows = rows_per_buf < n1 - n0 ? rows_per_buf : n1 - n0;
+  mm_dma_push(c->dmaq[wid], free_buf,
+              (const int8_t *)htp_ref_ptr(c, nx->in1) + (size_t)n0 * nx->k,
+              nx->k, rows);
+  c->pf[wid].desc = nx;
+  c->pf[wid].buf = free_buf;
+  c->pf[wid].rows = rows;
+#endif
+}
+
 /** VTCM/DMA streaming path for this worker's N-slab. Returns false if the
  * slab cannot hold two 32-row tiles, in which case the caller falls back to
  * the DDR path. Activations are not copied: the kernel reads c->xq through
  * the cache (4-byte scalar loads gain nothing from VTCM). The queue is the
- * worker's graph-lifetime one (c->dmaq[wid], htp_graph_dma_init). */
-static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
+ * worker's graph-lifetime one (c->dmaq[wid], htp_graph_dma_init); on entry
+ * a prefetch record for this very op (pointer identity on the graph's op
+ * array) means chunk 0 is already in flight in pf.buf, anything else
+ * pending is drained first. */
+static bool mm_worker_vtcm(struct htp_exec_ctx *c,
+                           const struct nntr_htp_op_desc *d, const int8_t *w,
                            const float *sw, uint8_t *y, bool y_is_f32,
                            uint32_t m, uint32_t k, uint32_t n, uint32_t n0,
                            uint32_t n1, int wid, int nw) {
@@ -175,17 +228,31 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
   if (!c->dmaq || !mm_slab(c, k, wid, nw, buf, &rows_per_buf))
     return false;
   dma_queue_t q = c->dmaq[wid];
+  struct htp_mm_prefetch *pf = &c->pf[wid];
 
   uint32_t total_rows = n1 - n0;
   uint32_t n_chunks = (total_rows + rows_per_buf - 1) / rows_per_buf;
-
-  /* Kick the first chunk before entering the pipeline. */
   uint32_t rows0 = rows_per_buf < total_rows ? rows_per_buf : total_rows;
-  mm_dma_push(q, buf[0], w + (size_t)n0 * k, k, rows0);
+
+  /** Chunk 0: already in flight if the previous matmul prefetched it for
+   * us (then the pipeline starts from that half); otherwise drain whatever
+   * is pending and kick it here. */
+  uint32_t start = 0;
+  if (pf->desc == d && pf->rows == rows0 &&
+      (pf->buf == buf[0] || pf->buf == buf[1])) {
+    start = pf->buf == buf[1] ? 1u : 0u;
+    pf->hits += 1u;
+  } else {
+    if (pf->desc)
+      dma_queue_flush(q);
+    mm_dma_push(q, buf[0], w + (size_t)n0 * k, k, rows0);
+  }
+  pf->desc = NULL;
 
   for (uint32_t ci = 0; ci < n_chunks; ++ci) {
     uint32_t row0 = ci * rows_per_buf;
     uint32_t rows = rows_per_buf;
+    uint8_t *cur = buf[(start + ci) & 1], *other = buf[(start + ci + 1) & 1];
     if (row0 + rows > total_rows)
       rows = total_rows - row0;
 
@@ -194,14 +261,16 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c, const int8_t *w,
       uint32_t next_rows = rows_per_buf;
       if (next_row0 + next_rows > total_rows)
         next_rows = total_rows - next_row0;
-      mm_dma_push(q, buf[(ci + 1) & 1], w + (size_t)(n0 + next_row0) * k, k,
-                  next_rows);
+      mm_dma_push(q, other, w + (size_t)(n0 + next_row0) * k, k, next_rows);
     }
 
     dma_queue_pop(q); /* wait for this chunk's DMA (kicked one iteration ago) */
 
-    mm_tiles((const int8_t *)buf[ci & 1], sw, c->xq, c->xq_scale, y, y_is_f32,
-             m, k, n, n0 + row0, n0 + row0 + rows);
+    if (ci + 1 == n_chunks)
+      mm_pf_kick(c, other, wid, nw); /* the other half is free from here */
+
+    mm_tiles((const int8_t *)cur, sw, c->xq, c->xq_scale, y, y_is_f32, m, k, n,
+             n0 + row0, n0 + row0 + rows);
   }
   return true;
 }
@@ -218,11 +287,17 @@ static void mm_worker(void *arg, int wid, int nw) {
   uint8_t *y = htp_ref_ptr(c, d->out);
   uint32_t n0, n1;
   mm_tile_range(n, wid, nw, &n0, &n1);
-  if (n0 == n1)
+  if (n0 == n1) {
+    mm_pf_drop(c, wid);
     return;
+  }
   if (c->vtcm &&
-      mm_worker_vtcm(c, w, sw, y, j->y_is_f32, j->m, k, n, n0, n1, wid, nw))
+      mm_worker_vtcm(c, d, w, sw, y, j->y_is_f32, j->m, k, n, n0, n1, wid, nw))
     return;
+  /** DDR path: a prefetch pending for this worker (kicked for another op
+   * or with another slab size) would otherwise meet the next matmul as a
+   * stale record. */
+  mm_pf_drop(c, wid);
   mm_tiles(w + (size_t)n0 * k, sw, c->xq, c->xq_scale, y, j->y_is_f32, j->m, k,
            n, n0, n1);
 }
