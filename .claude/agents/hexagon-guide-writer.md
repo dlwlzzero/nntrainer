@@ -51,6 +51,17 @@ note the discrepancy in your report.
   4. *What each measurement decided*: one paragraph per handoff, the
      conclusion the supervisor drew (e.g. "#24: the logits return is not a
      lever; ledger ⑫ closed").
+  5. *Baselines and references* (user requirement, 2026-09-18): a table
+     with **every non-nntrainer row of HEXAGON_BENCHMARK.md's comparison
+     table** — the GENIEX_LLAMACPP (NPU and CPU) and GENIEX_QAIRT rows with
+     their precision, device and context — and the **nntrainer CPU
+     baseline row** (issue #60, `Q4_0-FP16` from `main`; "pending" until
+     its handoff is filled), each with prefill and decode tok/s. The
+     *Latest* box and the chart show the current reference next to our
+     numbers: the CPU baseline as the floor, GENIEX_QAIRT as the stage-3
+     (W4, issue #65) reference. A goal that is a multiple of a baseline is
+     written as the multiple and the resolved tok/s once the baseline is
+     measured.
   `index.html`'s status box links here and holds only the *Latest* box.
 
 ## Rules
