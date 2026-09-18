@@ -122,6 +122,15 @@ steps / 1e6); decode ms/tok = median host `us` over the 63 `n=1` steps ÷ 1000; 
 3. `gh issue edit 35 -R dlwlzzero/nntrainer --remove-label state:needs-measurement --add-label state:measured`
 
 ## Results (run 2026-09-18, S25 Ultra `R3CY10WM83Y`, skels rebuilt on the workstation — see Notes)
+
+> **Rebase note (implementer, 2026-09-18, PR time).** After this run the branch was rebased onto `hvx_impl` @
+> `4b39062f` (adds PR #50, the shared op-shape source in `nntr_htp_common.h`, so the DSP bytes changed:
+> the container v79 skel is now 50,792 B, `776287048384fbd0ba80961b49086741`; v79qf 50,792 B,
+> `05e9943cfbc1a9ed63f9498409d4c3a2`; v75 46,696 B, `e451ce5a1b647897e5a767118a79a7e3`;
+> `hexagon_e2e_test` 1,260,624 B, `ecdc1051698c7f59fc7e56f6ebfe8a22`; `hexagon_rpc_test` unchanged). The
+> measured rows below are the pre-rebase binaries of the table above and stay the record; the v79 13-test +
+> `profile acc` sweep was repeated on the rebased tree and reproduces the G1 STATs digit for digit
+> (see "Simulator record" at the end).
 Reference in brackets: B1 and B2 against #23 variant B (v79 skel, same silicon), A against #23 variant A
 (`docs/measurements/23-sdk64-baseline.md`). v79 is the primary arch; A is the optional last v75 row. **Pass (B1 only)**: prefill tok/s within ±5 % of 207.4 /
 131.2 / 34.4 and decode DSP Mcyc/tok within ±5 % of 60.1 / 76.5 / 177.6 at 512 / 1024 / 4096; `--eval`
@@ -235,3 +244,9 @@ see: record, file, do not block.
   `quant16_generic pm1=162/25600` (was 167), `matmul_w8a8_m8 0.0078125/0.000788644` (unchanged),
   `graph_prefill 0.0273907/8.00437`, `graph_decode 0.0174583/24.125`, `logits 7.62939e-06/2.36832e-07`
   (unchanged).
+* v79, **rebased tree** (`hvx_impl` @ `4b39062f` + this branch, container SDK 6.4.0.2, 2026-09-18, PR-time
+  repeat per contract §7): 13/13 PASS; `profile acc` PASS, `profile_prefill_acc STAT max_abs=0.0659682
+  max_rel=92.7791`, `workers=6`, `total_pcycles=6174596` (pre-rebase 6174196, +400 from #50's header);
+  `quant_generic pm1=0/65536`, `quant16_generic pm1=184/25600`, `matmul_w8a8_* 0/0`, `matmul_dma ref_* 0/0`,
+  `logits 0/0`, `attn_prefill 0.000488281/0.208165`, `graph_prefill 0.0218946/6.88818`,
+  `graph_decode 0.0197323/23.2374` — every STAT equal to the G1 record above.
