@@ -34,6 +34,13 @@
 #define HTP_ATTN_NB 0u
 #endif
 
+/** 1: l2fetch the next lane block of K^T (one 2-D descriptor: the 128 lines
+ * the score loop touches) during the score pass and the next 16 KB V block
+ * during the PV pass (handoff variant C). Values are unchanged. */
+#ifndef HTP_ATTN_L2FETCH
+#define HTP_ATTN_L2FETCH 0
+#endif
+
 /** q heads of one kv head served by one K^T / V stream: two accumulator
  * sets, so a GQA group is walked in pairs (an odd group's last pair
  * computes its head twice and discards the copy). */
@@ -139,7 +146,14 @@ static void attn_sdpa_pair(const __fp16 *kh, const __fp16 *vh, uint32_t max_seq,
    * loads aligned and inside the cache) are computed and ignored. The
    * widened pair holds even positions in lo and odd in hi, so vshuff by 4
    * bytes restores position order before the store. */
+#if HTP_ATTN_L2FETCH
+  hex_l2fetch(kh + p_lo, VLEN, max_seq * sizeof(__fp16), hd);
+#endif
   for (uint32_t p0 = p_lo; p0 < p_hi; p0 += VLEN_FP16) {
+#if HTP_ATTN_L2FETCH
+    if (p0 + VLEN_FP16 < p_hi)
+      hex_l2fetch(kh + p0 + VLEN_FP16, VLEN, max_seq * sizeof(__fp16), hd);
+#endif
     HVX_VectorPair acc0 = Q6_W_vcombine_VV(Q6_V_vzero(), Q6_V_vzero());
     HVX_VectorPair acc1 = acc0;
     const __fp16 *kcol = kh + p0;
@@ -158,6 +172,9 @@ static void attn_sdpa_pair(const __fp16 *kh, const __fp16 *vh, uint32_t max_seq,
     }
   }
 
+#if HTP_ATTN_L2FETCH
+  hex_l2fetch_block(vh + (size_t)p_lo * hd, VLEN_FP16 * hd * sizeof(__fp16));
+#endif
   float mb[ATTN_PAIR] = {-INFINITY, -INFINITY}, lb[ATTN_PAIR] = {0.f, 0.f};
   for (uint32_t g = 0; g < (pair_valid ? ATTN_PAIR : 1u); ++g) {
     float *sc = rows[g];
@@ -189,6 +206,11 @@ static void attn_sdpa_pair(const __fp16 *kh, const __fp16 *vh, uint32_t max_seq,
   HVX_VectorPair a01 = a00, a10 = a00, a11 = a00;
   const uint16_t *pr0 = s16[0], *pr1 = s16[pair_valid ? 1u : 0u];
   for (uint32_t p0 = 0; p0 < len; p0 += VLEN_FP16) {
+#if HTP_ATTN_L2FETCH
+    if (p0 + VLEN_FP16 < len)
+      hex_l2fetch_block(vh + (size_t)(p_lo + p0 + VLEN_FP16) * hd,
+                        VLEN_FP16 * hd * sizeof(__fp16));
+#endif
     const uint32_t p1 = p0 + VLEN_FP16 < len ? p0 + VLEN_FP16 : len;
     for (uint32_t p = p0; p < p1; ++p) {
       const __fp16 *vrow = vh + (size_t)(p_lo + p) * hd;
