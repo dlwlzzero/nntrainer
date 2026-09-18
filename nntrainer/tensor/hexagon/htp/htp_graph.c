@@ -11,7 +11,7 @@
  */
 #include <HAP_compute_res.h>
 #include <HAP_perf.h>
-#ifdef HTP_PROF_FARF
+#if defined(HTP_PROF_FARF) || HTP_HMX
 #include <HAP_farf.h>
 #endif
 #include <stdlib.h>
@@ -27,6 +27,13 @@ const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
 };
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
+#if HTP_HMX
+/** With HexKL linked the session asks for 8 MB (v79 has 8 MB) with the
+ * HMX unit, keeps the first HTP_GRAPH_VTCM_BYTES for the HVX slabs exactly
+ * as before and lays the HMX arena over the rest; a 4 MB grant carves only
+ * the arena's fixed part (htp_hmx_arena_min_bytes) off the HVX region. */
+#define HTP_HMX_VTCM_BYTES (8u * 1024u * 1024u)
+#endif
 
 int htp_graph_dma_init(struct htp_exec_ctx *c, int n_workers) {
   const size_t align = dma_queue_alignof();
@@ -43,10 +50,20 @@ int htp_graph_dma_init(struct htp_exec_ctx *c, int n_workers) {
     htp_graph_dma_destroy(c);
     return 1;
   }
+  /** The queue's VTCM range decides the bypass bit of every descriptor
+   * whose end is in VTCM; with an HMX arena above the HVX slabs the range
+   * covers both (the arena is DMA'd into by S2's strip streaming). */
   for (i = 0; i < n_workers; ++i)
-    c->dmaq[i] = dma_queue_init((uint8_t *)c->dmaq_mem + one * (size_t)i,
-                                HTP_MM_DMA_QUEUE_CAP, (uintptr_t)c->vtcm,
-                                c->vtcm_size, NULL);
+    c->dmaq[i] =
+      dma_queue_init((uint8_t *)c->dmaq_mem + one * (size_t)i,
+                     HTP_MM_DMA_QUEUE_CAP, (uintptr_t)c->vtcm,
+#if HTP_HMX
+                     c->hmx.base ? (size_t)(c->hmx.base - c->vtcm) + c->hmx.size
+                                 : c->vtcm_size,
+#else
+                     c->vtcm_size,
+#endif
+                     NULL);
   return 0;
 }
 
@@ -152,6 +169,48 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
 
   /** Best-effort VTCM: NULL keeps the matmul DDR direct-read fallback and
    * is not an error. */
+#if HTP_HMX
+  /** First try: VTCM 8 MB (4 MB floor) plus the HMX unit in one context;
+   * the HVX kernels keep exactly their HTP_GRAPH_VTCM_BYTES at the bottom
+   * and HexKL's arena takes what is above it. If the resource manager
+   * refuses the HMX attribute (no HMX on the part, or held elsewhere) the
+   * plain 4 MB acquire below runs and the session has no HMX. */
+  (void)htp_hmx_version(g->ctx.hmx.version, sizeof(g->ctx.hmx.version));
+  {
+    compute_res_attr_t rattr;
+    unsigned id;
+    void *p = NULL;
+    unsigned sz = 0;
+    HAP_compute_res_attr_init(&rattr);
+    if (HAP_compute_res_attr_set_vtcm_param_v2(&rattr, HTP_HMX_VTCM_BYTES, 0,
+                                               HTP_GRAPH_VTCM_BYTES) == 0 &&
+        HAP_compute_res_attr_set_hmx_param(&rattr, 1) == 0) {
+      id = HAP_compute_res_acquire(&rattr, 10000 /*us*/);
+      if (id) {
+        if (HAP_compute_res_attr_get_vtcm_ptr_v2(&rattr, &p, &sz) == 0 && p &&
+            sz >= HTP_GRAPH_VTCM_BYTES) {
+          uint32_t arena = sz - HTP_GRAPH_VTCM_BYTES;
+          const uint32_t min_arena = htp_hmx_arena_min_bytes();
+          if (arena < min_arena)
+            arena = min_arena; /* 4 MB grant: the fixed part comes off HVX */
+          arena = (arena + HTP_HMX_ACT_ALIGN - 1u) & ~(HTP_HMX_ACT_ALIGN - 1u);
+          g->vtcm_ctx_id = id;
+          g->ctx.vtcm = (uint8_t *)p;
+          g->ctx.vtcm_size = sz - arena;
+          g->ctx.hmx.ctx_id = id;
+          if (htp_hmx_arena_init(&g->ctx.hmx, (uint8_t *)p + (sz - arena),
+                                 arena)) {
+            g->ctx.hmx.ctx_id = 0; /* arena too small: HVX keeps it all */
+            g->ctx.vtcm_size = sz;
+          }
+        } else {
+          HAP_compute_res_release(id);
+        }
+      }
+    }
+  }
+  if (!g->ctx.vtcm)
+#endif
   {
     compute_res_attr_t rattr;
     unsigned id;
@@ -169,6 +228,16 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
       }
     }
   }
+#if HTP_HMX
+  /** HexKL build (issue #65 S0): the library version this skel linked and
+   * whether the session got the HMX unit with its arena, so a handoff can
+   * copy both off logcat (plan 65 section 5, "beta1 vs beta2"). Logged
+   * here rather than in executor.c so the HTP_HMX=0 build keeps
+   * executor.o byte-identical (FARF embeds __LINE__). */
+  FARF(ALWAYS, "nntr_htp: hexkl %s hmx=%d vtcm_hvx=%u hmx_arena=%u",
+       g->ctx.hmx.version, g->ctx.hmx.base ? 1 : 0, (unsigned)g->ctx.vtcm_size,
+       (unsigned)g->ctx.hmx.size);
+#endif
   /** The matmul streaming path needs one DMA queue per worker for the
    * session (chunks are kicked ahead across ops, so the queue cannot live
    * inside an op call any more). Without VTCM the queues are not needed. */
@@ -313,6 +382,12 @@ void htp_graph_destroy(struct htp_graph *g) {
   /** Drain every worker's DMA queue on the workers before the VTCM the
    * descriptors write into goes away. */
   htp_graph_dma_flush(&g->ctx);
+#if HTP_HMX
+  /** The HMX lock is per thread: worker 0 took it, worker 0 gives it
+   * back, before the context that granted it is released. */
+  if (g->ctx.hmx.locked && g->ctx.pool)
+    wp_run(g->ctx.pool, htp_hmx_release_job, &g->ctx.hmx);
+#endif
   if (g->vtcm_ctx_id)
     HAP_compute_res_release(g->vtcm_ctx_id);
   htp_graph_dma_destroy(&g->ctx);

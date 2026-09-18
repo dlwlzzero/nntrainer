@@ -45,6 +45,32 @@ for f in "$HTP_DIR"/worker_pool.c "$HTP_DIR"/htp_graph.c \
   [ -e "$f" ] && SRCS+=("$f")
 done
 
+# HexKL (issue #65 S0): when the addon mount carries libhexkl_micro.a for
+# this toolchain/arch the skel is built with -DHTP_HMX=1, compiles hmx/*.c
+# and links the library; the addon is never copied into the tree
+# (tools/docker/run.sh mounts ~/Qualcomm/hexkl_addon at /opt/qcom/hexkl_addon).
+# Without it, or with -DHTP_HMX=0 in HEX_EXTRA_CFLAGS, the build is the
+# HVX-only tree (no hmx object, no HexKL symbol; HEXAGON.md section 5.3).
+HEXKL_ADDON_ROOT="${HEXKL_ADDON_ROOT:-/opt/qcom/hexkl_addon}"
+HEXKL_LIB="$HEXKL_ADDON_ROOT/lib/hexagon_${DEFAULT_TOOLS_VARIANT:-toolv19}_${HEX_ARCH}/libhexkl_micro.a"
+HTP_HMX=0
+case " ${HEX_EXTRA_CFLAGS:-} " in
+  *" -DHTP_HMX=0 "*) ;;
+  *) [ -f "$HEXKL_LIB" ] && [ -f "$HEXKL_ADDON_ROOT/include/hexkl_micro.h" ] && HTP_HMX=1 ;;
+esac
+HMX_CFLAGS=()
+HMX_LIBS=()
+if [ "$HTP_HMX" = 1 ]; then
+  HMX_CFLAGS=(-DHTP_HMX=1 -I "$HTP_DIR/hmx" -I "$HEXKL_ADDON_ROOT/include")
+  for f in "$HTP_DIR"/hmx/*.c; do
+    [ -e "$f" ] && SRCS+=("$f")
+  done
+  HMX_LIBS=("$HEXKL_LIB")
+  echo "HexKL: $HEXKL_LIB (HTP_HMX=1)"
+else
+  echo "HexKL: not linked (HTP_HMX=0; ${HEXKL_LIB} $([ -f "$HEXKL_LIB" ] && echo present || echo absent))"
+fi
+
 "$HEX_CLANG" \
     -m"$HEX_ARCH" -mhvx -mhvx-length=128B $HEX_IEEE_FLAG -G0 -O3 -fPIC -shared \
     -Wall -Werror -Wno-unused-function \
@@ -56,8 +82,10 @@ done
     -isystem "$HEXAGON_SDK_ROOT/incs" \
     -isystem "$HEXAGON_SDK_ROOT/incs/stddef" \
     -isystem "$HEXAGON_SDK_ROOT/ipc/fastrpc/incs" \
+    ${HMX_CFLAGS[@]+"${HMX_CFLAGS[@]}"} \
     ${HEX_EXTRA_CFLAGS:-} \
     "${SRCS[@]}" \
+    ${HMX_LIBS[@]+"${HMX_LIBS[@]}"} \
     -o "$OUT/skel/libnntr_htp_skel.so"
 
-echo "built: $OUT/skel/libnntr_htp_skel.so ($HEX_ARCH)"
+echo "built: $OUT/skel/libnntr_htp_skel.so ($HEX_ARCH, HTP_HMX=$HTP_HMX)"
