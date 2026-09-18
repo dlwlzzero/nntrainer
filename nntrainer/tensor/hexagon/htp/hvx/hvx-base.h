@@ -165,7 +165,12 @@ static inline HVX_Vector hvx_vec_f32_to_f16(HVX_Vector v0, HVX_Vector v1) {
   return Q6_Vh_vdeal_Vh(hvx_vec_f32_to_f16_shuff(v0, v1));
 }
 
-#if __HVX_ARCH__ >= 79
+/** HTP_FORCE_QF_HELPERS (local change, issue #35): build the >= 79 target
+ * with the qf-format helpers below instead of the IEEE Vsf/Vhf ones, so a
+ * v79 skel can be compared against the same kernels on the same silicon
+ * with only the helper set changed (HEXAGON.md section 7, rule 1). Never
+ * defined by default; opt in with HEX_EXTRA_CFLAGS=-DHTP_FORCE_QF_HELPERS. */
+#if __HVX_ARCH__ >= 79 && !defined(HTP_FORCE_QF_HELPERS)
 static inline HVX_VectorPair hvx_vec_f16_to_f32_shuff(HVX_Vector v) {
   const HVX_Vector one = hvx_vec_splat_f16(1.0);
   HVX_VectorPair p = Q6_Wsf_vmpy_VhfVhf(v, one);
@@ -218,7 +223,7 @@ static inline HVX_Vector hvx_vec_i16_from_hf_rnd_sat(HVX_Vector vin) {
   return Q6_Vh_vround_VwVw_sat(vsf_1, vsf_0);
 }
 
-#if __HVX_ARCH__ < 79
+#if __HVX_ARCH__ < 79 || defined(HTP_FORCE_QF_HELPERS)
 
 static inline HVX_VectorPair
 hvx_vec_mpyacc_f32_f16(HVX_VectorPair acc, HVX_Vector x, HVX_Vector y) {
@@ -239,7 +244,7 @@ hvx_vec_mpyacc_f32_f16(HVX_VectorPair acc, HVX_Vector x, HVX_Vector y) {
 
 #endif
 
-#if __HVX_ARCH__ < 79
+#if __HVX_ARCH__ < 79 || defined(HTP_FORCE_QF_HELPERS)
 
 static inline HVX_Vector hvx_vec_add_f16_f16(HVX_Vector a, HVX_Vector b) {
   const HVX_Vector negone = Q6_Vh_vsplat_R(0xBC00); // -1.0 in IEEE FP16
@@ -303,7 +308,7 @@ static inline HVX_Vector hvx_vec_mul_f32_f32(HVX_Vector a, HVX_Vector b) {
   return Q6_Vsf_vmpy_VsfVsf(a, b);
 }
 
-#endif // __HVX_ARCH__ < 79
+#endif // __HVX_ARCH__ < 79 || HTP_FORCE_QF_HELPERS
 
 static inline HVX_Vector hvx_vec_load_act_tile(const uint8_t *y_q, uint32_t kt,
                                                HVX_Vector *v_act_all) {

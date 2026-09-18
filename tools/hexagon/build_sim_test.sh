@@ -1,12 +1,15 @@
 #!/bin/bash
 # tools/hexagon/build_sim_test.sh
-# Cross-builds the hexagon-sim test lib for HEX_ARCH (v75 or v79: needs
-# $HEXAGON_SDK_ROOT/rtos/qurt/compute<arch>/sdksim_bin/runelf.pbn; SDK 6.4
-# ships both). Prereq: source $HEXAGON_SDK_ROOT/setup_sdk_env.source
+# Cross-builds the hexagon-sim test lib for HEX_ARCH (default v79, the
+# shipping arch since issue #35; v75 is the fallback, built and simulated
+# only when a change touches an __HVX_ARCH__ branch or on request, not per
+# PR). Needs $HEXAGON_SDK_ROOT/rtos/qurt/compute<arch>/sdksim_bin/runelf.pbn;
+# SDK 6.4 ships both. Prereq: source $HEXAGON_SDK_ROOT/setup_sdk_env.source
+# Extra compiler flags (appended, so they override): HEX_EXTRA_CFLAGS=-DFOO
 set -eu
 : "${HEXAGON_SDK_ROOT:?source setup_sdk_env.source first}"
 : "${DEFAULT_HEXAGON_TOOLS_ROOT:?source setup_sdk_env.source first}"
-HEX_ARCH="${HEX_ARCH:-v75}"
+HEX_ARCH="${HEX_ARCH:-v79}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HTP_DIR="$REPO/nntrainer/tensor/hexagon/htp"
 SIM_DIR="$REPO/test/hexagon/sim"
@@ -43,4 +46,9 @@ done
     ${HEX_EXTRA_CFLAGS:-} \
     "${SRCS[@]}" \
     -o "$OUT/libnntr_sim_test.so"
-echo "built: $OUT/libnntr_sim_test.so ($HEX_ARCH)"
+# Stamp the arch and the extra flags next to the library: run_sim_test.sh
+# refuses to boot a different simulator against it, or to run a variant build
+# (HEX_EXTRA_CFLAGS) as if it were the plain one (both arches and every
+# variant share this output directory).
+echo "$HEX_ARCH ${HEX_EXTRA_CFLAGS:-}" > "$OUT/libnntr_sim_test.arch"
+echo "built: $OUT/libnntr_sim_test.so ($HEX_ARCH${HEX_EXTRA_CFLAGS:+ $HEX_EXTRA_CFLAGS})"

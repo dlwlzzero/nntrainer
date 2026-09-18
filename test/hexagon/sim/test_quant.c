@@ -91,6 +91,15 @@ static int test_quant_row(void) {
   for (uint32_t i = 1; i < 1024; ++i)
     x_row[i] = (__fp16)((i & 1u ? -1.f : 1.f) * ((float)(i % 127u) + 0.5f));
   fails += check_row("tie", 1024, 1u, NULL);
+  /** tie2: the sign changes every two elements, independently of the parity
+   * of n, so each of the four classes +(even).5, +(odd).5, -(even).5,
+   * -(odd).5 holds a quarter of the row. The tie row above also reaches all
+   * four (its sign and the parity of n drift out of step every 127
+   * elements) but unevenly; tie2 makes the coverage explicit. */
+  for (uint32_t i = 1; i < 1024; ++i)
+    x_row[i] =
+      (__fp16)(((i >> 1) & 1u ? -1.f : 1.f) * ((float)(i % 127u) + 0.5f));
+  fails += check_row("tie2", 1024, 1u, NULL);
 
   /* (d) widest and narrowest row widths. */
   for (uint32_t i = 0; i < KQ; ++i)
@@ -135,6 +144,10 @@ static int test_quant_row(void) {
   for (uint32_t i = 1; i < 1024; ++i)
     x_row[i] = (__fp16)((i & 1u ? -1.f : 1.f) * ((float)(i % 2047u) + 0.5f));
   fails += check_row("i16_tie", 1024, 2u, NULL);
+  for (uint32_t i = 1; i < 1024; ++i)
+    x_row[i] =
+      (__fp16)(((i >> 1) & 1u ? -1.f : 1.f) * ((float)(i % 2047u) + 0.5f));
+  fails += check_row("i16_tie2", 1024, 2u, NULL);
   uint32_t pm16 = 0;
   for (int r = 0; r < 16; ++r) {
     for (uint32_t i = 0; i < KQ; ++i)

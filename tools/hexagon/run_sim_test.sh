@@ -1,12 +1,26 @@
 #!/bin/bash
 # tools/hexagon/run_sim_test.sh <test-name> [args...]
+# HEX_ARCH and HEX_EXTRA_CFLAGS default to v79 / empty and must match the
+# build_sim_test.sh values that produced build_hexagon/sim/libnntr_sim_test.so.
 # SIM_TIMING=1 adds --timing (cycle-accurate core model; slower)
 set -eu
 : "${HEXAGON_SDK_ROOT:?source setup_sdk_env.source first}"
 : "${DEFAULT_HEXAGON_TOOLS_ROOT:?source setup_sdk_env.source first}"
-HEX_ARCH="${HEX_ARCH:-v75}"
+HEX_ARCH="${HEX_ARCH:-v79}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$REPO/build_hexagon/sim"
+# The library is built for one arch and one set of extra flags
+# (build_sim_test.sh stamps "<arch> <HEX_EXTRA_CFLAGS>"); running it under the
+# other simulator, or running a -DHTP_FORCE_QF_HELPERS build as the plain gate,
+# would pass silently with the wrong helper set.
+if [ -f "$OUT/libnntr_sim_test.arch" ]; then
+  BUILT="$(sed -e 's/[[:space:]]*$//' "$OUT/libnntr_sim_test.arch")"
+  WANT="$(printf '%s' "$HEX_ARCH ${HEX_EXTRA_CFLAGS:-}" | sed -e 's/[[:space:]]*$//')"
+  if [ "$BUILT" != "$WANT" ]; then
+    echo "run_sim_test.sh: libnntr_sim_test.so was built with '$BUILT', not '$WANT'; rebuild with HEX_ARCH=$HEX_ARCH HEX_EXTRA_CFLAGS='${HEX_EXTRA_CFLAGS:-}'" >&2
+    exit 1
+  fi
+fi
 # run_main_on_hexagon ships one image per (toolchain, arch). Use the one built
 # by the toolchain that compiled libnntr_sim_test.so ($DEFAULT_TOOLS_VARIANT from
 # setup_sdk_env.source, e.g. toolv19 for HEXAGON_Tools 19.0.04); a lexical
