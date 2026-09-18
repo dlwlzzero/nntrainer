@@ -5,6 +5,14 @@ Branch: `hvx/25-decode-prefetch` from `hvx_impl` (`f9d1a062`). Planned 2026-09-1
 ledger ⑫ (the logits return is < 0.1 ms inside a 34 ms step; the whole stage-1 W8A8 decode gap is
 the weight stream plus #41's idle-gap clock).
 
+**Status (2026-09-18): H1 measured, H2 folded into #57.** H1 (`docs/measurements/25-decode-prefetch.md`,
+unit `R3CY10WM83Y`, v79): G1 PASS 0.884 → prefetch on by default; D FAIL (+9.9 %) → max-fit chunk stays;
+G3 PASS; G1' ceiling 54 tok/s @512 (32.3 GB/s, `mm8`+`mm16`+`lg`). H2 is not run: `MM_TB` / `MM16_TB` are
+inert at m=1 and decode `mm8` already sits under the pure DMA wait, so the sweep is a prefill question
+and lives in #57's device session together with the `MM16_R` epilogue generalisation (ledger ⑩). Step 7's
+"then build H2" and step 8's "after H2" are superseded; the PR follows H1. Next decode lever: ATTN (#58);
+`down` on the DMA ring (#59, ledger ⑬).
+
 Two deliverables, two handoffs: **H1** decides the prefetch and produces the W8 weight-stream
 ceiling that #51 waits on; **H2** is the kernel-constant sweep on top of whatever H1 adopts. No ABI
 change, no host change, no image change.
