@@ -952,7 +952,12 @@ simulators pass either way, so a device pass is not optional.
    a push is cold (3 % host wall and 5 % DSP cycles high, the first 16
    `forward_full_us` of an `hexagon_rpc_test` group ~20 % high), so an
    A/B at the sub-ms level is run twice with the variant order reversed
-   and the second pass is read. The teacher-forced `--eval` loop on the
+   and the second pass is read — and the warm-up can be larger than
+   that: in #25 (2026-09-18, same unit) pass 1's first run read **+8.5 %**
+   DSP cycles over pass 2 (66.97 vs 61.74 Mcyc), so the same A/B read on
+   pass 1 alone would have been 0.84 instead of 0.88; any verdict tighter
+   than ±10 % needs the reversed double pass, not a warm-up run. The
+   teacher-forced `--eval` loop on the
    same unit runs at 1167–1178 MHz (issue #41). (e) **The 4096 row on
    `R3CY10WM83Y` is offset from every other 4096 reference (#35,
    2026-09-18, issue #53).** The v79 shipping skel read 188.0 / 186.8
@@ -1300,6 +1305,88 @@ is unchanged for the fallback. The 1.7 % v79-vs-v75 offset is not the
 IEEE helpers (B2 = B1 digit for digit; rule 1 closed) and goes to the
 layer-0 bisection of #26 (ledger ⑮) with a v79-vs-v75 `--dump-op` pair.
 
+**Cross-op weight prefetch and the W8 weight-stream ceiling (#25,
+ledger ① ⑨; plan `docs/plans/25-decode-prefetch.md`, measurement
+`docs/measurements/25-decode-prefetch.md`, 2026-09-18, unit
+`R3CY10WM83Y`, v79, SDK 6.4.0.2).** #25 promoted the per-worker DMA queue
+from op to graph lifetime and let each tiled matmul kick chunk 0 of the
+next tiled matmul into its free half-slab while ROPE / ATTN / eltwise
+run (section 2.2). The handoff ran four v79 skels, all with a per-call
+`HTP_PROF_FARF` line (`prof … mm8= mm16= lg= attn= rest=` in
+kilo-pcycles, summed by `tools/hexagon/summ_farf_prof.py`): A control
+(`-DHTP_MM_NO_PREFETCH`), B prefetch (the shipping build), C
+(`-DHTP_MM_STREAM_ONLY`: every weight byte DMA'd, nothing multiplied —
+outputs garbage by construction), D (`-DHTP_MM_CHUNK_ROWS=64u`, ledger
+⑨). 512 tokens as a reversed double pass, pass 2 read; B and C also at
+1024 / 4096. `RPC_TEST PASS`, 14/14 runs clean, no SSR or FARF fatal, and
+no > 2× step after the prefill chunks in any B / D run (the one new
+runtime pattern, a descriptor pending across the worker barrier, did not
+stall).
+
+| variant | ctx | prefill tok/s | decode host ms | decode tok/s | DSP Mcyc/step | FARF median Mcyc: `mm8` / `mm16` / `lg` / `attn` / `rest` |
+|---|---|---|---|---|---|---|
+| A control | 512 | 188.5 | 32.64 | 30.64 | **61.735** (#35 B1 61.2, +0.9 %: env PASS) | 24.35 / 7.87 / 9.07 / 17.31 / 3.08 |
+| **B prefetch** | 512 | 191.1 | 29.72 | 33.65 | **54.575** (B/A **0.884**) | 16.05 / 8.59 / 8.96 / 17.26 / 3.65 |
+| C stream-only | 512 | 370.3 | 30.40 | 32.90 | 52.997 | 16.58 / 7.23 / 8.35 / 16.65 / 4.13 |
+| D chunk 64 | 512 | 181.4 | 29.33 | 34.10 | 59.993 (D/B 1.099) | 20.66 / 7.91 / 9.01 / 18.77 / 3.60 |
+| B prefetch | 1024 | 123.7 | 38.00 | 26.31 | 73.744 (#35 77.8) | ATTN 34.2 = 46 % |
+| C stream-only | 1024 | 186.6 | 38.16 | 26.21 | 73.809 | `mm8`+`mm16` 25.9 |
+| B prefetch | 4096 | 30.84 | 90.28 | 11.08 | 184.603 (#35 186.8) | ATTN 146.6 = 79 % |
+| C stream-only | 4096 | 33.60 | 91.79 | 10.89 | 186.884 | `mm8`+`mm16` 26.4 |
+
+`pcycles_per_us` wandered 1743–2046 across the runs, which is why the
+host-ms column disagrees with the Mcyc column on D and why every verdict
+is read in Mcyc (rule 9). Accuracy: `--eval` 41.4947 / 162 on
+`t512_23.i32` in all six A / B / D runs, 5.8595 / 692 at 1024 and
+1.5623 / 3759 at 4096 (= #35 B1), and the 63-step `top1=` sequence and
+`E2E gen` line are md5-identical across A / B / D and both passes.
+
+Verdicts (plan §1 rules; supervisor 2026-09-18). **G1 PASS, prefetch on
+by default**: 0.884 (−11.6 %), with `mm8` 24.35 → 16.05 Mcyc (−34 %) —
+0.5 Mcyc *below* C's pure DMA wait for the same bytes, so at 512 the
+W8A8 MACs are entirely hidden behind the stream and B's
+`mm8`+`mm16`+`lg` (33.6 Mcyc) is within 4 % of C's (32.2). **D FAIL, the
+max-fit chunk stays**: +9.9 % Mcyc over B and lower prefill (a 64-row
+chunk turns the 1-chunk decode ops into several and pays the DMA
+latency per chunk). **G3 PASS**. `MM16_R` stays pinned to 4 (#57).
+
+**The ceiling (G1'), read correctly.** `HTP_MM_STREAM_ONLY` drops
+`mm_tiles` in `mm_worker_vtcm`, which serves `MATMUL_W8A8` *and*
+`MATMUL_LOGITS`, so C's `lg` is DMA wait as much as its `mm8`, and the
+printed `stream bytes/step=595,984,384` is exactly 28 × 15,728,640 B of
+layer weights + 151,936 × 1024 B of lm_head. The stream phase is
+therefore `mm8`+`mm16`+`lg` = **32.2 Mcyc = 18.5 ms at 1.74 GHz = 32.3
+GB/s, a weight-stream-only ceiling of 54 tok/s at 512** — not the ≈ 74
+the handoff quotes from `mm8`+`mm16` alone (which leaves out the
+lm_head's 26 % of the bytes). Per path: the tiled q/k/v/o/gate/up DMA
+moves 352.3 MB in 9.5 ms (**37.0 GB/s**), the lm_head 155.6 MB in 4.8 ms
+(32.5 GB/s), and `down` 88.1 MB in 4.15 ms (**21.2 GB/s** — the C build
+DMAs the row-major rows without the up→q handover; the shipping kernel
+reads them straight from DDR in 8.59 Mcyc). `mm8`+`mm16` is flat with
+context (23.8 / 25.9 / 26.4 Mcyc), so the ceiling is ≈ 54–57 tok/s at
+every depth (the 1024 / 4096 `lg` column is a #25 read-back item). Two
+consequences: the provisional ≥ 60 tok/s W8A8 goal is above the
+ceiling and HEXAGON_BENCHMARK.md carries its replacement as a user
+decision; and the 4-bit stream of #51 (≈ 307 MB) buys 8.3–9.6 ms/step
+at these rates, which is not enough for 70.3 on its own.
+
+**What the split says about the rest of the step.** At 512 the
+non-stream part of B is `attn` 17.3 + `rest` 3.6 = 20.9 Mcyc (38 %);
+at 1024 and 4096 B equals C within 0.1 % / 1.2 % because ATTN is 46 %
+/ 79 % of the step there — 34.2 and 146.6 Mcyc for 117 MB and 470 MB
+of fp16 KV, ≈ 6.5 GB/s, a fifth of what the weight DMA reaches on the
+same unit. `attn_worker` (`hvx-attn.c`) splits the 8 kv heads over the 6
+workers (three workers get two heads, three get one) and re-streams K^T
+for each of the two GQA query heads at m=1, so this is the kernel, not
+DDR: **decode attention is the decode lever above the weight stream —
+issue #58** (p1). `mm16` is 15.7 % of B's step (8.59 Mcyc; 12.8 % on A),
+below the 30 % that would have promoted #57, and only 1.35 Mcyc above
+its stream wait; the larger `mm16` lever is moving `down` onto the DMA
+ring (21 → 37 GB/s, ≈ 3 Mcyc, ledger ⑬, **issue #59**, p2). The `MM_TB`
+/ `MM16_TB` sweep planned as H2 is inert at m=1 and so a prefill
+question; it is folded into #57's device session instead of holding
+the #25 PR.
+
 ### 8.3 Simulator profile (M6 baseline, P3 and P4 acc)
 
 hexagon-sim v75 (SDK 6.0.0.2, toolchain 8.7.08), `timing=off`, 2-layer /
@@ -1566,11 +1653,18 @@ here.
 
 ## 9. Planned work
 
-* **Performance (first)**: K^T reuse across query rows in prefill
-  attention (`Follow-up:` note in `hvx-attn.c`) — P5. After P4 took
-  `MATMUL_W8A16` down 3.58× (section 8.3), ATTN is the largest
-  remaining cost at long context and the only one that grows with
-  sequence length.
+* **Performance (first): decode attention — issue #58.** #25
+  (section 8.2, 2026-09-18) finished the W8 weight stream at 512 (the
+  W8A8 MACs hide behind a 37 GB/s DMA; ceiling 54 tok/s) and its FARF
+  split puts ATTN at 17.3 / 34.2 / 146.6 Mcyc = 32 / 46 / 79 % of the
+  decode step at 512 / 1024 / 4096, ≈ 6.5 GB/s over the fp16 KV. The
+  decode @4096 goal (≥ 27.5 = 36 ms/step) needs ATTN ≤ 36 Mcyc against
+  38 Mcyc of everything else; #58 balances the 8 kv heads over the 6
+  workers and shares K^T across the GQA pair at m=1, gate: ATTN halved
+  at 4096. Prefill K^T reuse across query rows (`Follow-up:` note in
+  `hvx-attn.c`) stays P5 / #26. After #58: the 4-bit weight stream (#51,
+  whose tok/s targets need both), then `down` on the DMA ring (#59,
+  ledger ⑬, 21 → 37 GB/s).
 * **Accuracy: the upstream qf32 divergence.** At layer 0 on the device
   the SILU_MUL output already differs from the x86 reference by
   rel-RMS 2.65 % while the new int16 kernel is exact to one fp16 ulp on
@@ -1588,9 +1682,11 @@ here.
   caller that does host work between steps (`engine="htp"` sampling,
   tokenizer, printing) loses up to 39 % of the DSP clock — a
   `HAP_power` / DCVS vote sized for gapped decode, judged on the app
-  path, not the harness. The decode budget itself belongs to the weight
-  stream: cross-op prefetch and the `MM_TB` / `MM16_R` / chunk device
-  sweep (#25), then the 4-bit weight stream (#51).
+  path, not the harness. The decode budget itself: the cross-op
+  prefetch (#25, measured 2026-09-18: −11.6 % at 512, on by default;
+  chunk 64 rejected) closed the W8 weight-stream question — what is
+  left is decode attention (#58), the 4-bit stream (#51) and `down` on
+  the DMA ring (#59).
 * **Device re-measurement of the rest**: section 5.4's app numbers and
   the section 8.2 M5 tables predate P3 and P4, `MM_TB`'s real effect
   (the simulator showed only 1–4 %) is unmeasured on silicon, and the
@@ -1601,13 +1697,18 @@ here.
 * **Left out of P4, still open**: VTCM/DMA streaming for the W8A16
   weight rows, which only a device A/B can decide because the simulator
   does not model DDR bandwidth; an `MM16_R` / `MM16_TB` sweep on the
-  device for the same reason — with one correction from #25
+  device for the same reason — with two updates from #25
   (2026-09-18): `mm16_block`'s epilogue folds exactly four rows, so a
   build with `MM16_R` other than 4 returned wrong `down_proj` rows
   silently; #25 pins `MM16_R` to 4 with a static check and issue #57
   generalises the fold (R ∈ {2, 4, 8}, one simulator case per value)
-  before the `MM16_R` half of that sweep can run; and tiling `down` so
-  the image carries one weight layout.
+  before the `MM16_R` half of that sweep can run, and #57's device
+  session now also carries the `MM_TB` / `MM16_TB` half (inert at m=1,
+  so a prefill sweep; #25's H2 was not run). The VTCM/DMA streaming
+  question has its number: #25's stream-only skel moves `down` at 21
+  GB/s against 37 on the tiled ring, ≈ 3 Mcyc of the decode step —
+  issue #59. Tiling `down` so the image carries one weight layout stays
+  ledger ⑤.
 * **`engine="htp"` follow-ups**: route host-side `hexagon:` messages
   into the nntrainer logger instead of stderr; system-prompt KV
   save/load on the DSP (today it forces the CPU path); a second lowered
