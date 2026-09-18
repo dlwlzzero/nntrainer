@@ -162,3 +162,14 @@ compares only within this session, rule 9(e)). On `R3CY205ZMND` the v79 referenc
 
 Hand back: `git add docs/measurements/25-decode-prefetch.md && git commit -s -m "[docs] Fill the #25 H1 measurement (<unit>, SDK <ver>)" && git push`,
 then `gh issue edit 25 -R dlwlzzero/nntrainer --remove-label state:needs-measurement --add-label state:measured`.
+
+## Simulator record (v79, container SDK 6.4.0.2, 2026-09-18, `logs/hexagon/sim_v79_25_full.log`, DSP bytes of `7d318718`)
+`profile acc` PASS, `profile_prefill_acc STAT max_abs=0.0659682 max_rel=92.7791` — bit-identical to the #35 v79
+record; `workers=6`, `total_pcycles` 6,158,964 (#35 6,174,196, −0.2 %), `MATMUL_W8A8` per_call 215,153 (#35
+216,272), `MATMUL_W8A16` 1,261,864 (=), `ATTN` 174,287 (174,095), `MATMUL_LOGITS` 113,504, `barrier_empty_x1000`
+8,319,592 (=) — the per-kind numbers are a relative signal only (no DDR model: the prefetch cannot show here).
+13/13 PASS with every STAT equal to the #35 v79 record (`quant_generic 0/65536`, `quant16_generic 184/25600`, every
+`matmul_w8a8_*` / `matmul_dma_ref_*` / `logits` `0/0`, `graph_prefill 0.0218946/6.88818`, `graph_decode
+0.0197323/23.2374`, `graph_prefill_2workers 0.0218946/6.88818`), plus the new `SIM_TEST matmul_dma prefetch hits=6
+workers=6`. Rung 1: `LOWER_TEST PASS`, `W8CX_BIN_TEST PASS`, oplist header `PASS`. Rung 4: default skel
+`7dc42f5981cf000393d2d23c3c181314` (55,208 B) + both harnesses build; the four variants above.
