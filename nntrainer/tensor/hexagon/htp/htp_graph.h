@@ -22,9 +22,12 @@ struct htp_graph {
   const struct nntr_htp_op_desc *ops; /**< points into the caller's oplist */
   struct htp_exec_ctx ctx;            /**< owns pool + scratch pointers */
   unsigned vtcm_ctx_id;               /**< HAP compute-res id, 0 = no VTCM */
-  uint32_t *next_mm; /**< [n_ops] index of the next MATMUL_W8A8 / LOGITS op
-                        after op i (UINT32_MAX = none), built at init for
-                        the cross-op weight prefetch (hvx-matmul.c) */
+  uint64_t stream_bytes; /**< weight bytes every forward call streams: sum
+                            of n*k over the W8A8 / LOGITS / W8A16 ops (the
+                            denominator of the weight-stream GB/s) */
+  uint32_t *next_mm;     /**< [n_ops] index of the next MATMUL_W8A8 / LOGITS op
+                            after op i (UINT32_MAX = none), built at init for
+                            the cross-op weight prefetch (hvx-matmul.c) */
 };
 
 /**

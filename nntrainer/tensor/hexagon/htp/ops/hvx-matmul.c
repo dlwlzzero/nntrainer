@@ -37,7 +37,13 @@
 /** Measurement-only knobs (HEXAGON.md section 5.3), all off by default:
  * HTP_MM_NO_VTCM forces the direct DDR read path; HTP_MM_CHUNK_ROWS=<n>
  * caps the DMA chunk at n rows (0 = as many whole tiles as fit in half the
- * slab, the shipping behaviour; ledger (9)). */
+ * slab, the shipping behaviour; ledger (9)); HTP_MM_NO_PREFETCH compiles
+ * the cross-op prefetch out (mm_pf_kick); HTP_MM_STREAM_ONLY keeps every
+ * weight DMA (chunking, prefetch, and a DMA read of the W8A16 rows that
+ * are otherwise read directly) but skips the multiply - the step time of
+ * that build is the weight stream plus the non-matmul ops, the ceiling the
+ * W8A8 decode goal is stated against (HEXAGON_BENCHMARK.md). Its outputs
+ * are garbage by construction. */
 #ifndef HTP_MM_CHUNK_ROWS
 #define HTP_MM_CHUNK_ROWS 0u
 #endif
@@ -269,11 +275,51 @@ static bool mm_worker_vtcm(struct htp_exec_ctx *c,
     if (ci + 1 == n_chunks)
       mm_pf_kick(c, other, wid, nw); /* the other half is free from here */
 
+#ifdef HTP_MM_STREAM_ONLY
+    (void)cur; /* measurement-only: the bytes landed, nothing is computed */
+#else
     mm_tiles((const int8_t *)cur, sw, c->xq, c->xq_scale, y, y_is_f32, m, k, n,
              n0 + row0, n0 + row0 + rows);
+#endif
   }
   return true;
 }
+
+#ifdef HTP_MM_STREAM_ONLY
+/** Measurement-only stand-in for the W8A16 row loop: DMA rows [n0, n1)
+ * (row-major, k bytes each) into the worker's two half-slabs, double
+ * buffered, and compute nothing. A prefetch pending from the previous
+ * tiled matmul is drained first so the ring's pop order stays the pipeline's
+ * (the following matmul then kicks its own chunk 0: this build loses the
+ * up -> q handover across down, one chunk latency per layer). */
+static void mm16_stream_only(struct htp_exec_ctx *c, const int8_t *w,
+                             uint32_t k, uint32_t n0, uint32_t n1, int wid,
+                             int nw) {
+  if (!c->vtcm || !c->dmaq)
+    return;
+  mm_pf_drop(c, wid);
+  const size_t slab_sz = (c->vtcm_size / (uint32_t)nw) & ~(size_t)127;
+  const size_t half = (slab_sz / 2u) & ~(size_t)127;
+  const uint32_t rows_per = (uint32_t)(half / k);
+  if (rows_per == 0u || n1 <= n0)
+    return;
+  uint8_t *buf[2];
+  buf[0] = c->vtcm + (size_t)wid * slab_sz;
+  buf[1] = buf[0] + half;
+  dma_queue_t q = c->dmaq[wid];
+  const uint32_t total = n1 - n0, n_pieces = (total + rows_per - 1u) / rows_per;
+  mm_dma_push(q, buf[0], w + (size_t)n0 * k, k,
+              rows_per < total ? rows_per : total);
+  for (uint32_t i = 0; i < n_pieces; ++i) {
+    if (i + 1u < n_pieces) {
+      const uint32_t r0 = (i + 1u) * rows_per;
+      mm_dma_push(q, buf[(i + 1u) & 1u], w + (size_t)(n0 + r0) * k, k,
+                  r0 + rows_per <= total ? rows_per : total - r0);
+    }
+    dma_queue_pop(q);
+  }
+}
+#endif
 
 /** W8A8 and LOGITS worker: per-worker N-slab [n0, n1) of whole tiles, VTCM
  * streaming when it fits, DDR direct read otherwise. */
@@ -409,6 +455,14 @@ static void mm16_worker(void *arg, int wid, int nw) {
   uint32_t n0 = (uint32_t)(((uint64_t)n * wid) / nw);
   uint32_t n1 = (uint32_t)(((uint64_t)n * (wid + 1)) / nw);
 
+#ifdef HTP_MM_STREAM_ONLY
+  (void)sw;
+  (void)y;
+  (void)xq;
+  (void)m;
+  mm16_stream_only(c, w, k, n0, n1, wid, nw);
+  return;
+#endif
   for (uint32_t jn = n0; jn < n1; jn += MM16_R) {
     const uint32_t rows = n1 - jn < MM16_R ? n1 - jn : MM16_R;
     uint32_t t = 0;
