@@ -94,7 +94,7 @@ Reading the numbers (HEXAGON.md §8.2, #24): prefill tok/s = 512 ÷ (sum of `us`
 `median_pcycles` / 1e6** (the column every rule reads); `pcycles_per_us` = the run's own clock. For C:
 GB/s = 595,984,384 ÷ (`median_pcycles` ÷ `pcycles_per_us`) ÷ 1000; ceiling tok/s = 1000 ÷ (`median_us` / 1000).
 
-## Results (fill in) — unit serial: `__________`, pass 2 rows are the record
+## Results — unit serial: `R3CY10WM83Y` (S25 Ultra, v79), measured 2026-09-18, pass 2 rows are the record
 
 Reference cells for this unit (`R3CY10WM83Y`, v79 shipping skel, #35 B1 = `hvx_impl` today): 512 →
 198.7 prefill tok/s / 32.391 ms / 30.87 tok/s / **61.200 Mcyc** at 1905–1915 `pcycles_per_us`; 1024 →
@@ -105,60 +105,101 @@ compares only within this session, rule 9(e)). On `R3CY205ZMND` the v79 referenc
 
 ### Speed, 512 tokens (`--chunk 128 --steps 64`, `t512_23.i32`, `qwen3_full`)
 
-| variant | pass | skel md5 (from `run()`) | prefill tok/s | decode median host ms | decode tok/s | **DSP Mcyc/step** | `pcycles_per_us` | FARF median kcyc: mm8 / mm16 / lg / attn / rest | log stamp |
+Skels were **rebuilt on the workstation** (SDK 6.4.0.2, `HEXAGON_Tools/19.0.04`, `HEX_ARCH=v79`) because the
+container binaries were not on this machine, so the md5s below replace the artifact table's; the sizes are
+the doc's + 160 B (the doc expected #35's + 192 B), A/C 51,272 B and B/D 55,368 B:
+A `de8050b87810a85bb4341fee9cd940b5`, B `98b07cafa2f273bd7a587159efe759de`,
+C `6520a381bcf8f71c702d18a70da1c3ce`, D `8effb8755c69d9c261fa7389d614d0f8`,
+default (not run) `f032508a80e0ac8a09dcdf26bf361dbb`, `hexagon_e2e_test` `743ba32c935ada2571b97b9003de3163`,
+`hexagon_rpc_test` `60a7098b27a8868ad820b139772a9ea1`. Every model / token artifact md5 matched the table
+exactly. Step 0 `run_device_test.sh` on A: `RPC_TEST full-logits pattern ok`, **`RPC_TEST PASS`**.
+
+| variant | pass | skel md5 (from `run()`) | prefill tok/s | decode median host ms | decode tok/s | **DSP Mcyc/step** | `pcycles_per_us` | FARF median Mcyc: mm8 / mm16 / lg / attn / rest | log stamp |
 |---|---|---|---|---|---|---|---|---|---|
-| A control | 1 | | | | | | | | |
-| B prefetch | 1 | | | | | | | | |
-| C ceiling | 1 | | | | | | | | |
-| D chunk 64 | 1 | | | | | | | | |
-| **D chunk 64** | 2 | | | | | | | | |
-| **C ceiling** | 2 | | | | | | | | |
-| **B prefetch** | 2 | | | | | | | | |
-| **A control** | 2 | | | | | | | | |
+| A control | 1 | `de8050b8…` | 179.5 | 34.990 | 28.58 | 66.968 | 1913.9 | 26.273 / 8.554 / 9.908 / 18.973 / 3.150 | 132629 |
+| B prefetch | 1 | `98b07caf…` | 185.0 | 29.694 | 33.68 | 56.284 | 1895.5 | 16.200 / 8.611 / 8.963 / 18.499 / 3.653 | 132702 |
+| C ceiling | 1 | `6520a381…` | 340.8 | 30.739 | 32.53 | 58.214 | 1893.8 | 17.954 / 7.823 / 9.076 / 18.801 / 4.478 | 132732 |
+| D chunk 64 | 1 | `8effb875…` | 179.1 | 31.705 | 31.54 | 59.711 | 1883.3 | 20.430 / 7.948 / 9.052 / 18.617 / 3.550 | 132738 |
+| **D chunk 64** | 2 | `8effb875…` | 181.4 | 29.329 | 34.10 | **59.993** | 2045.5 | 20.662 / 7.914 / 9.012 / 18.766 / 3.603 | 132820 |
+| **C ceiling** | 2 | `6520a381…` | 370.3 | 30.399 | 32.90 | **52.997** | 1743.4 | 16.583 / 7.233 / 8.345 / 16.651 / 4.130 | 132851 |
+| **B prefetch** | 2 | `98b07caf…` | 191.1 | 29.715 | 33.65 | **54.575** | 1836.6 | 16.052 / 8.588 / 8.955 / 17.260 / 3.647 | 132857 |
+| **A control** | 2 | `de8050b8…` | 188.5 | 32.637 | 30.64 | **61.735** | 1891.6 | 24.347 / 7.874 / 9.066 / 17.312 / 3.080 | 132929 |
+
+The clock moved between runs (1743–2046 `pcycles_per_us`), which is why the host-ms column disagrees with the
+Mcyc column on D (lowest host ms of pass 2, highest Mcyc of B/C/D) — rule 9 reads Mcyc only.
 
 ### Goal rows (B and C at 1024 / 4096; references are #35 B1 on `R3CY10WM83Y`)
 
-| variant | ctx | image | prefill tok/s (ref) | decode median host ms (ref) | decode tok/s (ref) | DSP Mcyc/step (ref) | `pcycles_per_us` | C only: GB/s, ceiling tok/s |
-|---|---|---|---|---|---|---|---|---|
-| B prefetch | 1024 | qwen3_full | (131.1) | (40.227) | (24.86) | (77.781) | | — |
-| B prefetch | 4096 | qwen3_full4k | (32.71) | (89.103) | (11.22) | (186.753) | | — |
-| C ceiling | 512 | qwen3_full | | | | | | |
-| C ceiling | 1024 | qwen3_full | | | | | | |
-| C ceiling | 4096 | qwen3_full4k | | | | | | |
+| variant | ctx | image | prefill tok/s (ref) | decode median host ms (ref) | decode tok/s (ref) | DSP Mcyc/step (ref) | `pcycles_per_us` | C only: GB/s over the step, ceiling tok/s | log stamp |
+|---|---|---|---|---|---|---|---|---|---|
+| B prefetch | 1024 | qwen3_full | 123.7 (131.1) | 38.002 (40.227) | 26.31 (24.86) | **73.744** (77.781) | 1940.5 | — | 133021 |
+| B prefetch | 4096 | qwen3_full4k | 30.84 (32.71) | 90.280 (89.103) | 11.08 (11.22) | **184.603** (186.753) | 2044.8 | — | 133125 |
+| C ceiling | 512 | qwen3_full | 370.3 | 30.399 | 32.90 | 52.997 | 1743.4 | **19.61 GB/s, 32.90 tok/s** | 132851 |
+| C ceiling | 1024 | qwen3_full | 186.6 | 38.156 | 26.21 | 73.809 | 1934.4 | 15.62 GB/s, 26.21 tok/s | 133817 |
+| C ceiling | 4096 | qwen3_full4k | 33.60 | 91.791 | 10.89 | 186.884 | 2036.0 | 6.49 GB/s, 10.89 tok/s | 133828 |
+
+**The step-level GB/s of C is not the DDR ceiling above 512**, because the stream-only skel still runs ATTN,
+LOGITS and the eltwise ops: its FARF split is `mm8`+`mm16` (pure DMA wait) 23.8 Mcyc of 53.0 at 512, 25.9 of
+73.8 at 1024, 26.4 of 186.9 at 4096 — the rest is `attn` (16.7 / 34.2 / 146.6 Mcyc). Taking the matmul phase
+alone, 595,984,384 B moves in 13.7 ms at 512, 13.4 ms at 1024 and 13.0 ms at 4096 → **43.6 / 44.6 / 46.0 GB/s,
+i.e. a weight-stream-only ceiling of ≈ 74 tok/s** (13.4 ms/step). B's own matmul phase at 512 is 24.6 Mcyc =
+13.4 ms at 44.4 GB/s, i.e. **the matmul compute is already fully hidden behind the stream** and what remains
+above the ceiling is ATTN + LOGITS + eltwise (26.0 Mcyc at 512, 55.0 at 1024, 168.0 at 4096).
 
 ### Accuracy (`--eval`, both passes; C is `n/a (stream only)`)
 
 | variant | pass | ctx | token file | `--eval` PPL (ref) | top-1 (ref) | `E2E gen` identical to A pass 2? (`diff <(grep -o 'top1=[0-9]*' a.log) <(… b.log)`) |
 |---|---|---|---|---|---|---|
-| A control | 1 | 512 | t512_23.i32 | (41.4947) | (162) | |
-| B prefetch | 1 | 512 | t512_23.i32 | (41.4947) | (162) | |
-| D chunk 64 | 1 | 512 | t512_23.i32 | (41.4947) | (162) | |
-| D chunk 64 | 2 | 512 | t512_23.i32 | (41.4947) | (162) | |
-| B prefetch | 2 | 512 | t512_23.i32 | (41.4947) | (162) | |
-| A control | 2 | 512 | t512_23.i32 | (41.4947) | (162) | — (the reference) |
-| B prefetch | — | 1024 | t1024.i32 | (5.8595) | (692) | vs #35 B1 log |
-| B prefetch | — | 4096 | t4096.i32 | (1.5623) | (3759) | vs #35 B1 log |
+| A control | 1 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | yes |
+| B prefetch | 1 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | yes |
+| D chunk 64 | 1 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | yes |
+| D chunk 64 | 2 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | yes |
+| B prefetch | 2 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | yes |
+| A control | 2 | 512 | t512_23.i32 | **41.4947** (41.4947) | **162** (162) | — (the reference) |
+| B prefetch | — | 1024 | t1024.i32 | **5.8595** (5.8595) | **692** (692) | equal to #35 B1 |
+| B prefetch | — | 4096 | t4096.i32 | **1.5623** (1.5623) | **3759** (3759) | equal to #35 B1 |
 | C ceiling | — | — | — | n/a (stream only) | n/a | n/a |
 
-`adb shell md5sum` after the last run: `__________` (the C skel) / `__________` (hexagon_e2e_test).
+All six 512 speed runs (A / B / D, both passes) have a **byte-identical** 63-step `top1=` sequence
+(md5 `2fb368f6c82386c4da2481090c37f996`) and `E2E gen` line (md5 `14ea2f315231c20614bb8f74356e4d54`).
+
+`adb shell md5sum` after the last run: `6520a381bcf8f71c702d18a70da1c3ce` (the C skel, as built) /
+`743ba32c935ada2571b97b9003de3163` (hexagon_e2e_test).
 
 ### Pass rules (plan §1; fill the verdict column)
 
 | rule | reads | verdict |
 |---|---|---|
-| env | A pass 2 within ±5 % of 61.2 Mcyc (`R3CY10WM83Y`) or 60.1 (`R3CY205ZMND`) at 512 | |
-| G1 | `Mcyc(B) ≤ 0.90 × Mcyc(A)` at 512, pass 2 → prefetch **on** by default; 0.90–0.97 partial (adopt, record); > 0.97 no lever (keep the graph-lifetime queue, prefetch compiled in but off) | |
-| G1' | C: GB/s and ceiling tok/s at 512 / 1024 / 4096 → the stage-1 W8A8 goal cell in HEXAGON_BENCHMARK.md and the #51 input | |
-| D rule | D ≥ 2 % below B at 512 decode (Mcyc, pass 2) **and** D prefill tok/s ≥ B → `HTP_MM_CHUNK_ROWS 64` becomes the default; else keep max-fit | |
-| G3 | A, B, D: PPL / top-1 equal to the digit across variants and passes, and `E2E gen` byte-identical to A pass 2 | |
-| no hang / SSR / FARF fatal | all 14 runs | |
+| env | A pass 2 within ±5 % of 61.2 Mcyc (`R3CY10WM83Y`) or 60.1 (`R3CY205ZMND`) at 512 | **PASS** — 61.735 Mcyc = +0.9 % of 61.2 on `R3CY10WM83Y` |
+| G1 | `Mcyc(B) ≤ 0.90 × Mcyc(A)` at 512, pass 2 → prefetch **on** by default; 0.90–0.97 partial (adopt, record); > 0.97 no lever (keep the graph-lifetime queue, prefetch compiled in but off) | **PASS** — 54.575 / 61.735 = **0.884** (−11.6 %); `mm8` 24.347 → 16.052 Mcyc (−34 %). Prefetch **on** by default |
+| G1' | C: GB/s and ceiling tok/s at 512 / 1024 / 4096 → the stage-1 W8A8 goal cell in HEXAGON_BENCHMARK.md and the #51 input | **MEASURED** — step-level 19.61 / 15.62 / 6.49 GB/s = 32.90 / 26.21 / 10.89 tok/s; the stream-phase-only ceiling is **43.6–46.0 GB/s ≈ 74 tok/s** (13.4 ms/step). The provisional `≥ 60 tok/s` stage-1 goal is reachable only if ATTN + LOGITS shrink: at 512 they are 26.0 Mcyc on top of a 13.4 ms stream |
+| D rule | D ≥ 2 % below B at 512 decode (Mcyc, pass 2) **and** D prefill tok/s ≥ B → `HTP_MM_CHUNK_ROWS 64` becomes the default; else keep max-fit | **FAIL → keep max-fit** — D is **+9.9 %** above B (59.993 vs 54.575 Mcyc) and its prefill is lower (181.4 vs 191.1 tok/s); D's `mm8` 20.662 vs B 16.052 Mcyc |
+| G3 | A, B, D: PPL / top-1 equal to the digit across variants and passes, and `E2E gen` byte-identical to A pass 2 | **PASS** — 41.4947 / 162 in all six 512 `--eval` runs; 1024 5.8595 / 692 and 4096 1.5623 / 3759 equal the #35 B1 cells; `top1=` and `E2E gen` md5-identical across A / B / D, both passes |
+| no hang / SSR / FARF fatal | all 14 runs | **PASS** — 14/14 completed, no DSP restart (the only `Reset` line is the benign `Reset loading vote for libnntr_htp_skel.so`); the `E` lines are the usual fastrpc `open_shell` / `log_config` permission noise present since #23. No > 2× step after the prefill chunks in any B / D run |
 
-## Notes from the run
-- phone model / serial / SDK version on the workstation:
-- rebuilt on the workstation? (then the md5s in the artifact table do not apply; the sizes should match up to the +192 B of #35)
-- warm-up: does pass 1 A differ from pass 2 A by the usual 3–5 %?
-- anything odd (thermal, FARF errors, stale-file pushes, a > 2× step right after the prefill chunks):
-- `summ_farf_prof.py` output for A pass 2 and C pass 2 (the device non-matmul share and the matmul-only share of C):
+## Notes from the run (2026-09-18, all 14 runs in one session, ≈ 15 min of device time)
+- phone / serial / SDK: S25 Ultra `R3CY10WM83Y` (the P3 / P4 / #24 unit), workstation SDK **6.4.0.2**,
+  `HEXAGON_Tools/19.0.04`, NDK r26d. Both images were already on the device (md5 match, no 600 MB push).
+- **rebuilt on the workstation: yes** — the md5s in the Results header replace the artifact table; sizes are
+  + 160 B vs the container build (the doc expected #35's + 192 B), and each variant pair A/C and B/D has the
+  expected identical size.
+- warm-up: pass 1 A is **+8.5 %** above pass 2 A (66.968 vs 61.735 Mcyc) — larger than the 3–5 % of rule 9(d),
+  so the reversed double pass mattered: on pass-1 numbers alone B/A would read 0.84 and D/B 1.06.
+- nothing odd: no thermal throttle visible (SoC zone0 29.3 °C at start), no stale push (`run_e2e_test.sh`
+  compares md5), no FARF fatal, no SSR. The clock wandered 1743–2046 `pcycles_per_us` across runs, which is
+  the reason every verdict above is read in Mcyc.
+- `summ_farf_prof.py`, decode median, pass 2: **A** `mm8=24.347 mm16=7.874 lg=9.066 attn=17.312 rest=3.080`
+  → non-matmul (attn+rest) 20.392 Mcyc = **33.0 %** of the loop; **C** `mm8=16.583 mm16=7.233 lg=8.345
+  attn=16.651 rest=4.130` → its matmul phase is 23.8 of 53.0 Mcyc (**45 %**), the rest is ATTN / LOGITS /
+  eltwise that the stream-only skel still executes. **B** lands at `mm8=16.052` — 0.5 Mcyc below C's DMA-only
+  matmul wait, i.e. the W8A8 compute is fully covered by the stream.
+- context scaling: at 1024 and 4096 the prefetch has nothing left to win (B 73.744 vs C 73.809 Mcyc at 1024;
+  184.603 vs 186.884 at 4096) because ATTN is 48.9 % / 79.3 % of the decode loop there. The next decode lever
+  above 512 is ATTN, not the weight stream.
+- vs the #35 B1 reference on this unit, B is −5.2 % Mcyc at 1024 and −1.2 % at 4096, but its prefill tok/s
+  reads 3–6 % below the reference cells (188–191 vs 198.7 at 512) — host time at a lower clock this session;
+  in Mcyc B's prefill sum is 1.3 % *below* A's (5463.9 vs 5537.5), so this is a clock artefact, not a
+  prefill regression.
 
 Hand back: `git add docs/measurements/25-decode-prefetch.md && git commit -s -m "[docs] Fill the #25 H1 measurement (<unit>, SDK <ver>)" && git push`,
 then `gh issue edit 25 -R dlwlzzero/nntrainer --remove-label state:needs-measurement --add-label state:measured`.
