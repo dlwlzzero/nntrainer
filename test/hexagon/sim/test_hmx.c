@@ -310,9 +310,11 @@ int test_hmx(void) {
   }
 
   j = calloc(1, sizeof(*j));
-  j->ddr_tile = memalign(128, HTP_HMX_W4_TILE_BYTES);
+  if (j)
+    j->ddr_tile = memalign(128, HTP_HMX_W4_TILE_BYTES);
   if (!j || !j->ddr_tile) {
     printf("SIM_TEST hmx FAIL alloc\n");
+    free(j);
     htp_graph_destroy(&g);
     return 1;
   }
