@@ -27,6 +27,11 @@ unit. The first handoff (§4.3) re-measures both on our unit with the PR
 head unchanged and replaces them; the goal is then read against our own
 numbers. Two S25 Ultra units differed by 6–8.6 % on one binary in the
 `hvx_impl` work, and one unit drifts ±5 % between sittings.
+(Status 2026-09-21, cycle 2: the first handoff #77 ran on the second unit
+`R3CY205ZMND`, so the table above is still provisional; its readings —
+NPU decode 18.2–21.3, CPU decode 46.4–54.1, NPU prefill 403–541 tok/s at
+prompt 512 — are in BENCHMARK.md unit-tagged, and the anchor sitting on
+`R3CY10WM83Y` is #91.)
 
 2× the CPU (96 tok/s) is **not** a goal: it needs 70 GB/s from a 38 GB/s
 memory system. Anything that raises the ceiling itself (fewer bytes per
