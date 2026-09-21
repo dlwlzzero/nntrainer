@@ -14,6 +14,9 @@
 
 #include "nntr_htp_common.h"
 #include "worker_pool.h"
+#if HTP_HMX
+#include "htp_hmx.h"
+#endif
 
 struct dma_queue_s; /* dma-queue.h; only hvx-matmul.c and htp_graph.c use it */
 
@@ -68,6 +71,11 @@ struct htp_exec_ctx {
   uint32_t prof_calls[NNTR_HTP_OP_KIND_COUNT];
   uint64_t *prof_op_cycles; /**< [n_ops] per-op-index pcycles, same window as
                                  prof_cycles (kind = sum over its ops). */
+#if HTP_HMX
+  struct htp_hmx hmx; /**< HMX arena above the HVX slabs, worker-0 lock,
+                           HexKL version (hmx/htp_hmx.h); base == NULL
+                           when the session has no HMX */
+#endif
 };
 
 typedef void (*htp_op_fn)(struct htp_exec_ctx *c,
