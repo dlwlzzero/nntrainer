@@ -91,6 +91,7 @@ SRCS="$SRCS $BACKEND/hvx/hvx_worker_pool.c $BACKEND/hvx/hvx_gemm_u8i4_wh.c"
 "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
     -m"$HEX_ARCH" -mhvx -mhvx-length=128B -G0 -O3 -fPIC -shared \
     -Wall -Werror \
+    ${HEX_EXTRA_CFLAGS:-} \
     -I generated \
     -I "$HEXKL_ROOT/include" \
     -I "$BACKEND/.." \
