@@ -105,3 +105,8 @@ void hexkl_dma_ring_drain(void) {
   }
   g_started = 0; // engine idle after drain -- the next push must dmstart
 }
+
+int hexkl_dma_ring_is_done(uint32_t idx) {
+  return ((volatile hexkl_dma_desc2d *)&g_ring[idx & (HEXKL_DMA_RING_N - 1)])
+    ->done;
+}

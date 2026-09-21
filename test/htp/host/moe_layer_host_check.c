@@ -93,6 +93,12 @@ void hexkl_dma_ring_drain(void) {}
 static uint32_t g_stub_idx;
 uint32_t hexkl_dma_ring_next_idx(void) { return g_stub_idx++; }
 void hexkl_dma_ring_wait(uint32_t idx) { (void)idx; }
+/* Every transfer is complete by the time push2d returns, so the trace's
+   watermark sees each descriptor done at the very next point. */
+int hexkl_dma_ring_is_done(uint32_t idx) {
+  (void)idx;
+  return 1;
+}
 void hexkl_dma_ring_push2d(void *dst, const void *src, uint32_t ds, uint32_t ss,
                            uint32_t rs, uint32_t nrows, int sv, int dv) {
   (void)sv;

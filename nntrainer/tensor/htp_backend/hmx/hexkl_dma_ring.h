@@ -107,4 +107,12 @@ void hexkl_dma_ring_wait(uint32_t idx);
 /** @brief Blocks until every queued transfer has completed. */
 void hexkl_dma_ring_drain(void);
 
+/**
+ * @brief Whether the transfer queued at @a idx has completed: its done bit,
+ *        read once. No dmpoll, no state change -- a pure query for the
+ *        #87 trace (hexkl_dma_trace.c), which brackets completions between
+ *        the points it already visits rather than adding any of its own.
+ */
+int hexkl_dma_ring_is_done(uint32_t idx);
+
 #endif /* __NNTRAINER_HEXKL_DMA_RING_H__ */
