@@ -74,10 +74,14 @@ int main(void) {
   struct nntr_htp_oplist_header h = {NNTR_HTP_OPLIST_MAGIC,
                                      NNTR_HTP_ABI_VERSION, 0, 0};
 
-  /* v4: reserved2[0] became weight_layout; the record stays 64 bytes. */
-  assert(NNTR_HTP_ABI_VERSION == 4u);
+  /** v4: reserved2[0] became weight_layout; the record stays 64 bytes.
+   * v5 (#65 S1): kind 9 and two layout ids, no record change. */
+  assert(NNTR_HTP_ABI_VERSION == 5u);
   assert(sizeof(struct nntr_htp_oplist_header) == 64u);
   assert(offsetof(struct nntr_htp_oplist_header, weight_layout) == 52u);
+  assert(NNTR_HTP_OP_MATMUL_W4A8 == 9u && NNTR_HTP_OP_KIND_COUNT == 10u);
+  assert(NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8 == 2u &&
+         NNTR_HTP_WEIGHT_LAYOUT_W4CX == 3u);
 
   /* tile_off by example (spec P2 "tile definition"): K = 256 -> k_tiles = 2. */
   assert(nntr_htp_tile_off(0u, 0u, 256u) == 0u);
@@ -106,6 +110,39 @@ int main(void) {
         seen[o] = 1;
         assert(dst[o] == src[n * TK + k]);
       }
+  }
+
+  /** w4cx tile index: K = 64 -> k_tiles = 2; nibble index k*32 + n inside
+   * a 512 B tile, n even = low nibble. */
+  assert(nntr_htp_w4_tile_off(0u, 0u, 64u) == 0u);
+  assert(nntr_htp_w4_tile_off(1u, 0u, 64u) == 0u);     /* same byte, high */
+  assert(nntr_htp_w4_tile_off(2u, 0u, 64u) == 1u);     /* next byte */
+  assert(nntr_htp_w4_tile_off(0u, 1u, 64u) == 16u);    /* next k row */
+  assert(nntr_htp_w4_tile_off(31u, 31u, 64u) == 511u); /* last byte */
+  assert(nntr_htp_w4_tile_off(0u, 32u, 64u) == 512u);  /* tile(0,1) */
+  assert(nntr_htp_w4_tile_off(32u, 0u, 64u) == 1024u); /* tile(1,0) */
+
+  /** repack_w4cx: every code lands where w4_get reads it, colsum is the
+   * row sum, the [-8, 7] range is enforced. */
+  {
+    enum { WN = 64, WK = 64 };
+    static int8_t src[WN * WK];
+    static uint8_t dst[WN * WK / 2];
+    static int32_t cs[WN];
+    uint32_t n, k;
+    for (n = 0; n < (uint32_t)(WN * WK); ++n)
+      src[n] = (int8_t)((int)(n * 7u % 16u) - 8);
+    assert(nntr_htp_repack_w4cx(dst, cs, src, WN, WK) == 0);
+    for (n = 0; n < WN; ++n) {
+      int32_t sum = 0;
+      for (k = 0; k < WK; ++k) {
+        assert(nntr_htp_w4_get(dst, n, k, WK) == src[n * WK + k]);
+        sum += src[n * WK + k];
+      }
+      assert(cs[n] == sum);
+    }
+    src[5] = 8; /* not an int4 code */
+    assert(nntr_htp_repack_w4cx(dst, cs, src, WN, WK) == 1);
   }
 
   assert(nntr_htp_oplist_check(&h, sizeof(h)) == 0);
@@ -164,6 +201,40 @@ int main(void) {
     build_valid(&wire.h, wire.ops, buf_size);
     wire.h.weight_layout = 0u;
     assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 4);
+    /* v5: w4cx_down8 is a known layout; w4cx (3) is reserved -> 4 */
+    wire.h.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+    wire.h.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 4);
+
+    /** v5 MATMUL_W4A8: on a w4cx_down8 header with a 128B-aligned colsum
+     * of n int32 inside WEIGHTS -> 0; on a tiled32 header -> 5; k % 32,
+     * n % 32, k > 16384, an unaligned or out-of-range colsum -> 5. The
+     * tiles are n*k/2 bytes (256*128/2 = 16384 at WEIGHTS@256). */
+    build_valid(&wire.h, wire.ops, buf_size);
+    wire.ops[1].kind = NNTR_HTP_OP_MATMUL_W4A8;
+    wire.ops[1].param0 = 34048u; /* 33024 + 1024 scale bytes */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.h.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+    wire.ops[1].k = 96u; /* % 32 ok, % 128 not: W4A8 needs only 32 */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+    wire.ops[1].k = 80u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].k = 0u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].k = 128u;
+    wire.ops[1].n = 240u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].n = 256u;
+    wire.ops[1].param0 = 34052u; /* unaligned colsum */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].param0 = 65536u - 512u; /* 1024 B of colsum past WEIGHTS */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
+    wire.ops[1].param0 = 65536u - 1024u;
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 0);
+    wire.ops[1].m = 1u; /* the per-call row rule holds for W4A8 too */
+    assert(nntr_htp_oplist_validate(&wire, sizeof(wire), buf_size) == 5);
 
     /* tiled kinds need n % 32 == 0 -> 5; W8A16 (down, row-major) is exempt */
     build_valid(&wire.h, wire.ops, buf_size);
@@ -297,6 +368,11 @@ int main(void) {
     d.kind = NNTR_HTP_OP_MATMUL_W8A16; /* same operand layout */
     assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
     assert(e.in0 == 1024u && e.in1 == 32768u && e.in2 == 1024u &&
+           e.out == 2048u);
+    assert(e.used == 0xFu && e.out_alias_in0 == 0u);
+    d.kind = NNTR_HTP_OP_MATMUL_W4A8; /* nibble tiles: half the bytes */
+    assert(nntr_htp_op_extent(&h4, &d, 4u, &e) == 0);
+    assert(e.in0 == 1024u && e.in1 == 16384u && e.in2 == 1024u &&
            e.out == 2048u);
     assert(e.used == 0xFu && e.out_alias_in0 == 0u);
 

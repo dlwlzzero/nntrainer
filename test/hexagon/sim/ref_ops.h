@@ -43,6 +43,18 @@ int32_t ref_dot_i8_tiled(const int8_t *w_base, uint32_t n, const int8_t *x,
 void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
                      __fp16 *y, uint32_t m, uint32_t k, uint32_t n);
 
+/** Reference for MATMUL_W4A8 (ABI v5, issue #65 S1): x fp16[m][k], w int4
+ * w4cx nibble tiles [n][k] (nntr_htp_w4_tile_off), sw fp32[n], colsum
+ * int32[n] = sum_k w[n][k], y fp16[m][n]. Quantizes each x row with
+ * ref_quant_row (bit-exact with the kernel), then accumulates the HMX
+ * u8 x i4 form sum_k (xq[k] + 128) * w[n][k] in int32 and subtracts
+ * 128 * colsum[n] - identical to the signed int8 dot, so the integer path
+ * is exact; the epilogue is the W8A8 one, (fp16)(((float)dot * sw[n]) *
+ * sx). */
+void ref_matmul_w4a8(const __fp16 *x, const uint8_t *w, const float *sw,
+                     const int32_t *colsum, __fp16 *y, uint32_t m, uint32_t k,
+                     uint32_t n);
+
 /** Per-token int16 quantization: scale = absmax / 32767, q = lrintf(x *
  * 32767/absmax). */
 float ref_quant_row_i16(const __fp16 *x, int16_t *q, uint32_t k);

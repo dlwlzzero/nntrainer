@@ -41,7 +41,7 @@ static const struct sim_model_cfg QWEN3_2L = {
  * instead of silently leaving a NULL entry. */
 static const char *const KIND_NAME[] = {
   "EMBED",    "RMSNORM", "MATMUL_W8A8",   "ROPE",         "ATTN",
-  "SILU_MUL", "ADD",     "MATMUL_LOGITS", "MATMUL_W8A16",
+  "SILU_MUL", "ADD",     "MATMUL_LOGITS", "MATMUL_W8A16", "MATMUL_W4A8",
 };
 /* Same idiom as the ABI size checks in nntr_htp_common.h. */
 typedef char kind_name_count_check[(sizeof(KIND_NAME) / sizeof(KIND_NAME[0]) ==

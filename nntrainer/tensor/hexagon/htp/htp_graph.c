@@ -20,10 +20,15 @@
 #include "dma-queue.h"
 #include "htp_graph.h"
 
+/** A NULL slot is a kind the wire format defines but this build cannot
+ * execute; init rejects any op-list that uses it (rc 4), so an image is
+ * never run silently on the wrong kernel. MATMUL_W4A8 (v5, #65 S1) has its
+ * HMX kernel in S2, for HTP_HMX builds only. */
 const htp_op_fn htp_op_table[NNTR_HTP_OP_KIND_COUNT] = {
   hvx_op_embed, hvx_op_rmsnorm,       hvx_op_matmul_w8a8,
   hvx_op_rope,  hvx_op_attn,          hvx_op_silu_mul,
   hvx_op_add,   hvx_op_matmul_logits, hvx_op_matmul_w8a16,
+  NULL, /* NNTR_HTP_OP_MATMUL_W4A8 */
 };
 
 #define HTP_GRAPH_VTCM_BYTES (4u * 1024u * 1024u)
@@ -118,6 +123,10 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
 
   g->ops =
     (const struct nntr_htp_op_desc *)(const void *)(oplist + sizeof(g->cfg));
+  /* A valid kind without a kernel in this build (see htp_op_table). */
+  for (i = 0; i < g->cfg.n_ops; ++i)
+    if (!htp_op_table[g->ops[i].kind])
+      return 4;
   memcpy(g->ctx.buf_size, buf_size, sizeof(buf_size));
   g->ctx.buf[NNTR_HTP_BUF_WEIGHTS] = weights;
   g->ctx.buf[NNTR_HTP_BUF_KV] = kv;
@@ -129,14 +138,20 @@ int htp_graph_init_ex(struct htp_graph *g, const uint8_t *oplist, uint32_t len,
     return 1;
 
   /** Quant scratch sized by the widest matmul k in this op-list; x2 for the
-   * int16 rows of MATMUL_W8A16. */
+   * int16 rows of MATMUL_W8A16. MATMUL_W4A8 (v5) quantises its rows into
+   * the same scratch and streams n*k/2 bytes of nibble tiles; counted here
+   * already so S2's kernel cannot inherit an undersized xq. Its cross-op
+   * prefetch (next_mm) is S2's: the kick geometry is per kind. */
   for (i = 0; i < g->cfg.n_ops; ++i)
     if (g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A8 ||
         g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_LOGITS ||
-        g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16) {
+        g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W8A16 ||
+        g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W4A8) {
       if (g->ops[i].k > k_max)
         k_max = g->ops[i].k;
-      g->stream_bytes += (uint64_t)g->ops[i].n * g->ops[i].k;
+      g->stream_bytes += g->ops[i].kind == (uint32_t)NNTR_HTP_OP_MATMUL_W4A8
+                           ? (uint64_t)g->ops[i].n * g->ops[i].k / 2u
+                           : (uint64_t)g->ops[i].n * g->ops[i].k;
     }
   if (k_max) {
     g->ctx.xq = memalign(128, (size_t)g->cfg.max_chunk * k_max * 2u);

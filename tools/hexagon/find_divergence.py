@@ -60,6 +60,7 @@ def list_ops(prefix):
 
 
 def load(path, kind):
+    # Every kind but MATMUL_LOGITS writes fp16 rows (MATMUL_W4A8 included).
     dt = np.float32 if kind == "MATMUL_LOGITS" else np.float16
     return np.fromfile(path, dtype=dt).astype(np.float32)
 

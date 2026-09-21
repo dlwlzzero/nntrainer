@@ -2,7 +2,8 @@
 /**
  * @file	qwen3_w8cx_bin.cpp
  * @date	31 August 2026
- * @brief	mmap view over a W8_CX qwen3 .bin (tools/hexagon/make_w8cx_bin.py)
+ * @brief	mmap view over a W8_CX / w4cx qwen3 .bin
+ *		(tools/hexagon/make_w8cx_bin.py, or make_w4cx_bin.py on hvx_w4cx)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -10,6 +11,7 @@
 #include "qwen3_w8cx_bin.h"
 
 #include <cassert>
+#include <cstring>
 #include <fcntl.h>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -72,10 +74,14 @@ Qwen3W8cxBin::Qwen3W8cxBin(const std::string &path, const HexModelConfig &cfg) {
   }
   size_ = (uint64_t)st.st_size;
   const uint64_t want = expected_size(cfg);
-  if (size_ != want) {
+  // A W4CX file is the same payload behind a 64-byte header.
+  const bool w4 = size_ == want + sizeof(Qwen3W4cxBinHeader);
+  if (size_ != want && !w4) {
     close(fd_);
-    throw std::runtime_error("w8cx bin: size " + std::to_string(size_) +
-                             " != expected " + std::to_string(want));
+    throw std::runtime_error(
+      "w8cx bin: size " + std::to_string(size_) + " != expected " +
+      std::to_string(want) + " (W8) or " +
+      std::to_string(want + sizeof(Qwen3W4cxBinHeader)) + " (w4cx)");
   }
   void *m = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
   if (m == MAP_FAILED) {
@@ -87,6 +93,17 @@ Qwen3W8cxBin::Qwen3W8cxBin(const std::string &path, const HexModelConfig &cfg) {
   const uint64_t qdim = (uint64_t)cfg.n_heads * cfg.head_dim;
   const uint64_t kvdim = (uint64_t)cfg.n_kv_heads * cfg.head_dim;
   Cursor c{base_, base_ + size_};
+
+  w_.i8_mask = kHexAllI8;
+  if (w4) {
+    Qwen3W4cxBinHeader h;
+    std::memcpy(&h, c.take(sizeof(h)), sizeof(h));
+    if (std::memcmp(h.magic, "W4CX", 4) != 0 || h.version != 1u ||
+        h.bits != 4u || h.n_layers != cfg.n_layers ||
+        (h.i8_mask & ~kHexAllI8) != 0u)
+      throw std::runtime_error("w8cx bin: bad w4cx header in " + path);
+    w_.i8_mask = h.i8_mask;
+  }
 
   quantized(c, w_.embed, w_.embed_s, cfg.vocab, cfg.hidden);
   w_.layers.resize(cfg.n_layers);
@@ -107,6 +124,19 @@ Qwen3W8cxBin::Qwen3W8cxBin(const std::string &path, const HexModelConfig &cfg) {
   w_.final_norm = c.f32(cfg.hidden);
   if (c.p != c.end)
     throw std::runtime_error("w8cx bin: trailing bytes");
+}
+
+void Qwen3W8cxBin::apply_layout(HexModelConfig &cfg) const {
+  cfg.i8_mask = w_.i8_mask;
+  if (w_.i8_mask == kHexAllI8) {
+    cfg.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
+    return;
+  }
+  if ((w_.i8_mask & kHexW4cxDown8I8) != kHexW4cxDown8I8)
+    throw std::runtime_error("w8cx bin: a 4-bit embed or down needs the w4cx "
+                             "layout of #65 S3; only w4cx_down8 (embed and "
+                             "down int8) packs today");
+  cfg.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
 }
 
 Qwen3W8cxBin::~Qwen3W8cxBin() {

@@ -11,11 +11,58 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <stdexcept>
 
 namespace nntrainer::hexagon {
+
+namespace {
+const char *const kTensorNames[8] = {"embed", "q",    "k",  "v",
+                                     "o",     "gate", "up", "down"};
+} // namespace
+
+std::string hex_i8_names(uint32_t mask) {
+  std::string s;
+  for (uint32_t i = 0; i < 8u; ++i)
+    if (mask & (1u << i))
+      s += (s.empty() ? "" : ",") + std::string(kTensorNames[i]);
+  return s;
+}
+
+uint32_t hex_i8_mask(const std::string &names) {
+  uint32_t mask = 0;
+  size_t pos = 0;
+  while (pos < names.size()) {
+    size_t end = names.find(',', pos);
+    if (end == std::string::npos)
+      end = names.size();
+    const std::string name = names.substr(pos, end - pos);
+    uint32_t i = 0;
+    while (i < 8u && name != kTensorNames[i])
+      ++i;
+    if (i == 8u)
+      throw std::runtime_error("hexcfg: unknown tensor name '" + name + "'");
+    mask |= 1u << i;
+    pos = end + 1;
+  }
+  return mask;
+}
+
+const char *hex_layout_name(uint32_t layout) {
+  switch (layout) {
+  case NNTR_HTP_WEIGHT_LAYOUT_TILED32:
+    return "tiled32";
+  case NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8:
+    return "w4cx_down8";
+  case NNTR_HTP_WEIGHT_LAYOUT_W4CX:
+    return "w4cx";
+  default:
+    throw std::runtime_error("hexcfg: unknown weight_layout id " +
+                             std::to_string(layout));
+  }
+}
 
 void write_hexcfg(const std::string &path, const HexModelConfig &c) {
   std::ofstream f(path);
@@ -25,7 +72,9 @@ void write_hexcfg(const std::string &path, const HexModelConfig &c) {
     << "\nn_kv_heads=" << c.n_kv_heads << "\nhead_dim=" << c.head_dim
     << "\nhidden=" << c.hidden << "\nffn=" << c.ffn << "\nvocab=" << c.vocab
     << "\nmax_seq=" << c.max_seq << "\nmax_chunk=" << c.max_chunk
-    << "\nweight_layout=tiled32\n";
+    << "\nweight_layout=" << hex_layout_name(c.weight_layout) << "\n";
+  if (c.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_TILED32)
+    f << "i8_tensors=" << hex_i8_names(c.i8_mask) << "\n";
   char buf[64];
   // %.9g round-trips any float through strtof exactly.
   snprintf(buf, sizeof(buf), "rms_eps=%.9g\nrope_theta=%.9g\n", c.rms_eps,
@@ -64,11 +113,22 @@ HexModelConfig read_hexcfg(const std::string &path) {
   if (wl == kv.end())
     throw std::runtime_error("hexcfg: legacy image (no weight_layout) " + path +
                              ", regenerate with nntr_hexpack");
-  if (wl->second != "tiled32")
+  // Only the layouts the v5 kernels read: w4cx (4-bit embed / down, #65
+  // S3) is a reserved id and stays refused until those kernels land.
+  HexModelConfig c{};
+  if (wl->second == "tiled32") {
+    c.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
+    c.i8_mask = kHexAllI8;
+  } else if (wl->second == "w4cx_down8") {
+    c.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
+    c.i8_mask = hex_i8_mask(get("i8_tensors"));
+    if ((c.i8_mask & kHexW4cxDown8I8) != kHexW4cxDown8I8)
+      throw std::runtime_error(
+        "hexcfg: w4cx_down8 needs embed and down in i8_tensors, in " + path);
+  } else {
     throw std::runtime_error("hexcfg: unsupported weight_layout '" +
                              wl->second + "' in " + path);
-
-  HexModelConfig c{};
+  }
   c.n_layers = u32("n_layers");
   c.n_heads = u32("n_heads");
   c.n_kv_heads = u32("n_kv_heads");

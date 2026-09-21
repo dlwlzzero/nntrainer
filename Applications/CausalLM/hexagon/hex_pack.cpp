@@ -3,7 +3,8 @@
  * @file	hex_pack.cpp
  * @date	31 August 2026
  * @brief	nntr_hexpack: build the packed DSP WEIGHTS image (.hexw) and its
- *		shape file (.hexcfg) from a W8_CX qwen3-0.6b checkpoint
+ *		shape file (.hexcfg) from a W8_CX or w4cx qwen3-0.6b checkpoint
+ *		(the .bin decides the layout: tiled32 or w4cx_down8)
  *
  * Usage: nntr_hexpack <w8cx.bin> <out-prefix> [--layers N] [--max-seq N]
  *                     [--max-chunk N]
@@ -65,6 +66,7 @@ int main(int argc, char **argv) {
     Qwen3W8cxBin bin(argv[1], full); // reads all 28 layers
     HexModelConfig cfg = full;
     cfg.n_layers = opt_layers ? opt_layers : full.n_layers;
+    bin.apply_layout(cfg);
 
     HexModelWeights w = bin.weights();
     w.layers.resize(cfg.n_layers); // 1-layer bring-up
@@ -79,10 +81,12 @@ int main(int argc, char **argv) {
 
     nntr_htp_oplist_header h;
     std::memcpy(&h, g.oplist.data(), sizeof(h));
-    std::printf("HEXPACK weights=%llu kv=%llu act=%llu n_ops=%u\n",
+    std::printf("HEXPACK weights=%llu kv=%llu act=%llu n_ops=%u layout=%s "
+                "i8=%s\n",
                 (unsigned long long)g.weights_size,
                 (unsigned long long)g.kv_size, (unsigned long long)g.act_size,
-                h.n_ops);
+                h.n_ops, hex_layout_name(cfg.weight_layout),
+                hex_i8_names(cfg.i8_mask).c_str());
   } catch (const std::exception &e) {
     std::fprintf(stderr, "nntr_hexpack: %s\n", e.what());
     return 1;

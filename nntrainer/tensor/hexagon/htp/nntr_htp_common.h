@@ -2,7 +2,7 @@
 /**
  * @file	nntr_htp_common.h
  * @date	15 August 2026
- * @brief	Op-list wire format (ABI v4: op descriptors) shared by host (arm64)
+ * @brief	Op-list wire format (ABI v5: op descriptors) shared by host (arm64)
  *		and DSP (hexagon-clang). Plain C - compiled by both toolchains.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
@@ -16,11 +16,19 @@
 
 #define NNTR_HTP_OPLIST_MAGIC 0x5054484Eu /* "NHTP" little-endian */
 #define NNTR_HTP_ABI_VERSION                                                   \
-  4u /* v4: tiled32 int8 projections, header weight_layout */
+  5u /* v5: MATMUL_W4A8 (w4cx int4 tiles + colsum), w4cx layout ids */
 
-/** WEIGHTS layout id carried in the op-list header (v4). The only value the
- * kernels understand; anything else is rejected by the validator. */
+/** WEIGHTS layout id carried in the op-list header (v4). The values the
+ * kernels understand; anything else is rejected by the validator (rc 4).
+ * - TILED32: every projection int8 tiled32, down row-major (v4 image).
+ * - W4CX_DOWN8 (v5, issue #65 S1): the six per-layer projections may be
+ *   w4cx int4 tiles read by MATMUL_W4A8 (each op's kind says which);
+ *   embed / LOGITS / down stay int8 exactly as TILED32.
+ * - W4CX (v5, reserved for #65 S3): embed / LOGITS / down 4-bit too. No
+ *   kernel reads those tiles yet, so the validator still rejects it. */
 #define NNTR_HTP_WEIGHT_LAYOUT_TILED32 1u
+#define NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8 2u
+#define NNTR_HTP_WEIGHT_LAYOUT_W4CX 3u
 
 /** tiled32: an int8 [N][K] projection is stored as 4 KB tiles of 32 rows x
  * 128 k, n-tile outer, k-tile inner. Inside a tile, vector g (128 B) holds
@@ -31,6 +39,22 @@
 #define NNTR_HTP_TILE_ROWS 32u
 #define NNTR_HTP_TILE_K 128u
 #define NNTR_HTP_TILE_BYTES 4096u
+
+/** w4cx (v5, issue #65 S1): an int4 [N][K] projection with one fp32 scale
+ * per output channel is stored as 512 B tiles of 32 n x 32 k nibbles,
+ * n-tile outer, k-tile inner (an n-strip is one contiguous DMA, as in
+ * tiled32). Inside a tile the nibbles are in (k, n) order - nibble index
+ * k*32 + n, low nibble first - which is exactly the row-major [K][N] int8
+ * source HexKL's hexkl_micro_hmx_rm_to_wh_i4 consumes after a straight
+ * nibble expand, so the in-place WH bake of S2 is a per-tile unpack, bake,
+ * write-back with no reshuffle. Codes are two's complement in [-8, 7]; the
+ * producer emits [-7, 7]. Beside the tiles the image carries int32
+ * colsum[n] = sum_k w[n][k], the exact correction the u8 x i4 HMX path
+ * (x_u8 = x_i8 + 128) subtracts as 128 * colsum[n]. Requires N % 32 == 0
+ * and K % 32 == 0. */
+#define NNTR_HTP_W4_TILE_ROWS 32u
+#define NNTR_HTP_W4_TILE_K 32u
+#define NNTR_HTP_W4_TILE_BYTES 512u
 
 enum nntr_htp_buf_id {
   NNTR_HTP_BUF_WEIGHTS = 0,
@@ -53,7 +77,11 @@ enum nntr_htp_op_kind {
   NNTR_HTP_OP_MATMUL_LOGITS = 7,
   NNTR_HTP_OP_MATMUL_W8A16 =
     8, /* per-token int16 x . int8 w (row-major), fp16 y; down_proj */
-  NNTR_HTP_OP_KIND_COUNT = 9
+  NNTR_HTP_OP_MATMUL_W4A8 =
+    9, /* v5: per-token int8 x (+128 -> u8) . int4 w (w4cx tiles), fp16 y;
+        * in1 tiles, in2 fp32 scale[n], param0 = WEIGHTS offset of the int32
+        * colsum[n]; the six per-layer projections of a w4cx image */
+  NNTR_HTP_OP_KIND_COUNT = 10
 };
 
 #define NNTR_HTP_FLAG_PER_HEAD 0x1u /* RMSNORM: per head_dim QK-Norm */
@@ -106,6 +134,57 @@ static inline uint32_t nntr_htp_tile_off(uint32_t n, uint32_t k, uint32_t K) {
            NNTR_HTP_TILE_BYTES +
          ((k % NNTR_HTP_TILE_K) / 4u) * 128u + (n % NNTR_HTP_TILE_ROWS) * 4u +
          (k % 4u);
+}
+
+/**
+ * @brief Byte offset of the nibble holding w[n][k] of a w4cx [N][K] int4
+ *        tensor; the nibble is the low one when n is even, the high one
+ *        when n is odd (nibble index k*32 + n inside the 512 B tile).
+ *        Shared by the host packer and the scalar references.
+ */
+static inline uint32_t nntr_htp_w4_tile_off(uint32_t n, uint32_t k,
+                                            uint32_t K) {
+  const uint32_t k_tiles = K / NNTR_HTP_W4_TILE_K;
+  return ((n / NNTR_HTP_W4_TILE_ROWS) * k_tiles + k / NNTR_HTP_W4_TILE_K) *
+           NNTR_HTP_W4_TILE_BYTES +
+         (k % NNTR_HTP_W4_TILE_K) * 16u + (n % NNTR_HTP_W4_TILE_ROWS) / 2u;
+}
+
+/**
+ * @brief Read w[n][k] of a w4cx tensor as a signed int (two's complement
+ *        nibble, [-8, 7]).
+ */
+static inline int nntr_htp_w4_get(const uint8_t *w, uint32_t n, uint32_t k,
+                                  uint32_t K) {
+  const uint32_t b = w[nntr_htp_w4_tile_off(n, k, K)];
+  const uint32_t nib = (n & 1u) ? (b >> 4) : (b & 0xFu);
+  return (int)nib - ((nib & 8u) ? 16 : 0);
+}
+
+/**
+ * @brief Pack a row-major int8 [N][K] tensor of int4 codes ([-8, 7], one
+ *        per byte) into the w4cx nibble tiles (N*K/2 bytes) and fill the
+ *        int32 colsum[N]. dst, colsum and src must not overlap.
+ * @return 0 ok, 1 a code outside [-8, 7] (the source is not int4)
+ */
+static inline int nntr_htp_repack_w4cx(uint8_t *dst, int32_t *colsum,
+                                       const int8_t *src, uint32_t N,
+                                       uint32_t K) {
+  uint32_t n, k;
+  memset(dst, 0, (size_t)N * K / 2u);
+  for (n = 0; n < N; ++n) {
+    int32_t cs = 0;
+    for (k = 0; k < K; ++k) {
+      const int v = src[(uint64_t)n * K + k];
+      if (v < -8 || v > 7)
+        return 1;
+      cs += v;
+      dst[nntr_htp_w4_tile_off(n, k, K)] |=
+        (uint8_t)(((unsigned)v & 0xFu) << ((n & 1u) ? 4u : 0u));
+    }
+    colsum[n] = cs;
+  }
+  return 0;
 }
 
 /**
@@ -239,6 +318,15 @@ static inline int nntr_htp_op_extent(const struct nntr_htp_oplist_header *h,
     e->out = r * d->n * 2u;
     e->used = 0xFu;
     break;
+  case NNTR_HTP_OP_MATMUL_W4A8: /* nibble tiles; the int32 colsum[n] sits at
+                                 * WEIGHTS + param0 and is checked by the
+                                 * validator beside this table */
+    e->in0 = r * d->k * 2u;
+    e->in1 = (uint64_t)d->n * d->k / 2u;
+    e->in2 = (uint64_t)d->n * 4u;
+    e->out = r * d->n * 2u;
+    e->used = 0xFu;
+    break;
   case NNTR_HTP_OP_ROPE: /* q in place, k, cos/sin table of max_seq rows */
     e->in0 = r * q_row;
     e->in1 = r * kv_row;
@@ -286,6 +374,9 @@ static inline int nntr_htp_op_extent(const struct nntr_htp_oplist_header *h,
  * RMSNORM/ADD/SILU_MUL, PER_HEAD n % head_dim, ATTN.layer >= n_layers, a
  * LOGITS in0 that cannot hold max_chunk rows, and any tensor ref past its
  * buffer (ROPE's out is in-place, == in0, and is not checked separately).
+ * v5: MATMUL_W4A8 needs a w4cx header layout, k % 32, n % 32, k <= 16384
+ * (exact u8 x i4 int32 accumulation) and a 128B-aligned param0 colsum of
+ * n int32 inside WEIGHTS.
  * The byte extent of every ref comes from nntr_htp_op_extent at
  * rows = max_chunk.
  * @return 0 ok, 1 bad pointer/size, 2 bad magic, 3 version mismatch,
@@ -307,8 +398,11 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
   if ((uint64_t)len != nntr_htp_oplist_bytes(h.n_ops))
     return 1;
   if (h.head_dim != 128u || h.hidden % 64u != 0u || h.ffn % 64u != 0u ||
-      h.n_kv_heads == 0u || h.n_heads % h.n_kv_heads != 0u ||
-      h.max_chunk < 1u || h.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_TILED32)
+      h.n_kv_heads == 0u || h.n_heads % h.n_kv_heads != 0u || h.max_chunk < 1u)
+    return 4;
+  /* W4CX (3) is reserved until its embed / LOGITS / down kernels exist. */
+  if (h.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_TILED32 &&
+      h.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8)
     return 4;
 
   for (i = 0; i < h.n_ops; ++i) {
@@ -380,6 +474,20 @@ nntr_htp_oplist_validate(const void *buf, uint32_t len,
     case NNTR_HTP_OP_SILU_MUL:
     case NNTR_HTP_OP_ADD:
       if (d.n % 64u != 0u) /* whole 64-half vectors per row */
+        return 5;
+      break;
+    case NNTR_HTP_OP_MATMUL_W4A8:
+      /** Only a w4cx image carries nibble tiles; a tiled32 header with a
+       * W4A8 op would read int8 bytes as nibbles. */
+      if (h.weight_layout == NNTR_HTP_WEIGHT_LAYOUT_TILED32)
+        return 5;
+      if (d.k == 0u || d.k % NNTR_HTP_W4_TILE_K != 0u ||
+          d.n % NNTR_HTP_W4_TILE_ROWS != 0u || d.k > 16384u)
+        return 5;
+      /* colsum: n int32 at WEIGHTS + param0, the fifth operand. */
+      if (d.param0 % 128u != 0u ||
+          nntr_htp_check_ref(NNTR_HTP_BUF_WEIGHTS, d.param0, (uint64_t)d.n * 4u,
+                             buf_size))
         return 5;
       break;
     default:

@@ -148,7 +148,7 @@ DSP methods return AEE codes (`AEEStdErr.h`) unchanged to the host. **rout
 parameters are not copied back on failure** — `dsp_abi_version` reads 0
 when `init()` fails; that is expected, not a marshalling bug.
 
-### 1.4 Op-list wire format (ABI v4)
+### 1.4 Op-list wire format (ABI v5)
 
 The op-list passed to `init()` is one 64-byte `nntr_htp_oplist_header`
 (magic, version, `n_ops`, model shape — layers/heads/dims/`max_seq`/
@@ -165,6 +165,7 @@ LOGITS) plus a 128-byte-aligned offset.
 | `RMSNORM` | RMS norm, optional per-head QK-Norm (`FLAG_PER_HEAD`) |
 | `MATMUL_W8A8` | per-token dynamic-quant int8×int8 tiled `vrmpy` matmul (32 rows per vector) → fp16 |
 | `MATMUL_W8A16` | per-token int16 activation × int8 row-major weight, int32 lanes → fp32 → fp16 (`down_proj`; the op name keeps its wire meaning "no int8 activation quant") |
+| `MATMUL_W4A8` | v5 (#65 S1): per-token int8 activation (+128 → u8) × int4 `w4cx` tiles with int32 `colsum` (`param0` = its WEIGHTS offset) → fp16; the six per-layer projections of a `w4cx_down8` image. No kernel yet: `htp_op_table` holds NULL and `init` rejects the list (rc 4) until S2's HMX kernel lands |
 | `ROPE` | rotary embedding on q/k in place, precomputed cos/sin |
 | `ATTN` | causal GQA attention against the persistent KV cache |
 | `SILU_MUL` | SiLU(gate) ⊙ up |
@@ -202,6 +203,21 @@ negative id fails the same unsigned compare) before any buffer pointer
 or KV row is touched, and rejects with `AEE_EBADPARM`.
 `HexagonBackend::forward` pre-checks the ids of the whole request on the
 host, so a bad id in a later chunk cannot leave the earlier chunks in KV.
+
+v5 additions (#65 S1, 2026-09-21): kind 9 `MATMUL_W4A8` and two layout
+ids next to `TILED32` (1): `W4CX_DOWN8` (2, the six projections int4
+`w4cx` tiles, `embed` / `LOGITS` / `down` int8 as before) and `W4CX` (3,
+reserved for S3's 4-bit `embed` / `down`; the validator still rejects it
+with rc 4 because no kernel reads those tiles). Per-op rules for
+`MATMUL_W4A8` (rc 5): a `w4cx` header layout (a `tiled32` header with a
+W4A8 op would read int8 bytes as nibbles), `k > 0`, `k % 32 == 0`,
+`n % 32 == 0`, `k <= 16384` (u8 × i4 int32 accumulation is exact to that
+depth), and a 128-byte-aligned `param0` colsum of `n` int32 inside
+WEIGHTS — the one operand that is not a `tensor_ref`, checked beside
+`nntr_htp_op_extent()` (which reports `in1 = n*k/2` for the nibbles).
+`m == 0` holds for it like every kind but `LOGITS`. A `tiled32` image's
+op-list bytes are unchanged apart from the version (int8 projections keep
+`param0 == 0`); a v4 op-list fails the version check.
 
 v4 additions: `reserved2[0]` became `weight_layout` and must read
 `NNTR_HTP_WEIGHT_LAYOUT_TILED32` (1); any other value is rejected with
@@ -255,9 +271,10 @@ A bump cursor lays out the image with every tensor 128B-aligned:
 5. per layer: `wq/wq_s`, `wk/wk_s`, `wv/wv_s`, `wo/wo_s`, `gate/gate_s`,
    `up/up_s`, `down/down_s`, then `attn_norm/ffn_norm/q_norm/k_norm`.
 
-Projections carry one fp32 scale per output channel and are int8, but
-since ABI v4 every projection except `down` is stored **tiled32** — the
-same `N*K` bytes in a different order:
+Projections carry one fp32 scale per output channel and are int8 (or,
+in a `w4cx_down8` image, int4 — below), but since ABI v4 every int8
+projection except `down` is stored **tiled32** — the same `N*K` bytes in
+a different order:
 
 ```
 n_tiles = N / 32, k_tiles = K / 128
@@ -283,6 +300,38 @@ unifying the layout is a follow-up (section 9). Norm gammas and the RoPE table a
 before. For qwen3-0.6b (28 layers, hidden 1024, 16/8 heads, head_dim
 128, ffn 3072, vocab 151936, max_seq 2048) the image is still exactly
 **598,623,744 bytes** with no alignment padding.
+
+**`w4cx` (ABI v5, #65 S1).** In a `w4cx_down8` image
+(`weight_layout=w4cx_down8` in the `.hexcfg`, header id 2) each of the
+six per-layer projections whose class is *not* in the `.hexcfg`'s
+`i8_tensors=` line is int4 per output channel and stored as 512 B tiles
+of 32 n × 32 k nibbles, n-tile outer, k-tile inner (an n-strip is again
+one contiguous DMA):
+
+```
+n_tiles = N / 32, k_tiles = K / 32
+tile(nt, kt)  : 512 B at ((nt * k_tiles + kt) * 512)
+inside a tile : nibble index (k % 32) * 32 + (n % 32); byte = index / 2,
+                n even -> low nibble, n odd -> high nibble; two's complement [-8, 7]
+```
+
+The `(k, n)` order inside a tile is the row-major `[K][N]` int8 source
+`hexkl_micro_hmx_rm_to_wh_i4` consumes after a plain nibble expand, so
+S2's in-place WH bake is unpack → bake → write-back per tile, with no
+reshuffle. Right after each such tensor's fp32 `scale[N]` the image
+carries its int32 `colsum[N] = Σ_k w[n][k]`, the exact correction the
+u8 × i4 HMX path subtracts as `128 · colsum[n]` (`x_u8 = x_i8 + 128`, so
+the integer result equals the signed int8 dot and the reference stays
+bit-exact). The inverse index is `nntr_htp_w4_tile_off(n, k, K)` and the
+packer is `nntr_htp_repack_w4cx` (both in `nntr_htp_common.h`; the
+scalar reference reads through `nntr_htp_w4_get`). Requirements:
+`N % 32 == 0`, `K % 32 == 0`. A projection whose class *is* in
+`i8_tensors` stays tiled32 int8 with a `MATMUL_W8A8` op, so a mixed set
+(the S1 sweep) is a per-op choice, not a new layout; `embed` / `LOGITS`
+/ `down` are int8 in `w4cx_down8` exactly as in tiled32. Sizes for
+qwen3-0.6b: **423,724,544 bytes** for `w4cx_down8` with all six int4
+(176 MB of nibble tiles + 2.8 MB scale / colsum + 88 MB `down` + 156 MB
+`embed`), against 598,623,744 for tiled32.
 
 Since M6 P3 the `MATMUL_W8A8` / `MATMUL_LOGITS` kernel reads a tile
 strip as `k/4` consecutive vectors (`kt*4096 + g*128 == 128*(k/4)`), one
@@ -408,16 +457,37 @@ then `output_norm` (2-D tensors as int8 `[N][K]` + fp32 `[N]`, norms
 fp32). `Qwen3W8cxBin` mmaps it and hands out non-owning pointers as a
 `HexModelWeights`.
 
+`make_w4cx_bin.py [--i8-tensors down,embed]` (#65 S1, on the `hvx_w4cx`
+branch, not on `hvx_impl`) writes the `w4cx` checkpoint instead: every 2-D tensor whose class is not
+named in `--i8-tensors` (names in mask-bit order
+`embed,q,k,v,o,gate,up,down`) is quantised per output channel to int4
+with the same primitive at `qmax = 7` (symmetric RTN, `scale = absmax /
+7`, codes in `[-7, 7]`), still stored one code per byte so the stream
+keeps the W8 layout and size, and the file is prefixed by a 64-byte
+`W4CX` header (`Qwen3W4cxBinHeader`: magic, version 1, `n_layers`, the
+int8 class mask, bits). `Qwen3W8cxBin` tells the two apart by size and
+magic; `apply_layout()` maps a header-less file to `tiled32` and a
+W4CX file to `w4cx_down8` (its int8 set must include `embed` and
+`down` until S3). `make_w8cx_bin.py` is untouched, so the W8 output is
+byte-identical to before (md5 `7562313b…`). The default split, `w4cx_down8` with
+`--i8-tensors down,embed`, is 598,230,592 bytes.
+
 `nntr_hexpack <bin> <prefix> [--layers N]` writes `<prefix>.hexw` (the
-WEIGHTS image; 172,498,944 B for the 1-layer bring-up image) and
-`<prefix>.hexcfg` (12 `key=value` lines: the 11 `HexModelConfig` fields
-plus `weight_layout=tiled32`). Every consumer re-runs `lower_qwen3()`
-from the `.hexcfg`, so image and op-list cannot drift.
+WEIGHTS image; 172,498,944 B for the 1-layer bring-up image, 166,252,544
+for its `w4cx_down8` twin) and `<prefix>.hexcfg` (the 11 `HexModelConfig`
+fields plus `weight_layout=tiled32|w4cx_down8` and, for the latter,
+`i8_tensors=<names>`); the `.bin` decides the layout. Every consumer
+re-runs `lower_qwen3()` from the `.hexcfg`, so image and op-list cannot
+drift.
 
 A `.hexcfg` without `weight_layout` is a pre-v4, row-major image;
 `read_hexcfg` rejects it ("legacy image ... regenerate with
-nntr_hexpack") so it can never be paired with the tiled kernels. The
-CausalLM app packs from the `.bin` at start-up and needs no regeneration.
+nntr_hexpack") so it can never be paired with the tiled kernels, and so
+does one claiming the reserved `w4cx` layout or a `w4cx_down8` whose
+`i8_tensors` lacks `embed` or `down`. `pack_weights` refuses a source
+whose int width does not match the layout (a W8 `.bin` packed as
+`w4cx`, or the reverse). The CausalLM app packs from the `.bin` at
+start-up (`apply_layout` picks the layout) and needs no regeneration.
 
 ---
 
@@ -1178,6 +1248,44 @@ Prejudice*, first 70k chars in 8 × 2048-token windows (torch proxy).
   `eval.txt` rows above were not re-measured, so ②' and ③ still show
   the fp16-activation definition). Compare that with the +6 % an int8
   `down_proj` costs (section 2.3).
+
+**Per-channel int4 (`w4cx`, #65 S1, 2026-09-21, x86 only).** Prompt:
+the first 512 tokens of *Pride and Prejudice* chapter 1 (Gutenberg
+`pg1342.txt` from the line "It is a truth universally acknowledged",
+6,000 chars → `make_tokens.py --limit 512`, token file md5
+`8186fa8b…`; the P4 / `t512_23` prompt files were not on this machine).
+x86 reference `--eval`, 511 steps, this workstation's gcc build:
+
+| image | PPL / top-1 | × W8 | wall |
+|---|---|---|---|
+| W8 `tiled32` (md5 `5abf61be…`) | **22.5282 / 186** | 1.000 | 168 s |
+| `w4cx_down8`, six projections int4 RTN (md5 `43ad323a…`) | **46.2279 / 148** | **2.052** | 266 s |
+
+Torch weight-only fake quant on the same tokens (fp32 21.8485; W8
+per-channel 21.7619, so the ~+3.5 % between it and the x86 W8 row is the
+usual activation cost): six int4 41.6754 (1.915 ×); back to int8 one at
+a time — q 38.65, k 37.13, v 35.57, o 35.95, gate 34.98, up 33.28; only
+gate + up int4 (q/k/v/o int8) **27.85 (1.280 ×)**; only q/k/v/o int4
+28.74 (1.321 ×); a single int4 tensor q 1.056 ×, k 1.068 ×, v 1.029 ×,
+o 1.067 ×, gate 1.033 ×, up 1.186 ×. The x86 W4A8 reference op is
+bit-exact against an independent numpy evaluation of the same op from
+the `.bin` codes (1-layer image, 8 tokens, `max_abs 0`). Verdict: plain
+per-channel int4 RTN is above the plan's 1.25 × stop line even with
+q/k/v/o int8 — the S1 gate's `needs-user` branch (plan 65 §4 S1). The
+one producer-side lever that keeps the format (one fp32 scale per
+channel, HexKL-compatible) is a per-row clip search (weight-MSE-optimal
+scale over 64 points in `[0.5, 1] × amax`): six int4 38.65 (1.776 ×,
+`[-7, 7]`) / 37.70 (1.732 ×, `[-8, 7]`); gate + up only 26.03
+(**1.196 ×**) — under 1.25 but not 1.10, and only two of the six
+tensors. Group scales (`w4g128`, #51) or a calibration-based method are
+outside what per-channel HMX tiles can express.
+
+The `graph` simulator test on this machine (SDK 6.3.0.0, toolchain
+8.8.06, v79) fails `graph_partial_attn` with `inf` on the unmodified
+`hvx_impl` tree exactly as on this branch (`graph_prefill` /
+`graph_decode` STAT 0/0 on both) — the toolchain-8.8 v79 ATTN failure of
+section 7 rule 1, closed by SDK 6.4 / hexagon-clang 19.0.04, not a
+regression of this change.
 
 ### 8.2 Performance on device (M5, then M6 P3 and P4)
 
