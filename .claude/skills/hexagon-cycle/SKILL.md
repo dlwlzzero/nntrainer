@@ -8,7 +8,8 @@ You are the orchestrator for one cycle of the Hexagon work. The contract is
 `docs/plans/0000-agent-system-and-env.md`; do not restate it, follow it.
 
 Preconditions (check, do not fix silently): current branch is `hvx_impl`
-or a `hvx/*` branch with a clean tree; `tools/docker/run.sh` exists; the
+or a `hvx/*` branch with a clean tree; `source tools/hexagon/env.sh` works
+(SDK 6.4.0.1 + HexKL found); `gh auth status` is logged in; the
 GitHub MCP is connected as the repo owner. If the tree is dirty, stop and
 say what is uncommitted.
 

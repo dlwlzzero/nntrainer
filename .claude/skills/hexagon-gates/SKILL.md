@@ -3,13 +3,15 @@ name: hexagon-gates
 description: The verification ladder for any change to the Hexagon backend (x86 reference → simulator → skel/harness compile → device handoff), with the exact container commands and what "pass" means at each rung. Use before claiming a Hexagon change works.
 ---
 
-All commands run through `tools/docker/run.sh` from the repo root. Never
+All commands run natively on the Ubuntu workstation from the repo root
+after `source tools/hexagon/env.sh` (SDK 6.4.0.1, HexKL, model dir,
+simulator compat libs; contract §2). Never
 report a rung as passed without its pass line in the output. Rungs are
 cumulative: a PR needs 0–4; a single step inside a plan needs the rung the
 plan names.
 
-**Simulator budget (contract §7).** The simulator runs under Rosetta on
-the Mac: on v79 (the default since #35, 6 HVX units so `workers=6`)
+**Simulator budget (contract §7).** Times below were measured under Rosetta
+on the Mac; the native workstation is faster but the budget stands: on v79 (the default since #35, 6 HVX units so `workers=6`)
 `profile acc` ≈ 17 min and the 13 tests ≈ 6 min; on v75 ≈ 10 / 5 min. So:
 
 * No file under `nntrainer/tensor/hexagon/htp/`, `test/hexagon/sim_*`,
@@ -36,25 +38,25 @@ the Mac: on v79 (the default since #35, 6 HVX units so `workers=6`)
 ## 0. Format (every commit)
 
 ```
-tools/docker/run.sh clang-format-14 -i <changed .c .cpp .h>
+clang-format-14 -i <changed .c .cpp .h>
 ```
 Pass: `git diff --stat` after formatting shows only intended files.
 
 ## 1. x86 reference (no SDK; seconds)
 
 ```
-tools/docker/run.sh ./tools/hexagon/build_host_x86.sh
-tools/docker/run.sh ./build_x86_hexagon/test_lowering        # LOWER_TEST PASS
-tools/docker/run.sh ./build_x86_hexagon/test_w8cx_bin /model/<w8cx>.bin   # W8CX_BIN_TEST PASS
-tools/docker/run.sh bash -c 'gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c -lm && /tmp/t'
+./tools/hexagon/build_host_x86.sh
+./build_x86_hexagon/test_lowering        # LOWER_TEST PASS
+./build_x86_hexagon/test_w8cx_bin $NNTR_MODEL_DIR/w8cx/nntr_qwen3_0.6b_w8cx_DEFAULT.bin   # W8CX_BIN_TEST PASS
+gcc -Wall -Werror -o /tmp/t test/hexagon/test_oplist_header.c -lm && /tmp/t
 ```
 When the packer, lowering or `ref_ops.c` changed, also regenerate the image
 and check the reference perplexity did not move unless the plan says it
 should (record the number in the plan):
 ```
-tools/docker/run.sh ./build_x86_hexagon/nntr_hexpack /model/<w8cx>.bin /work/build_x86_hexagon/qwen3_full
-tools/docker/run.sh python3 tools/hexagon/make_tokens.py /model <text.txt> /work/build_x86_hexagon/t.i32 --limit 512
-tools/docker/run.sh ./build_x86_hexagon/hexagon_ref_run /work/build_x86_hexagon/qwen3_full --tokens /work/build_x86_hexagon/t.i32 --eval
+./build_x86_hexagon/nntr_hexpack $NNTR_MODEL_DIR/w8cx/nntr_qwen3_0.6b_w8cx_DEFAULT.bin build_x86_hexagon/qwen3_full
+python3 tools/hexagon/make_tokens.py $NNTR_MODEL_DIR <text.txt> build_x86_hexagon/t.i32 --limit 512
+./build_x86_hexagon/hexagon_ref_run build_x86_hexagon/qwen3_full --tokens build_x86_hexagon/t.i32 --eval
 ```
 Reference values live in HEXAGON.md §5.1 (e.g. 512-token local prompt PPL
 33.0195 / top1 184 after M6 P4).
@@ -62,8 +64,8 @@ Reference values live in HEXAGON.md §5.1 (e.g. 512-token local prompt PPL
 ## 2. Simulator, per-task gate (SDK; tens of minutes under emulation)
 
 ```
-HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/build_sim_test.sh
-HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh profile acc
+HEX_ARCH=v79 ./tools/hexagon/build_sim_test.sh
+HEX_ARCH=v79 ./tools/hexagon/run_sim_test.sh profile acc
 ```
 Pass: `SIM_TEST profile PASS` and the 8-token accuracy check within the
 0.1 atol/rtol bound, with the STAT bit-identical to HEXAGON.md §8.3's
@@ -75,12 +77,12 @@ are not comparable with the 4-worker v75 rows).
 
 ```
 for t in smoke pool exp quant matmul matmul_dma rmsnorm rope eltwise embed attn logits graph; do
-  HEX_ARCH=v79 tools/docker/run.sh ./tools/hexagon/run_sim_test.sh $t || break
+  HEX_ARCH=v79 ./tools/hexagon/run_sim_test.sh $t || break
 done
 ```
 Pass: 13 × `SIM_TEST <name> PASS`; `quant_generic` and `quant16_generic`
 STAT lines within HEXAGON.md §5.2 rates (v79 values). Since #68 (#65 S0)
-a build with HexKL on the addon mount (`build_sim_test.sh` prints
+a build with HexKL under `$HEXKL_ADDON_ROOT` (`build_sim_test.sh` prints
 `HexKL: … (HTP_HMX=1)`) also runs `run_sim_test.sh hmx` → `SIM_TEST hmx
 PASS`; the plain v79 simulator core executes HMX, so its STATs are real
 gates (`acc_layout usable=1`, every `hmx_mm_*` STAT `max_abs=0`,
@@ -97,11 +99,11 @@ first — the two builds share `build_hexagon/sim/` and `run_sim_test.sh`
 refuses to run a library built for another arch or with other
 `HEX_EXTRA_CFLAGS` (the stamp carries both).
 
-## 4. Skel and host harness compile (SDK + NDK; no device)
+## 4. Skel and host harness compile (SDK; no device. The host harness needs an Android NDK, which the workstation does not have yet: skip it and say so)
 
 ```
-tools/docker/run.sh ./tools/hexagon/build_skel.sh                   # build_hexagon/skel/libnntr_htp_skel.so (v79, shipping)
-tools/docker/run.sh ./tools/hexagon/build_host_test.sh              # build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
+./tools/hexagon/build_skel.sh                   # build_hexagon/skel/libnntr_htp_skel.so (v79, shipping)
+./tools/hexagon/build_host_test.sh              # build_hexagon/host/{hexagon_rpc_test,hexagon_e2e_test}
 ```
 Pass: both artifacts exist; record `md5sum` of each for the handoff. For
 variants use `HEX_EXTRA_CFLAGS=-D...` and copy each skel to
