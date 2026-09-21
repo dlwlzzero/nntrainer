@@ -75,6 +75,25 @@ void ref_matmul_w8a8(const __fp16 *x, const int8_t *w, const float *sw,
   free(xq);
 }
 
+void ref_matmul_w4a8(const __fp16 *x, const uint8_t *w, const float *sw,
+                     const int32_t *colsum, __fp16 *y, uint32_t m, uint32_t k,
+                     uint32_t n) {
+  int8_t *xq = (int8_t *)malloc((size_t)k);
+  for (uint32_t t = 0; t < m; ++t) {
+    float sx = ref_quant_row(x + (size_t)t * k, xq, k);
+    for (uint32_t j = 0; j < n; ++j) {
+      /* u8 activation (x_i8 + 128) against the int4 weight, as HMX sees it;
+       * exact in int32 for k <= 16384 (255 * 8 * 16384 < 2^31). */
+      int32_t acc = 0;
+      for (uint32_t i = 0; i < k; ++i)
+        acc += ((int32_t)xq[i] + 128) * nntr_htp_w4_get(w, j, i, k);
+      const int32_t dot = acc - 128 * colsum[j];
+      y[(size_t)t * n + j] = (__fp16)((float)dot * sw[j] * sx);
+    }
+  }
+  free(xq);
+}
+
 void ref_matmul_w8a16(const __fp16 *x, const int8_t *w, const float *sw,
                       __fp16 *y, uint32_t m, uint32_t k, uint32_t n) {
   int16_t *xq = (int16_t *)malloc((size_t)k * sizeof(int16_t));
@@ -273,6 +292,12 @@ void ref_graph_forward_upto(const uint8_t *oplist, uint8_t *weights,
       ref_matmul_w8a16(
         (const __fp16 *)(const void *)p0, (const int8_t *)(const void *)p1,
         (const float *)(const void *)p2, (__fp16 *)(void *)po, m, d->k, d->n);
+      break;
+    case NNTR_HTP_OP_MATMUL_W4A8: /* colsum: the fifth operand at param0 */
+      ref_matmul_w4a8(
+        (const __fp16 *)(const void *)p0, p1, (const float *)(const void *)p2,
+        (const int32_t *)(const void *)(bufs[NNTR_HTP_BUF_WEIGHTS] + d->param0),
+        (__fp16 *)(void *)po, m, d->k, d->n);
       break;
     case NNTR_HTP_OP_ROPE:
       ref_rope((__fp16 *)(void *)p0, (const __fp16 *)(const void *)p2, m,
