@@ -216,7 +216,7 @@ under 1.25 but not 1.10 and only two tensors — i.e. the format can carry gate/
 projections' bytes) at ≈ +20 % PPL, nothing more). S2 must not start on the six-int4 image; the S1
 code (format, ABI, reference) is complete and merges on its own so the decision does not block the
 tree. Build-machine notes: no docker / SDK 6.4 / HexKL / NDK on the workstation this ran on, so rung 1
-ran natively (gcc 13), rung 4 with SDK 6.3.0.0 v79 (`HTP_HMX=0`, skel md5 `68869d53…`, no host
+ran natively (gcc 13), rung 4 with SDK 6.3.0.0 v79 (`HTP_HMX=0`, skel md5 `aae982ee…` after the review follow-up, no host
 harness: no NDK), and the one simulator run (`graph`) fails `graph_partial_attn` with `inf` on the
 unmodified `hvx_impl` tree as well (toolchain 8.8 v79, HEXAGON.md §7 rule 1) while `graph_prefill` /
 `graph_decode` are 0/0 on both trees.
