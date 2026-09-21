@@ -74,7 +74,7 @@ mkdir -p generated build
     -I "$HEXAGON_SDK_ROOT/incs/stddef" \
     -mdll -o generated nntr_hvx.idl
 
-SRCS="hvx_add_f32.c nntr_hvx_mm_u8i4.c nntr_hvx_mm_u8i8.c nntr_hvx_softmax.c nntr_hvx_attn.c generated/nntr_hvx_skel.c"
+SRCS="hvx_add_f32.c nntr_hvx_mm_u8i4.c nntr_hvx_mm_u8i8.c nntr_hvx_softmax.c nntr_hvx_attn.c nntr_hvx_dma_probe.c generated/nntr_hvx_skel.c"
 SRCS="$SRCS $BACKEND/hmx/hexkl_mm_u8i4.c $BACKEND/hmx/hexkl_mm_u8i4_dma.c"
 SRCS="$SRCS $BACKEND/hmx/hexkl_mm_u8i4_moe.c"
 SRCS="$SRCS $BACKEND/hmx/hexkl_mm_u8i8_dma.c"

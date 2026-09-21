@@ -378,4 +378,22 @@ interface nntr_hvx : remote_handle64 {
    // ION mapping of a given size -- the design section 8.4 depends on.
    AEEResult mem_probe_touch(in sequence<uint8> buf,
                              rout sequence<uint64> touched_sum);
+
+   // [#77, doc 48 section 5 C] Streams bytes of an attached arena into VTCM
+   // with one DMA engine per worker thread (each worker issues its own
+   // dmstart on its own descriptors -- not the shared dmlinked ring), so
+   // the three axes of the arena bandwidth question can be moved one at a
+   // time: descriptor shape (row_size x nrows at src_stride), worker
+   // count, and the bus vote (a compile-time property of the skel,
+   // reported back as vote_state). The plan that splits the range into
+   // descriptors is test/htp/nntr_dma_probe_plan.h, checked on the host.
+   //
+   // res: [us, bytes_lo, bytes_hi, checksum, workers_used, vote_state,
+   //       n_descriptors, max_desc_bytes, vtcm_per_worker, passes]
+   // checksum sums worker 0's VTCM slice at a 64-byte stride after the
+   // run, so a mapping that reads as zeros is visible. DEBUG ONLY.
+   AEEResult dma_probe(in uint32 arena, in uint32 src_off, in uint32 bytes,
+                       in uint32 row_size, in uint32 nrows,
+                       in uint32 src_stride, in uint32 workers,
+                       in uint32 passes, rout sequence<uint32> res);
 };

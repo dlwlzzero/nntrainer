@@ -42,3 +42,14 @@ cc=${CC:-gcc}
   "$HERE/worker_pool_host_check.c" "$BACKEND/hvx/hvx_worker_pool.c"
 
 "$OUT/worker_pool_host_check"
+
+# The DMA probe's descriptor plan (test/htp/nntr_dma_probe_plan.h): the
+# skel runs the same header-only function, so the geometry checked here --
+# disjoint rows, in-bounds destinations, worker balance -- is what the
+# device DMAs. Bandwidth is measured on the device, never here.
+"$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
+  -I "$HERE/.." \
+  -o "$OUT/dma_probe_host_check" \
+  "$HERE/dma_probe_host_check.c"
+
+"$OUT/dma_probe_host_check"
