@@ -168,7 +168,6 @@ enum {
   HTP_MOE_T_PUSH,
   HTP_MOE_T_STAGE,
   HTP_MOE_T_ACC_STRIDE,
-  /* PR #86's HTP_MOE_T_PATH belongs here, before the #87 slots below. */
   /** [#87] The DMA ring trace's per-call numbers, hexkl_probe.h's
       HEXKL_PROBE_DMA_* in the same order. Counts unless named _US. */
   HTP_MOE_T_DMA_DESC,
@@ -181,8 +180,14 @@ enum {
   HTP_MOE_T_DMA_DEPTH_MAX,
   HTP_MOE_T_DMA_FIRST_READY_US,
   HTP_MOE_T_DMA_LAST_ISSUE_US,
+  HTP_MOE_T_PATH, /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
   HTP_MOE_N_STAGES
 };
+
+/** @brief hexkl_mm_u8i4_moe.h's HEXKL_MOE_FLAG_M1_GEMV restated for the
+ *  ARM side (the DSP header does not compile here): the moe_set_opts bit
+ *  that lets a call of at most 4 rows take the HVX GEMV path. */
+static constexpr uint32_t HTP_MOE_FLAG_M1_GEMV = 1u;
 
 /**
  * @brief Per-stage timing for the HTP path. Off unless NNTR_HTP_PROFILE is set.
@@ -333,6 +338,7 @@ public:
       }
       b.dma_first_ready_us += stage_us[HTP_MOE_T_DMA_FIRST_READY_US];
       b.dma_last_issue_us += stage_us[HTP_MOE_T_DMA_LAST_ISSUE_US];
+      b.m1_calls += (stage_us[HTP_MOE_T_PATH] != 0u) ? 1u : 0u;
     }
   }
 
@@ -419,6 +425,11 @@ private:
   struct Bucket {
     uint64_t calls = 0;
     uint64_t rows = 0; /**< summed M, so prefill batching is visible */
+    /** MoE layer calls that took the M=1 HVX GEMV path (#80). Beside
+        blocks it is the per-call proof of which path a row's numbers came
+        from: m1_gemv=calls/calls with blocks=0 is the GEMV, 0/calls with
+        blocks=4*calls the HMX loop. */
+    uint64_t m1_calls = 0;
     uint64_t host_us = 0;
     uint64_t dsp_us = 0;
     uint64_t quant_us = 0;
@@ -581,13 +592,15 @@ private:
                      "dequant %.1f acc %.1f drain %.1f+%.1f push %.1f "
                      "scatter %.1f alloc %.1f "
                      "stage %.1f mm %.1f | rest<=%.1f (%.1f%% of host) "
-                     "blocks=%llu]",
+                     "blocks=%llu m1_gemv=%llu/%llu]",
                      dsp_per, host_per > 0.0 ? 100.0 * dsp_per / host_per : 0.0,
                      host_per - dsp_per, quant_per, gather_per, requant_per,
                      swiglu_per, dequant_per, acc_per, drain_per, drain_dn_per,
                      push_per, scatter_per, alloc_per, stage_per, mm_meas_per,
                      mm_per, host_per > 0.0 ? 100.0 * mm_per / host_per : 0.0,
-                     (unsigned long long)b.blocks);
+                     (unsigned long long)b.blocks,
+                     (unsigned long long)b.m1_calls,
+                     (unsigned long long)b.calls);
       }
       if (level_ >= 2 && b.calls != 0 && b.dma_first_us != 0) {
         // The first weight wait happens with an empty ring, so it times a
@@ -1018,6 +1031,7 @@ public:
 
     const remote_handle64 session =
       static_cast<remote_handle64>(HtpBackend::global().handle());
+    sendMoeOptsOnce(session);
     std::vector<uint32_t> h_gu(n_experts), h_dn(n_experts);
     for (size_t e = 0; e < n_experts; ++e) {
       if (weights_wh) {
@@ -1034,6 +1048,48 @@ public:
     }
     invokeMoeLayer(session, h_gu, h_dn, row_index, row_count, row_weight, act,
                    out, M, K, inter, N_out);
+  }
+
+  /** [#80] The M=1 GEMV switch: NNTR_MOE_HTP_M1_GEMV=1 in the environment,
+   *  read once, sent to the DSP once per session through moe_set_opts
+   *  (the DSP decides per call on M). Off by default. With the switch on,
+   *  an error or an echo that differs from what was sent throws rather
+   *  than falling back: a silent fallback would let a run report the HMX
+   *  loop's numbers as the GEMV's. With it off, a skel too old to know the
+   *  method is exactly the HMX loop, so that case only logs. The stderr line is
+   * the proof of which path a run took when no profile is on; [HTP-PROFILE]'s
+   * m1_gemv= and blocks= are the per-call proof. */
+  void sendMoeOptsOnce(remote_handle64 session) {
+    std::call_once(moe_opts_once_, [session]() {
+      const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
+      const uint32_t flags =
+        (env != nullptr && std::atoi(env) != 0) ? HTP_MOE_FLAG_M1_GEMV : 0u;
+      uint32_t applied = 0;
+      const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
+      if (flags == 0u && err != AEE_SUCCESS) {
+        // Nothing was asked for, and a skel that predates moe_set_opts runs
+        // the HMX loop, which is what "off" means: say so and go on rather
+        // than fail a deployment this PR changed nothing for.
+        std::fprintf(stderr,
+                     "[HTP] moe m1 gemv: off (moe_set_opts err=0x%08x; the "
+                     "skel predates it)\n",
+                     static_cast<unsigned>(err));
+        return;
+      }
+      if (err != AEE_SUCCESS || applied != flags) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "nntr_hvx_moe_set_opts failed: err=0x%08x sent=0x%x "
+                      "applied=0x%x",
+                      static_cast<unsigned>(err), flags, applied);
+        throw std::runtime_error(
+          std::string(buf) +
+          " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
+          "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
+      }
+      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x)\n",
+                   flags != 0u ? "on" : "off", applied);
+    });
   }
 
   /** Same registration the layer call above does on first use, keyed by
@@ -2494,6 +2550,7 @@ private:
   // demand (ensureCapacity) -- see invokeLayer's comment. Guarded by the
   // same mutex that serializes every call into the one HTP session.
   std::mutex invoke_mutex_;
+  std::once_flag moe_opts_once_; /**< sendMoeOptsOnce */
   std::unique_ptr<HtpRpcBuffer> act_buf_;
   std::unique_ptr<HtpRpcBuffer> out_buf_;
 
