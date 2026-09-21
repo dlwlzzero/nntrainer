@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP MoE decode guide — 2. The decode path</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--good:#006300;--warn:#b35c00;--crit:#d03b3b;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.5}
+main{max-width:46em;margin:0 auto;padding:0 1em 3em}
+nav.top{background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none;white-space:nowrap}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+p,li{max-width:60ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0}
+.box{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.8em 1em;margin:1em 0}
+.box.status{border-left:4px solid var(--s1)}
+.box.warn{border-left:4px solid var(--warn)}
+.src{color:var(--ink2);font-size:.85em}
+.src::before{content:"source: "}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:#eef4fc}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.big{font-size:1.9em;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5em,1fr));gap:.6em;margin:.6em 0}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em .8em}
+.tile .lbl{font-size:.8em;color:var(--ink2)}
+.tile .sub{font-size:.8em;color:var(--muted)}
+.legend{display:flex;gap:1.2em;flex-wrap:wrap;font-size:.85em;color:var(--ink2);margin:.3em 0}
+.legend span::before{content:"";display:inline-block;width:.8em;height:.8em;border-radius:50%;margin-right:.35em;vertical-align:-.05em}
+.legend .l1::before{background:var(--s1)}
+.legend .l2::before{background:var(--s2)}
+.legend .lg::before{background:none;border-top:2px dashed var(--ink2);height:0;border-radius:0;vertical-align:.2em}
+dl.gl dt{font-weight:600;margin-top:.6em}
+dl.gl dd{margin:0 0 0 1em;max-width:60ch}
+footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}.big{font-size:1.6em}}
+</style>
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="01-run-it.html">1 Run it</a><a href="02-decode-path.html" class="here">2 Decode path</a><a href="03-performance.html">3 Performance</a><a href="04-glossary.html">4 Glossary</a></nav>
+<main>
+<h1>2. The decode path — what happens for one token, in order</h1>
+<p class="src"><code>Applications/CausalLM/models/lfm2/lfm2_causallm.cpp</code> (layer graph), <code>Applications/CausalLM/models/lfm2_moe/lfm2_moe_layer.cpp</code> (router, gate, routing arrays), <code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code> (the ARM side of the call), <code>nntrainer/tensor/htp_backend/hmx/hexkl_mm_u8i4_moe.c</code> (the DSP kernel), <code>test/htp/nntr_hvx.idl</code>; the PR's own walk-through <code>docs/htp_attention/49_ffn_on_npu_report.md</code> §2–§4 and cause analysis <code>48_decode_35_to_15_cause.md</code> §3 (Korean, translated); numbers from <code>docs/measurements/77-first-handoff.md</code> §B and §A-profile.</p>
+
+<p>Decode means: the prompt has already been read (prefill), and the model now produces one token, feeds it back, produces the next, and so on. Every step below is repeated per token. The shape that matters everywhere is <strong>M = 1</strong>: one activation row goes through every matrix.</p>
+
+<h2>2.1 One token through the 24 layers</h2>
+<p>The new token's embedding row (Q4_0, 2048 wide) enters layer 0. Each layer is a <em>mixer</em> followed by a <em>feed-forward</em> block, each wrapped in an RMSNorm and a residual add. There are two mixer kinds and two feed-forward kinds:</p>
+<ul>
+<li><strong>Conv mixer (18 layers).</strong> <code>rms_norm</code> → <code>in_proj</code> (a fully-connected matrix to 3 × conv width) → <code>split</code> into three → <code>custom_multiply</code> (gate B) → <code>causal_conv1d</code> (a short depthwise convolution over the last few positions) → <code>custom_multiply</code> (gate C) → <code>out_proj</code> (fully-connected back to 2048). <span class="src"><code>lfm2_causallm.cpp:152–201</code></span></li>
+<li><strong>Attention mixer (6 layers).</strong> q/k/v projections, per-head norm (<code>reshaped_rms_norm</code>), rotary position encoding (RoPE, <code>rope_theta</code> at <code>lfm2_causallm.cpp:130</code>), <code>mha_core</code> over the KV cache, o projection.</li>
+<li><strong>MoE FFN (22 layers).</strong> <code>rms_norm</code> → router → 4 of 32 experts → weighted sum. This is the block that runs on the DSP (§2.2). <span class="src"><code>lfm2_causallm.cpp:212</code>; contract §1</span></li>
+<li><strong>Dense FFN (2 layers).</strong> gate/up FCs → <code>swiglu</code> → down FC, on the CPU.</li>
+</ul>
+<p>After layer 23: <code>output_norm</code> and the tied lm_head (<code>output_of_causallm</code>, 128 000 × 2048, Q4_0) give the logits; greedy decoding picks the argmax. <span class="src"><code>lfm2_causallm.cpp:404</code>; contract §1 "tied lm_head"</span></p>
+
+<figure>
+<svg viewBox="0 0 640 304" role="img" aria-label="One token flows through 24 layers; only the MoE FFN of 22 layers runs on the DSP, everything else on the ARM CPU">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker></defs>
+<text x="0" y="14" font-size="12" fill="#52514e">Per token · ARM = CPU side · DSP = the HTP · ×N = how many layers of each kind</text>
+<rect x="0" y="26" width="640" height="52" rx="6" fill="#fcfcfb" stroke="#e1e0d9"/>
+<text x="10" y="44" font-size="12" fill="#0b0b0b" font-weight="600">Layer ℓ (24 of them)</text>
+<text x="10" y="64" font-size="11" fill="#52514e">rms_norm → mixer → +residual → rms_norm → feed-forward → +residual</text>
+<rect x="0" y="94" width="300" height="86" rx="6" fill="#fcfcfb" stroke="#e1e0d9"/>
+<text x="10" y="112" font-size="12" font-weight="600" fill="#0b0b0b">mixer, ARM</text>
+<text x="10" y="132" font-size="11" fill="#52514e">conv ×18: in_proj FC · split · gate · causal_conv1d</text>
+<text x="10" y="148" font-size="11" fill="#52514e">   · gate · out_proj FC</text>
+<text x="10" y="168" font-size="11" fill="#52514e">attention ×6: q/k/v FC · q/k norm · RoPE · mha_core · o FC</text>
+<rect x="320" y="94" width="320" height="86" rx="6" fill="#eef4fc" stroke="#2a78d6"/>
+<text x="330" y="112" font-size="12" font-weight="600" fill="#0b0b0b">feed-forward</text>
+<text x="330" y="132" font-size="11" fill="#0b0b0b">MoE ×22: router (ARM) → <tspan font-weight="600" fill="#2a78d6">1 FastRPC call → DSP</tspan></text>
+<text x="330" y="148" font-size="11" fill="#0b0b0b">   4 experts: gate_up · SwiGLU · down · weighted sum</text>
+<text x="330" y="168" font-size="11" fill="#52514e">dense ×2: gate/up FC · swiglu · down FC (ARM)</text>
+<line x1="150" y1="78" x2="150" y2="94" stroke="#52514e" marker-end="url(#ar)"/>
+<line x1="480" y1="78" x2="480" y2="94" stroke="#52514e" marker-end="url(#ar)"/>
+<rect x="0" y="200" width="640" height="40" rx="6" fill="#fcfcfb" stroke="#e1e0d9"/>
+<text x="10" y="224" font-size="11" fill="#52514e">after layer 23: output_norm → lm_head (tied embedding, 128000 × 2048, Q4_0) → argmax → next token (ARM)</text>
+<text x="0" y="260" font-size="11" fill="#52514e">Bytes read: MoE 484 MB (22 × 4 × 5.5) · conv + attention FCs ≈ 170 MB · lm_head 75 MB (doc 48 §1)</text>
+<text x="0" y="278" font-size="11" fill="#52514e">Measured ms/token, profile build, NPU model (#77 §A-profile):</text>
+<text x="0" y="294" font-size="11" fill="#52514e">lfm2_moe 42.1 · fully_connected 28.2 · lm_head 2.85 · mha_core 2.30 · rest ≤ 0.2 each</text>
+</svg>
+<figcaption>Only the MoE FFN leaves the ARM. Every other matrix (≈ 245 MB per token) is read by the CPU. The 22 FastRPC calls happen in sequence, one per MoE layer.</figcaption>
+</figure>
+
+<h2 id="moe">2.2 The MoE call, step by step</h2>
+
+<h3>a. Router (ARM)</h3>
+<p>The normalized row <em>x</em> (2048 floats) is multiplied by the router matrix (FP32, 32 columns, on the CPU) to get 32 logits. For each expert the code takes a sigmoid; adds a per-expert bias <em>only for ranking</em>; keeps the top 4 by (sigmoid + bias); and sets each chosen expert's weight to its bias-free sigmoid divided by the sum of the four (then a fixed scaling factor). <span class="src"><code>lfm2_moe_layer.cpp:271–312</code> (<code>buildExpertAssignments</code>), <code>:774</code> (<code>input.dot(gate_weights)</code>)</span></p>
+
+<h3>b. The gate: who runs the experts</h3>
+<p><code>tryMoeLayerOnAccelerator</code> decides. If the expert weights are <code>QS4CX_WH</code>, the DSP path is taken even at one token, because no CPU kernel can read that layout. With plain <code>QS4CX</code> weights a single token would stay on the ARM (the 64-row padding does not pay) unless <code>NNTR_MOE_HTP_DECODE=1</code>. <span class="src"><code>lfm2_moe_layer.cpp:455–506</code></span></p>
+
+<h3>c. Routing arrays and staging (ARM)</h3>
+<p>The four (expert, weight) pairs become three arrays in expert order: <code>row_index</code> (which token row — at decode always row 0, four times), <code>row_count[32]</code> (1 for the four chosen experts, 0 elsewhere) and <code>row_weight</code>. The activation row is copied into a shared ION buffer (<code>act_buf_</code>) the DSP can see; the output buffer is another. Expert weight <em>handles</em> (small integers registered at load) are looked up from a cache. <span class="src"><code>lfm2_moe_layer.cpp:524–545</code>; <code>htp_compute_ops.cpp</code> <code>invokeMoeLayer</code> (<code>ensureCapacity</code>, <code>stagedMemcpy</code>)</span></p>
+
+<h3>d. FastRPC round trip</h3>
+<p>One remote call, <code>nntr_hvx_mm_u8i4_moe_layer(session, M=1, K=2048, inter=1792, N_out=2048, h_gate_up[32], h_down[32], row_index, row_count, row_weight, act_f32, out_f32)</code>, blocks the ARM thread until the DSP returns. The stub (generated from <code>nntr_hvx.idl</code> by <code>qaic</code>) packs the small arrays (≈ 14 KB at prefill, a few hundred bytes at decode) and passes the ION buffers zero-copy; the driver wakes a DSP thread; the skel unpacks and calls the kernel. When <code>NNTR_HTP_PROFILE ≥ 2</code> the <code>_timed</code> twin is used, which returns per-stage microseconds. <span class="src"><code>test/htp/nntr_hvx.idl:161–182</code>; <code>htp_compute_ops.cpp:1470–1500</code></span></p>
+<p>The session itself is opened once at load: an unsigned process domain on the compute DSP (<code>cdsp</code>), then a latency vote for <em>poll</em> mode (<code>RPC_POLL_QOS</code>, fallback <code>PM_QOS</code>) so the DSP is not asleep between calls; that is the <code>qos_mode=2</code> in every profile header. <span class="src"><code>htp_backend.cpp:40–90</code></span></p>
+
+<h3>e. On the DSP (<code>hexkl_mm_u8i4_moe_layer_run</code>)</h3>
+<p>The stage names in brackets are the columns of the <code>[HTP-PROFILE]</code> <code>M==1</code> row; the microseconds are #77's level-3 (5× repeat, min) values on unit <code>R3CY205ZMND</code>. <span class="src"><code>hexkl_mm_u8i4_moe.c:573–1246</code> read with doc 49 §4.5 B-3…B-6; <code>77-first-handoff.md</code> §B level 3</span></p>
+<ol>
+<li><strong>Validate and lay out.</strong> Every handle's K/N is checked before any work; VTCM (the DSP's 8 MiB on-chip scratch memory) is carved into fixed regions: activation block 128 KB, gate_up weights 3.5 MiB, down weights 1.75 MiB, gate f32, mid u8, two 256 KB accumulator staging buffers, result f32. <span class="src"><code>:490–571</code>, <code>:597–613</code>; doc 49 §4.4</span></li>
+<li><strong>Stage in</strong> [<code>stage</code> 4.4 µs]: DMA the activation row from the uncached ION buffer into a cached DSP-heap copy <code>act_c</code>; zero <code>out_c</code>. <span class="src"><code>:807–809</code></span></li>
+<li><strong>Kick the first weight DMA.</strong> Expert 0's gate_up (3.5 MiB) is pushed from the ION <em>arena</em> (where all 1408 expert weights sit in DDR, in HMX tile order) into VTCM through a ring of 2D DMA descriptors, in four column chunks. <span class="src"><code>:823–827</code>, <code>moe_push_gate_up_chunks</code> <code>:159</code>; <code>hexkl_dma_ring.c</code></span></li>
+<li><strong>Activation quantization</strong> [<code>quant</code> 21.9]: the row's min/max give a scale and zero point; the row is packed as u8 into the "AH" tile layout the matrix unit reads. Each active expert gets a <strong>64-row slot block</strong>; at M = 1 the other 63 rows are padding that repeats row 0. <span class="src"><code>:831–872</code></span></li>
+<li><strong>Per expert (4 times):</strong>
+ <ul>
+ <li>[<code>gather</code> 122.6] wait for the activation block DMA and copy the block's scale/zp;</li>
+ <li>push the expert's down weights (1.75 MiB) so they arrive during gate_up;</li>
+ <li>[<code>drain</code> 0.9+0.4] wait for the gate_up chunk;</li>
+ <li>[<code>mm</code> 746.6 + <code>acc</code> 258.8] <strong>HMX gate_up</strong>: for each of 112 column tiles, clear the accumulator, issue 64 tile multiplies (64 rows × 32 k × 32 n each), read the 64×32 int32 result out to staging. <em>63 of the 64 rows are padding at decode</em>;</li>
+ <li>[<code>dequant</code> 7.3, <code>swiglu</code>] worker threads dequantize gate and up tiles (scale · column sum · bias) and store silu(gate) · up as f32;</li>
+ <li>[<code>requant</code> 41.9] the 1792-wide f32 row becomes u8 again for the down matrix (synchronous, nothing to hide behind);</li>
+ <li><strong>HMX down</strong> (same shape rules, 64 column tiles) → dequantize to f32;</li>
+ <li>[<code>scatter</code> 0.9] <code>out_c[row] += weight · result</code> — the weighted sum of the four experts is this <code>+=</code>. <span class="src"><code>:976–1225</code>; doc 49 §3.2.2 "scatter"</span></li>
+ </ul></li>
+<li><strong>Stage out</strong>: DMA <code>out_c</code> back to the ION output buffer; return. <span class="src"><code>:1230–1246</code></span></li>
+</ol>
+<p>Sum: <strong>dsp 1222.7 µs</strong> per call, of which the weight DMA moved 21 504 KB at <strong>18.0 GB/s</strong> averaged over the call; <strong>host 1750.4 µs</strong>; the difference, <strong>transport 527.7 µs</strong>, is the round trip. (Level 2, without repetition: host 1948.6 / dsp 1360.9 / transport 587.7, DMA 16.2 GB/s.) <span class="src"><code>77-first-handoff.md</code> §B</span></p>
+
+<figure>
+<svg viewBox="0 0 640 330" role="img" aria-label="Sequence of one MoE call at decode: ARM router and staging, FastRPC in, DSP stages, FastRPC out, ARM copy back">
+<defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker></defs>
+<text x="0" y="14" font-size="12" fill="#52514e">One MoE layer call at M = 1 (µs, #77 level 3, unit R3CY205ZMND)</text>
+<text x="0" y="40" font-size="12" font-weight="600" fill="#0b0b0b">ARM</text>
+<rect x="40" y="28" width="150" height="20" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="46" y="42" font-size="10">router · top-4 · arrays · memcpy</text>
+<rect x="196" y="28" width="60" height="20" rx="4" fill="#eb6834"/><text x="200" y="42" font-size="10" fill="#fff">RPC in</text>
+<rect x="540" y="28" width="60" height="20" rx="4" fill="#eb6834"/><text x="544" y="42" font-size="10" fill="#fff">RPC out</text>
+<rect x="604" y="28" width="36" height="20" rx="4" fill="#fcfcfb" stroke="#c3c2b7"/><text x="607" y="42" font-size="9">copy</text>
+<text x="196" y="66" font-size="10" fill="#52514e">transport (in + out) = host − dsp = 527.7</text>
+<text x="0" y="100" font-size="12" font-weight="600" fill="#0b0b0b">DSP</text>
+<rect x="258" y="88" width="280" height="20" rx="4" fill="#2a78d6"/><text x="264" y="102" font-size="10" fill="#fff">dsp 1222.7 (4 experts)</text>
+<line x1="258" y1="118" x2="258" y2="140" stroke="#52514e" marker-end="url(#ar2)"/>
+<text x="0" y="160" font-size="11" fill="#52514e">inside the 1222.7 (stage columns; not to scale):</text>
+<rect x="0" y="170" width="612" height="22" rx="4" fill="#2a78d6"/>
+<rect x="0" y="170" width="374" height="22" rx="4" fill="#1c5cab"/>
+<rect x="374" y="170" width="129" height="22" fill="#5598e7"/>
+<rect x="505" y="170" width="61" height="22" fill="#9ec5f4"/>
+<rect x="568" y="170" width="21" height="22" fill="#cde2fb"/>
+<text x="6" y="185" font-size="10" fill="#fff">mm 746.6 — HMX issues 64-row tiles for 1 row</text>
+<text x="380" y="185" font-size="10" fill="#fff">acc 258.8</text>
+<text x="508" y="185" font-size="9" fill="#0b0b0b">gather 123</text>
+<text x="571" y="185" font-size="8" fill="#0b0b0b">rq 42</text>
+<text x="0" y="212" font-size="10" fill="#52514e">quant 21.9 · dequant 7.3 · stage 4.4 · push 2.6 · drain 1.3 · scatter 0.9 · alloc 0.1 · rest ≤ 14.1</text>
+<text x="0" y="240" font-size="11" fill="#52514e">weight DMA during the call: 21 504 KB (4 × 5.25 MiB) at 18.0 GB/s — DMA alone needs 1.19 ms</text>
+<line x1="0" y1="256" x2="640" y2="256" stroke="#e1e0d9"/>
+<text x="0" y="278" font-size="11" fill="#0b0b0b">host 1750.4 µs per call × 22 MoE layers = <tspan font-weight="600">38.5 ms per token</tspan> in MoE calls alone</text>
+<text x="0" y="298" font-size="11" fill="#0b0b0b">of which transport 527.7 × 22 = <tspan font-weight="600">11.6 ms</tspan>; DSP 1222.7 × 22 = <tspan font-weight="600">26.9 ms</tspan></text>
+<text x="0" y="318" font-size="11" fill="#52514e">CPU reference for the same 22 layers: ≈ 19 ms (0.88 ms/layer, derived, doc 48 §1)</text>
+</svg>
+<figcaption>Sequence and stage widths from <code>77-first-handoff.md</code> §B (level 3 row). The mm column is the HMX issue loop timed by difference (doc 49 §3.2.3).</figcaption>
+</figure>
+
+<h3>f. Memory tiers the data crosses</h3>
+<figure>
+<svg viewBox="0 0 640 250" role="img" aria-label="Memory tiers: DDR holds the ARM heap, ION buffers, DSP heap and the 3.9 GB ION arena; inside the DSP chip are caches and 8 MiB VTCM that the HMX reads">
+<text x="0" y="14" font-size="12" fill="#52514e">Where the bytes live (doc 49 §4.0; doc 46 §41 via contract §2)</text>
+<rect x="0" y="24" width="300" height="216" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+<text x="10" y="42" font-size="12" font-weight="600">DDR (phone main memory, 34–38 GB/s)</text>
+<rect x="10" y="52" width="280" height="30" rx="4" fill="#f0efec"/><text x="16" y="71" font-size="10">ARM process heap — tensors; the DSP cannot see it</text>
+<rect x="10" y="88" width="280" height="30" rx="4" fill="#f0efec"/><text x="16" y="107" font-size="10">ION buffers act/out — shared window, uncached on the DSP</text>
+<rect x="10" y="124" width="280" height="30" rx="4" fill="#f0efec"/><text x="16" y="143" font-size="10">DSP heap ≈ 182 MiB — act_c, out_c, scratch; cached</text>
+<rect x="10" y="160" width="280" height="70" rx="4" fill="#eef4fc" stroke="#2a78d6"/>
+<text x="16" y="179" font-size="10" font-weight="600">ION arena 3840 MiB (15 × 256 MiB chunks)</text>
+<text x="16" y="195" font-size="10">all 1408 expert weights, QS4CX_WH bytes as-is,</text>
+<text x="16" y="211" font-size="10">filled once at load, 0.09 ms per registration</text>
+<text x="16" y="225" font-size="10">read by DMA every token: 4 × 5.25 MiB per layer</text>
+<rect x="340" y="24" width="300" height="216" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+<text x="350" y="42" font-size="12" font-weight="600">DSP chip (HTP v79)</text>
+<rect x="350" y="52" width="280" height="30" rx="4" fill="#f0efec"/><text x="356" y="71" font-size="10">scalar core + 4 HVX vector contexts + 1 HMX matrix unit</text>
+<rect x="350" y="88" width="280" height="30" rx="4" fill="#f0efec"/><text x="356" y="107" font-size="10">L1 / L2 cache — automatic, holds recent DDR reads</text>
+<rect x="350" y="124" width="280" height="106" rx="4" fill="#eef4fc" stroke="#2a78d6"/>
+<text x="356" y="143" font-size="10" font-weight="600">VTCM 8 MiB — real SRAM with an address, filled by DMA only</text>
+<text x="356" y="161" font-size="10">act 128 KB · gate_up W 3.5 MiB · down W 1.75 MiB</text>
+<text x="356" y="177" font-size="10">gate f32 458 KB · mid u8 115 KB · acc staging 2 × 256 KB</text>
+<text x="356" y="193" font-size="10">res f32 512 KB   (≈ 6.9 MB, fixed per call)</text>
+<text x="356" y="215" font-size="10" fill="#0b0b0b" font-weight="600">HMX reads only VTCM. That is why every weight is DMA'd.</text>
+<line x1="290" y1="195" x2="350" y2="160" stroke="#2a78d6" stroke-width="2"/>
+<text x="296" y="172" font-size="9" fill="#2a78d6">DMA</text>
+</svg>
+<figcaption>Address-space rule: the 32-bit DSP address space bounds what can be mapped (arena + heap in one 4 GiB space), not host RAM — LEDGER rule 8.</figcaption>
+</figure>
+
+<h3>g. Back on the ARM</h3>
+<p>The output row is copied from the ION buffer into the layer's output tensor; profile counters accumulate; the CPU-side work that the DSP already did (zeroing, routing multiply, scatter) is skipped; the residual add is the graph's next node. <span class="src"><code>htp_compute_ops.cpp</code> after the call; <code>lfm2_moe_layer.cpp:838–892</code> via doc 49 §4.5 B-7</span></p>
+
+<h2>2.3 The ARM remainder</h2>
+<p>Everything outside the 22 MoE calls runs on the CPU: the conv and attention projections, the norms, the conv1d, attention over the KV cache, the dense FFN and the lm_head. Measured per token with the <code>--profile</code> build (inflated in absolute terms; the <em>shape</em> is the finding), NPU model vs CPU model, unit <code>R3CY205ZMND</code>:</p>
+<div class="tablewrap"><table>
+<tr><th>node type</th><th class="num">NPU model ms/token</th><th class="num">CPU model ms/token</th><th>what it is</th></tr>
+<tr><td><code>lfm2_moe</code></td><td class="num">42.12</td><td class="num">22.32</td><td>the 22 MoE layers (router + call)</td></tr>
+<tr><td><code>fully_connected</code></td><td class="num">28.16</td><td class="num">10.29</td><td>conv in/out_proj, attention q/k/v/o, dense FFN FCs</td></tr>
+<tr><td><code>output_of_causallm</code></td><td class="num">2.85</td><td class="num">3.40</td><td>lm_head (tied embedding)</td></tr>
+<tr><td><code>mha_core</code></td><td class="num">2.30</td><td class="num">2.81</td><td>attention over the KV cache</td></tr>
+<tr><td><code>addition</code>, <code>rms_norm</code>, <code>custom_multiply</code>, <code>causal_conv1d</code>, <code>split</code>, <code>reshaped_rms_norm</code>, <code>swiglu</code></td><td class="num">0.04–0.21 each</td><td class="num">0.02–0.14 each</td><td>residual, norms, gates, conv1d, dense SwiGLU</td></tr>
+<tr><td><strong>total</strong></td><td class="num"><strong>76.2</strong></td><td class="num"><strong>39.3</strong></td><td>profile-inflated; the tok/s binary gives 54.4 and 19.0 ms/token</td></tr>
+</table></div>
+<p class="src"><code>77-first-handoff.md</code> §A (profile); LEDGER verdict ①</p>
+<p>Two readings. First, MoE + FC are 92 % of the NPU token and 83 % of the CPU token; the MoE FFN on the NPU costs about 2× the CPU path. Second, <code>fully_connected</code> is 2.7× slower in the NPU-model run than in the CPU-model run. The handoff and LEDGER attribute this to the FCs being "routed through the HTP"; but the #78 NPU model's <code>nntr_config.json</code> sets no <code>*_proj_engine</code> key and the code defaults those to <code>"cpu"</code> (<code>lfm2_causallm.cpp:337–348</code>), so in that run the FCs ran on the CPU with the same Q4_0 weights. Doc 48 §2 ③ saw the same excess in the PR's run and named CPU thread over-splitting as the candidate. This guide follows the code and records the disagreement; the cause is open. The lever that does not depend on the cause is the same either way: fewer round trips, i.e. one call per token (LEDGER ⑨).</p>
+
+<h2 id="walls">2.4 The three walls — and why all three must fall</h2>
+<p>The PR author's decode anatomy of one MoE call (doc 48 §3, unit <code>R5KL30G6MLT</code>, 2026-09-15), reproduced within a few percent by #77 on <code>R3CY205ZMND</code>:</p>
+<pre><code>host 1913 = dsp 1348 + transport 565             (µs)
+dsp  1348 = HMX 1029 (mm 770 + acc 259)   ← 64-row tiles for 1 row: 63/64 empty
+          + drain 173 (exposed DMA wait)
+          + quant 43 + requant 42 + dequant 23 + other ~40
+DMA       = 18 GB/s (first 1 MiB), 16.3 averaged  ← not the 38.8 of the arena probe</code></pre>
+
+<figure>
+<svg viewBox="0 0 640 230" role="img" aria-label="Stacked bar of one 1.91 ms MoE call: HMX tile waste 1.03, DMA wait 0.17, conversions 0.11, other 0.04, transport 0.57; and what each wall alone would leave">
+<text x="0" y="14" font-size="12" fill="#52514e">One decode MoE call, 1.91 ms (doc 48 §3), and the wall each piece belongs to</text>
+<rect x="0" y="26" width="345" height="26" rx="4" fill="#1c5cab"/>
+<rect x="347" y="26" width="58" height="26" fill="#5598e7"/>
+<rect x="407" y="26" width="37" height="26" fill="#9ec5f4"/>
+<rect x="446" y="26" width="13" height="26" fill="#cde2fb"/>
+<rect x="461" y="26" width="179" height="26" rx="4" fill="#eb6834"/>
+<text x="6" y="44" font-size="11" fill="#fff">wall 1 · HMX 64-row tile 1.03</text>
+<text x="350" y="44" font-size="10" fill="#fff">drain .17</text>
+<text x="409" y="44" font-size="9" fill="#0b0b0b">conv .11</text>
+<text x="466" y="44" font-size="11" fill="#fff">wall 3 · transport 0.57</text>
+<text x="0" y="72" font-size="11" fill="#52514e">wall 2 is underneath: 21.5 MB of weights at 18 GB/s = 1.19 ms floor, today hidden behind the HMX work</text>
+<text x="0" y="104" font-size="12" font-weight="600" fill="#0b0b0b">Remove one wall only → the call barely moves</text>
+<text x="0" y="124" font-size="11" fill="#52514e">only wall 1 (HVX GEMV): DSP floor becomes the DMA, 21.5 MB / 18 GB/s = 1.19 ms ≈ today's 1.35</text>
+<text x="0" y="142" font-size="11" fill="#52514e">only wall 2 (DMA 38 GB/s → 0.57 ms): the HMX's 1.03 ms stays the floor</text>
+<text x="0" y="160" font-size="11" fill="#52514e">only wall 3 (transport → 0.1): DSP unchanged; even at DSP = 0, 22 × 0.57 = 12.5 ms/token, 2/3 of the CPU's 19</text>
+<text x="0" y="190" font-size="12" font-weight="600" fill="#0b0b0b">All three → call ≈ 0.57 + 0.1 ≈ 0.7 ms → MoE ≈ 15 ms/token, under the CPU's 19</text>
+<text x="0" y="212" font-size="11" fill="#52514e">Then the ARM remainder (≈ 19 ms, now measured as the table above) must shrink: one FastRPC call per token.</text>
+</svg>
+<figcaption>doc 48 §3 table, translated; contract §2 "three walls".</figcaption>
+</figure>
+
+<div class="tablewrap"><table>
+<tr><th>wall</th><th>today</th><th>what #77 decided</th><th>fix in flight</th></tr>
+<tr><td><strong>1. HMX computes 64 rows for 1</strong></td><td>1.03 of 1.35 ms DSP</td><td>Confirmed by the stage columns (mm 746.6 + acc 258.8 of 1222.7).</td><td>#80: an M ≤ 4 dispatch inside the same kernel onto the existing HVX GEMV <code>hvx_gemm_u8i4_wh.c</code>, which reads WH tiles and produces the same int32 sums as the HMX (integer sums are order-independent), so it can be gated bit-identical. Reads weights straight from the arena, no DMA; switch <code>NNTR_MOE_HTP_M1_GEMV=1</code>. Expected DSP 0.7–1.4 ms per call depending on the arena read rate. <span class="src"><code>docs/plans/80-m1-moe-gemv-dispatch.md</code> §3</span></td></tr>
+<tr><td><strong>2. Weight DMA at 16–18 GB/s</strong></td><td>1.19 ms floor per call</td><td>Isolated probe of the same engine, arena and skel: 72–80 GB/s contiguous, 108–117 GB/s strided 2D; workers 1→4 flat to negative; bus vote ≤ 4 %. So the engine is not the wall; <em>the layer call's use of the DMA ring</em> is (4–7× gap). <span class="src">LEDGER rule 11, verdict ③</span></td><td>#87: instrument the ring inside the call (per-descriptor issue/complete, wait time, outstanding depth, chunk shapes at M=1) and attribute the gap to named causes; then the fix it names.</td></tr>
+<tr><td><strong>3. Transport 0.53–0.59 ms per call</strong></td><td>× 22 = 11.6–12.9 ms/token</td><td>Level 3 (no wake/clock effects) still 527.7 µs, −10 % from level 2: the cost is <em>marshalling</em>, not the DSP waking up. <span class="src">LEDGER verdict ②</span></td><td>#88: prebound per-layer arguments and persistent ION staging on plain FastRPC (0.53 → ≤ 0.1 ms per call); a resident DSP worker / <code>dspqueue</code> only revisited together with one-call-per-token (#85, #81, #82).</td></tr>
+</table></div>
+
+<h2>2.5 After the walls: one call per token</h2>
+<p>Even with MoE at 15 ms, the CPU-side remainder keeps the token above 20 ms. The contract's next step is therefore M = 1 kernels for the rest of the layer on the DSP (RMSNorm, conv1d + gating, RoPE, attention at M = 1, dense FFN, lm_head) and one per-token entry in the IDL, so the ARM sends one token in and gets logits out with a single round trip — the "DSP owns the graph" shape that the frozen <code>hvx_impl</code> branch already validated for a smaller model. <span class="src">contract §2, §3.1 step 3; LEDGER §3 ⑨ and §4</span></p>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only.</footer>
+</main></body></html>

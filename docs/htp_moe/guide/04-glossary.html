@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP MoE decode guide — 4. Glossary</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--good:#006300;--warn:#b35c00;--crit:#d03b3b;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.5}
+main{max-width:46em;margin:0 auto;padding:0 1em 3em}
+nav.top{background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none;white-space:nowrap}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+p,li{max-width:60ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0}
+.box{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.8em 1em;margin:1em 0}
+.box.status{border-left:4px solid var(--s1)}
+.box.warn{border-left:4px solid var(--warn)}
+.src{color:var(--ink2);font-size:.85em}
+.src::before{content:"source: "}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:#eef4fc}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.big{font-size:1.9em;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5em,1fr));gap:.6em;margin:.6em 0}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em .8em}
+.tile .lbl{font-size:.8em;color:var(--ink2)}
+.tile .sub{font-size:.8em;color:var(--muted)}
+.legend{display:flex;gap:1.2em;flex-wrap:wrap;font-size:.85em;color:var(--ink2);margin:.3em 0}
+.legend span::before{content:"";display:inline-block;width:.8em;height:.8em;border-radius:50%;margin-right:.35em;vertical-align:-.05em}
+.legend .l1::before{background:var(--s1)}
+.legend .l2::before{background:var(--s2)}
+.legend .lg::before{background:none;border-top:2px dashed var(--ink2);height:0;border-radius:0;vertical-align:.2em}
+dl.gl dt{font-weight:600;margin-top:.6em}
+dl.gl dd{margin:0 0 0 1em;max-width:60ch}
+footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}.big{font-size:1.6em}}
+</style>
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="01-run-it.html">1 Run it</a><a href="02-decode-path.html">2 Decode path</a><a href="03-performance.html">3 Performance</a><a href="04-glossary.html" class="here">4 Glossary</a></nav>
+<main>
+<h1>4. Glossary — every acronym and term on these pages</h1>
+<p class="src">definitions as used in contract <code>docs/plans/0001-…</code>, LEDGER.md, BENCHMARK.md, doc 49 §3–§4 and the code under <code>nntrainer/tensor/htp_backend/</code>.</p>
+<dl class="gl">
+<dt>A/B</dt><dd>Two variants run in the same sitting on the same phone; only their ratio is a verdict (LEDGER rule 9).</dd>
+<dt>acc, acc_read</dt><dd>The HMX accumulator (64 rows × 32 int32) and the instruction that copies it out to VTCM; the HMX stalls while it is read. Profile column <code>acc</code>.</dd>
+<dt>adb</dt><dd>Android Debug Bridge: the USB tool that pushes files to the phone and runs commands on it. Agents never run it.</dd>
+<dt>AEE_EBADPARM (0x8000040E)</dt><dd>FastRPC's "bad parameter" error; on this project it almost always means a stale skel (rule 3).</dd>
+<dt>AH tile</dt><dd>"Activation, HMX order": 64 rows × 32 k-values of u8, 2048 B, the layout of the activation operand the HMX reads.</dd>
+<dt>arena (ION arena)</dt><dd>3840 MiB of ION memory in 256 MiB chunks, mapped once into the DSP, holding all 1408 expert weight matrices in WH order.</dd>
+<dt>ARM</dt><dd>The phone's CPU cores (Cortex big.LITTLE), where the app and everything not on the DSP runs.</dd>
+<dt>bus vote</dt><dd>A request the DSP makes for DDR bandwidth (40 GB/s at session open); the <code>novote</code> skel drops it. Worth ≤ 4 % in #77.</dd>
+<dt>cDSP</dt><dd>The compute DSP domain of the Snapdragon; the FastRPC session opens with <code>_dom=cdsp</code>.</dd>
+<dt>control (variant A)</dt><dd>The unchanged reference binary that opens every sitting.</dd>
+<dt>conv block / causal_conv1d</dt><dd>LFM2's non-attention mixer: two FCs around a short depthwise convolution with two gating multiplies.</dd>
+<dt>CPU control</dt><dd>The <code>q40</code> model on the CPU: the tok/s floor the NPU must beat.</dd>
+<dt>DCVS / DVFS</dt><dd>Dynamic clock and voltage scaling: the DSP may lower its clock when idle; a candidate cause for run-to-run drift.</dd>
+<dt>decode</dt><dd>Generating tokens one at a time after the prompt; M = 1 everywhere.</dd>
+<dt>DDR (LPDDR5X)</dt><dd>The phone's main memory; 34–38 GB/s measured for one reader, the speed limit of decode.</dd>
+<dt>dequant / requant / quant</dt><dd>int32 → f32 with scales (dequant), f32 → u8 for the next matrix (requant), the first f32 → u8 of the activation row (quant).</dd>
+<dt>DMA</dt><dd>Direct memory access: the DSP's copy engine, driven by descriptors (2D: row bytes, stride, row count) through a ring; how weights get from DDR to VTCM.</dd>
+<dt>drain</dt><dd>Profile column: time spent waiting for a DMA transfer that was not hidden behind compute.</dd>
+<dt>DSP</dt><dd>Digital signal processor; here the Hexagon core inside the HTP.</dd>
+<dt>dspqueue</dt><dd>Hexagon SDK's low-latency ARM↔DSP queue; deferred alternative to plain FastRPC calls.</dd>
+<dt>expert</dt><dd>One of 32 small FFNs in a MoE layer: gate_up [2048 × 3584] and down [1792 × 2048], 5.25 MiB in int4.</dd>
+<dt>FastRPC</dt><dd>Qualcomm's remote procedure call from ARM to DSP; one call = marshal arguments, wake a DSP thread, run the skel function, return.</dd>
+<dt>FC (fully_connected)</dt><dd>A dense matrix multiply layer (in_proj, out_proj, q/k/v/o, dense FFN).</dd>
+<dt>FFN</dt><dd>Feed-forward network: the gate/up → SwiGLU → down block of a layer; MoE or dense.</dd>
+<dt>GEMM / GEMV</dt><dd>General matrix–matrix / matrix–vector multiply. Decode is GEMV (M = 1).</dd>
+<dt>gather / scatter</dt><dd>Gather: bring a block's activation rows (and scale/zp) to where the HMX reads; scatter: <code>out[row] += weight · result</code>, the weighted sum of the experts.</dd>
+<dt>gen (G)</dt><dd>Generation length in tokens: 64 / 512 / 1024 in every handoff.</dd>
+<dt>greedy decoding</dt><dd><code>do_sample: false</code>; the argmax token every step, so runs are repeatable.</dd>
+<dt>handoff</dt><dd>A measurement document (<code>docs/measurements/&lt;issue&gt;-&lt;slug&gt;.md</code>) the user runs on the phone in one sitting and fills in.</dd>
+<dt>HexKL</dt><dd>Qualcomm's kernel library exposing the HMX (<code>libhexkl_micro.a</code> on the DSP, <code>libsdkl.so</code> on the ARM).</dd>
+<dt>HMX</dt><dd>Hexagon Matrix eXtension: the matrix unit; one instruction multiplies a 64 × 32 u8 tile by a 32 × 32 i4 tile into the accumulator.</dd>
+<dt>host / dsp / transport</dt><dd>Profile columns: host = the call as timed by the ARM; dsp = as timed by the DSP; transport = host − dsp, the round trip.</dd>
+<dt>HTP</dt><dd>Hexagon Tensor Processor: Qualcomm's name for the NPU (DSP + HVX + HMX + VTCM).</dd>
+<dt>HVX</dt><dd>Hexagon Vector eXtensions: the DSP's 1024-bit SIMD unit; four contexts (one per thread that owns one).</dd>
+<dt>IDL / qaic / stub / skel</dt><dd>The interface file <code>nntr_hvx.idl</code>; the generator; the ARM-side caller code; the DSP-side receiver library <code>libnntr_hvx_skel.so</code>.</dd>
+<dt>int4 (i4) / u8 / int32 / f32</dt><dd>4-bit signed weights; 8-bit unsigned activations; 32-bit integer sums; 32-bit floats.</dd>
+<dt>ION</dt><dd>Android's shared-memory allocator (<code>rpcmem</code>): buffers both ARM and DSP can map; uncached on the DSP side.</dd>
+<dt>KV cache</dt><dd>Stored keys and values of past positions that attention reads at decode.</dd>
+<dt>l2fetch</dt><dd>DSP instruction that prefetches a 2D region into L2 ahead of vector loads.</dd>
+<dt>LEDGER / BENCHMARK</dt><dd><code>docs/htp_moe/LEDGER.md</code>: rules learned on silicon, verdicts, open items; <code>BENCHMARK.md</code>: goals and every measured row.</dd>
+<dt>LFM2.5-8B-A1B</dt><dd>The model: 8 B parameters total, ≈ 1 B active per token (top-4 of 32 experts).</dd>
+<dt>lm_head</dt><dd>The final projection to vocabulary logits; tied to the embedding (same matrix, 128000 × 2048).</dd>
+<dt>M, K, N</dt><dd>Matrix shapes: M rows of activation, K reduction length, N output columns. Expert gate_up: M × 2048 × 3584.</dd>
+<dt>M0-PROF</dt><dd><code>NNTR_M0_PROFILE=1</code>'s ARM-side per-MoE-layer stage line.</dd>
+<dt>marshalling</dt><dd>Packing call arguments for FastRPC; #77 B's verdict for what the transport cost is.</dd>
+<dt>md5</dt><dd>Checksum used to identify every pushed binary and model file.</dd>
+<dt>mm</dt><dd>Profile column: HMX instruction issue time, timed by difference.</dd>
+<dt>MoE</dt><dd>Mixture of experts: a router picks a few experts per token; here top-4 of 32 in 22 layers.</dd>
+<dt>NDK</dt><dd>Android Native Development Kit: the ARM cross-compiler (r30 here).</dd>
+<dt>NPU</dt><dd>Neural processing unit; in this project the HTP.</dd>
+<dt>one call per token</dt><dd>The target shape: the whole layer stack resident on the DSP so a token costs one FastRPC round trip (LEDGER ⑨).</dd>
+<dt>PD (unsigned PD)</dt><dd>Process domain on the DSP; "unsigned" lets a non-signed skel run.</dd>
+<dt>poll QoS (<code>qos_mode=2</code>)</dt><dd>The latency setting that keeps a DSP thread polling instead of sleeping between calls.</dd>
+<dt>PR (#4327)</dt><dd>The upstream pull request this branch is frozen from; its docs are <code>docs/htp_attention/*</code>.</dd>
+<dt>prefill</dt><dd>Processing the prompt (512 tokens) in one pass; M ≫ 1; the −5 % gate on every change.</dd>
+<dt>profile build (<code>--profile</code>)</dt><dd>An app build that prints per-node totals; never read for tok/s (rule 1).</dd>
+<dt>Q4_0</dt><dd>4-bit block quantization (32 weights per scale) the CPU kernels read.</dd>
+<dt>QS4CX / QS4CX_WH</dt><dd>4-bit per-channel quantization; the WH variant is pre-arranged in HMX tile order and has no CPU path.</dd>
+<dt>RMSNorm</dt><dd>Root-mean-square normalization, before each mixer and each FFN.</dd>
+<dt>RoPE</dt><dd>Rotary position embedding applied to q and k in attention.</dd>
+<dt>router / top-k</dt><dd>The small FP32 matrix and the sigmoid + bias ranking that choose 4 experts and their weights.</dd>
+<dt>RPC</dt><dd>Remote procedure call; see FastRPC.</dd>
+<dt>RSS (peak memory)</dt><dd>Resident set size the app reports at the end of a run, in KB.</dd>
+<dt>rung / gate</dt><dd>The verification ladder: 0 format, 1 host build + checks, 2 skel, 3 Android app + device gtest, 4 device handoff.</dd>
+<dt>SDK (Hexagon SDK 6.4.0.1)</dt><dd>Qualcomm's DSP toolchain.</dd>
+<dt>SiLU / SwiGLU</dt><dd>silu(x) = x · sigmoid(x); SwiGLU = silu(gate) · up, the FFN's non-linearity.</dd>
+<dt>sitting</dt><dd>One uninterrupted session on the phone; the unit within which numbers are comparable.</dd>
+<dt>SMMU</dt><dd>The IOMMU that maps ION buffers into the DSP's address space.</dd>
+<dt>stage</dt><dd>Profile column: DMA copies of the activation in and the output out of the ION buffers.</dd>
+<dt>tok/s, TPS</dt><dd>Tokens per second; the app prints "TPS".</dd>
+<dt>unit</dt><dd>A specific phone: <code>R3CY10WM83Y</code> (reference), <code>R3CY205ZMND</code> (second unit, #77), <code>R5KL30G6MLT</code> (PR author).</dd>
+<dt>v79</dt><dd>The Hexagon architecture version in the Snapdragon 8 Elite.</dd>
+<dt>vrmpy</dt><dd>HVX multiply-accumulate of four u8 × i8 products per lane; the GEMV's inner instruction.</dd>
+<dt>VTCM</dt><dd>Vector tightly-coupled memory: 8 MiB of on-chip SRAM the HMX reads from; filled only by DMA.</dd>
+<dt>wall</dt><dd>One of the three measured limits of the decode MoE call: HMX 64-row tile, weight DMA rate, FastRPC transport.</dd>
+<dt>WH tile</dt><dd>"Weight, HMX order": 32 k × 32 n int4, 512 B, the layout the HMX (and the HVX GEMV) reads.</dd>
+<dt>worker pool</dt><dd>Three DSP threads with HVX contexts that run epilogues, requant and scatter behind the HMX.</dd>
+<dt>zp (zero point)</dt><dd>The offset of an asymmetric u8 quantization, per row, alongside its scale.</dd>
+</dl>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only.</footer>
+</main></body></html>
