@@ -130,8 +130,9 @@ int main(int argc, char **argv) {
     CHECK(c.weight_layout == NNTR_HTP_WEIGHT_LAYOUT_TILED32);
   }
 
-  // 6. make_w4cx_bin.py --i8-tensors down,embed (hvx_w4cx): the same stream behind the W4CX
-  //    header; the six projections are int4 codes, embed / down int8.
+  // 6. make_w4cx_bin.py --i8-tensors down,embed (hvx_w4cx): the same
+  //    stream behind the W4CX header; the six projections are int4 codes,
+  //    embed / down int8.
   if (argc >= 3) {
     Qwen3W8cxBin b4(argv[2], kQwen3_0_6b);
     const HexModelWeights &w4 = b4.weights();

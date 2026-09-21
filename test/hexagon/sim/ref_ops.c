@@ -82,7 +82,7 @@ void ref_matmul_w4a8(const __fp16 *x, const uint8_t *w, const float *sw,
   for (uint32_t t = 0; t < m; ++t) {
     float sx = ref_quant_row(x + (size_t)t * k, xq, k);
     for (uint32_t j = 0; j < n; ++j) {
-      /* u8 activation (x_i8 + 128) against the int4 weight, as HMX sees it;
+      /** u8 activation (x_i8 + 128) against the int4 weight, as HMX sees it;
        * exact in int32 for k <= 16384 (255 * 8 * 16384 < 2^31). */
       int32_t acc = 0;
       for (uint32_t i = 0; i < k; ++i)

@@ -145,7 +145,7 @@ void check_sequence(const HexLoweredGraph &g, const HexModelConfig &cfg) {
       const bool w4 = proj_bit(j) && hex_is_w4(cfg, proj_bit(j));
       CHECK(d.kind == (w4 ? NNTR_HTP_OP_MATMUL_W4A8 : kLayerKinds[j]),
             "layer op kind mismatch");
-      /* v5: an int4 projection carries its colsum offset in param0; an
+      /** v5: an int4 projection carries its colsum offset in param0; an
        * int8 one keeps param0 == 0 (the W8 op-list bytes are unchanged). */
       if (proj_bit(j)) {
         CHECK(d.param0 == cs[j], "projection param0 != colsum offset");
@@ -851,7 +851,7 @@ int main(void) {
             "mixed i8 set size between w4cx_down8 and tiled32");
     }
 
-    /* .hexcfg: layout + i8_tensors round trip; w4cx (reserved) and a
+    /** .hexcfg: layout + i8_tensors round trip; w4cx (reserved) and a
      * w4cx_down8 without embed / down are refused. */
     {
       std::string path = std::string(P_tmpdir) + "/hexcfg_w4.hexcfg";

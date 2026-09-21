@@ -48,9 +48,9 @@ typedef char
 /**
  * @class Qwen3W8cxBin
  * @brief Read-only view over a W8_CX or w4cx .bin
- *        (tools/hexagon/make_w8cx_bin.py or make_w4cx_bin.py). mmaps the file and hands out
- *        non-owning pointers into it; the object must outlive the
- *        HexModelWeights it returns.
+ *        (tools/hexagon/make_w8cx_bin.py or make_w4cx_bin.py). mmaps the
+ *        file and hands out non-owning pointers into it; the object must
+ *        outlive the HexModelWeights it returns.
  *
  * The payload is a stream in graph layer order: embedding
  * (int8 [vocab][hidden] + fp32 [vocab]), then per layer attn_norm, wq,
