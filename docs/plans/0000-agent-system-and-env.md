@@ -25,17 +25,23 @@ Qwen3-0.6B on the S25 Ultra CPU from `main` at `Q4_0-FP16` (user decision
 
 ## 2. Machines and the measurement loop
 
-* **Mac (this machine)** is the editing/review client. It runs Claude Code
-  and Docker (OrbStack) only. No Hexagon SDK, adb or model weights are
-  installed natively.
-* **Docker container** (`tools/docker/`) does everything that does not
-  need a phone: x86 reference build and `hexagon_ref_run`, simulator golden
-  tests, DSP skel + Android host harness cross-builds, clang-format-14.
-  The Hexagon SDK is *mounted* from the host (`~/Qualcomm/Hexagon_SDK`),
-  never baked into the image (licence). Android NDK r26d is baked in.
-* **Workstation + Galaxy S25 Ultra** are operated by the user only. Agents
-  never run adb. When a task needs silicon numbers, the implementer writes a
-  *measurement handoff* (`docs/measurements/<issue#>-<slug>.md`, template in
+* **Ubuntu workstation (this machine, since 2026-09-21)** runs Claude Code
+  and every gate natively: x86 reference build and `hexagon_ref_run`,
+  simulator golden tests, DSP skel build, clang-format-14. `source
+  tools/hexagon/env.sh` first: it sources Hexagon SDK 6.4.0.1
+  (`/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.4.0.1`, toolchain
+  19.0.04, `toolv19`), points `HEXKL_ADDON_ROOT` at `~/Qualcomm/hexkl_addon`
+  (HexKL 1.0 beta.2, `include/` + `lib/` → the package's `lib/6.4.0.1/`),
+  `NNTR_MODEL_DIR` at `/local/mnt/workspace/models/qwen3-0.6b`, and adds
+  the `libncurses.so.5` compat directory the simulator needs. The earlier
+  Mac + Docker loop (`tools/docker/run.sh`) is retired; the scripts still
+  work inside the container, but no gate is run there any more. No Android
+  NDK is installed, so the host harness (`build_host_test.sh`) is not a
+  gate until one is.
+* **Galaxy S25 Ultra** is attached to this workstation but operated by the
+  user only. Agents never run adb. When a task needs silicon numbers, the
+  implementer writes a *measurement handoff*
+  (`docs/measurements/<issue#>-<slug>.md`, template in
   `.claude/skills/hexagon-handoff`) that lists the prebuilt artifacts (path
   + md5 + commit), the exact commands, expected log lines and an empty
   result table. The user runs it, fills the table, commits it on the same
@@ -61,28 +67,30 @@ Three kinds of gap have been recorded; each gets a standing rule:
 3. **Environment gap** (stale image on the device, same size, wrong
    layout). `push_if_changed` already compares md5. Handoff docs list the
    commit hash and the md5 of every artifact; the result table repeats the
-   md5 of the skel that actually ran. One toolchain (the container's SDK)
-   builds everything.
+   md5 of the skel that actually ran. One toolchain (SDK 6.4.0.1 via
+   `tools/hexagon/env.sh`) builds everything.
 
 Whenever a new gap is found, the supervisor appends a rule to HEXAGON.md §7.
 
 ## 3. SDK
 
-Hexagon SDK **6.4 or newer**, installed once by the user with the Linux
-`qpm-cli` *inside* the container (wizard: `tools/docker/setup_wizard.sh`)
-into the host directory that `run.sh` mounts. The workstation's 6.0.0.2 is
-no longer used for builds. Issue #23 rebuilds `hvx_impl` HEAD with 6.4,
-reruns the 13 simulator tests on v75 and v79, builds both skels and hands
-off a regression measurement against HEXAGON.md §8.2 (P4: 192.1 / 27.7
-tok/s @512). Matching numbers close follow-up ⑭; the v79 run doubles as the
-first data point for ④.
+Hexagon SDK **6.4.0.1** at `/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.4.0.1`
+(the 6.3.0.0 tree next to it is not used for gates). Issue #23 rebuilt
+`hvx_impl` with 6.4, reran the 13 simulator tests on v75 and v79, built
+both skels and handed off the regression measurement against HEXAGON.md
+§8.2; the v79 run doubled as the first data point for ④.
 
-HexKL (`libhexkl_micro.a`) goes under the same host directory
-(`~/Qualcomm/hexkl_addon`) when obtained; the wrapper mounts it if present.
+HexKL 1.0 beta.2 (`~/Downloads/hexkl-1.0-beta.2.zip`, unpacked to
+`~/Qualcomm/hexkl-1.0-beta.2/`) is reachable as `~/Qualcomm/hexkl_addon`
+(`include/`, `lib/` → `lib/6.4.0.1/`, so `lib/hexagon_toolv19_v79/
+libhexkl_micro.a` resolves). Its micro API carries the S2 primitives
+`hexkl_micro_hmx_mm_u8i4` (64×32 u8 activation × 32×32 int4 tile) and
+`hexkl_micro_hmx_rm_to_wh_i4`. Verified 2026-09-21: `run_sim_test.sh hmx`
+PASS on v79 with every STAT `max_abs=0`; skel builds with `HTP_HMX=1`.
 
 ## 4. Roles
 
-One Claude Code session on the Mac is the orchestrator. It reads the role
+One Claude Code session on the workstation is the orchestrator. It reads the role
 files in `.claude/agents/` and spawns them as subagents. State lives in
 GitHub issue labels on `dlwlzzero/nntrainer`; agents talk through issues,
 plans, handoff docs and PRs, never directly.
@@ -163,9 +171,9 @@ S25 Ultra's v79 silicon; v75 only when a change touches an
 `__HVX_ARCH__` branch, or on request) → device numbers only via handoff.
 clang-format-14 on changed lines.
 
-Simulator budget (agreed 2026-09-17; the Mac runs `hexagon-sim` under
-Rosetta, `profile acc` alone is ~10 min and the 13 tests ~5 min, so sim
-time is the scarcest agent resource after device time):
+Simulator budget (agreed 2026-09-17 for the Mac's Rosetta simulator and
+kept on the native workstation, where `hexagon-sim` is faster but still
+the scarcest agent resource after device time):
 
 * A change that touches no file under `nntrainer/tensor/hexagon/htp/`,
   `test/hexagon/sim_*` or the packer/lowering (host, tools, docs, tests

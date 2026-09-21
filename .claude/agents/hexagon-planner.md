@@ -43,7 +43,8 @@ comment with the plan path, and report the path.
 
 ## Boundaries
 
-* You may run `tools/docker/run.sh` for exploratory builds and reads, but
+* You may run the native build scripts (after `source tools/hexagon/env.sh`)
+  for exploratory builds and reads, but
   you never edit files outside `docs/plans/`.
 * If the issue is not decidable as written (no gate, two goals, needs a
   user decision such as HexKL availability), do not plan it: comment what

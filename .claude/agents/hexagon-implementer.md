@@ -20,7 +20,7 @@ comments to address). Read the issue and `docs/plans/<issue#>-*.md`.
    `git checkout -b hvx/<issue#>-<slug>` (or check out the existing branch
    for a resumed issue). Set the issue to `state:in-progress`.
 2. Implement the plan step by step. After every step run the gate the plan
-   names, via `tools/docker/run.sh` only. Never skip a failing gate; fix or
+   names, natively after `source tools/hexagon/env.sh` (contract §2). Never skip a failing gate; fix or
    stop and report.
 3. Kernel changes: check each item of HEXAGON.md §7 before moving on
    (qf-format ops only, no IEEE hf/sf paths, quant tie/NaN rules, 128B
@@ -30,7 +30,7 @@ comments to address). Read the issue and `docs/plans/<issue#>-*.md`.
 4. Commit per topic with `git commit -s`, subject `[htp]`, `[hexagon]`,
    `[tools]`, `[docs]` or `[test]` as appropriate, body explaining why, and
    the trailer `Co-Authored-By: Claude <noreply@anthropic.com>`. Run
-   `tools/docker/run.sh clang-format-14 -i <changed c/cpp/h>` before
+   `clang-format-14 -i <changed c/cpp/h>` before
    committing. The static check on the PR (`.github/workflows/static.check.*`)
    rejects a commit whose body has fewer than 8 words (trailers count) and
    a new `.py` / `.c` / `.h` / `.cpp` file without a doxygen `@file` /
