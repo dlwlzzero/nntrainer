@@ -178,6 +178,49 @@ HexKL is **1.0.0-beta1 hexagon v79**. The WH bake is a pure bit permutation of t
 ≤ 4 vector ops per tile. `profile acc` STAT and every unit STAT bit-identical to the #25 `hvx_impl`
 record; the `-DHTP_HMX=0` build is object-identical to `hvx_impl` (12/12 DSP objects, `dsp_obj_md5.sh`).
 
+**S1 outcome (#69, 2026-09-21, branch `hvx/69-w4cx-producer-abi5`).** Everything in the S1 row is
+built and its mechanical gates pass: `make_w8cx_bin.py --bits 4 --i8-tensors down,embed` (64-byte
+`W4CX` header, int4 codes one per byte, the W8 output byte-identical — md5 `7562313b…`), `Qwen3W8cxBin`
+reads both and `apply_layout()` picks `tiled32` / `w4cx_down8`, ABI **v5** (kind 9 `MATMUL_W4A8`,
+layout ids 2 / 3, `nntr_htp_w4_tile_off` / `nntr_htp_repack_w4cx` / `nntr_htp_w4_get`, extent row,
+validator rules incl. the `param0` colsum bound; `W4CX` = 3 stays rejected until S3), `lower_qwen3`
+emits `MATMUL_W4A8` per int4 class with `param0 = colsum` (a mixed i8 set is per op, recorded as
+`i8_tensors=` in the `.hexcfg`, so the sweep needs no new layout id), `ref_matmul_w4a8` (u8 × i4 +
+`128·colsum`, bit-exact against numpy from the `.bin` codes on the 1-layer image), `LOWER_TEST PASS`,
+`W8CX_BIN_TEST PASS` (+ `W4CX_BIN_TEST PASS` on the `--bits 4` file), the oplist header check, the
+W8 image byte-identical (`5abf61be…`, 598,623,744 B), the `w4cx_down8` image 423,724,544 B. DSP
+bytes: only `executor.o` (version string) and `htp_graph.o` (NULL table slot + init reject) differ
+from `hvx_impl`, 9/11 objects identical (`dsp_obj_md5.sh`); `run_sim_test.sh graph` on v79 passes.
+
+**The accuracy gate fails at the plan's stop line.** The P4 / `t512_23` prompt files were not on the
+build machine, so the band is read on a fresh 512-token prompt (*Pride and Prejudice* ch. 1, token
+md5 `8186fa8b…`; the ratio is what the gate is about — the user can re-run both commands on the
+original files, HEXAGON.md §8.1). x86 `--eval`, 511 steps:
+
+| set (x86 reference, activations per-token int8 as on the DSP) | PPL / top-1 | × W8 |
+|---|---|---|
+| W8 `tiled32` | 22.5282 / 186 | 1.000 |
+| `w4cx_down8`, all six int4 (RTN `amax/7`) | 46.2279 / 148 | **2.052** |
+
+Torch weight-only fake quant, same tokens (fp32 21.8485, W8 21.7619), the per-tensor sweep the row
+asks for: six int4 41.6754 (1.915 ×); one class back to int8 — q 38.65, k 37.13, v 35.57, o 35.95,
+gate 34.98, up 33.28 (each still > 1.5 ×); **q/k/v/o int8, gate + up int4: 27.85 = 1.280 ×** (the
+"> 1.25 × even with q/k/v/o i8" condition); gate/up int8, q/k/v/o int4 28.74 (1.321 ×); one class
+alone: q 1.056, k 1.068, v 1.029, o 1.067, gate 1.033, up 1.186 ×. The errors compound, so no set
+of more than ~two of the six stays under 1.10 ×. Per-channel int4 RTN is therefore **not viable
+for Qwen3-0.6B** on the HMX u8 × i4 path as planned → `needs-user` (the options the row names:
+#51's `w4g128` on HVX only, or HMX u8i8 W8A8 prefill; a third is a better per-channel quantiser
+on the producer side with the format unchanged — measured: a per-row weight-MSE clip search gives
+six int4 38.65 / 37.70 (`[-7, 7]` / `[-8, 7]`, 1.78 / 1.73 ×) and gate + up only **26.03 = 1.196 ×**,
+under 1.25 but not 1.10 and only two tensors — i.e. the format can carry gate/up (≈ 44 % of the six
+projections' bytes) at ≈ +20 % PPL, nothing more). S2 must not start on the six-int4 image; the S1
+code (format, ABI, reference) is complete and merges on its own so the decision does not block the
+tree. Build-machine notes: no docker / SDK 6.4 / HexKL / NDK on the workstation this ran on, so rung 1
+ran natively (gcc 13), rung 4 with SDK 6.3.0.0 v79 (`HTP_HMX=0`, skel md5 `68869d53…`, no host
+harness: no NDK), and the one simulator run (`graph`) fails `graph_partial_attn` with `inf` on the
+unmodified `hvx_impl` tree as well (toolchain 8.8 v79, HEXAGON.md §7 rule 1) while `graph_prefill` /
+`graph_decode` are 0/0 on both trees.
+
 Device measurements are unavoidable at **S2 (H1)** and **S3 (H2)**; S0 and S1 need none. Handoff
 rules: artifacts with md5 + commit, `--eval` columns on every row, reference numbers in the table
 (A: 54.6 Mcyc / 41.4947 / 162 at 512), B's `E2E gen` md5 recorded, 4096 rows only as A/B inside one
