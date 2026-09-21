@@ -144,8 +144,9 @@ sets everything below; agents put that line first in every shell.
 | clang-format-14 | `~/.local/bin/clang-format-14` | AGENTS.md rule, changed lines only |
 | adb | `/usr/bin/adb` | **agents never run it** |
 
-No Hexagon simulator gate exists in this tree (the PR never used one); a
-simulator test for the M=1 kernels is a candidate issue, not a rule.
+**No Hexagon simulator in this project** (user decision 2026-09-21). Kernel
+correctness is decided by host scalar specs and bit-identity checks (gate 1)
+and by the device (gate 4); nothing in between.
 
 ### 4.2 Device (user only)
 
@@ -312,4 +313,5 @@ recorded in BENCHMARK.md's artifact section once built.
 
 | date | decision |
 |---|---|
+| 2026-09-21 | No simulator in this project: host bit checks + device only |
 | 2026-09-21 | Base tree = PR #4327 head (Q1 b); model LFM2.5-8B-A1B; goal ≥ 50 tok/s decode (Q1 ii); decode on the NPU is the product condition, CPU decode stays the control (Q2); decode-first order (Q3); NPU-only first, CPU+NPU later (Q10); Q11 rule deferred to the user; prompt 512 + gen 64/512/1024 (Q6'); prefill gate −5 % of NPU now (Q12); control run per sitting (Q13); upstream-shaped commits (Q14); hvx_impl frozen (Q15); htp_moe frozen at the PR head, merges by user (Q16); English + decode-only guide (Q17); first handoff bundles control + doc 48 A/B/C + two-reader probe (Q18); on-demand measurements, ≤ 4 variants (Q19) |

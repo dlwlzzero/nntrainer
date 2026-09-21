@@ -68,4 +68,4 @@ Inherited from the PR's device work, with their sources:
 | ⑩ | Registration at load time, bake cache on disk (doc 45 Phase D "P4") | load time, not speed | — |
 | ⑪ | Prefill residency (doc 45 B/C/D) | prefill 523 → 700+ | after decode goal |
 | ⑫ | CPU+NPU expert split | raises the ceiling only if ④ > 45 GB/s | ④, user decision Q11 |
-| ⑬ | Simulator gate for the M=1 kernels (none exists in this tree) | host-side bit checks before every handoff | ⑤ |
+| ⑬ | (withdrawn 2026-09-21: no simulator in this project, user decision) | — | — |
