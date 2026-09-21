@@ -6,7 +6,8 @@
  *		WEIGHTS/ACT layout, header fields, and pack_weights() byte
  *		packing (int8/scale memcpy, norm fp16 conversion, RoPE
  *		table), against a tiny config and a qwen3-0.6b-dims smoke
- *		test. Not gtest, mirrors the test_oplist_header.c
+ *		test, for the tiled32 (W8) and w4cx_down8 (ABI v5, #65 S1)
+ *		layouts. Not gtest, mirrors the test_oplist_header.c
  *		self-contained main pattern.
  *
  * Compile:
@@ -35,6 +36,7 @@
 #include "../../nntrainer/tensor/hexagon/htp/nntr_htp_common.h"
 #include "sim/sim_test_util.h"
 
+using nntrainer::hexagon::hex_is_w4;
 using nntrainer::hexagon::HexLayerWeights;
 using nntrainer::hexagon::HexLoweredGraph;
 using nntrainer::hexagon::HexModelConfig;
@@ -94,6 +96,28 @@ const uint32_t kLayerKinds[16] = {
   NNTR_HTP_OP_ADD,
 };
 
+/** @brief HexTensorBit of layer op j when it is one of the six
+ *         projections (else 0): the kind becomes MATMUL_W4A8 when cfg
+ *         packs that class as int4. */
+uint32_t proj_bit(uint32_t j) {
+  switch (j) {
+  case 1:
+    return nntrainer::hexagon::kHexQ;
+  case 2:
+    return nntrainer::hexagon::kHexK;
+  case 3:
+    return nntrainer::hexagon::kHexV;
+  case 8:
+    return nntrainer::hexagon::kHexO;
+  case 11:
+    return nntrainer::hexagon::kHexGate;
+  case 12:
+    return nntrainer::hexagon::kHexUp;
+  default:
+    return 0u;
+  }
+}
+
 /** @brief Check the op sequence kinds/params for one config's graph. */
 void check_sequence(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   const uint32_t n_q = cfg.n_heads * cfg.head_dim;
@@ -112,9 +136,22 @@ void check_sequence(const HexLoweredGraph &g, const HexModelConfig &cfg) {
 
   uint32_t idx = 1;
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
+    const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
+    const uint32_t cs[16] = {
+      0,        pl.wq_cs, pl.wk_cs, pl.wv_cs,   0,        0, 0, 0,
+      pl.wo_cs, 0,        0,        pl.gate_cs, pl.up_cs, 0, 0, 0};
     for (uint32_t j = 0; j < 16; ++j, ++idx) {
       nntr_htp_op_desc d = read_op(g, idx);
-      CHECK(d.kind == kLayerKinds[j], "layer op kind mismatch");
+      const bool w4 = proj_bit(j) && hex_is_w4(cfg, proj_bit(j));
+      CHECK(d.kind == (w4 ? NNTR_HTP_OP_MATMUL_W4A8 : kLayerKinds[j]),
+            "layer op kind mismatch");
+      /* v5: an int4 projection carries its colsum offset in param0; an
+       * int8 one keeps param0 == 0 (the W8 op-list bytes are unchanged). */
+      if (proj_bit(j)) {
+        CHECK(d.param0 == cs[j], "projection param0 != colsum offset");
+        CHECK(w4 ? (cs[j] != 0u && cs[j] % 128u == 0u) : cs[j] == 0u,
+              "colsum offset allocated iff int4");
+      }
 
       switch (j) {
       case 0:  // L.1 RMSNORM (attn_norm)
@@ -228,25 +265,27 @@ uint64_t expected_weights_size(const HexModelConfig &cfg) {
   add(static_cast<uint64_t>(cfg.max_seq) * 128u * 2u); // rope_table
   add(static_cast<uint64_t>(cfg.hidden) * 2u);         // final_norm
 
+  // int4 (w4cx): half the tile bytes, then the scale, then int32 colsum.
+  auto proj = [&](uint32_t bit, uint64_t n, uint64_t k) {
+    const bool w4 = hex_is_w4(cfg, bit);
+    add(w4 ? n * k / 2u : n * k);
+    add(n * 4u);
+    if (w4)
+      add(n * 4u);
+  };
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
-    add(n_q * cfg.hidden);                            // wq
-    add(n_q * 4u);                                    // wq_s
-    add(n_kv * cfg.hidden);                           // wk
-    add(n_kv * 4u);                                   // wk_s
-    add(n_kv * cfg.hidden);                           // wv
-    add(n_kv * 4u);                                   // wv_s
-    add(static_cast<uint64_t>(cfg.hidden) * n_q);     // wo
-    add(static_cast<uint64_t>(cfg.hidden) * 4u);      // wo_s
-    add(static_cast<uint64_t>(cfg.ffn) * cfg.hidden); // gate
-    add(static_cast<uint64_t>(cfg.ffn) * 4u);         // gate_s
-    add(static_cast<uint64_t>(cfg.ffn) * cfg.hidden); // up
-    add(static_cast<uint64_t>(cfg.ffn) * 4u);         // up_s
-    add(static_cast<uint64_t>(cfg.hidden) * cfg.ffn); // down
-    add(static_cast<uint64_t>(cfg.hidden) * 4u);      // down_s
-    add(static_cast<uint64_t>(cfg.hidden) * 2u);      // attn_norm
-    add(static_cast<uint64_t>(cfg.hidden) * 2u);      // ffn_norm
-    add(static_cast<uint64_t>(cfg.head_dim) * 2u);    // q_norm
-    add(static_cast<uint64_t>(cfg.head_dim) * 2u);    // k_norm
+    proj(nntrainer::hexagon::kHexQ, n_q, cfg.hidden);        // wq(_s,_cs)
+    proj(nntrainer::hexagon::kHexK, n_kv, cfg.hidden);       // wk
+    proj(nntrainer::hexagon::kHexV, n_kv, cfg.hidden);       // wv
+    proj(nntrainer::hexagon::kHexO, cfg.hidden, n_q);        // wo
+    proj(nntrainer::hexagon::kHexGate, cfg.ffn, cfg.hidden); // gate
+    proj(nntrainer::hexagon::kHexUp, cfg.ffn, cfg.hidden);   // up
+    add(static_cast<uint64_t>(cfg.hidden) * cfg.ffn);        // down
+    add(static_cast<uint64_t>(cfg.hidden) * 4u);             // down_s
+    add(static_cast<uint64_t>(cfg.hidden) * 2u);             // attn_norm
+    add(static_cast<uint64_t>(cfg.hidden) * 2u);             // ffn_norm
+    add(static_cast<uint64_t>(cfg.head_dim) * 2u);           // q_norm
+    add(static_cast<uint64_t>(cfg.head_dim) * 2u);           // k_norm
   }
   return cur;
 }
@@ -267,10 +306,13 @@ struct SynthWeights {
 };
 
 /** @brief proj int8 pattern: buf[i] = (int8_t)(i*31 + ord*7); ord tags
- *         a tensor so distinct tensors get distinct byte patterns. */
-void fill_i8(int8_t *buf, uint64_t n, uint32_t ord) {
-  for (uint64_t i = 0; i < n; ++i)
-    buf[i] = static_cast<int8_t>(i * 31u + ord * 7u);
+ *         a tensor so distinct tensors get distinct byte patterns. With
+ *         w4 the same pattern is folded into int4 codes [-7, 7]. */
+void fill_i8(int8_t *buf, uint64_t n, uint32_t ord, bool w4 = false) {
+  for (uint64_t i = 0; i < n; ++i) {
+    const int8_t v = static_cast<int8_t>(i * 31u + ord * 7u);
+    buf[i] = w4 ? static_cast<int8_t>(v % 8) : v;
+  }
 }
 
 /** @brief Per-row (per-output-channel) scale pattern. */
@@ -285,12 +327,15 @@ void fill_norm(float *buf, uint64_t n) {
     buf[i] = 1.0f + 0.5f * frand();
 }
 
-/** @brief Build deterministic synthetic weights matching cfg's shapes. */
+/** @brief Build deterministic synthetic weights matching cfg's shapes
+ *         and int widths (int4 codes for the classes cfg packs as w4cx). */
 SynthWeights make_synth_weights(const HexModelConfig &cfg) {
   SynthWeights s;
   const uint64_t n_q = static_cast<uint64_t>(cfg.n_heads) * cfg.head_dim;
   const uint64_t n_kv = static_cast<uint64_t>(cfg.n_kv_heads) * cfg.head_dim;
   uint32_t ord = 0;
+  auto w4 = [&](uint32_t bit) { return hex_is_w4(cfg, bit); };
+  using namespace nntrainer::hexagon;
 
   s.embed.resize(static_cast<uint64_t>(cfg.vocab) * cfg.hidden);
   fill_i8(s.embed.data(), s.embed.size(), ord++);
@@ -304,32 +349,32 @@ SynthWeights make_synth_weights(const HexModelConfig &cfg) {
     SynthLayer &ly = s.layers[l];
 
     ly.wq.resize(n_q * cfg.hidden);
-    fill_i8(ly.wq.data(), ly.wq.size(), ord++);
+    fill_i8(ly.wq.data(), ly.wq.size(), ord++, w4(kHexQ));
     ly.wq_s.resize(n_q);
     fill_scale(ly.wq_s.data(), ly.wq_s.size());
 
     ly.wk.resize(n_kv * cfg.hidden);
-    fill_i8(ly.wk.data(), ly.wk.size(), ord++);
+    fill_i8(ly.wk.data(), ly.wk.size(), ord++, w4(kHexK));
     ly.wk_s.resize(n_kv);
     fill_scale(ly.wk_s.data(), ly.wk_s.size());
 
     ly.wv.resize(n_kv * cfg.hidden);
-    fill_i8(ly.wv.data(), ly.wv.size(), ord++);
+    fill_i8(ly.wv.data(), ly.wv.size(), ord++, w4(kHexV));
     ly.wv_s.resize(n_kv);
     fill_scale(ly.wv_s.data(), ly.wv_s.size());
 
     ly.wo.resize(static_cast<uint64_t>(cfg.hidden) * n_q);
-    fill_i8(ly.wo.data(), ly.wo.size(), ord++);
+    fill_i8(ly.wo.data(), ly.wo.size(), ord++, w4(kHexO));
     ly.wo_s.resize(cfg.hidden);
     fill_scale(ly.wo_s.data(), ly.wo_s.size());
 
     ly.gate.resize(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    fill_i8(ly.gate.data(), ly.gate.size(), ord++);
+    fill_i8(ly.gate.data(), ly.gate.size(), ord++, w4(kHexGate));
     ly.gate_s.resize(cfg.ffn);
     fill_scale(ly.gate_s.data(), ly.gate_s.size());
 
     ly.up.resize(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    fill_i8(ly.up.data(), ly.up.size(), ord++);
+    fill_i8(ly.up.data(), ly.up.size(), ord++, w4(kHexUp));
     ly.up_s.resize(cfg.ffn);
     fill_scale(ly.up_s.data(), ly.up_s.size());
 
@@ -351,8 +396,12 @@ SynthWeights make_synth_weights(const HexModelConfig &cfg) {
 }
 
 /** @brief Wire SynthWeights storage into non-owning HexModelWeights. */
-HexModelWeights to_model_weights(const SynthWeights &s) {
+HexModelWeights to_model_weights(const SynthWeights &s,
+                                 const HexModelConfig &cfg) {
   HexModelWeights w{};
+  w.i8_mask = cfg.weight_layout == NNTR_HTP_WEIGHT_LAYOUT_TILED32
+                ? nntrainer::hexagon::kHexAllI8
+                : cfg.i8_mask;
   w.embed = s.embed.data();
   w.embed_s = s.embed_s.data();
   w.final_norm = s.final_norm.data();
@@ -399,20 +448,23 @@ std::vector<Extent> tensor_extents(const HexLoweredGraph &g,
   add(g.woff.rope_table, static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);
   add(g.woff.final_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
 
+  auto proj = [&](uint32_t bit, uint32_t w, uint32_t s, uint32_t cs, uint64_t n,
+                  uint64_t k) {
+    const bool w4 = hex_is_w4(cfg, bit);
+    add(w, w4 ? n * k / 2u : n * k);
+    add(s, n * 4u);
+    if (w4)
+      add(cs, n * 4u);
+  };
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
-    add(pl.wq, n_q * cfg.hidden);
-    add(pl.wq_s, n_q * 4u);
-    add(pl.wk, n_kv * cfg.hidden);
-    add(pl.wk_s, n_kv * 4u);
-    add(pl.wv, n_kv * cfg.hidden);
-    add(pl.wv_s, n_kv * 4u);
-    add(pl.wo, static_cast<uint64_t>(cfg.hidden) * n_q);
-    add(pl.wo_s, static_cast<uint64_t>(cfg.hidden) * 4u);
-    add(pl.gate, static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    add(pl.gate_s, static_cast<uint64_t>(cfg.ffn) * 4u);
-    add(pl.up, static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    add(pl.up_s, static_cast<uint64_t>(cfg.ffn) * 4u);
+    using namespace nntrainer::hexagon;
+    proj(kHexQ, pl.wq, pl.wq_s, pl.wq_cs, n_q, cfg.hidden);
+    proj(kHexK, pl.wk, pl.wk_s, pl.wk_cs, n_kv, cfg.hidden);
+    proj(kHexV, pl.wv, pl.wv_s, pl.wv_cs, n_kv, cfg.hidden);
+    proj(kHexO, pl.wo, pl.wo_s, pl.wo_cs, cfg.hidden, n_q);
+    proj(kHexGate, pl.gate, pl.gate_s, pl.gate_cs, cfg.ffn, cfg.hidden);
+    proj(kHexUp, pl.up, pl.up_s, pl.up_cs, cfg.ffn, cfg.hidden);
     add(pl.down, static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
     add(pl.down_s, static_cast<uint64_t>(cfg.hidden) * 4u);
     add(pl.attn_norm, static_cast<uint64_t>(cfg.hidden) * 2u);
@@ -446,6 +498,33 @@ void check_tiled(const uint8_t *dst, uint32_t off, const int8_t *src,
       CHECK(static_cast<int8_t>(dst[off + nntr_htp_tile_off(n, kk, k)]) ==
               src[static_cast<uint64_t>(n) * k + kk],
             msg);
+}
+
+/** @brief w4cx check: source code w[n][k] must read back through
+ *         nntr_htp_w4_get and colsum[n] must be the row sum. */
+void check_w4cx(const uint8_t *dst, uint32_t off, uint32_t cs_off,
+                const int8_t *src, uint32_t n_rows, uint32_t k,
+                const char *msg) {
+  for (uint32_t n = 0; n < n_rows; ++n) {
+    int32_t sum = 0, cs;
+    for (uint32_t kk = 0; kk < k; ++kk) {
+      const int8_t v = src[static_cast<uint64_t>(n) * k + kk];
+      CHECK(nntr_htp_w4_get(dst + off, n, kk, k) == v, msg);
+      sum += v;
+    }
+    std::memcpy(&cs, dst + cs_off + n * 4u, 4);
+    CHECK(cs == sum, "w4cx colsum");
+  }
+}
+
+/** @brief One projection: tiled32 or w4cx by the class bit of cfg. */
+void check_proj(const HexModelConfig &cfg, uint32_t bit, const uint8_t *dst,
+                uint32_t off, uint32_t cs_off, const int8_t *src,
+                uint32_t n_rows, uint32_t k, const char *msg) {
+  if (hex_is_w4(cfg, bit))
+    check_w4cx(dst, off, cs_off, src, n_rows, k, msg);
+  else
+    check_tiled(dst, off, src, n_rows, k, msg);
 }
 
 /** @brief Read one fp16 (as raw bits) back from the packed buffer. */
@@ -527,8 +606,9 @@ void check_rope_table(const uint8_t *dst, const HexLoweredGraph &g,
  *         conversion accuracy, tied-embed size accounting, and
  *         full-coverage writtenness against an 0xA5 prefill. */
 void check_pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg) {
+  using namespace nntrainer::hexagon;
   SynthWeights synth = make_synth_weights(cfg);
-  HexModelWeights w = to_model_weights(synth);
+  HexModelWeights w = to_model_weights(synth, cfg);
 
   std::vector<uint8_t> dst(g.weights_size, 0xA5u);
   pack_weights(g, cfg, w, dst.data());
@@ -547,26 +627,28 @@ void check_pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg) {
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     const HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
     const SynthLayer &ly = synth.layers[l];
-    check_tiled(dst.data(), pl.wq, ly.wq.data(), n_q32, cfg.hidden, "wq tiled");
+    check_proj(cfg, kHexQ, dst.data(), pl.wq, pl.wq_cs, ly.wq.data(), n_q32,
+               cfg.hidden, "wq tiles");
     check_bytes(dst.data(), pl.wq_s, ly.wq_s.data(), ly.wq_s.size() * 4u,
                 "wq_s");
-    check_tiled(dst.data(), pl.wk, ly.wk.data(), n_kv32, cfg.hidden,
-                "wk tiled");
+    check_proj(cfg, kHexK, dst.data(), pl.wk, pl.wk_cs, ly.wk.data(), n_kv32,
+               cfg.hidden, "wk tiles");
     check_bytes(dst.data(), pl.wk_s, ly.wk_s.data(), ly.wk_s.size() * 4u,
                 "wk_s");
-    check_tiled(dst.data(), pl.wv, ly.wv.data(), n_kv32, cfg.hidden,
-                "wv tiled");
+    check_proj(cfg, kHexV, dst.data(), pl.wv, pl.wv_cs, ly.wv.data(), n_kv32,
+               cfg.hidden, "wv tiles");
     check_bytes(dst.data(), pl.wv_s, ly.wv_s.data(), ly.wv_s.size() * 4u,
                 "wv_s");
-    check_tiled(dst.data(), pl.wo, ly.wo.data(), cfg.hidden, n_q32, "wo tiled");
+    check_proj(cfg, kHexO, dst.data(), pl.wo, pl.wo_cs, ly.wo.data(),
+               cfg.hidden, n_q32, "wo tiles");
     check_bytes(dst.data(), pl.wo_s, ly.wo_s.data(), ly.wo_s.size() * 4u,
                 "wo_s");
-    check_tiled(dst.data(), pl.gate, ly.gate.data(), cfg.ffn, cfg.hidden,
-                "gate tiled");
+    check_proj(cfg, kHexGate, dst.data(), pl.gate, pl.gate_cs, ly.gate.data(),
+               cfg.ffn, cfg.hidden, "gate tiles");
     check_bytes(dst.data(), pl.gate_s, ly.gate_s.data(), ly.gate_s.size() * 4u,
                 "gate_s");
-    check_tiled(dst.data(), pl.up, ly.up.data(), cfg.ffn, cfg.hidden,
-                "up tiled");
+    check_proj(cfg, kHexUp, dst.data(), pl.up, pl.up_cs, ly.up.data(), cfg.ffn,
+               cfg.hidden, "up tiles");
     check_bytes(dst.data(), pl.up_s, ly.up_s.data(), ly.up_s.size() * 4u,
                 "up_s");
     check_bytes(dst.data(), pl.down, ly.down.data(), ly.down.size(), "down");
@@ -715,6 +797,94 @@ int main(void) {
     std::remove(path.c_str());
   }
 
+  // 10. w4cx_down8 (ABI v5, #65 S1): the six projections int4, embed and
+  // down int8, on the same tiny config.
+  {
+    using namespace nntrainer::hexagon;
+    HexModelConfig c4 = cfg;
+    c4.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
+    c4.i8_mask = kHexW4cxDown8I8;
+    HexLoweredGraph g4 = lower_qwen3(c4);
+    uint32_t bs[NNTR_HTP_BUF_COUNT];
+    bs[NNTR_HTP_BUF_WEIGHTS] = static_cast<uint32_t>(g4.weights_size);
+    bs[NNTR_HTP_BUF_KV] = static_cast<uint32_t>(g4.kv_size);
+    bs[NNTR_HTP_BUF_ACT] = static_cast<uint32_t>(g4.act_size);
+    bs[NNTR_HTP_BUF_TOKENS] = c4.max_chunk * 4u;
+    bs[NNTR_HTP_BUF_LOGITS] = c4.vocab * 4u;
+    CHECK(nntr_htp_oplist_validate(
+            g4.oplist.data(), static_cast<uint32_t>(g4.oplist.size()), bs) == 0,
+          "validate() failed on w4cx_down8 tiny config");
+    CHECK(read_header(g4).weight_layout == NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8,
+          "w4cx_down8 header weight_layout");
+    check_sequence(g4, c4); /* six W4A8 kinds with colsum param0 */
+    check_act_disjoint(g4, c4);
+    CHECK(g4.weights_size == expected_weights_size(c4),
+          "w4cx_down8 weights_size mismatch vs independent recompute");
+    CHECK(g4.weights_size < g.weights_size, "w4cx image not smaller");
+    check_pack_weights(g4, c4); /* nibble tiles, colsum, coverage */
+
+    /* A W8 checkpoint (int8 set = all) packed as w4cx must be refused. */
+    {
+      SynthWeights s8 = make_synth_weights(cfg);
+      HexModelWeights w8 = to_model_weights(s8, cfg);
+      std::vector<uint8_t> dst(g4.weights_size);
+      bool threw = false;
+      try {
+        pack_weights(g4, c4, w8, dst.data());
+      } catch (const std::runtime_error &) {
+        threw = true;
+      }
+      CHECK(threw, "W8 weights packed as w4cx_down8 accepted");
+    }
+
+    /* A mixed set (o back to int8, the S1 sweep) changes only op 9. */
+    {
+      HexModelConfig cm = c4;
+      cm.i8_mask = kHexW4cxDown8I8 | kHexO;
+      HexLoweredGraph gm = lower_qwen3(cm);
+      check_sequence(gm, cm);
+      CHECK(read_op(gm, 9).kind == NNTR_HTP_OP_MATMUL_W8A8 &&
+              read_op(gm, 2).kind == NNTR_HTP_OP_MATMUL_W4A8,
+            "mixed i8 set: wo int8, wq int4");
+      CHECK(gm.weights_size > g4.weights_size &&
+              gm.weights_size < g.weights_size,
+            "mixed i8 set size between w4cx_down8 and tiled32");
+    }
+
+    /* .hexcfg: layout + i8_tensors round trip; w4cx (reserved) and a
+     * w4cx_down8 without embed / down are refused. */
+    {
+      std::string path = std::string(P_tmpdir) + "/hexcfg_w4.hexcfg";
+      write_hexcfg(path, c4);
+      HexModelConfig back = read_hexcfg(path);
+      CHECK(back.weight_layout == c4.weight_layout &&
+              back.i8_mask == c4.i8_mask,
+            "hexcfg w4cx_down8 round trip");
+      std::vector<uint8_t> txt = read_file(path);
+      std::string s(txt.begin(), txt.end());
+      CHECK(s.find("weight_layout=w4cx_down8\n") != std::string::npos &&
+              s.find("i8_tensors=embed,down\n") != std::string::npos,
+            "hexcfg w4cx_down8 keys");
+      auto rejects = [&](const std::string &body) {
+        nntrainer::hexagon::write_file(path, body.data(), body.size());
+        try {
+          read_hexcfg(path);
+        } catch (const std::runtime_error &) {
+          return true;
+        }
+        return false;
+      };
+      std::string body = s.substr(0, s.find("weight_layout="));
+      CHECK(rejects(body + "weight_layout=w4cx\ni8_tensors=\n"),
+            "reserved w4cx layout accepted");
+      CHECK(rejects(body + "weight_layout=w4cx_down8\ni8_tensors=embed\n"),
+            "w4cx_down8 without down accepted");
+      CHECK(rejects(body + "weight_layout=w4cx_down8\ni8_tensors=embed,dn\n"),
+            "unknown tensor name accepted");
+      std::remove(path.c_str());
+    }
+  }
+
   // 7. Real-dims smoke: qwen3-0.6b.
   HexModelConfig real{};
   real.n_layers = 28;
@@ -752,6 +922,17 @@ int main(void) {
   // replaces the plan's rough 655-700MB estimate.
   CHECK(rg.weights_size >= 590000000ull && rg.weights_size <= 610000000ull,
         "qwen3-0.6b weights_size out of sane band");
+  // w4cx_down8: 176 MB of nibble tiles + 88 MB down + 156 MB embed + scales,
+  // colsum, norms, rope = 423,724,544 B (plan 65 section 3.1: ~423 MB).
+  {
+    HexModelConfig r4 = real;
+    r4.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_W4CX_DOWN8;
+    r4.i8_mask = nntrainer::hexagon::kHexW4cxDown8I8;
+    HexLoweredGraph rg4 = lower_qwen3(r4);
+    CHECK(rg4.weights_size == 423724544ull, "qwen3-0.6b w4cx_down8 size");
+    CHECK(rg4.weights_size == expected_weights_size(r4),
+          "qwen3-0.6b w4cx_down8 weights_size vs independent recompute");
+  }
 
   std::puts("LOWER_TEST PASS");
   return 0;

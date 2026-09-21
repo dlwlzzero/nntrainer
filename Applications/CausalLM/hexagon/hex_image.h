@@ -20,11 +20,20 @@
 
 namespace nntrainer::hexagon {
 
-/** Write/read the 12-field .hexcfg text file (11 HexModelConfig fields +
- * weight_layout=tiled32; a file without the layout key is a pre-v4 image
- * and is rejected). @throw std::runtime_error */
+/** Write/read the .hexcfg text file: the 11 HexModelConfig fields,
+ * weight_layout=tiled32|w4cx_down8 and, for w4cx_down8, i8_tensors=<names>
+ * (hex_i8_names). A file without the layout key is a pre-v4 image and is
+ * rejected, as is a layout no kernel reads yet (w4cx).
+ * @throw std::runtime_error */
 void write_hexcfg(const std::string &path, const HexModelConfig &cfg);
 HexModelConfig read_hexcfg(const std::string &path);
+
+/** HexTensorBit mask <-> comma-separated names in the fixed order
+ * embed,q,k,v,o,gate,up,down (the make_w8cx_bin.py --i8-tensors spelling).
+ * @throw std::runtime_error on an unknown name */
+std::string hex_i8_names(uint32_t mask);
+uint32_t hex_i8_mask(const std::string &names);
+const char *hex_layout_name(uint32_t layout);
 
 /** Whole-file IO. @throw std::runtime_error on failure or size mismatch */
 void write_file(const std::string &path, const void *data, uint64_t size);

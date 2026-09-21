@@ -2,10 +2,12 @@
 /**
  * @file	qwen3_lowering.cpp
  * @date	19 August 2026
- * @brief	qwen3 -> op-list (ABI v4) lowering (WEIGHTS/ACT layout + op-list
- *		bytes). No weight data is read here; see pack_weights()
- *		(nntrainer/tensor/hexagon/host/graph_lowering.h) for
- *		the actual byte packing.
+ * @brief	qwen3 -> op-list (ABI v5) lowering (WEIGHTS/ACT layout + op-list
+ *		bytes). The six per-layer projections are MATMUL_W8A8 on
+ *		tiled32 int8 or MATMUL_W4A8 on w4cx int4 tiles + colsum, per
+ *		tensor class (HexModelConfig::weight_layout / i8_mask). No weight data is
+ *read here; see pack_weights() (nntrainer/tensor/hexagon/host/graph_lowering.h)
+ *for the actual byte packing.
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -70,20 +72,24 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
     wcur.alloc(static_cast<uint64_t>(cfg.max_seq) * 128u * 2u);
   g.woff.final_norm = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * 2u);
 
+  /** One projection: tiles (N*K int8, or N*K/2 nibbles), fp32 scale[N]
+   * and, for int4 only, int32 colsum[N] right after the scale. */
+  auto proj = [&](uint32_t bit, uint32_t &w, uint32_t &s, uint32_t &cs,
+                  uint64_t n, uint64_t k) {
+    const bool w4 = hex_is_w4(cfg, bit);
+    w = wcur.alloc(w4 ? n * k / 2u : n * k);
+    s = wcur.alloc(n * 4u);
+    cs = w4 ? wcur.alloc(n * 4u) : 0u;
+  };
+
   for (uint32_t l = 0; l < cfg.n_layers; ++l) {
     HexWeightOffsets::PerLayer &pl = g.woff.layers[l];
-    pl.wq = wcur.alloc(n_q * cfg.hidden);
-    pl.wq_s = wcur.alloc(n_q * 4u);
-    pl.wk = wcur.alloc(n_kv * cfg.hidden);
-    pl.wk_s = wcur.alloc(n_kv * 4u);
-    pl.wv = wcur.alloc(n_kv * cfg.hidden);
-    pl.wv_s = wcur.alloc(n_kv * 4u);
-    pl.wo = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * n_q);
-    pl.wo_s = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * 4u);
-    pl.gate = wcur.alloc(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    pl.gate_s = wcur.alloc(static_cast<uint64_t>(cfg.ffn) * 4u);
-    pl.up = wcur.alloc(static_cast<uint64_t>(cfg.ffn) * cfg.hidden);
-    pl.up_s = wcur.alloc(static_cast<uint64_t>(cfg.ffn) * 4u);
+    proj(kHexQ, pl.wq, pl.wq_s, pl.wq_cs, n_q, cfg.hidden);
+    proj(kHexK, pl.wk, pl.wk_s, pl.wk_cs, n_kv, cfg.hidden);
+    proj(kHexV, pl.wv, pl.wv_s, pl.wv_cs, n_kv, cfg.hidden);
+    proj(kHexO, pl.wo, pl.wo_s, pl.wo_cs, cfg.hidden, n_q);
+    proj(kHexGate, pl.gate, pl.gate_s, pl.gate_cs, cfg.ffn, cfg.hidden);
+    proj(kHexUp, pl.up, pl.up_s, pl.up_cs, cfg.ffn, cfg.hidden);
     pl.down = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * cfg.ffn);
     pl.down_s = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * 4u);
     pl.attn_norm = wcur.alloc(static_cast<uint64_t>(cfg.hidden) * 2u);
@@ -146,10 +152,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_t);
       ops.push_back(op);
     }
-    // L.2: MATMUL_W8A8 t*wq -> q
+    // L.2: MATMUL_W8A8 / W4A8 t*wq -> q (param0: colsum when int4)
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexQ) ? NNTR_HTP_OP_MATMUL_W4A8
+                                      : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.wq_cs;
       op.k = cfg.hidden;
       op.n = n_q32;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_t);
@@ -158,10 +166,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_q);
       ops.push_back(op);
     }
-    // L.3: MATMUL_W8A8 t*wk -> kb
+    // L.3: MATMUL_W8A8 / W4A8 t*wk -> kb
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexK) ? NNTR_HTP_OP_MATMUL_W4A8
+                                      : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.wk_cs;
       op.k = cfg.hidden;
       op.n = n_kv32;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_t);
@@ -170,10 +180,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_kb);
       ops.push_back(op);
     }
-    // L.4: MATMUL_W8A8 t*wv -> vb
+    // L.4: MATMUL_W8A8 / W4A8 t*wv -> vb
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexV) ? NNTR_HTP_OP_MATMUL_W4A8
+                                      : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.wv_cs;
       op.k = cfg.hidden;
       op.n = n_kv32;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_t);
@@ -228,10 +240,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_ao);
       ops.push_back(op);
     }
-    // L.9: MATMUL_W8A8 ao*wo -> h2
+    // L.9: MATMUL_W8A8 / W4A8 ao*wo -> h2
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexO) ? NNTR_HTP_OP_MATMUL_W4A8
+                                      : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.wo_cs;
       op.k = n_q32;
       op.n = cfg.hidden;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_ao);
@@ -261,10 +275,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_t);
       ops.push_back(op);
     }
-    // L.12: MATMUL_W8A8 t*gate -> g
+    // L.12: MATMUL_W8A8 / W4A8 t*gate -> g
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexGate) ? NNTR_HTP_OP_MATMUL_W4A8
+                                         : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.gate_cs;
       op.k = cfg.hidden;
       op.n = cfg.ffn;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_t);
@@ -273,10 +289,12 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
       op.out = ref(NNTR_HTP_BUF_ACT, act_g);
       ops.push_back(op);
     }
-    // L.13: MATMUL_W8A8 t*up -> u
+    // L.13: MATMUL_W8A8 / W4A8 t*up -> u
     {
       nntr_htp_op_desc op{};
-      op.kind = NNTR_HTP_OP_MATMUL_W8A8;
+      op.kind = hex_is_w4(cfg, kHexUp) ? NNTR_HTP_OP_MATMUL_W4A8
+                                       : NNTR_HTP_OP_MATMUL_W8A8;
+      op.param0 = pl.up_cs;
       op.k = cfg.hidden;
       op.n = cfg.ffn;
       op.in0 = ref(NNTR_HTP_BUF_ACT, act_t);
@@ -360,7 +378,7 @@ HexLoweredGraph lower_qwen3(const HexModelConfig &cfg) {
   header.vocab = cfg.vocab;
   header.max_seq = cfg.max_seq;
   header.max_chunk = cfg.max_chunk;
-  header.weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
+  header.weight_layout = cfg.weight_layout;
 
   g.oplist.resize(nntr_htp_oplist_bytes(header.n_ops));
   std::memcpy(g.oplist.data(), &header, sizeof(header));

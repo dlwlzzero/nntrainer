@@ -23,11 +23,16 @@
 namespace nntrainer::hexagon {
 
 std::unique_ptr<HexagonBackend>
-HexagonBackend::create(const std::string &w8cx_bin, const HexModelConfig &cfg) {
+HexagonBackend::create(const std::string &w8cx_bin,
+                       const HexModelConfig &cfg_in) {
   std::unique_ptr<HexagonBackend> b(new HexagonBackend());
-  b->cfg_ = cfg;
+  b->cfg_ = cfg_in;
   try {
-    Qwen3W8cxBin bin(w8cx_bin, cfg); // mmap; released at scope exit
+    Qwen3W8cxBin bin(w8cx_bin, cfg_in); // mmap; released at scope exit
+    /* The checkpoint decides the WEIGHTS layout (tiled32 or w4cx_down8). */
+    HexModelConfig cfg = cfg_in;
+    bin.apply_layout(cfg);
+    b->cfg_ = cfg;
     HexLoweredGraph g = lower_qwen3(cfg);
     b->weights_ = std::make_shared<RpcmemBuffer>(g.weights_size);
     b->kv_ = std::make_shared<RpcmemBuffer>(g.kv_size);

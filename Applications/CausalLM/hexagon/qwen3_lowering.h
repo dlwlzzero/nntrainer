@@ -2,7 +2,7 @@
 /**
  * @file	qwen3_lowering.h
  * @date	19 August 2026
- * @brief	qwen3 model-specific lowering recipe: builds the op-list (ABI v4)
+ * @brief	qwen3 model-specific lowering recipe: builds the op-list (ABI v5)
  *		and the WEIGHTS layout plan for the qwen3 transformer shape,
  *		using the shared types/pack_weights() declared in
  *		nntrainer/tensor/hexagon/host/graph_lowering.h.
@@ -18,7 +18,7 @@
 namespace nntrainer::hexagon {
 
 /**
- * @brief Lower a qwen3 model shape into the op-list (ABI v4) plus the WEIGHTS
+ * @brief Lower a qwen3 model shape into the op-list (ABI v5) plus the WEIGHTS
  *        and ACT layout plans. Pure shape computation, no source weight
  *        data is read.
  */

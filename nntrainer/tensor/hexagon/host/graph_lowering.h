@@ -18,7 +18,31 @@
 #include <cstring>
 #include <vector>
 
+#include "nntr_htp_common.h"
+
 namespace nntrainer::hexagon {
+
+/**
+ * @brief One bit per weight tensor class, in the order the names are
+ *        spelled in a .hexcfg `i8_tensors=` line and in
+ *        make_w8cx_bin.py --i8-tensors: embed,q,k,v,o,gate,up,down. A set
+ *        bit means "int8 (tiled32 / row-major), as in a W8 image"; a
+ *        clear bit means "int4 w4cx tiles" (issue #65 S1).
+ */
+enum HexTensorBit : uint32_t {
+  kHexEmbed = 1u << 0,
+  kHexQ = 1u << 1,
+  kHexK = 1u << 2,
+  kHexV = 1u << 3,
+  kHexO = 1u << 4,
+  kHexGate = 1u << 5,
+  kHexUp = 1u << 6,
+  kHexDown = 1u << 7,
+  kHexAllI8 = 0xFFu,
+  /** The w4cx_down8 split of #65: every per-layer projection int4, the
+   * tied embed / LOGITS table and down int8. */
+  kHexW4cxDown8I8 = kHexEmbed | kHexDown,
+};
 
 /**
  * @brief Round up to the next 128B boundary, all math in uint64_t. Shared
@@ -73,11 +97,26 @@ struct HexModelConfig {
   uint32_t n_layers, n_heads, n_kv_heads, head_dim;
   uint32_t hidden, ffn, vocab, max_seq, max_chunk;
   float rms_eps, rope_theta;
+  /** WEIGHTS image family (NNTR_HTP_WEIGHT_LAYOUT_*, the header field) and,
+   * for W4CX_DOWN8, which tensor classes stay int8 (HexTensorBit; embed and
+   * down must be set in S1). TILED32 ignores the mask: everything is int8.
+   * Both are read from the .bin by Qwen3W8cxBin and written to the .hexcfg
+   * so every consumer re-lowers the same op-list. */
+  uint32_t weight_layout = NNTR_HTP_WEIGHT_LAYOUT_TILED32;
+  uint32_t i8_mask = kHexAllI8;
 };
+
+/** @brief True when tensor class `bit` of cfg is packed as int4 w4cx. */
+inline bool hex_is_w4(const HexModelConfig &cfg, uint32_t bit) {
+  return cfg.weight_layout != NNTR_HTP_WEIGHT_LAYOUT_TILED32 &&
+         (cfg.i8_mask & bit) == 0u;
+}
 
 /**
  * @brief One transformer layer's source weights. All pointers are
  *        non-owning; int8 matrices are N-major [N][K] (row = out chan).
+ *        A tensor whose HexTensorBit is clear in HexModelWeights::i8_mask
+ *        holds int4 codes ([-7, 7]) one per byte at the same pointer.
  */
 struct HexLayerWeights {
   const int8_t *wq, *wk, *wv, *wo, *w_gate, *w_up, *w_down;
@@ -93,6 +132,7 @@ struct HexModelWeights {
   const float *embed_s; // [vocab]
   const float *final_norm;
   std::vector<HexLayerWeights> layers; // size == n_layers
+  uint32_t i8_mask = kHexAllI8;        // which classes are int8 (else int4)
 };
 
 /**
@@ -105,6 +145,9 @@ struct HexWeightOffsets {
     uint32_t wq, wq_s, wk, wk_s, wv, wv_s, wo, wo_s;
     uint32_t gate, gate_s, up, up_s, down, down_s;
     uint32_t attn_norm, ffn_norm, q_norm, k_norm; // stored fp16
+    /** int32 colsum[N] of a w4cx projection (MATMUL_W4A8 param0); 0 and
+     * unallocated for a tensor that is int8. */
+    uint32_t wq_cs, wk_cs, wv_cs, wo_cs, gate_cs, up_cs;
   };
   std::vector<PerLayer> layers;
 };
@@ -122,12 +165,17 @@ struct HexLoweredGraph {
 /**
  * @brief Pack source weights into dst according to a lowered graph's
  *        WEIGHTS layout. int8 projections except down_proj are stored
- *        tiled32 (see nntr_htp_tile_off in nntr_htp_common.h); scales,
- *        norms and the RoPE table are unchanged.
+ *        tiled32 (see nntr_htp_tile_off in nntr_htp_common.h); int4
+ *        projections (hex_is_w4) become w4cx nibble tiles plus their
+ *        int32 colsum (nntr_htp_repack_w4cx); scales, norms and the RoPE
+ *        table are unchanged.
  * @param g lowered graph carrying the WEIGHTS offsets/sizes.
  * @param cfg the same config passed to lower_qwen3().
- * @param w source weights to pack.
+ * @param w source weights to pack; w.i8_mask must match cfg on a w4cx
+ *          layout.
  * @param dst destination buffer, at least g.weights_size bytes.
+ * @throw std::runtime_error when the source is not the int width the
+ *        layout expects (a W8 .bin packed as w4cx, or the reverse).
  */
 void pack_weights(const HexLoweredGraph &g, const HexModelConfig &cfg,
                   const HexModelWeights &w, uint8_t *dst);
