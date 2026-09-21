@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -405,6 +406,27 @@ TEST(SafetensorsLoad, rejects_truncated_file_n) {
   writeSafetensors(path, header.size(), header, data);
   auto nn = createFcNN(8, 16, ml::train::ExecutionMode::INFERENCE);
   EXPECT_THROW(nn->load(path, ModelFormat::MODEL_FORMAT_SAFETENSORS),
+               std::runtime_error);
+  remove(path.c_str());
+}
+
+/**
+ * @brief A truncated .bin must make INFERENCE (mmap, multi-threaded) load
+ *        throw to the caller, not read past the mapping or terminate the
+ *        process from a worker thread.
+ */
+TEST(SafetensorsLoad, bin_truncated_inference_n) {
+  const std::string path = "h1_trunc.bin";
+  {
+    auto nn = createFcNN(8, 16);
+    nn->save(path, ModelFormat::MODEL_FORMAT_BIN, DataType::NONE);
+  }
+  auto nn_ok = createFcNN(8, 16, ml::train::ExecutionMode::INFERENCE);
+  ASSERT_NO_THROW(nn_ok->load(path, ModelFormat::MODEL_FORMAT_BIN));
+
+  std::filesystem::resize_file(path, std::filesystem::file_size(path) / 2);
+  auto nn = createFcNN(8, 16, ml::train::ExecutionMode::INFERENCE);
+  EXPECT_THROW(nn->load(path, ModelFormat::MODEL_FORMAT_BIN),
                std::runtime_error);
   remove(path.c_str());
 }

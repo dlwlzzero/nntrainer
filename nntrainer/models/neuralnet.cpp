@@ -31,10 +31,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <thread>
 
@@ -76,6 +78,22 @@
 namespace nntrainer {
 
 namespace {
+
+/**
+ * @brief Run @a fn and keep the first exception it throws in @a err. A throw
+ *        escaping a std::thread calls std::terminate, so loader threads use
+ *        this and the caller rethrows @a err after join.
+ */
+template <typename F>
+void keepFirstError(F &&fn, std::exception_ptr &err, std::mutex &m) {
+  try {
+    fn();
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(m);
+    if (!err)
+      err = std::current_exception();
+  }
+}
 
 Tensor mapExternalTensor(float *buf, const TensorDim &dim) {
   const unsigned int bytes = static_cast<unsigned int>(
@@ -1052,8 +1070,20 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((view == nullptr), std::runtime_error)
               << "MapViewOfFile failed";
 
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
+            LARGE_INTEGER li;
+            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
+              << "GetFileSizeEx failed";
+            try {
+              node->read(ReadView{view, static_cast<size_t>(li.QuadPart)},
+                         false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+            } catch (...) {
+              UnmapViewOfFile(view);
+              CloseHandle(hMap);
+              CloseHandle(hFile);
+              throw;
+            }
 
             // Early unmap: let the OS reclaim the working set ASAP
             UnmapViewOfFile(view);
@@ -1081,8 +1111,14 @@ void NeuralNetwork::load(const std::string &file_path,
             (void)::posix_madvise(mmap_ptr, f_size, POSIX_MADV_RANDOM);
 
             char *view = static_cast<char *>(mmap_ptr);
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
+            try {
+              node->read(ReadView{view, f_size}, false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+            } catch (...) {
+              ::munmap(mmap_ptr, f_size);
+              throw;
+            }
 
             // Early drop: pages no longer needed; helps lower peak RSS during
             // overlap
@@ -1094,15 +1130,20 @@ void NeuralNetwork::load(const std::string &file_path,
         }
       };
 
+      std::exception_ptr load_error;
+      std::mutex load_error_mutex;
       std::vector<std::thread> threads;
       threads.reserve(num_load_threads);
       for (size_t t = 0; t < num_load_threads; ++t) {
-        threads.emplace_back(load_worker);
+        threads.emplace_back(
+          [&]() { keepFirstError(load_worker, load_error, load_error_mutex); });
       }
       for (auto &t : threads) {
         if (t.joinable())
           t.join();
       }
+      if (load_error)
+        std::rethrow_exception(load_error);
 
     } else {
       for (auto iter = model_graph.cbegin(); iter != model_graph.cend();
@@ -1263,12 +1304,14 @@ void NeuralNetwork::load(const std::string &file_path,
       NNTR_THROW_IF((model_file_fd == -1), std::invalid_argument)
         << "Cannot open safetensors file: " << f_path;
 
+      std::exception_ptr load_error;
+      std::mutex load_error_mutex;
       std::vector<std::thread> threads;
       threads.reserve(model_graph.size());
       for (auto iter = model_graph.cbegin(); iter != model_graph.cend();
            ++iter) {
         auto node = *iter;
-        threads.emplace_back([&, node]() {
+        auto load_node = [&, node]() {
           if (!MMAP_READ) {
             auto local_file = checkedOpenStream<std::ifstream>(
               f_path, std::ios::in | std::ios::binary);
@@ -1292,8 +1335,20 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((view == nullptr), std::runtime_error)
               << "MapViewOfFile failed for safetensors file: " << f_path;
 
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
+            LARGE_INTEGER li;
+            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
+              << "GetFileSizeEx failed for safetensors file: " << f_path;
+            try {
+              node->read(ReadView{view, static_cast<size_t>(li.QuadPart)},
+                         false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+            } catch (...) {
+              UnmapViewOfFile(view);
+              CloseHandle(hMap);
+              CloseHandle(hFile);
+              throw;
+            }
 
             UnmapViewOfFile(view);
             CloseHandle(hMap);
@@ -1317,19 +1372,30 @@ void NeuralNetwork::load(const std::string &file_path,
             (void)::posix_madvise(mmap_ptr, f_size, POSIX_MADV_RANDOM);
 
             char *view = static_cast<char *>(mmap_ptr);
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
+            try {
+              node->read(ReadView{view, f_size}, false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+            } catch (...) {
+              ::munmap(mmap_ptr, f_size);
+              throw;
+            }
 
             (void)::posix_madvise(mmap_ptr, f_size, POSIX_MADV_DONTNEED);
             ::munmap(mmap_ptr, f_size);
 #endif
           }
+        };
+        threads.emplace_back([&, load_node]() {
+          keepFirstError(load_node, load_error, load_error_mutex);
         });
       }
       for (auto &t : threads) {
         if (t.joinable())
           t.join();
       }
+      if (load_error)
+        std::rethrow_exception(load_error);
     } else {
       // TRAINING mode: sequential read
       std::ifstream st_in(f_path, std::ios::in | std::ios::binary);
