@@ -40,10 +40,10 @@ import statistics
 import sys
 
 LAYER_KINDS = ["RMSNORM", "MATMUL_W8A8", "ROPE", "ATTN", "SILU_MUL", "ADD",
-               "MATMUL_W8A16"]
+               "MATMUL_W8A16", "MATMUL_W4A8"]
 VOCAB_KINDS = ["MATMUL_LOGITS"]
 KINDS = ["EMBED", "RMSNORM", "MATMUL_W8A8", "ROPE", "ATTN", "SILU_MUL", "ADD",
-         "MATMUL_LOGITS", "MATMUL_W8A16"]
+         "MATMUL_LOGITS", "MATMUL_W8A16", "MATMUL_W4A8"]
 
 
 def parse(path):

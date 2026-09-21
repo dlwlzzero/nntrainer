@@ -40,8 +40,8 @@ using namespace nntrainer::hexagon;
 namespace {
 
 const char *kKindName[NNTR_HTP_OP_KIND_COUNT] = {
-  "EMBED",    "RMSNORM", "MATMUL_W8A8",   "ROPE",        "ATTN",
-  "SILU_MUL", "ADD",     "MATMUL_LOGITS", "MATMUL_W8A16"};
+  "EMBED",    "RMSNORM", "MATMUL_W8A8",   "ROPE",         "ATTN",
+  "SILU_MUL", "ADD",     "MATMUL_LOGITS", "MATMUL_W8A16", "MATMUL_W4A8"};
 
 struct Opts {
   std::string prefix, tokens, dump_out;
