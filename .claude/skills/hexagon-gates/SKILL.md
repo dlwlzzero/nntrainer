@@ -31,12 +31,20 @@ carry `@file` / `@brief`, no merge commits.
 ninja -C build
 ./build/test/unittest/unittest_nntrainer_cpu_backend --gtest_filter='*qs4cx*'
 NNTR_QUANTIZE_BIN=$PWD/build/Applications/CausalLM/nntr_quantize \
+NNTR_QUANTIZE_STREAM_BIN=$PWD/build/Applications/CausalLM/nntr_quantize_stream \
   ./build/Applications/CausalLM/unittest_causallm_models --gtest_filter='*Lfm2Moe*'
 bash test/htp/host/run_host_checks.sh
 bash tools/htp_syntax_check.sh
 ```
-Pass: every gtest `[  PASSED  ]`; `run_host_checks.sh` ends without
-`FAIL`; the syntax check exits 0. The `build/` directory is configured with
+Pass: every gtest `[  PASSED  ]` — 6 for `*Lfm2Moe*` (3 differential + 3
+tiny-model), none skipped; `run_host_checks.sh` prints `ALL CHECKS PASS`
+and `WORKER POOL LANES OK`; the syntax check exits 0. The tiny fixture's
+weight file is gitignored and generated once per checkout:
+`python3 test/unittest/models/causallm_reference/generators/generate_lfm2_moe_reference.py`
+then `git checkout -- test/unittest/models/causallm_reference/lfm2_moe_tiny/`
+(the generator also rewrites `meta.json` / `nntr_config.json`; the
+reference logits are deterministic and must not change). Without it the
+three differential tests are `SKIPPED`, which is not a pass. The `build/` directory is configured with
 `meson setup build -Denable-transformer=true -Denable-tflite-backbone=false
 -Denable-tflite-interpreter=false` plus
 `-Dc_args=-Wno-error=missing-include-dirs -Dcpp_args=-Wno-error=missing-include-dirs`
@@ -79,6 +87,16 @@ binaries exist; md5s recorded for the handoff. Never `--clean` a builddir
 that was configured with `--htp` unless you re-run with `--htp` (the
 option lives only in `builddir` and is dropped silently). A `--profile`
 build is a separate builddir and is never the TPS binary.
+
+Workstation specifics (2026-09-21, first build): `tools/package_android.sh`
+ends in `ninja install`, and the googletest subproject installs to the
+meson `prefix` (`/usr/local`, not writable here) — on a fresh `builddir`
+run `cd builddir && meson configure -Dprefix=$PWD/android_build_result &&
+ninja install`, then `build_android.sh --htp --cache` for the rest
+(nntrainer's own Android outputs ignore `prefix`). The tokenizer library
+(`Applications/CausalLM/lib/libtokenizers_android_c.a`) is built once by
+`build_tokenizer_android.sh` with Rust (`~/.cargo`, target
+`aarch64-linux-android`; env.sh puts cargo on PATH).
 
 ## 4. Device (user only)
 

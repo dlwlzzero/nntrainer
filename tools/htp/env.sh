@@ -39,8 +39,9 @@ for _f in "$HEXKL_ROOT/lib/$HEXKL_SDK_VER/hexagon_toolv19_$HEX_ARCH/libhexkl_mic
   [ -e "$_f" ] || echo "env.sh: missing $_f" >&2
 done
 unset _f
-# Tools/bin (hexagon-clang), the NDK and ~/.local/bin (clang-format-14)
-for _d in "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin" "$ANDROID_NDK" "$HOME/.local/bin"; do
+# Tools/bin (hexagon-clang), the NDK, ~/.cargo/bin (cargo for the tokenizer
+# library of the Android app) and ~/.local/bin (clang-format-14)
+for _d in "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin" "$ANDROID_NDK" "$HOME/.cargo/bin" "$HOME/.local/bin"; do
   case ":$PATH:" in *":$_d:"*) ;; *) export PATH="$_d:$PATH" ;; esac
 done
 unset _d
