@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
@@ -1210,10 +1211,16 @@ void NeuralNetwork::load(const std::string &file_path,
     NNTR_THROW_IF(!st_file.is_open(), std::runtime_error)
       << "Cannot open safetensors file: " << f_path;
 
+    const uint64_t f_size = std::filesystem::file_size(f_path);
+
     uint64_t header_size = 0;
     st_file.read(reinterpret_cast<char *>(&header_size), sizeof(header_size));
     NNTR_THROW_IF(!st_file, std::runtime_error)
       << "Failed to read safetensors header length from: " << f_path;
+    NNTR_THROW_IF(header_size > f_size - sizeof(header_size),
+                  std::runtime_error)
+      << "safetensors header_size " << header_size << " exceeds file size "
+      << f_size << ": " << f_path;
 
     std::string header_json(header_size, '\0');
     st_file.read(header_json.data(), static_cast<std::streamsize>(header_size));
@@ -1228,6 +1235,9 @@ void NeuralNetwork::load(const std::string &file_path,
     // Parse header: name -> (offset_start, size_in_bytes)
     auto name_offset_map = safetensors::parseHeader(header_json);
 
+    // Bytes available for weight data; every entry used below must fit in it.
+    const size_t data_size = f_size - data_base;
+
     // Assign file offsets to each weight by name
     std::unordered_set<const Tensor *> visited_st;
     for (auto iter = model_graph.cbegin(); iter != model_graph.cend(); iter++) {
@@ -1239,8 +1249,12 @@ void NeuralNetwork::load(const std::string &file_path,
         auto it = name_offset_map.find(name);
         if (it == name_offset_map.end())
           continue;
-        const size_t file_off = data_base + it->second.first;
-        weight->getVariableRef().setFileOffset(file_off);
+        const auto [off, len] = it->second;
+        NNTR_THROW_IF(off > data_size || len > data_size - off,
+                      std::runtime_error)
+          << "safetensors entry '" << name << "' [" << off << ", " << off + len
+          << ") exceeds data section of " << data_size << " bytes: " << f_path;
+        weight->getVariableRef().setFileOffset(data_base + off);
       }
     }
 
