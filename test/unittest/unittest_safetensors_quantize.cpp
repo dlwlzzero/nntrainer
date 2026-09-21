@@ -125,6 +125,27 @@ TEST(SafetensorsUtil, build_parse_round_trip_p) {
   EXPECT_EQ(md["nntr_format"], "nntr-safetensors-v1");
 }
 
+/**
+ * @brief data_offsets with end < start must be rejected, not turned into a
+ *        size that wraps to ~2^64 (#4334 H1).
+ */
+TEST(SafetensorsUtil, parse_rejects_reversed_offsets_n) {
+  const std::string json =
+    R"({"w":{"dtype":"F32","shape":[1,1,1,4],"data_offsets":[16,0]}})";
+  EXPECT_THROW(st::parseHeaderEntries(json), std::runtime_error);
+  EXPECT_THROW(st::parseHeader(json), std::runtime_error);
+}
+
+/**
+ * @brief A number that does not fit in size_t must be rejected, not wrap to a
+ *        small value (#4334 H1).
+ */
+TEST(SafetensorsUtil, parse_rejects_overflowing_offset_n) {
+  const std::string json =
+    R"({"w":{"dtype":"F32","shape":[4],"data_offsets":[0,99999999999999999999999]}})";
+  EXPECT_THROW(st::parseHeaderEntries(json), std::runtime_error);
+}
+
 TEST(SafetensorsUtil, inspect_reports_quant_type_p) {
   std::vector<st::TensorEntry> entries;
   st::TensorEntry quant;
