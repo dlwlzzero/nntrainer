@@ -44,11 +44,12 @@ device are labelled `(PR)` and are provisional.
 | `Applications/CausalLM/jni/obj/local/arm64-v8a/libnntrainer.so` | `7c42228a6706dded899bf05c1cb6ef14` | same | r30 leaves it in `obj/local` |
 | `Applications/CausalLM/jni/obj/local/arm64-v8a/libccapi-nntrainer.so` | `65c9034c6341384443166b89de66191d` | same | |
 | `test/jni/obj/local/arm64-v8a/unittest_hvx_mm_u8i4` / `_softmax` / `_attn` / `_fc` | `08a99d8f…` / `17ef87d5…` / `63fa6a4b…` / `7bdc2e9d…` | same | device gtests |
-| `q40/*_ARM.bin` | pending | | CPU control |
-| `q40-qs4cx-wh/*_ARM.bin` | pending | | NPU model |
+| `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40/nntr_lfm2_8b_a1b_q40_arm.bin` (4,768,855,808 B) | `d28f55c5bd7adeb8bf73b02de582eb88` | `nntr_quantize_stream` from `htp_moe` @ `2ce38d65`, `--isa ARM`, all Q4_0 | CPU control (#78) |
+| `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin` (4,316,133,120 B) | `7b7867fab51845664c0050c0a837073e` | same plus `--moe_dtype QS4CX_WH`; `moe_engine: htp`, `moe_htp_layers: ""` | NPU model (#78) |
 
 ## Log
 
 | date | what | rows / goals touched |
 |---|---|---|
 | 2026-09-21 | File created from PR #4327 docs 49 and 50; goals from the contract | all |
+| 2026-09-21 | Weights prepared (#78); first handoff written (#77, `docs/measurements/77-first-handoff.md` on `htp/77-first-handoff`) | artifacts |
