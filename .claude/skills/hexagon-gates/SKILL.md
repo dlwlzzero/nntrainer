@@ -76,12 +76,20 @@ or the device fails with `AEE_EBADPARM (0x8000040E)`. Variants:
 
 ```
 (cd Applications/CausalLM && ./build_android.sh --htp)        # add --cache to reuse builddir
-readelf -d Applications/CausalLM/builddir/jni/arm64-v8a/libnntrainer.so | grep -E 'libsdkl|libcdsprpc'
-md5sum Applications/CausalLM/jni/libs/arm64-v8a/nntrainer_causallm Applications/CausalLM/jni/libs/arm64-v8a/libnntrainer.so
+readelf -d builddir/android_build_result/lib/arm64-v8a/libnntrainer.so | grep -E 'libsdkl|libcdsprpc'
+md5sum Applications/CausalLM/jni/libs/arm64-v8a/{nntrainer_causallm,libcausallm_core.so} \
+       Applications/CausalLM/jni/obj/local/arm64-v8a/{libnntrainer.so,libccapi-nntrainer.so}
+ln -sfn $PWD/subprojects/googletest/googletest test/jni/googletest     # once per checkout; in .git/info/exclude
 (cd test/jni && $ANDROID_NDK/ndk-build NDK_PROJECT_PATH=. NDK_APPLICATION_MK=./Application.mk \
-   APP_BUILD_SCRIPT=./Android.mk NNTRAINER_ROOT=$PWD/../.. HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT unittest_hvx_mm_u8i4)
-md5sum test/jni/obj/local/arm64-v8a/unittest_hvx_mm_u8i4
+   APP_BUILD_SCRIPT=./Android.mk NNTRAINER_ROOT=$PWD/../.. HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT \
+   unittest_hvx_mm_u8i4 unittest_hvx_softmax unittest_hvx_attn unittest_hvx_fc -j8)
+md5sum test/jni/obj/local/arm64-v8a/unittest_hvx_{mm_u8i4,softmax,attn,fc}
 ```
+With NDK r30 the shared libraries `libnntrainer.so`, `libccapi-nntrainer.so`
+and `libc++_shared.so` stay under `jni/obj/local/arm64-v8a/`, while
+`install_android.sh` pushes them from `jni/libs/arm64-v8a/`; a handoff
+lists the `obj/local` paths (or copies them into `libs/` first) so the
+install step does not push stale files.
 Pass: both `NEEDED` lines present (`libsdkl.so`, `libcdsprpc.so`); the
 binaries exist; md5s recorded for the handoff. Never `--clean` a builddir
 that was configured with `--htp` unless you re-run with `--htp` (the

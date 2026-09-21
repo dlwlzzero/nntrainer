@@ -39,6 +39,11 @@ device are labelled `(PR)` and are provisional.
 | artifact | md5 | built from | note |
 |---|---|---|---|
 | `test/htp/build/libnntr_hvx_skel.so` (v79, SDK 6.4.0.1, HexKL 6.4.0.1) | `0a3d4b81541799e5a25bbf234c515812` | `htp_moe` @ `2ce38d65` | first workstation build, 2026-09-21 |
+| `Applications/CausalLM/jni/libs/arm64-v8a/nntrainer_causallm` (`--htp`, NDK r30) | `53814a39abad75c045dc6d8ae16e67df` | `htp_moe` @ `2ce38d65` | `libnntrainer.so` NEEDED lists `libsdkl.so`, `libcdsprpc.so` |
+| `Applications/CausalLM/jni/libs/arm64-v8a/libcausallm_core.so` | `f735315882a0ba1769b5e901d9cb122f` | same | |
+| `Applications/CausalLM/jni/obj/local/arm64-v8a/libnntrainer.so` | `7c42228a6706dded899bf05c1cb6ef14` | same | r30 leaves it in `obj/local` |
+| `Applications/CausalLM/jni/obj/local/arm64-v8a/libccapi-nntrainer.so` | `65c9034c6341384443166b89de66191d` | same | |
+| `test/jni/obj/local/arm64-v8a/unittest_hvx_mm_u8i4` / `_softmax` / `_attn` / `_fc` | `08a99d8f…` / `17ef87d5…` / `63fa6a4b…` / `7bdc2e9d…` | same | device gtests |
 | `q40/*_ARM.bin` | pending | | CPU control |
 | `q40-qs4cx-wh/*_ARM.bin` | pending | | NPU model |
 
