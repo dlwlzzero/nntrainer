@@ -4,7 +4,7 @@
  * @date	31 August 2026
  * @brief	x86 self-check for the W8_CX checkpoint reader: size arithmetic,
  *		scale blocks finite/positive, RMSNorm gammas near 1, int8
- *		payload non-degenerate; with a second, --bits 4 file: the
+ *		payload non-degenerate; with a second, W4CX file: the
  *		W4CX header's int8 set, int4 codes in [-7, 7] on the six
  *		projections, int8 embed / down, and the w4cx_down8 layout it
  *		maps to. Not gtest; self-contained main.
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     CHECK(c.weight_layout == NNTR_HTP_WEIGHT_LAYOUT_TILED32);
   }
 
-  // 6. --bits 4 --i8-tensors down,embed: the same stream behind the W4CX
+  // 6. make_w4cx_bin.py --i8-tensors down,embed (hvx_w4cx): the same stream behind the W4CX
   //    header; the six projections are int4 codes, embed / down int8.
   if (argc >= 3) {
     Qwen3W8cxBin b4(argv[2], kQwen3_0_6b);

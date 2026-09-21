@@ -457,8 +457,8 @@ then `output_norm` (2-D tensors as int8 `[N][K]` + fp32 `[N]`, norms
 fp32). `Qwen3W8cxBin` mmaps it and hands out non-owning pointers as a
 `HexModelWeights`.
 
-`make_w8cx_bin.py --bits 4 [--i8-tensors down,embed]` (#65 S1) writes
-the `w4cx` checkpoint instead: every 2-D tensor whose class is not
+`make_w4cx_bin.py [--i8-tensors down,embed]` (#65 S1, on the `hvx_w4cx`
+branch, not on `hvx_impl`) writes the `w4cx` checkpoint instead: every 2-D tensor whose class is not
 named in `--i8-tensors` (names in mask-bit order
 `embed,q,k,v,o,gate,up,down`) is quantised per output channel to int4
 with the same primitive at `qmax = 7` (symmetric RTN, `scale = absmax /
@@ -467,9 +467,9 @@ keeps the W8 layout and size, and the file is prefixed by a 64-byte
 `W4CX` header (`Qwen3W4cxBinHeader`: magic, version 1, `n_layers`, the
 int8 class mask, bits). `Qwen3W8cxBin` tells the two apart by size and
 magic; `apply_layout()` maps a header-less file to `tiled32` and a
-`--bits 4` file to `w4cx_down8` (its int8 set must include `embed` and
-`down` until S3). Without `--bits 4` the W8 output is byte-identical to
-before (md5 `7562313b…`). The default split, `w4cx_down8` with
+W4CX file to `w4cx_down8` (its int8 set must include `embed` and
+`down` until S3). `make_w8cx_bin.py` is untouched, so the W8 output is
+byte-identical to before (md5 `7562313b…`). The default split, `w4cx_down8` with
 `--i8-tensors down,embed`, is 598,230,592 bytes.
 
 `nntr_hexpack <bin> <prefix> [--layers N]` writes `<prefix>.hexw` (the

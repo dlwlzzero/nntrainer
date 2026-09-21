@@ -3,7 +3,7 @@
  * @file	qwen3_w8cx_bin.cpp
  * @date	31 August 2026
  * @brief	mmap view over a W8_CX / w4cx qwen3 .bin
- *		(tools/hexagon/make_w8cx_bin.py, with or without --bits 4)
+ *		(tools/hexagon/make_w8cx_bin.py, or make_w4cx_bin.py on hvx_w4cx)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -74,7 +74,7 @@ Qwen3W8cxBin::Qwen3W8cxBin(const std::string &path, const HexModelConfig &cfg) {
   }
   size_ = (uint64_t)st.st_size;
   const uint64_t want = expected_size(cfg);
-  // A --bits 4 file is the same payload behind a 64-byte header.
+  // A W4CX file is the same payload behind a 64-byte header.
   const bool w4 = size_ == want + sizeof(Qwen3W4cxBinHeader);
   if (size_ != want && !w4) {
     close(fd_);

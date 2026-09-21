@@ -3,7 +3,7 @@
  * @file	qwen3_w8cx_bin.h
  * @date	31 August 2026
  * @brief	mmap view over a W8_CX / w4cx qwen3 .bin
- *		(tools/hexagon/make_w8cx_bin.py, with or without --bits 4)
+ *		(tools/hexagon/make_w8cx_bin.py, or make_w4cx_bin.py on hvx_w4cx)
  * @see		https://github.com/nnstreamer/nntrainer
  * @author	dlwlzzero <dlwlzzero@gmail.com>
  * @bug		No known bugs except for NYI items
@@ -27,7 +27,8 @@ inline const HexModelConfig kQwen3_0_6b = {
   /*max_chunk=*/128, /*rms_eps=*/1e-6f, /*rope_theta=*/1e6f};
 
 /**
- * @brief The 64-byte header of a --bits 4 checkpoint (issue #65 S1). A W8
+ * @brief The 64-byte header of a W4CX checkpoint (issue #65 S1,
+ *        written by make_w4cx_bin.py on the hvx_w4cx branch). A W8
  *        .bin has no header. Only the int width of the tensors changes:
  *        an int4 tensor is still stored one code per byte ([-7, 7]) at the
  *        same size, so the stream after the header is laid out exactly as
@@ -47,7 +48,7 @@ typedef char
 /**
  * @class Qwen3W8cxBin
  * @brief Read-only view over a W8_CX or w4cx .bin
- *        (tools/hexagon/make_w8cx_bin.py). mmaps the file and hands out
+ *        (tools/hexagon/make_w8cx_bin.py or make_w4cx_bin.py). mmaps the file and hands out
  *        non-owning pointers into it; the object must outlive the
  *        HexModelWeights it returns.
  *
@@ -55,7 +56,7 @@ typedef char
  * (int8 [vocab][hidden] + fp32 [vocab]), then per layer attn_norm, wq,
  * q_norm, wk, k_norm, wv, wo, ffn_norm, ffn_up, ffn_gate, ffn_down (2D
  * tensors as int8 [N][K] + fp32 [N], norms as fp32), then output_norm.
- * A W8 file is that stream alone; a --bits 4 file prefixes the
+ * A W8 file is that stream alone; a W4CX file prefixes the
  * Qwen3W4cxBinHeader and stores its int4 tensors as one code per byte.
  */
 class Qwen3W8cxBin {
@@ -69,12 +70,12 @@ public:
   const HexModelWeights &weights() const { return w_; }
 
   /** The WEIGHTS layout this checkpoint packs into: tiled32 for a W8
-   * file, w4cx_down8 for a --bits 4 file (whose i8 set must include embed
+   * file, w4cx_down8 for a W4CX file (whose i8 set must include embed
    * and down until #65 S3). Sets cfg.weight_layout / cfg.i8_mask.
    * @throw std::runtime_error when no v5 layout fits the file's i8 set */
   void apply_layout(HexModelConfig &cfg) const;
 
-  /** Byte size the payload must have for this shape (a --bits 4 file is
+  /** Byte size the payload must have for this shape (a W4CX file is
    * 64 bytes longer). */
   static uint64_t expected_size(const HexModelConfig &cfg);
 
