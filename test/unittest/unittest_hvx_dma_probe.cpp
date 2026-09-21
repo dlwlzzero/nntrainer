@@ -10,6 +10,9 @@
  * @author dlwlzzero <dlwlzzero@gmail.com>
  * @bug    No known bugs except for NYI items
  *
+ * MoeChunkReplay (#87) replays the MoE layer call's own M=1 descriptor
+ * list through dma_replay, next to one real traced call.
+ *
  * Runs on an Android device only. Requires libnntr_hvx_skel.so on
  * ADSP_LIBRARY_PATH; run once with the vote-on skel and once with the
  * vote-off one (test/htp/build.sh, HEX_EXTRA_CFLAGS=-DNNTR_HVX_NO_BUS_VOTE).
@@ -41,8 +44,10 @@
 #include <AEEStdErr.h>
 #include <remote.h>
 
+#include "htp_backend/hmx/hexkl_dma_trace.h"
 #include "nntr_dma_probe_plan.h"
 #include "nntr_hvx.h"
+#include "nntr_moe_dma_plan.h"
 
 namespace {
 
@@ -442,6 +447,203 @@ TEST_F(HvxDmaProbe, TwoReaderDdr) {
             << " aggregate=" << (cpu_with + dsp_with)
             << " cpu_threads=" << kThreads << " dsp_workers=" << best_w
             << " chunk_bytes=" << chunk_bytes << "\n";
+}
+
+/**
+ * @brief [#87, plan section 3.3] The MoE layer call's own M=1 descriptor
+ *        list, replayed with nothing between the pushes.
+ *
+ * Step 0 runs one real mm_u8i4_moe_layer_timed at M=1 over four expert
+ * regions of the pattern arena (registered as arena weights: the HMX does
+ * not care what the nibbles are, so no bake is needed for a timing) and
+ * reads its trace back -- the DMA_REPLAY_TRACE lines are the in-situ
+ * timeline the replays are held against, and its issue times pace the
+ * pace=1 cells. Reports rather than asserts on the numbers; asserts the
+ * mapping is live (checksum) and the trace has the planner's shape.
+ */
+TEST_F(HvxDmaProbe, MoeChunkReplay) {
+  const uint32_t K = 2048, I = 1792, N = 2048, E = 4, ACC_TILES = 32;
+  const uint32_t region = nntr_moe_dma_region_bytes(K, I, N);
+  const uint32_t gu_bytes = nntr_moe_dma_gu_bytes(K, I);
+  const uint32_t dn_bytes = nntr_moe_dma_dn_bytes(I, N);
+  const uint32_t dn_off = nntr_moe_dma_down_off(K, I);
+  const Chunk &ch = chunks_[0];
+  ASSERT_GE(ch.bytes, (E + 1) * region) << "chunk too small for 4 regions";
+
+  // VTCM layout for the replay: gate_up, down, activation, copy scratch.
+  const uint32_t v_gu = 0, v_dn = gu_bytes, v_act = v_dn + dn_bytes,
+                 v_copy = v_act + (K / 32u) * 2048u;
+  static nntr_moe_dma_item plan[NNTR_MOE_DMA_PLAN_MAX];
+  const uint32_t n_plan =
+    nntr_moe_dma_plan_m1(K, I, N, E, ACC_TILES, v_gu, v_dn, v_act, v_copy, plan,
+                         NNTR_MOE_DMA_PLAN_MAX);
+  ASSERT_NE(n_plan, 0u);
+  uint32_t plan_push = 0, plan_wait = 0;
+  for (uint32_t k = 0; k < n_plan; ++k) {
+    (plan[k].op == NNTR_MOE_DMA_OP_PUSH ? plan_push : plan_wait)++;
+  }
+
+  // --- step 0: one real timed call over the same regions -----------------
+  std::vector<uint32_t> h_gu(E), h_dn(E);
+  {
+    std::vector<float> ws_gu(2 * I, 0.01f), bias_gu(2 * I, 0.f);
+    std::vector<int32_t> cs_gu(2 * I, 0);
+    std::vector<float> ws_dn(N, 0.01f), bias_dn(N, 0.f);
+    std::vector<int32_t> cs_dn(N, 0);
+    for (uint32_t e = 0; e < E; ++e) {
+      ASSERT_EQ(nntr_hvx_weight_register_u8i4_arena(
+                  handle_, K, 2 * I, ch.arena, e * region, ws_gu.data(),
+                  (int)(2 * I), cs_gu.data(), (int)(2 * I), bias_gu.data(),
+                  (int)(2 * I), &h_gu[e]),
+                AEE_SUCCESS);
+      ASSERT_EQ(nntr_hvx_weight_register_u8i4_arena(
+                  handle_, I, N, ch.arena, e * region + dn_off, ws_dn.data(),
+                  (int)N, cs_dn.data(), (int)N, bias_dn.data(), (int)N,
+                  &h_dn[e]),
+                AEE_SUCCESS);
+    }
+  }
+  // One row routed to all four experts: decode's shape.
+  const std::vector<uint32_t> row_count(E, 1u), row_index(E, 0u);
+  const std::vector<float> row_weight(E, 0.25f);
+  std::vector<float> act(K), out(N, 0.f);
+  for (uint32_t i = 0; i < K; ++i) {
+    act[i] = static_cast<float>((i * 7919u) % 1000u) / 500.f - 1.f;
+  }
+  // test/htp/nntr_hvx_mm_u8i4.c's MOE_N_STAGES (mirrored as
+  // HTP_MOE_N_STAGES in htp_compute_ops.cpp): 19 before #87 + 10.
+  const int kMoeStages = 29;
+  std::vector<uint32_t> stage(kMoeStages, 0);
+  std::vector<uint32_t> trace;
+  uint32_t n_words = 0;
+  bool traced = false;
+  {
+    // Two calls: the first warms the page state, the second is traced.
+    int err = AEE_SUCCESS;
+    for (int rep = 0; rep < 2 && err == AEE_SUCCESS; ++rep) {
+      err = nntr_hvx_mm_u8i4_moe_layer_timed(
+        handle_, 1, K, I, N, h_gu.data(), (int)E, h_dn.data(), (int)E,
+        row_index.data(), (int)E, row_count.data(), (int)E, row_weight.data(),
+        (int)E, act.data(), (int)K, out.data(), (int)N, stage.data(),
+        kMoeStages);
+    }
+    if (err != AEE_SUCCESS) {
+      std::cout << "DMA_REPLAY_NOTE moe_layer_timed err=" << hex(err)
+                << " -- pace=1 cells fall back to pace=0\n";
+    } else {
+      trace.resize(HEXKL_DMA_TRACE_MAX_WORDS);
+      err = nntr_hvx_moe_dma_trace_read(handle_, trace.data(),
+                                        (int)trace.size(), &n_words);
+      traced = err == AEE_SUCCESS && n_words >= HEXKL_DMA_TRACE_HDR_WORDS &&
+               trace[0] == plan_push && trace[1] == plan_wait;
+      std::cout << "DMA_REPLAY_TRACE dsp_us=" << stage[0]
+                << " desc=" << stage[19] << " waits=" << stage[20]
+                << " blocked=" << stage[21] << " wait_us=" << stage[22]
+                << " wait_act_us=" << stage[23] << " busy_us=" << stage[24]
+                << ".." << stage[25] << " depth_max=" << stage[26]
+                << " first_ready_us=" << stage[27]
+                << " last_issue_us=" << stage[28] << " trace_words=" << n_words
+                << " plan_shape_ok=" << (traced ? "y" : "n") << "\n";
+    }
+  }
+  const uint32_t pw = HEXKL_DMA_TRACE_PUSH_WORDS,
+                 ww = HEXKL_DMA_TRACE_WAIT_WORDS;
+  auto us = [](uint32_t ticks) { return ticks / 19.2; };
+  if (traced) {
+    static const char *const kKind[] = {"act", "gate", "up", "down", "copy"};
+    static const char *const kSite[] = {"act", "gu", "dn", "copy_in",
+                                        "copy_out"};
+    const uint32_t *p = trace.data() + HEXKL_DMA_TRACE_HDR_WORDS;
+    for (uint32_t k = 0; k < trace[0]; ++k, p += pw) {
+      std::cout << std::fixed << std::setprecision(1)
+                << "DMA_REPLAY_TRACE push k=" << k << " t=" << us(p[0])
+                << " kind=" << (p[1] < 5 ? kKind[p[1]] : "?") << " e=" << p[2]
+                << " c=" << p[3] << " bytes=" << p[4] << " row=" << p[5]
+                << " nrows=" << p[6] << " stride=" << p[7] << " depth=" << p[9]
+                << " done=" << us(p[10]) << ".." << us(p[11]) << "\n";
+    }
+    for (uint32_t k = 0; k < trace[1]; ++k, p += ww) {
+      std::cout << std::fixed << std::setprecision(1)
+                << "DMA_REPLAY_TRACE wait k=" << k
+                << " site=" << (p[3] < 5 ? kSite[p[3]] : "?")
+                << " t=" << us(p[0]) << ".." << us(p[1])
+                << " blocked=" << (p[4] ? "y" : "n") << "\n";
+    }
+  }
+
+  // --- the schedule: the plan, with the traced call's issue times ---------
+  std::vector<uint32_t> sched;
+  sched.reserve(n_plan * 8);
+  {
+    const uint32_t *pp = trace.data() + HEXKL_DMA_TRACE_HDR_WORDS;
+    const uint32_t *wp = pp + plan_push * pw;
+    uint32_t ip = 0, iw = 0;
+    for (uint32_t k = 0; k < n_plan; ++k) {
+      const nntr_moe_dma_item &it = plan[k];
+      uint32_t t_rel = 0;
+      if (traced) {
+        t_rel =
+          it.op == NNTR_MOE_DMA_OP_PUSH ? pp[(ip++) * pw] : wp[(iw++) * ww];
+      }
+      const uint32_t words[8] = {(it.op << 8) | it.kind,
+                                 it.expert,
+                                 it.src_off,
+                                 it.dst_off,
+                                 it.row_size,
+                                 it.nrows,
+                                 it.src_stride,
+                                 t_rel};
+      sched.insert(sched.end(), words, words + 8);
+    }
+  }
+
+  const uint32_t want_sum = 0xA5u * (gu_bytes / 64u);
+  auto cell = [&](uint32_t workers, uint32_t load, uint32_t pace,
+                  uint32_t fresh, uint32_t gap_us) {
+    const uint32_t calls = 20;
+    std::vector<uint32_t> res(12, 0);
+    if (pace && !traced) {
+      pace = 0;
+    }
+    const int err = nntr_hvx_dma_replay(
+      handle_, ch.arena, region, sched.data(), (int)sched.size(), workers, load,
+      pace, fresh, gap_us, calls, res.data(), (int)res.size());
+    if (err != AEE_SUCCESS) {
+      std::cout << "DMA_REPLAY workers=" << workers << " load=" << load
+                << " pace=" << pace << " fresh=" << fresh
+                << " gap_us=" << gap_us << " skipped err=" << hex(err) << "\n";
+      return;
+    }
+    const double us_per_call = static_cast<double>(res[0]) / calls;
+    const double gbs = us_per_call > 0 ? res[2] / us_per_call / 1e3 : 0.0;
+    std::cout << std::fixed << std::setprecision(1)
+              << "DMA_REPLAY workers=" << workers << " load=" << load
+              << " pace=" << pace << " fresh=" << fresh << " gap_us=" << gap_us
+              << " calls=" << calls << " us_per_call=" << us_per_call
+              << " bytes_per_call=" << res[2] << " gbs=" << gbs
+              << " wait_us=" << res[3] / (double)calls << " blocked=" << res[4]
+              << "/" << plan_wait * calls << " depth_max=" << res[5]
+              << " busy_us=" << res[10] / (double)calls << ".."
+              << res[11] / (double)calls << " regions=" << res[7]
+              << " workers_used=" << res[8] << " load_units=" << res[9]
+              << " checksum_ok=" << (res[6] == want_sum ? "y" : "n") << "\n";
+    EXPECT_EQ(res[6], want_sum) << "workers=" << workers << " load=" << load;
+  };
+  for (uint32_t pace = 0; pace <= 1; ++pace) {
+    for (uint32_t w : {1u, 2u, 4u}) {
+      cell(w, 0, pace, 0, 0);
+    }
+  }
+  cell(1, 1, 1, 0, 0);
+  cell(1, 2, 1, 0, 0);
+  cell(1, 0, 1, 1, 0);
+  cell(1, 0, 1, 0, 600);
+  cell(1, 0, 1, 1, 600);
+
+  for (uint32_t e = 0; e < E; ++e) {
+    nntr_hvx_weight_release_u8i4(handle_, h_gu[e]);
+    nntr_hvx_weight_release_u8i4(handle_, h_dn[e]);
+  }
 }
 
 int main(int argc, char **argv) {
