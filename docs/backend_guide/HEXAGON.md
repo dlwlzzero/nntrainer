@@ -1108,6 +1108,42 @@ simulators pass either way, so a device pass is not optional.
    check is read on the unit that runs it. A skel's *size* is not a tree
    fingerprint (S2 landed 32 B under a prediction made on another
    tree); the `--eval` PPL / top-1 digits are.
+10. **HMX instructions are issued by worker 0 only, under a lock that
+    thread takes itself (#68 / #65 S0, 2026-09-21, PR #72).**
+    `HAP_compute_res_hmx_lock` is per thread, so the lock is not part of
+    the compute-res acquire in `htp_graph_init`: worker 0 takes it lazily
+    on its first HMX section (`htp_hmx_worker_acquire`, which also runs
+    `setup_acc_read_int32` once) and `htp_graph_destroy` releases it from
+    worker 0 in a `wp_run` job *before* the context goes back. Rules: (a)
+    an HMX kernel (S2's `MATMUL_W4A8`, S3) runs its HMX section on worker
+    0 and fans the HVX epilogue out to the other workers, never the
+    reverse; (b) a refused HMX attribute falls back to the plain 4 MB
+    VTCM acquire with `ctx.hmx.base == NULL`, and an op that needs HMX
+    fails at `init`, never silently on HVX; (c) the HVX tiled kernels keep
+    exactly the first 4 MB of VTCM and their slab geometry, so an HMX
+    build's `profile acc` STAT must stay bit-identical to the HVX-only
+    record (#68: identical to #25's) — a moved HVX slab is a bug, not a
+    tuning.
+11. **The v79 simulator executes HMX; only the accumulator layout is
+    device-only (#68, 2026-09-21).** The plain `-mv79` core is `v79na_1`
+    with an HMX v3 coprocessor: HexKL's own
+    `examples/hexkl_micro_hmx_mm_u8i4_i32` passes bit-exact on it and
+    `test_hmx` reads `max_abs=0` on the micro-mm in place, through the
+    vendor copy and after a VTCM → DDR → DMA → VTCM relocate. So every
+    HMX numeric STAT (`hmx`, S2's and S3's op tests) is a **simulator
+    gate** like the 13 HVX tests, not a device-only one, and the
+    "links and skips" degrade planned in #68 is not needed. What the
+    simulator cannot vouch for is the int32 accumulator tile layout
+    HexKL's `acc_read_int32` lands in VTCM (sim: `acc_layout usable=1
+    base=0 row_stride=32`): the first device handoff of every HMX
+    consumer (H1, #70) re-reads the `acc_layout` line on the silicon
+    before any in-place dequant result is trusted, and a device
+    `usable=0` sends that path to HexKL's vendor copy (75–96 % of the
+    upstream PR's attention time), which is then a measured cost, not a
+    hang. The WH weight-tile permutation printed by `test_hmx` (element
+    `(k, n)` of a 32×32 int4 tile → byte `128·(k>>3) + 4·n + (k&3)`,
+    nibble `(k>>2)&1`) is the S3 HVX reader's contract and is checked on
+    the simulator alone.
 
 ---
 
@@ -1859,7 +1895,8 @@ here.
   for that line comes later. #65 ports upstream PR nntrainer#4327's u8×i4
   HMX path into this executor (`docs/plans/65-w4-htp-port.md`) in four
   stage sub-issues — #68 S0 build + HexKL link + `test_hmx` simulator
-  probe, #69 S1 per-channel `w4cx` producer / image / ABI v5 / x86 PPL band
+  probe (**merged 2026-09-21**, PR #72 at `026af1e8`: the v79 simulator
+  executes HMX, section 7 rules 10–11), #69 S1 per-channel `w4cx` producer / image / ABI v5 / x86 PPL band
   (≤ 1.10 × W8), #70 S2 the HMX kernel for the six projections + handoff
   H1, #71 S3 the full 4-bit image (+ an HVX m=1 WH-tile kernel if H1 says
   so) + handoff H2 — read against GENIEX_QAIRT w4a16 (8,207 / 121 at 512)
