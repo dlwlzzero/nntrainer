@@ -397,8 +397,6 @@ interface nntr_hvx : remote_handle64 {
                        in uint32 src_stride, in uint32 workers,
                        in uint32 passes, rout sequence<uint32> res);
 
-   // (PR #86's moe_set_opts belongs here, ahead of the two #87 entries.)
-
    // [#87] The DMA ring trace of the last mm_u8i4_moe_layer_timed call,
    // flattened by hexkl_dma_trace_serialize: an 8-word header (n_push,
    // n_wait, n_blocked, depth_max, n_dropped, t_end ticks, words per push
@@ -441,4 +439,12 @@ interface nntr_hvx : remote_handle64 {
                         in uint32 load, in uint32 pace, in uint32 fresh,
                         in uint32 gap_us, in uint32 calls,
                         rout sequence<uint32> res);
+
+   // [#80] Session-scoped options for mm_u8i4_moe_layer*. flags is
+   // HEXKL_MOE_FLAG_* bits (hexkl_mm_u8i4_moe.h); bit 0 lets a call of at
+   // most 4 rows take the HVX GEMV path instead of the 64-row HMX block
+   // loop. The DSP stores the bits it knows and echoes them in applied, so
+   // a caller can tell a stale skel (AEE_EUNSUPPORTED from the stub, or
+   // applied != flags) from a switch that took. Default 0 = the HMX loop.
+   AEEResult moe_set_opts(in uint32 flags, rout uint32 applied);
 };
