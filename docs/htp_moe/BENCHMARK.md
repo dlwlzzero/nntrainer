@@ -20,13 +20,16 @@ device are labelled `(PR)` and are provisional. Rows labelled
 was the only unit reachable from that workstation) are ~7 % apart in DSP
 clock from ours and do not replace the "now" (LEDGER rule 13); the anchor
 sitting on `R3CY10WM83Y` is #94 (sitting 2, variant A; #91 folded in).
+#94's first attempt (2026-09-22) landed on `R3CY205ZMND` again and its NPU
+half was blocked by the skel loader defect #97; only its 6 CPU cells are
+in the table, as a same-unit re-run of #77's control.
 
 ## Goals
 
 | goal | now | target | ceiling | status |
 |---|---|---|---|---|
-| decode tok/s, NPU, gen 64 / 512 / 1024 | 20.8 (PR, gen 512, prompt 444); `R3CY205ZMND` #77: **19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0** (two runs per length) | **≥ 50** at each length | 48–52 (730 MB/token ÷ 34–38 GB/s) | provisional until the anchor sitting #94 (variant A) on `R3CY10WM83Y`; distance on `R3CY205ZMND`: **2.7×** at G=512 |
-| decode tok/s, CPU control (`q40`, 8 threads) | 48 (PR); `R3CY205ZMND` #77: 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5 | — (the floor the NPU must beat) | same ceiling | provisional; the CPU sits on the ceiling and clears 50 at G=64/512, not at G=1024 |
+| decode tok/s, NPU, gen 64 / 512 / 1024 | 20.8 (PR, gen 512, prompt 444); `R3CY205ZMND` #77: **19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0** (two runs per length) | **≥ 50** at each length | 48–52 (730 MB/token ÷ 34–38 GB/s) | provisional until the anchor sitting #94 (variant A) on `R3CY10WM83Y`; #94's first attempt measured no NPU cell (#97); distance on `R3CY205ZMND`: **2.7×** at G=512 |
+| decode tok/s, CPU control (`q40`, 8 threads) | 48 (PR); `R3CY205ZMND` #77: 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5; same unit, #94 partial (next day): 53.0 / 53.5 · 51.1 / 51.2 · 49.7 / 48.4 | — (the floor the NPU must beat) | same ceiling | provisional; the CPU sits on the ceiling and clears 50 at G=64/512, not reliably at G=1024 (46.4–49.7 over four runs); day-to-day drift on one unit ≤ 7 % per cell (rule 9) |
 | prefill tok/s, NPU, prompt 512 | 523–532 (PR, prompt 444); `R3CY205ZMND` #77: 403–541 (median of 6: 490); CPU 231–336 | **≥ −5 % of variant A** in every handoff | — | gate, not a goal; the denominator is variant A of each sitting, never this cell |
 | accuracy | text identical to CPU | identical | — | gate |
 
@@ -49,6 +52,13 @@ sitting on `R3CY10WM83Y` is #94 (sitting 2, variant A; #91 folded in).
 | 2026-09-21 | #77 A run 2, `R3CY205ZMND` | same | `q40-qs4cx-wh` | 512 | 494.7 | 18.24 | n/a | run1 = run2 | same |
 | 2026-09-21 | #77 A run 1, `R3CY205ZMND` | same | `q40-qs4cx-wh` | 1024 | 541.2 | 19.04 | n/a | run1 = run2 | same |
 | 2026-09-21 | #77 A run 2, `R3CY205ZMND` | same | `q40-qs4cx-wh` | 1024 | 455.1 | 16.96 | n/a | run1 = run2 | same |
+| 2026-09-22 | #94 partial, A run 1, unit `R3CY205ZMND` (**not** the planned `R3CY10WM83Y`; via a remote adb bridge) | CPU control, all Q4_0, 8 threads (`htp/94-sitting2-anchor-trace` @ `8029b76e`, code = `htp_moe` @ `2a75f7d9`; CPU path unchanged since #77) | `q40` | 64 | 287.2 | 53.02 | n/a (#89) | reference; run1 = run2 | `94-sitting2-anchor-trace.md` @ `ec7ad296` §A |
+| 2026-09-22 | #94 partial, A run 2, `R3CY205ZMND` | same | `q40` | 64 | 274.2 | 53.47 | n/a | reference; run1 = run2 | same |
+| 2026-09-22 | #94 partial, A run 1, `R3CY205ZMND` | same | `q40` | 512 | 278.7 | 51.08 | n/a | reference; run1 = run2 | same |
+| 2026-09-22 | #94 partial, A run 2, `R3CY205ZMND` | same | `q40` | 512 | 280.2 | 51.15 | n/a | reference; run1 = run2 | same |
+| 2026-09-22 | #94 partial, A run 1, `R3CY205ZMND` | same | `q40` | 1024 | 274.7 | 49.68 | n/a | reference; run1 = run2 | same |
+| 2026-09-22 | #94 partial, A run 2, `R3CY205ZMND` | same | `q40` | 1024 | 202.7 | 48.40 | n/a | reference; run1 = run2 | same |
+| 2026-09-22 | #94 partial, A NPU (6 cells), B, gtests, C | **not measured** — the skel built from `2a75f7d9` fails `remote_handle_open_domain` with `0x80000406` (`dlerror RX VA 0xFFF00000 outside ELF segment`); cause = seven undefined `hexkl_dma_trace_*` symbols, `hexkl_dma_trace.c` missing from `test/htp/build.sh` (#97) | `q40-qs4cx-wh` | — | — | — | — | — | same, Deviation 1 |
 
 #77 side tables (unit `R3CY205ZMND`, same sitting; verdicts in LEDGER §2):
 
@@ -70,10 +80,12 @@ sitting on `R3CY10WM83Y` is #94 (sitting 2, variant A; #91 folded in).
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40/nntr_lfm2_8b_a1b_q40_arm.bin` (4,768,855,808 B) | `d28f55c5bd7adeb8bf73b02de582eb88` | `nntr_quantize_stream` from `htp_moe` @ `2ce38d65`, `--isa ARM`, all Q4_0 | CPU control (#78) |
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin` (4,316,133,120 B) | `7b7867fab51845664c0050c0a837073e` | same plus `--moe_dtype QS4CX_WH`; `moe_engine: htp`, `moe_htp_layers: ""` | NPU model (#78) |
 | #77 set, `htp/77-first-handoff` @ `3c6e8397` (table) / `81fd3ec9` (built and pushed, other build path): skel A / novote, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `profile/nntrainer_causallm`, `unittest_hvx_dma_probe` | table `0dd2c303…` / `40007503…` / `53814a39…` / `83955c80…` / `326094f4…` / `ed4e73fc…` / `cf18de2c…`; **device** `47c14253…` / `99556663…` / `170af7a6…` / — / — / `3806b904…` / `9de5715b…` | `77-first-handoff.md` Artifacts + Notes | compiled files differ by build path (LEDGER rule 14); non-compiled files (`libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `77-prompt512.txt` `fc65c158…`, `tokenizer.json` `7b8067a5…`) and both model `.bin`s rebuilt there match bit-for-bit |
-| #94 set, `htp/94-sitting2-anchor-trace` @ `8029b76e` (code = `htp_moe` @ `2a75f7d9`): skel A, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `libccapi-nntrainer.so`, `gtest/unittest_hvx_dma_probe`, `gtest/unittest_hvx_mm_u8i4` | `20fb9801…` / `dc3f4b8f…` / `68574a5c…` / `b74ae822…` / `b11b0ef1…` / `26db4bfe…` / `51ba46f5…` (staged `md5.txt`; the device `md5sum` lines are filled by the sitting) | `94-sitting2-anchor-trace.md` Artifacts | `nntrainer_causallm`, `libcausallm_core.so`, `libccapi-nntrainer.so` are byte-identical to the discarded `0038cce2` build; #86 lives in the skel, `libnntrainer.so` and both gtests. `libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `prompt512.txt` `fc65c158…` == #77 |
+| #94 set, `htp/94-sitting2-anchor-trace` @ `8029b76e` (code = `htp_moe` @ `2a75f7d9`): skel A, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `libccapi-nntrainer.so`, `gtest/unittest_hvx_dma_probe`, `gtest/unittest_hvx_mm_u8i4` | `20fb9801…` / `dc3f4b8f…` / `68574a5c…` / `b74ae822…` / `b11b0ef1…` / `26db4bfe…` / `51ba46f5…` (staged `md5.txt`); **device** (`ec7ad296`, rebuilt from `8029b76e` on another machine, rule 14): skel `2bd15035…`, app `055703b2…`, `libnntrainer.so` `a508e889…`, `libcausallm_core.so` `8057cea3…`, `unittest_hvx_dma_probe` `76c43d3e…`, `unittest_hvx_mm_u8i4` `e79adbd0…`; **both skels carry the #97 defect** (seven undefined `hexkl_dma_trace_*`, `hexagon-nm -u -D`) and must not be pushed again | `94-sitting2-anchor-trace.md` Artifacts | `nntrainer_causallm`, `libcausallm_core.so`, `libccapi-nntrainer.so` are byte-identical to the discarded `0038cce2` build; #86 lives in the skel, `libnntrainer.so` and both gtests. `libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `prompt512.txt` `fc65c158…` == #77 |
 
-**Sitting 2 (#94) artifact set, 2026-09-22 — built and staged, not yet
-run.** Every artifact above was built from `htp_moe` @ `2ce38d65` (or the
+**Sitting 2 (#94) artifact set, 2026-09-22 — built and staged; first
+attempt ran only the CPU half (skel loader defect #97, see Results); the
+set is rebuilt from the fixed head once #97 lands and the handoff is
+re-issued with new md5s.** Every artifact above was built from `htp_moe` @ `2ce38d65` (or the
 #77 branch). PR #93 (`b6ebc2b7`) changed `test/htp/nntr_hvx.idl` and PR #86
 (`2a75f7d9`) added `moe_set_opts` and a 30th MoE stage slot, so the
 reference set for sitting 2 was rebuilt from **`htp_moe` @ `2a75f7d9`**
@@ -94,3 +106,4 @@ Pushing an old app with the new skel, or the reverse, fails with
 | 2026-09-21 | #77 filled (`e8b930ad`) on unit **`R3CY205ZMND`**, not ours: 12 A rows added, unit-tagged readings next to the provisional "now" (not replaced; anchor sitting #91), side tables A-profile / B / C / ④, artifact md5 note; #77 closed | results, goals (now column annotated, status), artifacts |
 | 2026-09-22 | Cycle 3: #87 closed (PR #93 merged `b6ebc2b7`), #91 folded into #94 (sitting 2 = anchor cells + #87 trace/replay, variant C only if PR #86 merges first); rebuild note for the #94 artifact set; PR #92 guide merged (LEDGER §3a); verdict ① corrected (no FC on the HTP in the NPU config → LEDGER ⑰) | goals (status column), artifacts |
 | 2026-09-22 | Cycle 4: no filled handoff (#94 tables empty, still `state:needs-measurement`); PR #86 merged `2a75f7d9` → #94 rebuilt from it with variant C on (LEDGER ⑯); #94 artifact row added, rebuild note rewritten; #95 (Hadamard on down_proj input, accuracy) recorded as LEDGER ⑱; upstream head `0a0c0402` → `b0a384d6` (LEDGER cycle 4) | artifacts |
+| 2026-09-22 | Cycle 5: #94 first attempt (`ec7ad296`) folded in — 6 CPU cells on **`R3CY205ZMND`** again (same-unit re-run of #77, not the anchor; deviations: wrong unit, remote bridge, skel would not load), no NPU/B/gtest/C cell; the goal column is untouched; #97 filed (p0) for the loader failure = undefined `hexkl_dma_trace_*` in the skel (`hexkl_dma_trace.c` missing from `build.sh`), LEDGER rule 17; device md5s added to the #94 artifact row; upstream head unchanged at `b0a384d6` | results, goals (CPU status), artifacts |

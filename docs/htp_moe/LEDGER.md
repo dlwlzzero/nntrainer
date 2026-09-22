@@ -94,6 +94,9 @@ handoff, variant A of that sitting already carries the 5 ms poll and #88
 is read against it — cleaner than merging in between. Nothing here touches
 #94's artifact set.
 
+**Cycle 5 (seen 2026-09-22 ~04:30 UTC): PR head unchanged at `b0a384d6`
+(updated 2026-09-22 01:54 UTC). Nothing to report; still not merged.**
+
 What this changes for us: (1) the "net-new" causal conv1d + gating of §4
 now exists upstream in prefill shape — #82 lifts it instead of deriving
 it; (2) the ARM decode path of the conv block is still the CPU one there
@@ -163,6 +166,27 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
     not at all**: `Lfm2MoeCausalLM` reports from `causal_lm.cpp:699`, not
     from `lfm2_causallm.cpp`'s block (#89).
 
+Learned in this project (#94 first attempt / #97, unit `R3CY205ZMND`,
+2026-09-22):
+
+17. **Gate 2 must include an undefined-symbol check of the skel.**
+    `-Wall -Werror` clean is not "links": a Hexagon shared object links
+    with unresolved symbols by default, and the device loader then fails
+    `dlopen` with `0x80000406` / `dlerror RX VA 0xFFF00000 outside ELF
+    segment` — a message that reads like a segment-layout bug and is not
+    one. #94's skel from `2a75f7d9` had seven `U hexkl_dma_trace_*`
+    (`hexkl_dma_trace.c` from PR #93 never entered `test/htp/build.sh`
+    `SRCS`; the host check compiled it on its own, so gate 1 passed).
+    From now on gate 2 = `-Wall -Werror` **and** `hexagon-nm -u -D
+    build/libnntr_hvx_skel.so` shows no `U` outside the runtime set
+    (`HAP_*`, `compute_resource_*`, `qurt*`, libc, compiler-rt); #97 puts
+    that check (or `-Wl,--no-undefined`) into `build.sh`. Second artifact
+    found broken only on the device (rule 14 was the first): every new
+    `.c` under `htp_backend/` is checked against `build.sh` at review.
+    Distinguish the three loader errors: `0x8000040E` = stale skel vs IDL
+    (rule 3), `htp Context is not registered` = app-side, `0x80000406` =
+    the skel itself does not load.
+
 ## 2. Verdicts (measured, closed)
 
 | item | verdict | source |
@@ -180,6 +204,7 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
 | ③ Arena DMA probe (wall 2) | **shape** is the only axis: strided 2D 108–117 GB/s vs contiguous 72–80; workers flat-to-negative; vote ≤ 4 %. **But isolated rates are 4–7× the in-situ 16–18 GB/s**, so the wall is the layer call's use of the ring, not the engine (rule 11) — ⑥ rewritten, #87 | #77 C |
 | ④ Two-reader DDR | **inconclusive on the DSP side** (probe defect, rule 12, #90); CPU side clean: 67.9 → 39.7 GB/s under DSP contention (−41 %). Q11 stays open | #77 ④ |
 | Control on `R3CY205ZMND` (12 cells, prompt 512) | NPU decode 18.2–21.3 tok/s, CPU 46.4–54.1, NPU prefill 403–541: the NPU is **2.7× short** of 50 at G=512; the CPU clears 50 at G=64/512 and not at G=1024. Provisional for our unit until #91 | #77 A |
+| CPU control re-run on `R3CY205ZMND` (#94 first attempt, 6 cells, next day) | 53.0 / 53.5 · 51.1 / 51.2 · 49.7 / 48.4 tok/s vs #77's 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5: **one unit drifts ≤ 7 % per cell day to day** (rule 9 quantified for the CPU path); G=1024 stays 46–50, i.e. the CPU does not reliably clear 50 there. No NPU cell (#97). Not the anchor; not a verdict on any lever | #94 `ec7ad296` |
 
 ## 3. Open items (candidates for issues; the supervisor promotes them)
 
@@ -191,7 +216,7 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
 | ③ | ~~Measurement C~~ **measured (#77) → shape only; in-situ gap is the wall → ⑥ / #87** | — | — |
 | ④ | Two-reader DDR probe — **DSP side invalid in #77 (rule 12); refiled as #90** (stream > VTCM+L2 or use the DMA ring, bounded result). CPU side: −41 % under contention, so any split pays less than the sum | decides whether the CPU+NPU split (contract §3.2) can ever pay | #90, ride-along step in a later sitting |
 | ⑤ | **Filed as #80.** M=1 MoE path on the existing HVX GEMV (wall 1). The kernel already exists: `hvx/hvx_gemm_u8i4_wh.c` (u8×i4 over WH tiles, int32 bit-identical to HMX, m ≤ 16) is used only by the prefill "tail" path in `hexkl_mm_u8i4_moe.c` (off by default, net −0.5 ms there). Decode needs a dispatch that sends all four experts through it at M=1 with no 64-row block, plus the weight feed (arena read vs DMA into VTCM) that ③ decides | MoE DSP 1.35 → ≈ 0.3 ms/call if DMA ≥ 30 GB/s | ③ |
-| ⑥ | **Wall 2 rewritten (#77 C): not descriptor / engine / vote but "why does the MoE call see a quarter of the isolated rate".** Step 1 = ~~#87~~ **landed on `htp_moe` as `b6ebc2b7` (PR #93, 2026-09-22; #87 closed)**: `hmx/hexkl_dma_trace.{c,h}` (static tables, union-of-intervals busy / depth / blocked-wait arithmetic, host-checked by `dma_trace_host_check`), trace hooks in `hexkl_mm_u8i4_moe.c` behind `hexkl_probe_on` (byte-identical output on vs off, 19 descriptors traced at the fixture shape, 46 at the LFM2 M=1 shape), IDL entries `dma_probe` / `moe_dma_trace_read` / `dma_replay` (`test/htp/nntr_hvx_dma_probe.c`), the header-only in-situ descriptor plan `test/htp/nntr_moe_dma_plan.h`, the second `weight DMA:` line and the `[HTP-DMA]` per-descriptor dump in `[HTP-PROFILE]` (`htp_compute_ops.cpp`, first `NNTR_HTP_DMA_TRACE` calls, default 3), and `TEST_F(HvxDmaProbe, MoeChunkReplay)` (workers 1/2/4 × HVX load × fresh/gap) in `unittest_hvx_dma_probe`. **The device sitting that fills the attribution table (plan 87 §1, hypotheses a–g) is #94 (sitting 2).** Original scope for reference: instrument the ring use inside `hexkl_mm_u8i4_moe.c` (per-descriptor issue/complete pcycles, wait time in `hexkl_dma_ring_wait`, outstanding depth, actual chunk shapes at M=1 and M>1) + a device gtest that reproduces the in-situ pattern, gate = a table attributing the 4–7× to named causes. Step 2 = the fix that table names (separate issue). Interacts with #80/#86: the M=1 GEMV path reads the arena directly, so its A/B also tells what the ring costs | 16–18 → ≥ 40 GB/s in situ; 1.19 → ≤ 0.57 ms per call | #87 |
+| ⑥ | **Wall 2 rewritten (#77 C): not descriptor / engine / vote but "why does the MoE call see a quarter of the isolated rate".** Step 1 = ~~#87~~ **landed on `htp_moe` as `b6ebc2b7` (PR #93, 2026-09-22; #87 closed)**: `hmx/hexkl_dma_trace.{c,h}` (static tables, union-of-intervals busy / depth / blocked-wait arithmetic, host-checked by `dma_trace_host_check`), trace hooks in `hexkl_mm_u8i4_moe.c` behind `hexkl_probe_on` (byte-identical output on vs off, 19 descriptors traced at the fixture shape, 46 at the LFM2 M=1 shape), IDL entries `dma_probe` / `moe_dma_trace_read` / `dma_replay` (`test/htp/nntr_hvx_dma_probe.c`), the header-only in-situ descriptor plan `test/htp/nntr_moe_dma_plan.h`, the second `weight DMA:` line and the `[HTP-DMA]` per-descriptor dump in `[HTP-PROFILE]` (`htp_compute_ops.cpp`, first `NNTR_HTP_DMA_TRACE` calls, default 3), and `TEST_F(HvxDmaProbe, MoeChunkReplay)` (workers 1/2/4 × HVX load × fresh/gap) in `unittest_hvx_dma_probe`. **The device sitting that fills the attribution table (plan 87 §1, hypotheses a–g) is #94 (sitting 2); its first attempt never reached the NPU because the trace's own `hexkl_dma_trace.c` was missing from the skel build (#97, rule 17).** Original scope for reference: instrument the ring use inside `hexkl_mm_u8i4_moe.c` (per-descriptor issue/complete pcycles, wait time in `hexkl_dma_ring_wait`, outstanding depth, actual chunk shapes at M=1 and M>1) + a device gtest that reproduces the in-situ pattern, gate = a table attributing the 4–7× to named causes. Step 2 = the fix that table names (separate issue). Interacts with #80/#86: the M=1 GEMV path reads the arena directly, so its A/B also tells what the ring costs | 16–18 → ≥ 40 GB/s in situ; 1.19 → ≤ 0.57 ms per call | #87 |
 | ⑦ | Transport (wall 3) **resolved by #77 B to prebound handles + per-call buffer/marshalling cleanup on plain FastRPC — #88**; #83 narrowed to the document that says what "prebound" concretely means (inventory of per-call bytes, bind/run IDL pair, persistent ION staging; upstream `fb0f02b9` size-class staging is the author's step in the same area). dspqueue / resident worker: one paragraph, revisited only with ⑨ | 0.53 → ≤ 0.1 ms per call (−10 ms/token) | #83 → #88 |
 | ⑧ | lm_head blocked Q4_0 twin on device (doc 46 §46): confirm 25.7 → ≈ 3.4 ms | ARM remainder | ① |
 | ⑨ | One FastRPC call per token: M=1 RMSNorm, conv1d + gating, RoPE, attention, dense FFN, lm_head on the DSP; per-token entry in the IDL. **Filed as #85 (skeleton entry + op table), #81 (m=1 attention), #82 (RMSNorm, q/k norm, RoPE, conv1d + gating)**; host harness for all of them #84 | removes 22 round trips and the ARM remainder | ⑤ ⑥ ⑦ |
@@ -200,8 +225,9 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
 | ⑫ | CPU+NPU expert split | raises the ceiling only if ④ > 45 GB/s | ④, user decision Q11 |
 | ⑬ | (withdrawn 2026-09-21: no simulator in this project, user decision) | — | — |
 | ⑭ | `generation(last 64)` in the base report block (**#89**) | fills the contract §1.1 column from the next handoff on | — |
-| ⑮ | Anchor sitting on `R3CY10WM83Y` — ~~#91~~ **folded into #94 (sitting 2, variant A; #91 closed as duplicate)** | replaces the provisional "now" in BENCHMARK.md and contract §1; measures rule 13's ratio | user's phone time (#94, ≤ 90 min all in) |
-| ⑯ | Device A/B of #80 / PR #86 (M=1 GEMV switch on vs off): the first lever against `lfm2_moe` 42.1 ms/token. **Cycle 4: PR #86 merged as `2a75f7d9` (2026-09-22 02:00 UTC) before #94's set was pushed, so it rides as variant C (`NNTR_MOE_HTP_M1_GEMV=1`, 6 NPU cells + one level-2 run + `*MoeLayerM1GemvMatchesHmx*`) of sitting 2 — handoff rebuilt from `2a75f7d9` (`htp/94-sitting2-anchor-trace` @ `8029b76e`). A on that head = the same binary with the switch off (`[HTP] moe m1 gemv: off (applied=0x0)`, `blocks=5632 m1_gemv=0/1408`); a C log that prints `on` in an A cell voids the run.** | MoE DSP 1.35 → ≈ 0.3 ms/call if the arena read keeps up; if not, the number says what ⑥ must deliver | #94 (user's phone time) |
+| ⑮ | Anchor sitting on `R3CY10WM83Y` — ~~#91~~ **folded into #94 (sitting 2, variant A; #91 closed as duplicate)**. **First attempt 2026-09-22 (`ec7ad296`) did not anchor:** only `R3CY205ZMND` was reachable (remote bridge) and the skel did not load (#97); 6 CPU cells recorded, still no `R3CY10WM83Y` number. Re-issue the same handoff with the skel rebuilt from the #97 fix | replaces the provisional "now" in BENCHMARK.md and contract §1; measures rule 13's ratio | **#97** → #94 rebuilt → user's phone time on `R3CY10WM83Y` |
+| ⑯ | Device A/B of #80 / PR #86 (M=1 GEMV switch on vs off): the first lever against `lfm2_moe` 42.1 ms/token. **Cycle 4: PR #86 merged as `2a75f7d9` (2026-09-22 02:00 UTC) before #94's set was pushed, so it rides as variant C (`NNTR_MOE_HTP_M1_GEMV=1`, 6 NPU cells + one level-2 run + `*MoeLayerM1GemvMatchesHmx*`) of sitting 2 — handoff rebuilt from `2a75f7d9` (`htp/94-sitting2-anchor-trace` @ `8029b76e`). A on that head = the same binary with the switch off (`[HTP] moe m1 gemv: off (applied=0x0)`, `blocks=5632 m1_gemv=0/1408`); a C log that prints `on` in an A cell voids the run.** | MoE DSP 1.35 → ≈ 0.3 ms/call if the arena read keeps up; if not, the number says what ⑥ must deliver | #97 (skel loads) → #94 (user's phone time); first attempt blocked before any NPU cell |
+| ⑲ | **Filed as #97 (p0).** Skel from `2a75f7d9` does not load (`0x80000406`): `hexkl_dma_trace.c` absent from `test/htp/build.sh` `SRCS` → seven undefined `hexkl_dma_trace_*`. Fix = add the file + an undefined-symbol guard in `build.sh` (rule 17); then #94's artifact set is rebuilt and the handoff re-issued (same document, new md5s) | unblocks every NPU cell of #94 (⑥ ⑮ ⑯ ⑰) | none |
 | ⑰ | **`fully_connected` 28.2 vs 10.3 ms/token on the NPU run with no FC on the HTP** (§2 ① correction). Not a round trip; candidates: CPU thread over-splitting / contention with the FastRPC poll thread (doc 48 §2 ③), CPU DVFS while the DSP runs. 18 ms/token is the second-largest single lever after MoE and needs no DSP code if it is a threading matter. Decide with one extra profile cell (`NNTR_NUM_THREADS=4` on the NPU model, or the non-WH `QS4CX` model with `NNTR_MOE_HTP_DECODE` off/on) — candidate ride-along for #94 or its own issue | up to −18 ms/token on the NPU path | #94 profile run |
 
 ## 3a. Guide and tooling notes
