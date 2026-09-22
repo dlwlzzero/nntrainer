@@ -55,7 +55,7 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <nav class="top"><a href="index.html">Overview</a><a href="01-run-it.html">1 Run it</a><a href="02-decode-path.html">2 Decode path</a><a href="03-performance.html">3 Performance</a><a href="04-glossary.html" class="here">4 Glossary</a></nav>
 <main>
 <h1>4. Glossary — every acronym and term on these pages</h1>
-<p class="src">definitions as used in contract <code>docs/plans/0001-…</code>, LEDGER.md, BENCHMARK.md, doc 49 §3–§4 and the code under <code>nntrainer/tensor/htp_backend/</code>.</p>
+<p class="src">definitions as used in plans 88, 101 and 105, <code>docs/measurements/88-moe-call-marshalling.md</code>, contract <code>docs/plans/0001-…</code>, LEDGER.md, BENCHMARK.md, doc 49 §3–§4 and the code under <code>nntrainer/tensor/htp_backend/</code>.</p>
 <dl class="gl">
 <dt>A/B</dt><dd>Two variants run in the same sitting on the same phone; only their ratio is a verdict (LEDGER rule 9).</dd>
 <dt>acc, acc_read</dt><dd>The HMX accumulator (64 rows × 32 int32) and the instruction that copies it out to VTCM; the HMX stalls while it is read. Profile column <code>acc</code>.</dd>
@@ -67,7 +67,7 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>ARM</dt><dd>The phone's CPU cores (Cortex big.LITTLE), where the app and everything not on the DSP runs.</dd>
 <dt>blocked wait / dry wait</dt><dd>A DMA wait that found its descriptor still in flight (blocked) vs one that returned at once; counted per call by the ring trace (<code>waits=… (blocked …)</code>).</dd>
 <dt>bus vote</dt><dd>A request the DSP makes for DDR bandwidth (40 GB/s at session open); the <code>novote</code> skel drops it. Worth ≤ 4 % in #77.</dd>
-<dt>cache maintenance (clean / invalidate)</dt><dd>What the FastRPC driver does to a <em>cached</em> ION buffer on every call so the DSP sees the ARM's writes and vice versa; it covers the whole buffer, not the bytes used (plan 88's finding for wall 3).</dd>
+<dt>cache maintenance (clean / invalidate)</dt><dd>What the FastRPC driver does to a <em>cached</em> ION buffer on every call so the DSP sees the ARM's writes (clean = write the cache back to DDR) and the ARM sees the DSP's (invalidate = drop stale lines); it covers the whole buffer, not the bytes used. With the old 4 MiB staging pair this was 245.8 µs of every decode call (#88).</dd>
 <dt>cDSP</dt><dd>The compute DSP domain of the Snapdragon; the FastRPC session opens with <code>_dom=cdsp</code>.</dd>
 <dt>cold / warm call</dt><dd>A single-shot MoE call after the ~0.6 ms FastRPC gap (profile level 2) vs the last of five back-to-back repeats (level 3); the DMA trace is printed for both.</dd>
 <dt>control (variant A)</dt><dd>The unchanged reference binary that opens every sitting.</dd>
@@ -95,24 +95,27 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>gather / scatter</dt><dd>Gather: bring a block's activation rows (and scale/zp) to where the HMX reads; scatter: <code>out[row] += weight · result</code>, the weighted sum of the experts.</dd>
 <dt>gen (G)</dt><dd>Generation length in tokens: 64 / 512 / 1024 in every handoff.</dd>
 <dt>greedy decoding</dt><dd><code>do_sample: false</code>; the argmax token every step, so runs are repeatable.</dd>
-<dt>handoff</dt><dd>A measurement document (<code>docs/measurements/&lt;issue&gt;-&lt;slug&gt;.md</code>) the user runs on the phone in one sitting and fills in.</dd>
+<dt>handoff</dt><dd>A measurement document (<code>docs/measurements/&lt;issue&gt;-&lt;slug&gt;.md</code>) the user runs on the phone in one sitting and fills in. Its binaries must be rebuildable from the named commits on any workstation; a staging path is not a deliverable (LEDGER rule 22).</dd>
 <dt>HexKL</dt><dd>Qualcomm's kernel library exposing the HMX (<code>libhexkl_micro.a</code> on the DSP, <code>libsdkl.so</code> on the ARM).</dd>
 <dt>HMX</dt><dd>Hexagon Matrix eXtension: the matrix unit; one instruction multiplies a 64 × 32 u8 tile by a 32 × 32 i4 tile into the accumulator.</dd>
-<dt>host / dsp / transport</dt><dd>Profile columns: host = the call as timed by the ARM; dsp = as timed by the DSP; transport = host − dsp, the round trip.</dd>
+<dt>host / dsp / transport</dt><dd>Profile columns: host = the call as timed by the ARM; dsp = as timed by the DSP; transport = host − dsp, the round trip (87.9 µs per decode call since #88). Transport and host drift between sittings like tok/s (401 vs 649 µs on identical sources two hours apart), so they are compared only as an A/B inside one sitting; only <code>dsp</code> is comparable across sittings (LEDGER rules 20, 23).</dd>
 <dt>HTP</dt><dd>Hexagon Tensor Processor: Qualcomm's name for the NPU (DSP + HVX + HMX + VTCM).</dd>
-<dt>HVX</dt><dd>Hexagon Vector eXtensions: the DSP's 1024-bit SIMD unit; four contexts (one per thread that owns one).</dd>
+<dt>HVX</dt><dd>Hexagon Vector eXtensions: the DSP's 1024-bit SIMD unit; a thread must own an HVX context to use it. The session sizes its worker pool from the context count <code>qurt_hvx_get_units()</code> reports (6 lanes on v79 per plan 105; older text said four).</dd>
 <dt>IDL / qaic / stub / skel</dt><dd>The interface file <code>nntr_hvx.idl</code>; the generator; the ARM-side caller code; the DSP-side receiver library <code>libnntr_hvx_skel.so</code>.</dd>
+<dt>issue-bound / feed-bound</dt><dd>Whether a loop is limited by how fast the core can issue its instructions or by how fast the data (here the arena weights) arrives; #105's microbench <code>MoeM1GemvFeedVsCompute</code> tells them apart for the GEMV.</dd>
 <dt>int4 (i4) / u8 / int32 / f32</dt><dd>4-bit signed weights; 8-bit unsigned activations; 32-bit integer sums; 32-bit floats.</dd>
 <dt>ION</dt><dd>Android's shared-memory allocator (<code>rpcmem</code>): buffers both ARM and DSP can map; uncached on the DSP side.</dd>
 <dt>KV cache</dt><dd>Stored keys and values of past positions that attention reads at decode.</dd>
-<dt>l2fetch</dt><dd>DSP instruction that prefetches a 2D region into L2 ahead of vector loads.</dd>
+<dt>l2fetch</dt><dd>DSP instruction that prefetches a 2D region into L2 ahead of vector loads; non-blocking, up to 3 queued per thread, lower priority than real loads.</dd>
+<dt>l2fetch lead</dt><dd>How far ahead of use a lane prefetches its weight columns. The GEMV issued each column's <code>l2fetch</code> right before that column's loads (lead 0); #105 / PR #107 lets each lane fetch its next block of columns while computing the current one (<code>HVX_GEMV_PF_LEAD_KB</code>: 0 / 64 / 192 KB = variants B1 / B2 / B3; too long a lead could evict useful lines from L2).</dd>
+<dt>libnative (HVX emulation)</dt><dd>A C implementation of every HVX intrinsic shipped with the Hexagon tools; PR #107 builds the real GEMV source on x86 against it, so its bit-identity is checked on the workstation, not only on the phone.</dd>
 <dt>LEDGER / BENCHMARK</dt><dd><code>docs/htp_moe/LEDGER.md</code>: rules learned on silicon, verdicts, open items; <code>BENCHMARK.md</code>: goals and every measured row.</dd>
 <dt>LFM2.5-8B-A1B</dt><dd>The model: 8 B parameters total, ≈ 1 B active per token (top-4 of 32 experts).</dd>
 <dt>lm_head</dt><dd>The final projection to vocabulary logits; tied to the embedding (same matrix, 128000 × 2048).</dd>
 <dt>M, K, N</dt><dd>Matrix shapes: M rows of activation, K reduction length, N output columns. Expert gate_up: M × 2048 × 3584.</dd>
 <dt>M0-PROF</dt><dd><code>NNTR_M0_PROFILE=1</code>'s ARM-side per-MoE-layer stage line.</dd>
-<dt>marshalling</dt><dd>Packing call arguments for FastRPC; #77 B's verdict for what the transport cost is.</dd>
-<dt>M=1 GEMV path (<code>NNTR_MOE_HTP_M1_GEMV</code>, <code>moe_set_opts</code>)</dt><dd>PR #86's branch inside the MoE kernel: at M ≤ 4 the four experts run on the HVX GEMV from the arena with no DMA and no HMX; enabled per session by the IDL method <code>moe_set_opts</code>; default off (to flip: #101). Measured in #94 as variant C: +6.2 / +7.7 / +1.7 % decode, text identical, dsp 1414 → 1044 µs but <code>mm</code> 783 → 975 µs (LEDGER ⑯).</dd>
+<dt>marshalling</dt><dd>Packing call arguments for FastRPC; #77 B's first name for the transport cost. #88 showed the arguments themselves are 464 bytes and cheap; the cost was cache maintenance on the staging buffers plus the poll window.</dd>
+<dt>M=1 GEMV path (<code>NNTR_MOE_HTP_M1_GEMV</code>, <code>moe_set_opts</code>)</dt><dd>PR #86's branch inside the MoE kernel: at M ≤ 4 the four experts run on the HVX GEMV from the arena with no DMA and no HMX; enabled per session by the IDL method <code>moe_set_opts</code>; default off (#101, in progress, flips it on with <code>=0</code> as the opt-out). Measured in #94 as variant C: +6.2 / +7.7 / +1.7 % decode, text identical, dsp 1414 → 1044 µs but <code>mm</code> 783 → 975 µs (LEDGER ⑯).</dd>
 <dt>md5</dt><dd>Checksum used to identify every pushed binary and model file.</dd>
 <dt>mm</dt><dd>Profile column: HMX instruction issue time, timed by difference.</dd>
 <dt>MoE</dt><dd>Mixture of experts: a router picks a few experts per token; here top-4 of 32 in 22 layers.</dd>
@@ -120,9 +123,12 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>NPU</dt><dd>Neural processing unit; in this project the HTP.</dd>
 <dt>packed vs strided (VTCM writes)</dt><dd>Where a DMA descriptor's rows land in VTCM: <em>strided</em> = destination stride equals the source stride (the kernel: an expert's eight gate/up chunks tile one 3.67 MB window exactly once); <em>packed</em> = destination stride equals the row size (the probe, and the replay before #99: rows contiguous, chunks overlapping in 569 KB). The DDR read is the same either way; only the write geometry and the checksum footprint differ (plan 99 §3).</dd>
 <dt>paced / unpaced replay</dt><dd><code>pace=1</code> replays the descriptors at the traced in-situ wait points (reproduces the in-call 15.6–18.6 GB/s); <code>pace=0</code> issues them as fast as the ring allows (40.2 GB/s in #94, the row-h number).</dd>
+<dt>one-row GEMV (<code>gemm_row1</code>)</dt><dd>#105 / PR #107's inner loop for a single activation row: one accumulator, 8 <code>vrmpy</code> per weight tile, the same accumulation order as row 0 of the four-row loop (<code>gemm_rows4</code>), so the int32 sums are identical by construction. The four-row loop at one row issued 32 <code>vrmpy</code> per tile, 24 of them wasted, in a pattern the v79 manual lists as an accumulator stall (36 vs 11–13 packets per tile). (LEDGER ㉒ spells it <code>gemm_rows1</code>; the plan and the PR use <code>gemm_row1</code>.)</dd>
 <dt>one call per token</dt><dd>The target shape: the whole layer stack resident on the DSP so a token costs one FastRPC round trip (LEDGER ⑨).</dd>
 <dt>PD (unsigned PD)</dt><dd>Process domain on the DSP; "unsigned" lets a non-signed skel run.</dd>
-<dt>poll QoS (<code>qos_mode=2</code>) / poll window</dt><dd>The latency setting that keeps the CPU polling for the DSP's reply for a set time (100 µs on <code>htp_moe</code>; upstream <code>NNTR_HTP_POLL_US</code> defaults to 5000) before falling back to an interrupt wait; a <code>qos_mode=1</code> in the profile header means the driver refused the value.</dd>
+<dt>poll QoS (<code>qos_mode=2</code>) / poll window</dt><dd>After sending a call the ARM thread can <em>poll</em> — check for the reply over and over, fast but keeping a core busy — or sleep until an interrupt wakes it, cheap but slow to wake. The poll window is how long it polls before sleeping: 5000 µs since PR #103 (<code>NNTR_HTP_POLL_US</code>, was 100 µs, which every ≈ 1.4 ms decode call outlived; worth 67.6 µs per call in #88). <code>qos_mode=2</code> in the profile header = poll accepted; <code>1</code> = the driver refused the value (10 000 is refused) and fell back to PM QoS.</dd>
+<dt>per-token budget</dt><dd>LEDGER §2's split of one decoded token into MoE DSP time, transport and "outside the MoE call", derived from tok/s minus 22 × the profile row — an estimate, not a measurement (42.0 ms at G=512 on #88 B: 30.4 / 1.9 / ≈ 9.6).</dd>
+<dt>prebind</dt><dd>Plan 88's conditional step (per-layer handles bound once); not built, because #88 met the ≤ 0.1 ms gate without it.</dd>
 <dt>PR (#4327)</dt><dd>The upstream pull request this branch is frozen from; its docs are <code>docs/htp_attention/*</code>.</dd>
 <dt>prefill</dt><dd>Processing the prompt (512 tokens) in one pass; M ≫ 1; the −5 % gate on every change.</dd>
 <dt>profile build (<code>--profile</code>)</dt><dd>An app build that prints per-node totals; never read for tok/s (rule 1).</dd>
@@ -138,24 +144,26 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>rung / gate</dt><dd>The verification ladder: 0 format, 1 host build + checks, 2 skel, 3 Android app + device gtest, 4 device handoff.</dd>
 <dt>SDK (Hexagon SDK 6.4.0.1)</dt><dd>Qualcomm's DSP toolchain.</dd>
 <dt>SiLU / SwiGLU</dt><dd>silu(x) = x · sigmoid(x); SwiGLU = silu(gate) · up, the FFN's non-linearity.</dd>
-<dt>size-class staging</dt><dd>Upstream's fix (<code>fb0f02b9</code>): one cached ION staging buffer per power-of-two size from 64 KiB, picked per call, so a decode call no longer rides a 4 MiB buffer sized by the prompt.</dd>
+<dt>size-class staging</dt><dd>Upstream's fix (<code>fb0f02b9</code>, in <code>htp_moe</code> via PR #103): one cached ION staging buffer per power-of-two size from 64 KiB, picked per call, so a decode call rides a 64 KiB pair instead of the 4 MiB pair the prompt grew — the driver's whole-buffer cache maintenance shrinks with it (245.8 µs per decode call in #88). Both classes stay allocated (+0.3 % peak RSS).</dd>
+<dt><code>staging:</code> line</dt><dd>Profile line (level ≥ 2, since PR #103) under each MoE row: the size classes the call rode, <code>ion=y|n</code>, <code>rpc allocs</code> (process-wide count of shared buffers; must not grow with calls) and the argument bytes copied outside ION (464 at decode).</dd>
 <dt>same-unit drift</dt><dd>How much one phone's tok/s moves between sittings with no code cause: up to −16 % (NPU) / ±9 % (CPU) per cell in #94 vs #77 while the DSP profile columns moved ≤ 4 % (LEDGER rules 9, 20). Recorded as a note, never as a verdict.</dd>
 <dt>sitting</dt><dd>One uninterrupted session on the phone; the unit within which numbers are comparable.</dd>
 <dt>SNR</dt><dd>Signal-to-noise ratio in dB between two paths' outputs; <code>NNTR_L2_DIFF</code>'s accuracy measure, the gate for #95.</dd>
 <dt>SMMU</dt><dd>The IOMMU that maps ION buffers into the DSP's address space.</dd>
 <dt>stage</dt><dd>Profile column: DMA copies of the activation in and the output out of the ION buffers.</dd>
 <dt>thermal_zone0</dt><dd>The phone's SoC temperature sensor the handoff samples at each checkpoint (29 °C cool → 51–55 °C after the twelve A cells in #94); probe readings are quoted with it (rule 18).</dd>
+<dt>transport (wall 3)</dt><dd>The FastRPC round trip of one call, host − dsp. Closed as a wall by #88 (401.3 → 87.9 µs per decode call, 1.9 ms per token). Only comparable inside one sitting (rule 23).</dd>
 <dt>tok/s, TPS</dt><dd>Tokens per second; the app prints "TPS".</dd>
 <dt>UND symbols / undefined-symbol guard</dt><dd><code>UND</code> is readelf's mark for a symbol a shared object imports rather than defines. A Hexagon skel legitimately imports ~46 runtime symbols (<code>HAP_*</code>, <code>qurt_*</code>, libc…) that the DSP image resolves at load; a project symbol left <code>UND</code> (a <code>.c</code> missing from <code>build.sh</code>) links fine and fails only on the device with <code>0x80000406</code>. Since PR #98 <code>build.sh</code> checks this and prints <code>UNDEFINED SYMBOLS OK (&lt;n&gt; runtime imports)</code> (LEDGER rule 17).</dd>
-<dt>unit</dt><dd>A specific phone, identified by its adb serial. Since 2026-09-22 no particular unit is required (contract §12): a handoff names none, the filled handoff records the one used. So far every nntrainer row ran on <code>R3CY205ZMND</code> (#77, #94); the PR author's rows are from <code>R5KL30G6MLT</code>. Two S25 Ultras were 6–8.6 % apart on one binary in an earlier project, which is why numbers are compared only inside a sitting (rule 13).</dd>
-<dt>variant A / B / C</dt><dd>A = the unchanged control binary that opens every sitting; B, C = the variants read against it. In #94, C was the same binary with the M=1 GEMV switch on.</dd>
+<dt>unit</dt><dd>A specific phone, identified by its adb serial. Since 2026-09-22 no particular unit is required (contract §12): a handoff names none, the filled handoff records the one used. So far every nntrainer row ran on <code>R3CY205ZMND</code> (#77, #94, #88); the PR author's rows are from <code>R5KL30G6MLT</code>. Two S25 Ultras were 6–8.6 % apart on one binary in an earlier project, which is why numbers are compared only inside a sitting (rule 13).</dd>
+<dt>variant A / B / C</dt><dd>A = the unchanged control binary that opens every sitting; B, C = the variants read against it. In #94, C was the same binary with the M=1 GEMV switch on; in #88, B was PR #103 and C was B with the poll window back at 100 µs.</dd>
 <dt>v79</dt><dd>The Hexagon architecture version in the Snapdragon 8 Elite.</dd>
 <dt>vrmpy</dt><dd>HVX multiply-accumulate of four u8 × i8 products per lane; the GEMV's inner instruction.</dd>
 <dt>VTCM</dt><dd>Vector tightly-coupled memory: 8 MiB of on-chip SRAM the HMX reads from; filled only by DMA.</dd>
 <dt>wall</dt><dd>One of the three measured limits of the decode MoE call: HMX 64-row tile, weight DMA rate, FastRPC transport.</dd>
 <dt>WH tile</dt><dd>"Weight, HMX order": 32 k × 32 n int4, 512 B, the layout the HMX (and the HVX GEMV) reads.</dd>
-<dt>worker pool</dt><dd>Three DSP threads with HVX contexts that run epilogues, requant and scatter behind the HMX.</dd>
+<dt>worker pool</dt><dd>DSP threads with HVX contexts (one fewer than the contexts the DSP reports; the calling thread is the extra lane) that run epilogues, requant and scatter behind the HMX, and the GEMV's column units.</dd>
 <dt>zp (zero point)</dt><dd>The offset of an asymmetric u8 quantization, per row, alongside its scale.</dd>
 </dl>
-<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (terms from PRs #93, #86 and plans 88/83, #95) and again against <code>e9c2c907</code> (sitting 2: descriptor list, packed vs strided, UND symbols, 0x80000406, row h, same-unit drift, unit rule). Decode only.</footer>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (terms from PRs #93, #86 and plans 88/83, #95) and again against <code>e9c2c907</code> (sitting 2: descriptor list, packed vs strided, UND symbols, 0x80000406, row h, same-unit drift, unit rule) and <code>0c1a445e</code> (#88: size-class staging, <code>staging:</code> line, poll window, transport and rule 23, prebind, per-token budget; #105: one-row GEMV, l2fetch lead, libnative, issue/feed-bound; HVX lane count corrected). Decode only.</footer>
 </main></body></html>
