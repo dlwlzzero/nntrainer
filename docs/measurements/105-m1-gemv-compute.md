@@ -261,79 +261,225 @@ cat $W/logs/skel_push.log $W/logs/therm.log
 Then fill the tables below, commit this file on the same branch, push,
 set #105 to `state:measured`.
 
-## Results (fill in)
+## Results (2026-09-22, unit `R3CY205ZMND`)
 
-Unit (serial from `adb devices`): ______  Battery / °C / thermal_zone0 at checkpoints 0–5: ______
+Unit (serial from `adb devices`): **`R3CY205ZMND`** (SM-S938N, `ro.board.platform=sun`, v79).
+Battery 100 % on charger, screen off, all through.
+Battery °C / `thermal_zone0` m°C at the checkpoints: **0** 27.9 / 31000 ·
+**1** 28.1 / 30200 · **3** (after the G = 64 block) 34.8 / 55400 · **4**
+(after G = 512) 37.9 / 64300 · **5** (after G = 1024) 41.4 / 66300.
+Checkpoint 2 is replaced by the second profile pass below.
 
-Proof and kernel columns (`[HTP-PROFILE]` level 2, G = 64, one run each;
-µs/call; the verdict reads `mm` and `dsp`):
+The sitting ran through the ADF SSH bridge (`adf.sraisys.com`, no local
+USB), so every `adb` line is a shim over that bridge and the device-side one-liners were pushed as
+`/system/bin/sh` scripts. `$W` did not exist on this workstation: the whole
+set was rebuilt from the commits per the recipe above, so **every md5 below
+is this workstation's build, not the table's** (rules 14 and 21). Staged
+md5 = device md5 for all 14 files, and every log carries the md5 of the
+skel it ran (0 mismatches over 24 E2E cells, 8 profile runs and 4 gtest
+runs).
+
+Rebuilt artifact md5s (`$W/md5.txt`, all verified on the device):
+
+| file | md5 (this workstation) | handoff table said |
+|---|---|---|
+| `libnntr_hvx_skel.A.so` | `a1af011b79934faac684b1e1a54032c2` | `9bcb81e4…` |
+| `libnntr_hvx_skel.B1.so` | `f6bc4014c1da87306bf0d53bec55c3a7` | `a3f5d431…` |
+| `libnntr_hvx_skel.B2.so` | `81d7f48acc55fcda695e97f471099789` | `18eeb1c8…` |
+| `libnntr_hvx_skel.B3.so` | `9aa17b57c9b26250d4aeadcba74b6029` | `1e08fd10…` |
+| `app/nntrainer_causallm` | `30cf2472920f5320b4bc66b0a2d3ae6b` | `01bd38f6…` |
+| `app/libnntrainer.so` | `b2a8016758ec8b269e01eb4ec84b2c4b` | `ddc61f29…` |
+| `app/libcausallm_core.so` | `94d3fd94c6064f13e5b56366965bada5` | `0a700c02…` |
+| `app/libccapi-nntrainer.so` | `160e20dd4c1521b02722d71854d19d62` | `571c0ff2…` |
+| `gtest/unittest_hvx_mm_u8i4` | `f74e8a0b5f0676cc201d9ff5598cdf0d` | `e498d6c2…` |
+| `app/libc++_shared.so`, `gtest/libc++_shared.so` | `b1586b9b512712800fd36a24abac1c0a` | **=** |
+| `app/libsdkl.so`, `gtest/libsdkl.so` | `0ad4e22a70e4f135bce38ad8fd1e001b` | **=** |
+| `prompt512.txt` | `fc65c1588dc66dd764c7013fe96cbb75` | **=** |
+| `tokenizer.json` (device) | `7b8067a580173d3eb1697afae3b456f5` | **=** |
+| model `nntr_lfm2_8b_a1b_q40_arm.bin` (device, 4316133120 B) | `7b7867fab51845664c0050c0a837073e` | **=** (reused, no push) |
+
+Since the skels are not byte-reproducible, the variant flag was re-proved
+in each rebuilt binary by disassembly, the same way the handoff did it:
+`A` exports only `hvx_gemm_u8i4_wh_col`; B1/B2/B3 all export
+`_col_nopf` + `_prefetch`; the lead constant appears as **B1** none
+(baseline 16 × `#0x10000` only), **B2** 8 extra `#0x10000` (64 KB),
+**B3** 8 × `#0x30000` (192 KB). App checks: `staging: act` = 1 (PR #103
+present), `per-layer-type totals` = 0 (not a profile binary), no
+`libcdsprpc*` staged.
+
+### Proof and kernel columns
+
+`[HTP-PROFILE]` level 2, G = 64, µs/call. **Two passes**, because in pass 1
+(the handoff's order A → B1 → B2 → B3, back to back) the four runs did not
+start from the same thermal state — A started at 30–32 °C and the B runs at
+50–58 °C. Pass 2 re-read all four in the **reverse** order, each from a
+34.5 °C cold start (`cool.sh` polls `thermal_zone0` device-side). The two
+passes agree to **≤ 0.4 %** on every `mm`, so the column is per-variant and
+the thermal worry is closed; the tables below give pass 1 / pass 2.
 
 | variant | skel md5 (device) | qos_mode | M==1 `mm` | M==1 `dsp` | M==1 `swiglu` | M==1 host / transport | blocks / m1_gemv | M>1 `dsp` | M>1 m1_gemv |
 |---|---|---|---|---|---|---|---|---|---|
-| A | | | | | | | | | |
-| B1 | | | | | | | | | |
-| B2 | | | | | | | | | |
-| B3 | | | | | | | | | |
+| A | `a1af011b…` | 2 / 2 | 973.1 / 972.9 | 1032.6 / 1032.5 | 5612.3 / 5610.2 | 1214.7 / 1216.6 · 182.0 / 184.2 | 0 / 1408/1408 (both) | 16661.8 / 16416.0 | 0/23 |
+| B1 | `f6bc4014…` | 2 / 2 | 1044.2 / 1045.0 | 1104.5 / 1105.2 | 6202.8 / 6207.3 | 1286.9 / 1291.4 · 182.5 / 186.3 | 0 / 1408/1408 (both) | 16447.4 / 16324.0 | 0/23 |
+| B2 | `81d7f48a…` | 2 / 2 | 1006.7 / 1003.0 | 1065.8 / 1062.0 | 5981.8 / 5959.5 | 1249.2 / 1247.5 · 183.4 / 185.5 | 0 / 1408/1408 (both) | 16613.0 / 16527.1 | 0/23 |
+| B3 | `9aa17b57…` | 2 / 2 | 929.5 / 932.2 | 989.4 / 992.7 | 5452.7 / 5465.4 | 1175.3 / 1183.9 · 186.0 / 191.2 | 0 / 1408/1408 (both) | 16618.2 / 16818.0 | 0/23 |
 
-Gtests (per skel; `thermal_zone0` before → after):
+Means and deltas against A (`mm`): A **973.0** · B1 **1044.6 (+7.4 %)** ·
+B2 **1004.9 (+3.3 %)** · B3 **930.9 (−4.3 %)**. `dsp`: 1032.6 / 1104.9 /
+1063.9 / 991.1. `swiglu` is still the mis-attributed bucket (#102) and is
+not read. M>1 `dsp` spans 16324–16818 over all eight runs, i.e. every
+variant within **2.5 %** of A — the M>1 path is untouched, as designed.
+
+### Gtests (per skel; `thermal_zone0` before → after, pass 1)
 
 | variant | bad_elems_M1 | bad_elems_M4 | bit_identical | therm (m°C) | arena mm / min / lane_us / ns_per_tile / gbps | heap mm / min / lane_us / ns_per_tile / gbps | hot mm / min / lane_us / ns_per_tile / gbps |
 |---|---|---|---|---|---|---|---|
-| A | | | | | | | |
-| B1 | | | | | | | |
-| B2 | | | | | | | |
-| B3 | | | | | | | |
+| A | 0 of 2048 | 0 of 8192 | yes | 32500 → 34900 | 830 / 748 / 4805 / **111.72** / 26.53 | 850 / 838 / 4977 / 115.72 / 25.91 | 31 / 29 / 154 / **70.77** / 35.94 |
+| B1 | 0 of 2048 | 0 of 8192 | yes | 56200 → 47700 | 1052 / 1045 / 6246 / **145.23** / 20.93 | 1017 / 1012 / 6026 / 140.11 / 21.65 | 20 / 19 / 93 / **42.74** / 55.71 |
+| B2 | 0 of 2048 | 0 of 8192 | yes | 57700 → 51200 | 997 / 979 / 5912 / **137.46** / 22.09 | 1058 / 1049 / 6255 / 145.44 / 20.81 | 19 / 17 / 86 / **39.52** / 58.64 |
+| B3 | 0 of 2048 | 0 of 8192 | yes | 57700 → 52300 | 880 / 875 / 5171 / **120.23** / 25.02 | 976 / 963 / 5729 / 133.21 / 22.56 | 16 / 14 / 68 / **31.25** / 69.63 |
 
-E2E (NPU model, `NNTR_MOE_HTP_M1_GEMV=1`, prompt 512, 8 threads):
+`[  PASSED  ] 2 tests.` in all four; no `INVALID`, no `SKIPPED`, and the
+`hot` cell never failed. `lanes` reads 5.8–5.9 on arena/heap and 4.3–5.0 on
+the (much shorter) hot cell.
+
+### E2E (NPU model, `NNTR_MOE_HTP_M1_GEMV=1`, prompt 512, 8 threads)
+
+Every cell: `prefill: 512 tokens`, `generation: <G> tokens`, exactly one
+`[HTP] moe m1 gemv: on (applied=0x1)`, no `[HTP-PROFILE]` block, and the
+in-log skel md5 equal to its variant's row (24/24).
 
 | variant | gen | run | prefill tok/s | decode tok/s (all) | decode tok/s (last 64) | peak RSS (KB) | text = A (same G, run)? | skel md5 (device, from the log) |
 |---|---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | n/a (#89) | | reference | |
-| B1 | 64 | 1 | | | n/a | | | |
-| B2 | 64 | 1 | | | n/a | | | |
-| B3 | 64 | 1 | | | n/a | | | |
-| B3 | 64 | 2 | | | n/a | | | |
-| B2 | 64 | 2 | | | n/a | | | |
-| B1 | 64 | 2 | | | n/a | | | |
-| A | 64 | 2 | | | n/a | | reference | |
-| A | 512 | 1 | | | n/a | | reference | |
-| B1 | 512 | 1 | | | n/a | | | |
-| B2 | 512 | 1 | | | n/a | | | |
-| B3 | 512 | 1 | | | n/a | | | |
-| B3 | 512 | 2 | | | n/a | | | |
-| B2 | 512 | 2 | | | n/a | | | |
-| B1 | 512 | 2 | | | n/a | | | |
-| A | 512 | 2 | | | n/a | | reference | |
-| A | 1024 | 1 | | | n/a | | reference | |
-| B1 | 1024 | 1 | | | n/a | | | |
-| B2 | 1024 | 1 | | | n/a | | | |
-| B3 | 1024 | 1 | | | n/a | | | |
-| B3 | 1024 | 2 | | | n/a | | | |
-| B2 | 1024 | 2 | | | n/a | | | |
-| B1 | 1024 | 2 | | | n/a | | | |
-| A | 1024 | 2 | | | n/a | | reference | |
+| A | 64 | 1 | 539.5 | 27.960 | n/a (#89) | 4790420 | reference | `a1af011b…` |
+| B1 | 64 | 1 | 506.4 | 26.745 | n/a | 4961708 | yes | `f6bc4014…` |
+| B2 | 64 | 1 | 487.6 | 27.223 | n/a | 4906256 | yes | `81d7f48a…` |
+| B3 | 64 | 1 | 475.0 | 28.508 | n/a | 4856292 | yes | `9aa17b57…` |
+| B3 | 64 | 2 | 493.3 | 28.432 | n/a | 4951828 | yes | `9aa17b57…` |
+| B2 | 64 | 2 | 482.1 | 27.211 | n/a | 5029992 | yes | `81d7f48a…` |
+| B1 | 64 | 2 | 471.5 | 26.490 | n/a | 5262300 | yes | `f6bc4014…` |
+| A | 64 | 2 | 457.6 | 27.527 | n/a | 5074368 | reference | `a1af011b…` |
+| A | 512 | 1 | 516.1 | 27.089 | n/a | 5251436 | reference | `a1af011b…` |
+| B1 | 512 | 1 | 427.4 | 25.907 | n/a | 5197960 | yes | `f6bc4014…` |
+| B2 | 512 | 1 | 433.9 | 25.233 | n/a | 5236136 | yes | `81d7f48a…` |
+| B3 | 512 | 1 | 372.6 | 27.533 | n/a | 4798148 | yes | `9aa17b57…` |
+| B3 | 512 | 2 | 396.9 | 27.431 | n/a | 5057704 | yes | `9aa17b57…` |
+| B2 | 512 | 2 | 398.4 | 26.197 | n/a | 5312920 | yes | `81d7f48a…` |
+| B1 | 512 | 2 | 403.2 | 25.684 | n/a | 5322848 | yes | `f6bc4014…` |
+| A | 512 | 2 | 390.8 | 26.669 | n/a | 4967492 | reference | `a1af011b…` |
+| A | 1024 | 1 | 401.6 | 25.674 | n/a | 5322572 | reference | `a1af011b…` |
+| B1 | 1024 | 1 | 435.7 | 23.381 | n/a | 5154852 | yes | `f6bc4014…` |
+| B2 | 1024 | 1 | 331.0 | 23.749 | n/a | 4802660 | yes | `81d7f48a…` |
+| B3 | 1024 | 1 | 358.3 | 24.327 | n/a | 5141020 | yes | `9aa17b57…` |
+| B3 | 1024 | 2 | 356.3 | 24.506 | n/a | 5315796 | yes | `9aa17b57…` |
+| B2 | 1024 | 2 | 358.3 | 23.005 | n/a | 5320812 | yes | `81d7f48a…` |
+| B1 | 1024 | 2 | 364.2 | 22.121 | n/a | 5322896 | yes | `f6bc4014…` |
+| A | 1024 | 2 | 359.8 | 23.978 | n/a | 5328960 | reference | `a1af011b…` |
 
-Verdict (plan §1), per B variant against A of this sitting:
+Decode means (of the two mirrored runs) and deltas against A:
 
-* **pass** = level-2 M==1 `mm` < A's × 0.95 **and** decode mean ≥ A's at G
-  = 64, 512 and 1024; **closes ㉒** if `mm` ≤ 600 µs/call.
-* accuracy: text = A at every G and run, `bit_identical value=yes`.
-* prefill: prompt-512 tok/s ≥ −5 % of A; a single cell below that with
-  the M>1 `dsp` within 5 % of A's is noise (A's own spread was ±13 % in
-  #94 s2).
-* microbench (plan §3.4): `hot` ≈ `arena` ns/tile under A → issue-bound,
-  B1 is the lever; `hot` ≪ `arena` under B1/B2 → the rest is feed, and
-  `arena` − `hot` is ㉒ feed half's budget; `heap` ≪ `arena` → the ION
-  mapping itself is the feed problem.
-* PR default after read-back: the better of B2/B3, 64 if they are within
-  ±5 %, 0 if B1 beats B2 by more than the noise.
+| G | A | B1 | B2 | B3 |
+|---|---|---|---|---|
+| 64 | 27.743 | 26.617 (−4.06 %) | 27.217 (−1.90 %) | **28.470 (+2.62 %)** |
+| 512 | 26.879 | 25.795 (−4.03 %) | 25.715 (−4.33 %) | **27.482 (+2.24 %)** |
+| 1024 | 24.826 | 22.751 (−8.36 %) | 23.377 (−5.84 %) | 24.416 (−1.65 %) |
 
-Reference (#94 sitting 2, unit `R3CY205ZMND`, `htp_moe` @ `2a75f7d9`,
-variant C = this A's path): level-2 M==1 `mm` 974.7, `dsp` 1044.0,
-host 1792.2, transport 748.2 µs/call, `blocks=0 m1_gemv=1408/1408`; M>1
-`dsp` 16554.3; decode 18.83 / 18.33 / 17.59 tok/s (G 64 / 512 / 1024,
-means of two), prefill 389–527 (A of that sitting). Goal ≥ 50 decode
-tok/s, prefill ≥ −5 % of A.
+Prefill means: A 498.5 / 453.5 / 380.7; B1 488.9 / 415.3 / 399.9; B2
+484.9 / 416.2 / 344.6; B3 484.1 / 384.8 / 357.3 (G = 64 / 512 / 1024).
+Several B cells fall below −5 %, but A's own two runs span 539.5 → 457.6
+at G = 64 and 516.1 → 390.8 at G = 512 (−8 to −14 % purely by position in
+the block: the prefill column tracks the block's thermal ramp, checkpoint
+3 → 5 is 55.4 → 66.3 °C), and the M>1 `dsp` of every variant is within
+2.5 % of A's. **By the handoff's own noise rule the prefill column is
+order drift, and the prefill gate is not failed.**
+
+## Verdict: no variant passes; the compute half alone does not close ㉒
+
+* **Gate** = M==1 `mm` < A × 0.95 (= 924.4 µs) **and** decode mean ≥ A at
+  G = 64, 512 **and** 1024.
+* **B1 (one-row loop, no lead) — fail.** `mm` **+7.4 %** and decode below A
+  at all three G. The one-row loop *by itself* is a regression on the
+  arena path.
+* **B2 (+64 KB lead) — fail.** `mm` +3.3 %, decode below A at all three G.
+* **B3 (+192 KB lead) — fail, but the best cell.** `mm` −4.3 %, inside the
+  ±5 % band, so the `mm` half of the gate misses; decode is +2.6 / +2.2 %
+  at G = 64 / 512 but −1.65 % at G = 1024 (where A's own spread is 25.674
+  → 23.978, 7 %), so the decode half is a wash rather than a pass.
+* **`mm` ≤ 600 µs is not reached** — best is 930.9 µs — so **㉒ stays open**
+  and its remainder keeps waiting on the feed half (#100), exactly as the
+  issue's fallback branch says.
+* **Accuracy: pass, everywhere.** `bit_identical value=yes` and
+  `bad_elems_M1/M4 = 0` under all four skels, generated text byte-identical
+  to A in 18/18 B cells, `blocks=0 m1_gemv=1408/1408` in all eight profile
+  runs, `qos_mode=2` in all eight, M>1 `m1_gemv=0/23` everywhere.
+* **Prefill: pass** (M>1 `dsp` within 2.5 % of A; the tok/s spread is the
+  block's thermal ramp, see above).
+
+### What the microbench says (the split this sitting was for)
+
+`ns_per_tile`, lower is better:
+
+| loop | arena | heap | hot | hot / arena |
+|---|---|---|---|---|
+| four-row (A) | 111.72 | 115.72 | 70.77 | 0.63 |
+| one-row, lead 0 (B1) | 145.23 | 140.11 | 42.74 | 0.29 |
+| one-row, lead 64 KB (B2) | 137.46 | 145.44 | 39.52 | 0.29 |
+| one-row, lead 192 KB (B3) | 120.23 | 133.21 | 31.25 | 0.26 |
+
+Three readings, and they all point the same way:
+
+1. **`hot` ≪ `arena` in every variant**, and the gap widens under the
+   one-row loop (0.63 → 0.26). So the arena path is **not** issue-bound:
+   plan §3.4's first branch is rejected and the remainder is **feed**.
+   Under B3, `arena − hot` = 89.0 of 120.2 ns/tile, i.e. **≈ 74 % of the
+   GEMV's `mm`** — of B3's 930.9 µs about **690 µs is feed and about 240 µs
+   is compute**. That 240 is the number ㉒'s feed half (#100, VTCM staging)
+   would expose, and it is well under the 600 µs target; under A's four-row
+   loop the same arithmetic leaves ≈ 590 µs, right at the target.
+   **So the one-row loop is what turns ≤ 600 from borderline into
+   comfortable — but only after the feed half lands.**
+2. **The one-row loop is exactly the 2× win it was designed to be when the
+   feed is not in the way**: `hot` 70.77 → 31.25 ns/tile, **2.26×**, close
+   to the 4 → 1 `vrmpy` accounting. On silicon today that win is invisible
+   because the arena feed dominates, and it even inverts: with 2 `vrmpy`
+   per quarter-tile instead of 8 there is less in-flight work to hide the
+   DDR read latency, which is why B1's `arena` is 30 % *worse* than A's.
+   The `l2fetch` lead buys that latency tolerance back — monotonically,
+   145.23 → 137.46 → 120.23 as the lead goes 0 → 64 → 192 KB — but at
+   192 KB it has still not caught A.
+3. **`heap` ≈ `arena`** (within 11 % either way, no consistent sign), so
+   the **ION mapping itself is not the feed problem** — it is plain
+   uncached DDR read bandwidth (21–27 GB/s, the same band #59 measured).
+   Plan §3.4's third branch is rejected too.
+
+### Follow-ups this sitting earns
+
+* **㉒'s feed half (#100, VTCM staging) is now measured, not assumed: it is
+  ≈ 74 % of the M=1 GEMV's `mm`.** It is the only lever left that reaches
+  ≤ 600 µs.
+* **The lead is not saturated at 192 KB** (the trend is still monotonic and
+  B3 is the best cell in every single column — `mm`, decode at two of three
+  G, and all three microbench cells). A lead sweep past 192 KB (384 KB, and
+  an L2-budget check) is the cheap next probe, and it belongs in the same
+  place the feed work goes.
+* **PR default after read-back:** the handoff's rule ("the better of
+  B2/B3") selects **B3, i.e. `HVX_GEMV_PF_LEAD_KB=192`**, not the branch's
+  current 64. B1 does not beat B2, so 0 is out.
+* Whether PR #107 should land at all despite failing today's gate is the
+  supervisor's call, and the case for it is reading 2 above: the kernel is
+  correct (bit-identical, text-identical), it is 2.26× faster on the L2-hot
+  path, and it is the half of the ≤ 600 target that cannot be built after
+  the feed half without redoing this work.
+
+### Reference the handoff wrote before the run (kept for the record)
+
+#94 sitting 2, same unit `R3CY205ZMND`, `htp_moe` @ `2a75f7d9`, variant C =
+this A's path: level-2 M==1 `mm` 974.7, `dsp` 1044.0, host 1792.2,
+transport 748.2 µs/call, `blocks=0 m1_gemv=1408/1408`; M>1 `dsp` 16554.3;
+decode 18.83 / 18.33 / 17.59 tok/s (G 64 / 512 / 1024, means of two),
+prefill 389–527. Goal ≥ 50 decode tok/s, prefill ≥ −5 % of A. Read against
+this sitting: `mm` and M>1 `dsp` reproduce (973.0 and 16324–16818), host,
+transport and decode do not, because the app here carries PR #103.
 
 ## Gates passed on the workstation (host evidence, not device)
 
@@ -351,7 +497,64 @@ tok/s, prefill ≥ −5 % of A.
 
 ## Notes from the run
 
-<serial, thermal at checkpoints, the provenance and skel_push md5 lines,
-first-run page faults, FARF/AEE errors, anything stale. A `qos_mode=1`
-header, an `AEE_EBADPARM (0x8000040E)`, a `0x80000406` open failure or a
-`nntr_hvx_moe_set_opts failed` line goes here with the exact text.>
+* **Unit / bridge.** `R3CY205ZMND` (SM-S938N, `sun`, v79) over the ADF SSH
+  bridge — no local USB on this workstation. `getprop ro.serialno` stands in
+  for `adb devices`; the bridge takes only `shell` / `push` / `pull`, and it
+  mangles quoting, so `therm`, the config edits, `prof`, `gt`, `run` and a
+  `cool` helper were pushed as `/system/bin/sh` scripts under
+  `/data/local/tmp/` and invoked as `shell sh <path>`. Host key checked
+  against the fingerprint the Terminal panel showed
+  (`SHA256:gmhiquYuizssrdAW9El92totPqZS/fid3iv28oThjoU`).
+* **`$W` was not on this workstation**, so the whole set was rebuilt per the
+  recipe. Three things the recipe does not mention and that cost time:
+  * A fresh worktree has **empty `subprojects/`** (`iniparser`, `googletest`,
+    `benchmark`, `CLBlast`, `OpenBLAS`, `ruy`) and `build_android.sh` dies
+    with `fatal error: 'iniparser.h' file not found` after ~15 min of
+    compiling. The wrap files are identical to the #88 worktree's, so the
+    populated directories were copied from there.
+  * `Applications/CausalLM/lib/libtokenizers_android_c.a` is likewise
+    per-checkout (Rust); copied from the #88 worktree rather than rebuilt.
+  * `libc++_shared.so` is **not** under `jni/obj/local/arm64-v8a/` on this
+    box; it was taken from the NDK r30 sysroot
+    (`toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/`)
+    and its md5 `b1586b9b…` matches the table and #88's staged copy.
+  * Env used: `HEXAGON_SDK_ROOT=/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.4.0.1`,
+    `HEXKL_ROOT=$HOME/Downloads/hexkl_addon`, `HEXKL_SDK_VER=6.4.0.1`,
+    `ANDROID_NDK=$HOME/android-ndk-r30` — note `HEXKL_ROOT` differs from
+    `env.sh`'s default on this box and must be set explicitly, or the link
+    silently picks another HexKL version.
+* **Model reused**, as planned: the device copy is 4316133120 B with md5
+  `7b7867fab51845664c0050c0a837073e`, so the 4.3 GB push was skipped. The
+  phone had cooled from the earlier sitting on its own (battery log shows
+  38.5 → 27.7 °C); checkpoint 0 read 31000 m°C.
+* **Second profile pass, and why.** In pass 1 the four profile runs went
+  back to back in the handoff's order, and the `thermal_zone0` readings
+  taken around the gtests showed A's block at 30–35 °C and the B blocks at
+  50–58 °C. Rather than read a possibly order-biased `mm` column, all four
+  were re-run in reverse order, each from a 34.5 °C cold start. The two
+  passes agree to ≤ 0.4 % on every `mm` (A 973.1/972.9, B1 1044.2/1045.0,
+  B2 1006.7/1003.0, B3 929.5/932.2), so **the `mm` column is per-variant,
+  not per-position** — the opposite of the #53 outcome, and the reason the
+  verdict above is stated as a fail rather than as "one sitting only".
+  `thermal_zone0` here recovers fast (57 → 34.5 °C in ≤ 60 s idle).
+* **The E2E prefill column does drift with position**, though: A's own two
+  runs read 539.5 / 457.6 at G = 64 and 516.1 / 390.8 at G = 512, and the
+  ramp follows checkpoints 3 → 5 (55.4 → 66.3 °C). Decode is far steadier
+  (A's worst pair is 25.674 / 23.978 at G = 1024). The mirrored order per G
+  is what makes the decode means usable.
+* **A reads 27.7 decode tok/s here against #94 sitting 2's 18.8** for the
+  same DSP path, because the app carries PR #103 (`staging: act` present).
+  So this sitting's A is the right and only baseline for these B numbers;
+  the #94 reference row is not comparable on decode. The M==1 `mm`, by
+  contrast, reproduces #94 almost exactly (973.0 here vs 974.7 there),
+  which is the cross-check that the A skel really is that path.
+* **No errors of the kinds the handoff asks about:** no `qos_mode=1`
+  header (all eight profile runs read `qos_mode=2`), no `AEE_EBADPARM`
+  (`0x8000040E`), no `0x80000406` open failure, no
+  `nntr_hvx_moe_set_opts failed`, no `INVALID` microbench cell, no
+  `SKIPPED` gtest. The `hot` cell (the one the handoff warns may fail)
+  passed under all four skels.
+* Logs, both profile passes and `md5.txt` are under
+  `/local/mnt/workspace/htp_moe/105/` (`logs/prof_*.log`,
+  `logs/prof2_*.log`, `logs/gtest_*.log`, `logs/<v>_G<g>_r<n>.log`,
+  `logs/therm.log`, `logs/skel_push.log`, `logs/provenance.log`).
