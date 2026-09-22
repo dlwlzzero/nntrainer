@@ -95,6 +95,7 @@ void checkedRead(ReadSource src, char *array, std::streamsize size,
   if (auto f = std::get_if<std::ifstream *>(&src)) {
     if (read_from_offset) {
       (*f)->seekg(start_offset, std::ios::beg);
+      checkFile(**f, "failed to move offset");
     }
     (*f)->read(static_cast<char *>(array), size);
     checkFile(**f, error_msg);

@@ -1060,6 +1060,10 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((hFile == INVALID_HANDLE_VALUE), std::runtime_error)
               << "CreateFileA failed";
 
+            LARGE_INTEGER li;
+            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
+              << "GetFileSizeEx failed";
+
             HANDLE hMap =
               CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
             NNTR_THROW_IF((hMap == NULL), std::runtime_error)
@@ -1070,9 +1074,6 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((view == nullptr), std::runtime_error)
               << "MapViewOfFile failed";
 
-            LARGE_INTEGER li;
-            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
-              << "GetFileSizeEx failed";
             try {
               node->read(ReadView{view, static_cast<size_t>(li.QuadPart)},
                          false, exec_mode, fsu_mode,
@@ -1325,6 +1326,10 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((hFile == INVALID_HANDLE_VALUE), std::runtime_error)
               << "CreateFileA failed for safetensors file: " << f_path;
 
+            LARGE_INTEGER li;
+            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
+              << "GetFileSizeEx failed for safetensors file: " << f_path;
+
             HANDLE hMap =
               CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
             NNTR_THROW_IF((hMap == NULL), std::runtime_error)
@@ -1335,9 +1340,6 @@ void NeuralNetwork::load(const std::string &file_path,
             NNTR_THROW_IF((view == nullptr), std::runtime_error)
               << "MapViewOfFile failed for safetensors file: " << f_path;
 
-            LARGE_INTEGER li;
-            NNTR_THROW_IF(!GetFileSizeEx(hFile, &li), std::runtime_error)
-              << "GetFileSizeEx failed for safetensors file: " << f_path;
             try {
               node->read(ReadView{view, static_cast<size_t>(li.QuadPart)},
                          false, exec_mode, fsu_mode,
