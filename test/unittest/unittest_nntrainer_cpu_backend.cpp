@@ -8,6 +8,7 @@
  * @bug		No known bugs except for NYI items
  */
 
+#include "fwht_det.h"
 #include "htp_act_quant.h"
 #include "htp_q4_0_convert.h"
 #include "htp_wh_layout.h"
@@ -627,6 +628,100 @@ TEST(nntrainer_cpu_backend_standalone, htp_qs4cx_from_q4_0x4_accuracy) {
   // sign bug, not a tight accuracy contract.
   EXPECT_LT(max_abs_err, 0.5f);
   EXPECT_LT(mean_abs_err, 0.1f);
+}
+
+/**
+ * @brief The Hadamard fold (issue #95) preserves the dot product
+ *
+ * QS4CX_WH_HAD folds H^T*W/16 into the expert down_proj offline and the DSP
+ * applies h*H/16 to the activation; the two must compose to h*W. The weight
+ * sits in the converter as N rows of K (is_nxk), so the fold is an FWHT
+ * along each ROW -- the same fwht_rows_f32_ref the activation side runs.
+ * Folding along N instead would fail this by O(1), which is the mistake the
+ * check exists to catch; f32 rounding of two 256-term transforms is ~1e-6.
+ */
+TEST(nntrainer_cpu_backend_standalone, hadamard_fold_preserves_dot) {
+  const unsigned int K = 512, N = 256; // two blocks along K, one along N
+  std::vector<float> w = generate_random_vector<float>(N * K); // N x K
+  std::vector<float> h = generate_random_vector<float>(K);
+
+  std::vector<double> y0(N, 0.0);
+  for (unsigned int n = 0; n < N; ++n) {
+    for (unsigned int k = 0; k < K; ++k) {
+      y0[n] += static_cast<double>(h[k]) * w[static_cast<size_t>(n) * K + k];
+    }
+  }
+
+  std::vector<float> hr = h, wr = w;
+  fwht_rows_f32_ref(hr.data(), 1, K);
+  fwht_rows_f32_ref(wr.data(), N, K);
+  double max_err = 0.0, max_y = 0.0;
+  for (unsigned int n = 0; n < N; ++n) {
+    float y1 = 0.0f;
+    for (unsigned int k = 0; k < K; ++k) {
+      y1 += hr[k] * wr[static_cast<size_t>(n) * K + k];
+    }
+    max_err = std::max(max_err, std::fabs(static_cast<double>(y1) - y0[n]));
+    max_y = std::max(max_y, std::fabs(y0[n]));
+  }
+  std::cout << "hadamard_fold: max_abs_err=" << max_err << " max|y|=" << max_y
+            << std::endl;
+  EXPECT_LE(max_err, 1e-4 * max_y);
+
+  // The wrong axis, for the record: rotating W along N (down the columns
+  // of the N x K storage) leaves nothing for the activation rotation to
+  // cancel, and the error is of the order of the result itself.
+  std::vector<float> wt(static_cast<size_t>(K) * N);
+  for (unsigned int n = 0; n < N; ++n)
+    for (unsigned int k = 0; k < K; ++k)
+      wt[static_cast<size_t>(k) * N + n] = w[static_cast<size_t>(n) * K + k];
+  fwht_rows_f32_ref(wt.data(), K, N); // N = 256: one block per k row
+  double wrong_err = 0.0;
+  for (unsigned int n = 0; n < N; ++n) {
+    float y1 = 0.0f;
+    for (unsigned int k = 0; k < K; ++k) {
+      y1 += hr[k] * wt[static_cast<size_t>(k) * N + n];
+    }
+    wrong_err = std::max(wrong_err, std::fabs(static_cast<double>(y1) - y0[n]));
+  }
+  EXPECT_GT(wrong_err, 1e-2 * max_y) << "the wrong fold axis went unnoticed";
+}
+
+/**
+ * @brief fwht_rows_f32_ref is its own inverse under the 1/16 scale
+ *
+ * H*H^T = 256*I, so (x*H/16)*H/16 = x. Two passes must give the input back
+ * up to f32 rounding; the same property is what lets one function serve
+ * both the weight fold and the activation side.
+ */
+TEST(nntrainer_cpu_backend_standalone, fwht_ref_is_involutive_up_to_scale) {
+  const unsigned int rows = 3, K = 1792; // 7 blocks, the model's inter
+  std::vector<float> x = generate_random_vector<float>(rows * K, -4.f, 4.f);
+  std::vector<float> y = x;
+  fwht_rows_f32_ref(y.data(), rows, K);
+  // Not the identity after one pass.
+  size_t moved = 0;
+  for (size_t i = 0; i < x.size(); ++i)
+    moved += (x[i] != y[i]) ? 1 : 0;
+  EXPECT_GT(moved, x.size() / 2);
+  fwht_rows_f32_ref(y.data(), rows, K);
+  float max_err = 0.0f;
+  for (size_t i = 0; i < x.size(); ++i)
+    max_err = std::max(max_err, std::fabs(x[i] - y[i]));
+  EXPECT_LE(max_err, 1e-5f);
+  // A power-of-two scale, so exact inputs come back bit-exact.
+  std::vector<float> e(K, 0.0f);
+  e[3] = 1.0f;
+  e[300] = -2.0f;
+  fwht_rows_f32_ref(e.data(), 1, K);
+  fwht_rows_f32_ref(e.data(), 1, K);
+  EXPECT_EQ(e[3], 1.0f);
+  EXPECT_EQ(e[300], -2.0f);
+  // Subnormals flush, as the DSP does.
+  std::vector<float> d(K, 1e-40f);
+  fwht_rows_f32_ref(d.data(), 1, K);
+  for (unsigned int k = 0; k < K; ++k)
+    ASSERT_EQ(d[k], 0.0f);
 }
 
 /**
