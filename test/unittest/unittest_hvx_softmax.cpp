@@ -30,6 +30,7 @@
 #include <AEEStdErr.h>
 #include <remote.h>
 
+#include "fwht_det.h"
 #include "nntr_hvx.h"
 #include "swiglu_det.h"
 
@@ -120,6 +121,7 @@ class HvxExp : public HtpSession {};
 class HvxSoftmax : public HtpSession {};
 
 class HvxSwigluDet : public HtpSession {};
+class HvxFwht : public HtpSession {};
 
 namespace {
 
@@ -225,6 +227,89 @@ TEST_F(HvxSwigluDet, MatchesScalarBitExact) {
                            "HVX Vsf does not round like ARM f32";
   EXPECT_EQ(bad_recip, 0) << "hvx_recip_det_sf differs from the scalar spec";
   EXPECT_EQ(bad_out, 0) << "hvx_swiglu_det_sf differs from the scalar spec";
+}
+
+TEST_F(HvxFwht, RejectsPartialBlock) {
+  std::vector<float> x(2 * 300, 1.0f), y(x.size());
+  int err =
+    nntr_hvx_fwht_rows_f32(handle_, x.data(), static_cast<int>(x.size()), 2,
+                           300, y.data(), static_cast<int>(y.size()));
+  EXPECT_EQ(err, AEE_EBADPARM + kDspOffset)
+    << "expected EBADPARM, got " << hex(err);
+}
+
+/**
+ * @brief [issue 95] hvx_fwht_rows_f32 against fwht_det.h, bit for bit.
+ *
+ * The rotation feeds the u8 requantization of the down input, so as with
+ * the SwiGLU this is a bit-identity gate, not an SNR one. 32 rows of 256:
+ * a SwiGLU-like spread, exact cancellations (pairs that sum to zero),
+ * signed zeros, values of order 1e30 (the sums stay finite), and one row
+ * each of +-subnormals and of near-FLT_MAX values. The subnormal row is
+ * gated: it settles the sign of a flushed zero, which the host cannot
+ * decide (fwht_det.h keeps it); a failure confined to that row means the
+ * reference's convention is flipped, one edit. The overflow row is
+ * reported only -- the model never reaches 1e38 and whether HVX overflows
+ * to inf or saturates is not a property this kernel relies on.
+ */
+TEST_F(HvxFwht, MatchesScalarBitExact) {
+  const uint32_t rows = 32, k = 256;
+  const int n = static_cast<int>(rows * k);
+  std::vector<float> x(n), y(n, 0.0f);
+  std::mt19937 rng(0x95959595u);
+  std::uniform_real_distribution<float> small(-8.0f, 8.0f);
+  std::uniform_real_distribution<float> big(-1e30f, 1e30f);
+  const uint32_t row_cancel = 28, row_zero = 29, row_sub = 30, row_ovf = 31;
+  for (uint32_t r = 0; r < rows; ++r) {
+    float *v = &x[static_cast<size_t>(r) * k];
+    for (uint32_t i = 0; i < k; ++i) {
+      if (r == row_cancel) {
+        v[i] = (i & 1u) ? -v[i - 1] : small(rng); // pairs cancel at s = 1
+      } else if (r == row_zero) {
+        v[i] = (i & 1u) ? -0.0f : 0.0f;
+      } else if (r == row_sub) {
+        v[i] = ((i & 1u) ? -1.0f : 1.0f) * ((i & 2u) ? 1e-40f : 1e-39f);
+      } else if (r == row_ovf) {
+        v[i] = ((i & 1u) ? -1.0f : 1.0f) * 3.0e38f;
+      } else if (r >= 24) {
+        v[i] = big(rng);
+      } else {
+        v[i] = small(rng);
+      }
+    }
+  }
+
+  int err = nntr_hvx_fwht_rows_f32(handle_, x.data(), n, rows, k, y.data(), n);
+  ASSERT_EQ(err, AEE_SUCCESS) << "fwht_rows_f32 failed: " << hex(err);
+
+  std::vector<float> ref = x;
+  fwht_rows_f32_ref(ref.data(), rows, k);
+
+  std::vector<int> bad_per_row(rows, 0);
+  int first_bad = -1;
+  for (int i = 0; i < n; ++i) {
+    if (bits_of(y[i]) != bits_of(ref[i])) {
+      ++bad_per_row[static_cast<size_t>(i) / k];
+      if (first_bad < 0) {
+        first_bad = i;
+        std::cout << "FWHT first mismatch i=" << i << " (row " << i / k
+                  << ") x=" << std::hexfloat << x[i] << " dsp=" << y[i]
+                  << " ref=" << ref[i] << std::defaultfloat << std::endl;
+      }
+    }
+  }
+  int bad_gated = 0;
+  for (uint32_t r = 0; r < rows; ++r) {
+    if (r != row_ovf)
+      bad_gated += bad_per_row[r];
+  }
+  std::cout << "FWHT_FIELD bad_gated=" << bad_gated
+            << " bad_subnormal_row=" << bad_per_row[row_sub]
+            << " bad_overflow_row=" << bad_per_row[row_ovf] << " of " << n
+            << std::endl;
+  EXPECT_EQ(bad_gated, 0)
+    << "hvx_fwht_rows_f32 differs from fwht_det.h; if only the subnormal "
+       "row is bad, fwht_det_ftz's flushed-zero sign is the other one";
 }
 
 /**

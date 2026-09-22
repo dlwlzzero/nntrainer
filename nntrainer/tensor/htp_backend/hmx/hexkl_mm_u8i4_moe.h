@@ -195,6 +195,19 @@ void hexkl_moe_pack_bg_worker(uint32_t n_units, uint32_t u, void *vctx);
   } while (0)
 
 /**
+ * @brief hexkl_mm_u8i4_moe_layer_run flags. Bit 1u is reserved (htp_moe's
+ *        HEXKL_MOE_FLAG_M1_GEMV); unknown bits are refused.
+ *
+ * DOWN_HADAMARD: rotate the SwiGLU output by H/16 in blocks of 256
+ * (hvx_fwht_rows_f32) right before its uint8 requantization, for a down
+ * weight the converter folded by H^T/16 (QS4CX_WH_HAD, issue #95). Both
+ * requantization sites of this kernel -- the HMX block loop and the HVX
+ * tail -- apply it. Refused with AEE_EBADPARM when inter % 256 != 0.
+ */
+#define HEXKL_MOE_FLAG_DOWN_HADAMARD 2u
+#define HEXKL_MOE_FLAGS_KNOWN (HEXKL_MOE_FLAG_DOWN_HADAMARD)
+
+/**
  * @brief One MoE FFN layer: routing, every expert, and the scatter-add.
  *
  * out_f32 is zeroed here and accumulated into, because experts share token
@@ -209,6 +222,7 @@ void hexkl_moe_pack_bg_worker(uint32_t n_units, uint32_t u, void *vctx);
  * @param[in] act_f32     [M x K]
  * @param[out] out_f32    [M x N_out]
  * @param[in,out] scratch session-lifetime heap scratch; grown here as needed
+ * @param[in] flags       HEXKL_MOE_FLAG_* bits; 0 is today's arithmetic
  * @return AEE_SUCCESS, or the first failing stage's code
  */
 int hexkl_mm_u8i4_moe_layer_run(
@@ -217,6 +231,6 @@ int hexkl_mm_u8i4_moe_layer_run(
   uint32_t n_experts, const uint32_t *h_gate_up, const uint32_t *h_down,
   const uint32_t *row_index, const uint32_t *row_count, const float *row_weight,
   const float *act_f32, float *out_f32, hvx_worker_pool *pool,
-  hexkl_moe_scratch *scratch);
+  hexkl_moe_scratch *scratch, uint32_t flags);
 
 #endif /* __NNTRAINER_HEXKL_MM_U8I4_MOE_H__ */

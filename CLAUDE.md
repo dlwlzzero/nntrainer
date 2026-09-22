@@ -80,3 +80,7 @@ where `NNTR_PPL` is available. Wherever `.claude/` says `htp_moe`, read
 `htp_hadamard`: work branches are `htp/95-<slug>` off this branch, PRs
 target this branch, docs/htp_moe/ does not exist here. The contract doc
 and ledger stay on `htp_moe`; issue #95 is the spec.
+
+**Parked 2026-09-22.** Read `docs/htp_hadamard/STATUS.md` first: results,
+known defects, and the resume checklist. The work resumes on `htp_moe` as
+issue #110 after the HVX decode work there is done, on the user's request.

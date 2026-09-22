@@ -5,6 +5,7 @@
    scatter lands on the right output row with the right routing weight --
    not HMX's arithmetic, which the stubs define self-consistently for both
    sides. */
+#include "fwht_det.h"
 #include "hexkl_acc_tile.h"
 #include "hexkl_dma_ring.h"
 #include "hexkl_mm_u8i4_moe.h"
@@ -73,7 +74,7 @@ int main(void) {
   hexkl_moe_scratch scratch = {NULL, NULL, 0};
   rc = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, sizeof vtcm, sizeof vtcm, M, K,
                                    inter, N_out, NE, hg, hd, ridx, rc_, rw, act,
-                                   got, NULL, &scratch);
+                                   got, NULL, &scratch, 0u);
   printf("run rc=%d  n_rows=%u\n", rc, n_rows);
   if (rc)
     return 1;
@@ -160,7 +161,7 @@ int main(void) {
     memset(got, 0xA5, sizeof(float) * M * N_out);
     int r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, sizeof vtcm, sizeof vtcm,
                                         M, K, inter, N_out, NE, hg, hd, ridx, z,
-                                        rw, act, got, NULL, &scratch);
+                                        rw, act, got, NULL, &scratch, 0u);
     int ok = (r == 0);
     for (uint32_t i = 0; i < M * N_out; ++i) {
       if (got[i] != 0.f) {
@@ -175,7 +176,7 @@ int main(void) {
     uint32_t c64[8] = {64, 0, 0, 0, 0};
     int r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, sizeof vtcm, sizeof vtcm,
                                         M, K, inter, N_out, NE, hg, hd, ridx,
-                                        c64, rw, act, got, NULL, &scratch);
+                                        c64, rw, act, got, NULL, &scratch, 0u);
     printf("exactly 64 rows   : rc=%d\n", r);
     fail |= (r != 0);
   }
@@ -184,7 +185,7 @@ int main(void) {
     uint32_t bad_row[1] = {M};
     int r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, sizeof vtcm, sizeof vtcm,
                                         M, K, inter, N_out, NE, hg, hd, bad_row,
-                                        c1, rw, act, got, NULL, &scratch);
+                                        c1, rw, act, got, NULL, &scratch, 0u);
     printf("row_index >= M    : rc=%d (want %d)\n", r, AEE_EBADPARM);
     fail |= (r != AEE_EBADPARM);
   }
@@ -198,6 +199,95 @@ int main(void) {
     r = hexkl_mm_u8i4_moe_layout(2048, 1792, 2048, 4u << 20, &R);
     printf("4 MB arena        : rc=%d (want %d)\n", r, AEE_ENOMEMORY);
     fail |= (r != AEE_ENOMEMORY);
+  }
+  /* --- issue #95: HEXKL_MOE_FLAG_DOWN_HADAMARD ------------------------
+     The rotation must reach BOTH requantization sites -- the HMX block
+     loop and the HVX tail (this build's MOE_TAIL_MAX_ROWS=16 puts two of
+     the routing's experts through the tail) -- and nothing else. Same
+     routing, same activations, a second expert set with inter = 256 (one
+     FWHT block; the harness's 32 is refused, below). The stand-in for
+     hvx_fwht_rows_f32 is fwht_rows_f32_ref itself, so this is the loop
+     structure, not the HVX arithmetic (HvxFwht.MatchesScalarBitExact). */
+  {
+    const uint32_t I2 = 256;
+    W wg2[8], wd2[8];
+    uint32_t hg2[8], hd2[8];
+    for (uint32_t e = 0; e < NE; ++e) {
+      make_weight(16 + e, K, 2 * I2, &wg2[e]);
+      make_weight(24 + e, I2, N_out, &wd2[e]);
+      hg2[e] = 16 + e;
+      hd2[e] = 24 + e;
+    }
+    float *got_off = (float *)malloc(sizeof(float) * M * N_out);
+    hexkl_probe_us[HEXKL_PROBE_BLOCKS] = 0; /* accumulates across runs */
+    int r0 = hexkl_mm_u8i4_moe_layer_run(
+      &g_tbl, vtcm, sizeof vtcm, sizeof vtcm, M, K, I2, N_out, NE, hg2, hd2,
+      ridx, rc_, rw, act, got_off, NULL, &scratch, 0u);
+    int r1 = hexkl_mm_u8i4_moe_layer_run(
+      &g_tbl, vtcm, sizeof vtcm, sizeof vtcm, M, K, I2, N_out, NE, hg2, hd2,
+      ridx, rc_, rw, act, got, NULL, &scratch, HEXKL_MOE_FLAG_DOWN_HADAMARD);
+    printf("hadamard run      : rc off=%d on=%d  HMX blocks=%llu (want 10: "
+           "5 per run, two tails each on the HVX)\n",
+           r0, r1, (unsigned long long)hexkl_probe_us[HEXKL_PROBE_BLOCKS]);
+    fail |= (r0 != 0) | (r1 != 0) | (hexkl_probe_us[HEXKL_PROBE_BLOCKS] != 10u);
+
+    /* Reference with the rotation between SwiGLU and the requant. */
+    float *want2 = (float *)calloc(M * N_out, sizeof(float));
+    uint8_t *mq2 = (uint8_t *)malloc(I2);
+    float *gu2 = (float *)malloc(sizeof(float) * 2 * I2);
+    float *mid2 = (float *)malloc(sizeof(float) * I2);
+    uint32_t b2 = 0;
+    for (uint32_t e = 0; e < NE; ++e) {
+      for (uint32_t i = 0; i < rc_[e]; ++i) {
+        uint32_t row = ridx[b2 + i];
+        float as;
+        int32_t az;
+        quant_row(act + (size_t)row * K, K, aq, &as, &az);
+        ref_mm(&wg2[e], aq, as, az, gu2);
+        for (uint32_t j = 0; j < I2; ++j)
+          mid2[j] = gu2[j] / (1.f + expf(-gu2[j])) * gu2[I2 + j];
+        fwht_rows_f32_ref(mid2, 1, I2);
+        float ms;
+        int32_t mz;
+        quant_row(mid2, I2, mq2, &ms, &mz);
+        ref_mm(&wd2[e], mq2, ms, mz, dn);
+        for (uint32_t c = 0; c < N_out; ++c) {
+          volatile float p = dn[c] * rw[b2 + i];
+          want2[(size_t)row * N_out + c] = want2[(size_t)row * N_out + c] + p;
+        }
+      }
+      b2 += rc_[e];
+    }
+    uint32_t bad2 = 0, moved = 0;
+    for (uint32_t i = 0; i < M * N_out; ++i) {
+      double d = fabs((double)got[i] - (double)want2[i]);
+      double sc = fabs((double)want2[i]) + 1e-6;
+      if (d / sc > 1e-5)
+        ++bad2;
+      if (got[i] != got_off[i])
+        ++moved;
+    }
+    printf("hadamard on       : mismatches=%u of %u vs rotated reference; "
+           "%u elements differ from flag off (want > 0)\n",
+           bad2, M * N_out, moved);
+    fail |= (bad2 != 0) | (moved == 0);
+
+    /* Refusals: a partial block (the harness's inter = 32), an unknown bit. */
+    int rb = hexkl_mm_u8i4_moe_layer_run(
+      &g_tbl, vtcm, sizeof vtcm, sizeof vtcm, M, K, inter, N_out, NE, hg, hd,
+      ridx, rc_, rw, act, got, NULL, &scratch, HEXKL_MOE_FLAG_DOWN_HADAMARD);
+    int ru = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, sizeof vtcm, sizeof vtcm,
+                                         M, K, I2, N_out, NE, hg2, hd2, ridx,
+                                         rc_, rw, act, got, NULL, &scratch, 4u);
+    printf(
+      "hadamard refusals : inter%%256 rc=%d, unknown flag rc=%d (want %d)\n",
+      rb, ru, AEE_EBADPARM);
+    fail |= (rb != AEE_EBADPARM) | (ru != AEE_EBADPARM);
+    free(got_off);
+    free(want2);
+    free(mq2);
+    free(gu2);
+    free(mid2);
   }
   printf(fail ? "\nFAIL\n" : "\nALL CHECKS PASS\n");
   hexkl_moe_scratch_free(&scratch);

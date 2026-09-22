@@ -964,6 +964,21 @@ static int check_moe_row_totals(const uint32 *row_count, int n_experts,
   return AEE_SUCCESS;
 }
 
+int nntr_hvx_moe_set_opts(remote_handle64 handle, uint32 flags,
+                          uint32 *applied) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s || !applied) {
+    return AEE_EBADPARM;
+  }
+  /* Unknown bits are dropped, not refused: the echo is how the host tells
+     an old skel from a new one, and a refusal would say only "bad param". */
+  s->moe_flags = flags & HEXKL_MOE_FLAGS_KNOWN;
+  *applied = s->moe_flags;
+  FARF(HIGH, "moe_set_opts: flags=0x%x applied=0x%x", (unsigned)flags,
+       (unsigned)*applied);
+  return AEE_SUCCESS;
+}
+
 int nntr_hvx_mm_u8i4_moe_layer(remote_handle64 handle, uint32 M, uint32 K,
                                uint32 inter, uint32 N_out,
                                const uint32 *h_gate_up, int h_gate_upLen,
@@ -987,7 +1002,7 @@ int nntr_hvx_mm_u8i4_moe_layer(remote_handle64 handle, uint32 M, uint32 K,
   return hexkl_mm_u8i4_moe_layer_run(
     &s->weights_u8i4, s->vtcm_base, s->vtcm_size, s->config_off, M, K, inter,
     N_out, (uint32_t)h_gate_upLen, h_gate_up, h_down, row_index, row_count,
-    row_weight, act_f32, out_f32, s->quant_pool, &s->moe_scratch);
+    row_weight, act_f32, out_f32, s->quant_pool, &s->moe_scratch, s->moe_flags);
 }
 
 int nntr_hvx_mm_u8i4_moe_layer_timed(
@@ -1020,7 +1035,7 @@ int nntr_hvx_mm_u8i4_moe_layer_timed(
   rc = hexkl_mm_u8i4_moe_layer_run(
     &s->weights_u8i4, s->vtcm_base, s->vtcm_size, s->config_off, M, K, inter,
     N_out, (uint32_t)h_gate_upLen, h_gate_up, h_down, row_index, row_count,
-    row_weight, act_f32, out_f32, s->quant_pool, &s->moe_scratch);
+    row_weight, act_f32, out_f32, s->quant_pool, &s->moe_scratch, s->moe_flags);
   t1 = hexkl_probe_now();
   hexkl_probe_on = 0;
 

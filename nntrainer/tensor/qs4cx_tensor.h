@@ -307,9 +307,13 @@ public:
 
   /**
    * @brief  Get the Data Type String object
-   * @return std::string of tensor data type (QS4CX_WH)
+   * @return std::string of tensor data type (QS4CX_WH, or QS4CX_WH_HAD
+   *         when the dim carries the Hadamard tag: same class, same bytes)
    */
-  std::string getStringDataType() const override { return "QS4CX_WH"; }
+  std::string getStringDataType() const override {
+    return getDataType() == Tdatatype::QS4CX_WH_HAD ? "QS4CX_WH_HAD"
+                                                    : "QS4CX_WH";
+  }
 };
 
 } // namespace nntrainer

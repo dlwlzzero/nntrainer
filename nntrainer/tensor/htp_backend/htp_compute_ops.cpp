@@ -44,6 +44,7 @@
 
 #include <compute_ops.h>
 #include <cpu_ops_table.h>
+#include <fwht_det.h>
 #include <htp_act_quant.h>
 #include <htp_backend.h>
 #include <htp_q4_0_convert.h>
@@ -896,7 +897,8 @@ public:
                                  const std::vector<float> &row_weight,
                                  const float *act, float *out, unsigned int M,
                                  unsigned int K, unsigned int inter,
-                                 unsigned int N_out, bool weights_wh) override {
+                                 unsigned int N_out, bool weights_wh,
+                                 bool down_hadamard) override {
     const size_t n_experts = gate_up_data.size();
     if (n_experts == 0 || gate_up_scale.size() != n_experts ||
         down_data.size() != n_experts || down_scale.size() != n_experts ||
@@ -905,9 +907,17 @@ public:
       throw std::invalid_argument(
         "gemm_qs4cx_moe_layer_fp32: per-expert arrays disagree");
     }
+    // The fold lives in the converter's QS4CX_WH_HAD branch only; a plain
+    // QS4CX weight was never folded, so rotating its input would compute
+    // the wrong product rather than a differently-rounded right one.
+    if (down_hadamard && !weights_wh) {
+      throw std::invalid_argument(
+        "gemm_qs4cx_moe_layer_fp32: down_hadamard needs QS4CX_WH_HAD weights");
+    }
 
     const remote_handle64 session =
       static_cast<remote_handle64>(HtpBackend::global().handle());
+    setMoeOpts(session, down_hadamard ? kMoeFlagDownHadamard : 0u);
     std::vector<uint32_t> h_gu(n_experts), h_dn(n_experts);
     for (size_t e = 0; e < n_experts; ++e) {
       if (weights_wh) {
@@ -924,6 +934,182 @@ public:
     }
     invokeMoeLayer(session, h_gu, h_dn, row_index, row_count, row_weight, act,
                    out, M, K, inter, N_out);
+    if (l2DiffEnabled()) {
+      l2DiffMoe(session, h_gu, h_dn, down_scale, row_index, row_count, act, M,
+                K, inter, N_out, weights_wh, down_hadamard);
+    }
+  }
+
+  /** @brief HEXKL_MOE_FLAG_DOWN_HADAMARD, spelled here because this file
+   *  does not include the DSP kernel's header. */
+  static constexpr uint32_t kMoeFlagDownHadamard = 2u;
+
+  /**
+   * @brief Sends the MoE layer options to the skel when they change.
+   *
+   * A session option rather than a per-call argument (test/htp/nntr_hvx.idl
+   * moe_set_opts): the rotation is a property of the model file, so it is
+   * set once -- or once per change, for a model whose MoE layers mix the
+   * two dtypes. The skel echoes the bits it applied; a mismatch means the
+   * skel on the device predates the option, and running on would silently
+   * multiply a folded weight by an unrotated input.
+   */
+  void setMoeOpts(remote_handle64 session, uint32_t flags) {
+    if (flags == moe_flags_applied_)
+      return;
+    uint32_t applied = 0;
+    const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
+    if (err != AEE_SUCCESS || applied != flags) {
+      throw std::runtime_error(
+        "nntr_hvx_moe_set_opts(" + std::to_string(flags) + ") failed: err=" +
+        std::to_string(err) + " applied=" + std::to_string(applied) +
+        " -- is libnntr_hvx_skel.so on the device older than this binary?");
+    }
+    moe_flags_applied_ = flags;
+    std::fprintf(stderr, "[HTP-MOE] opts applied=%u\n", applied);
+  }
+
+  /**
+   * @brief NNTR_L2_DIFF on the MoE-layer path: the requantization noise of
+   *        the down input, expert by expert (issue #95, metric 1).
+   *
+   * The split-call l2Diff above compares the device against a reference
+   * that quantizes the same intermediate with the same quantizer, which on
+   * this tree is exact (999 dB, 0 flips) and cannot move with the rotation.
+   * What the rotation changes is the error of the u8 requantization of
+   * `mid` itself, so this reference never quantizes it: the device's own
+   * gate_up output, host swiglu_det, host fwht_rows_f32_ref when the
+   * weights are folded, then an f64 matmul against the int4 down weight
+   * dequantized from the arena bytes. The device side is the layer call on
+   * this expert alone with identity routing and weight 1.0. Both sides
+   * share the gate_up bytes and the int4 down weight, so the SNR is the
+   * requantization's (plus f32 rounding); the fold's own int4 error is
+   * deliberately outside it -- perplexity carries that.
+   *
+   * WH weights only: plain QS4CX weights live on the DSP heap after
+   * registration and have no host-readable copy. One host GEMM per expert
+   * call (about 0.4 GFLOP at M_e = 100) -- a diagnostic run, never a TPS
+   * run.
+   */
+  void l2DiffMoe(remote_handle64 session, const std::vector<uint32_t> &h_gu,
+                 const std::vector<uint32_t> &h_dn,
+                 const std::vector<float *> &down_scale,
+                 const std::vector<unsigned int> &row_index,
+                 const std::vector<unsigned int> &row_count, const float *act,
+                 unsigned int M, unsigned int K, unsigned int inter,
+                 unsigned int N_out, bool weights_wh, bool down_hadamard) {
+    (void)M;
+    if (!weights_wh) {
+      static bool said = false;
+      if (!said) {
+        said = true;
+        std::fprintf(stderr, "[L2-DIFF-MOE] skipped: plain QS4CX weights have "
+                             "no host-readable copy after registration\n");
+      }
+      return;
+    }
+    std::vector<float> w(static_cast<size_t>(inter) * N_out);
+    std::vector<uint8_t> wh;
+    size_t base = 0;
+    for (size_t e = 0; e < h_gu.size(); ++e) {
+      const unsigned int n_e = row_count[e];
+      if (n_e == 0)
+        continue;
+      // 1. the expert's rows, gathered
+      std::vector<float> act_e(static_cast<size_t>(n_e) * K);
+      for (unsigned int i = 0; i < n_e; ++i) {
+        std::memcpy(&act_e[static_cast<size_t>(i) * K],
+                    act + static_cast<size_t>(row_index[base + i]) * K,
+                    sizeof(float) * K);
+      }
+      base += n_e;
+      // 2. gate_up on the device, 3. swiglu_det (+ the rotation) on the host
+      std::vector<float> gu(static_cast<size_t>(n_e) * 2 * inter, 0.0f);
+      const uint32_t hg = h_gu[e];
+      int err = nntr_hvx_mm_u8i4_layer(session, n_e, K, &hg, 1, act_e.data(),
+                                       static_cast<int>(act_e.size()),
+                                       gu.data(), static_cast<int>(gu.size()));
+      if (err != AEE_SUCCESS) {
+        std::fprintf(stderr, "[L2-DIFF-MOE] gate_up failed: %d\n", err);
+        return;
+      }
+      std::vector<float> mid(static_cast<size_t>(n_e) * inter);
+      for (unsigned int m = 0; m < n_e; ++m) {
+        for (unsigned int j = 0; j < inter; ++j) {
+          mid[static_cast<size_t>(m) * inter + j] =
+            swiglu_det_one(gu[static_cast<size_t>(m) * 2 * inter + j],
+                           gu[static_cast<size_t>(m) * 2 * inter + inter + j]);
+        }
+      }
+      if (down_hadamard)
+        fwht_rows_f32_ref(mid.data(), n_e, inter);
+      // 4. the int4 down weight, read back from the arena (the ARM pages are
+      //    gone) and dequantized; then mid . W in double with no activation
+      //    quantization at all
+      {
+        std::lock_guard<std::mutex> lock(handle_mutex_);
+        auto it = wh_where_.find(h_dn[e]);
+        if (it == wh_where_.end()) {
+          std::fprintf(stderr, "[L2-DIFF-MOE] handle %u not in the arena\n",
+                       h_dn[e]);
+          return;
+        }
+        wh.resize(whBytes(inter, N_out));
+        std::memcpy(wh.data(),
+                    arena_chunks_[it->second.first].buf->data() +
+                      it->second.second,
+                    wh.size());
+      }
+      const uint32_t n_tiles = N_out / WH_TILE;
+      for (uint32_t kt = 0; kt < inter / WH_TILE; ++kt) {
+        for (uint32_t nt = 0; nt < n_tiles; ++nt) {
+          const uint8_t *tile =
+            wh.data() +
+            (static_cast<size_t>(kt) * n_tiles + nt) * WH_TILE_BYTES;
+          for (uint32_t r = 0; r < WH_TILE; ++r) {
+            for (uint32_t c = 0; c < WH_TILE; ++c) {
+              const uint32_t sl = whSlot(r, c);
+              const int nib = (tile[sl / 2] >> (4 * (sl % 2))) & 0x0F;
+              const uint32_t n = nt * WH_TILE + c;
+              w[static_cast<size_t>(kt * WH_TILE + r) * N_out + n] =
+                static_cast<float>(nib > 7 ? nib - 16 : nib) * down_scale[e][n];
+            }
+          }
+        }
+      }
+      std::vector<double> ref(static_cast<size_t>(n_e) * N_out, 0.0);
+      for (unsigned int m = 0; m < n_e; ++m) {
+        double *o = &ref[static_cast<size_t>(m) * N_out];
+        for (unsigned int k = 0; k < inter; ++k) {
+          const double a = mid[static_cast<size_t>(m) * inter + k];
+          const float *wr = &w[static_cast<size_t>(k) * N_out];
+          for (unsigned int n = 0; n < N_out; ++n)
+            o[n] += a * wr[n];
+        }
+      }
+      // 5. the device on this expert alone: identity rows, weight 1.0
+      std::vector<unsigned int> idx(n_e), cnt(1, n_e);
+      std::vector<float> one(n_e, 1.0f), dev(ref.size(), 0.0f);
+      for (unsigned int i = 0; i < n_e; ++i)
+        idx[i] = i;
+      const std::vector<uint32_t> hg1(1, hg), hd1(1, h_dn[e]);
+      invokeMoeLayer(session, hg1, hd1, idx, cnt, one, act_e.data(), dev.data(),
+                     n_e, K, inter, N_out);
+      // 6. the number
+      double sig = 0.0, noise = 0.0, max_abs_err = 0.0;
+      for (size_t i = 0; i < ref.size(); ++i) {
+        const double d = dev[i] - ref[i];
+        sig += ref[i] * ref[i];
+        noise += d * d;
+        max_abs_err = std::max(max_abs_err, std::fabs(d));
+      }
+      const double snr = noise == 0.0 ? 999.0 : 10.0 * std::log10(sig / noise);
+      std::fprintf(stderr,
+                   "[L2-DIFF-MOE] expert=%u M=%u had=%d snr=%.2f dB "
+                   "max_abs_err=%g\n",
+                   static_cast<unsigned>(e), n_e, down_hadamard ? 1 : 0, snr,
+                   max_abs_err);
+    }
   }
 
   /** Same registration the layer call above does on first use, keyed by
@@ -2061,6 +2247,10 @@ private:
       for (unsigned int r = 0; r < M; ++r)
         row_index[c * M + r] = r;
     }
+    // The MoE options are session state: a QS4CX_WH_HAD layer before this
+    // one leaves DOWN_HADAMARD set, and these chunks' down weights are not
+    // folded (issue #95).
+    setMoeOpts(session, 0u);
     invokeMoeLayer(session, dh.h_gu, dh.h_dn, row_index, row_count, row_weight,
                    act, out, M, K, dh.w, N, /*kind=*/1);
   }
@@ -2275,6 +2465,7 @@ private:
                                std::to_string(K) + "x" + std::to_string(N) +
                                " WH weight");
     }
+    wh_where_.emplace(handle, std::make_pair(chunk, off));
     // Only now: e.w_scale and e.colsum_w are already copies, so the source
     // buffer -- whose scales sit just past the nibbles -- has no reader left.
     releaseArmSource(matAdata, wh_len);
@@ -2617,6 +2808,12 @@ private:
 
   std::mutex handle_mutex_;
   std::unordered_map<const void *, uint32_t> handle_cache_;
+  /** WH handle -> (arena chunk, offset): where l2DiffMoe reads the int4
+   *  bytes back from, the ARM copy being gone. 8 bytes a weight. */
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> wh_where_;
+  /** The MoE option word the skel last acknowledged; UINT32_MAX until the
+   *  first layer call sends one (0 is a real value: flag off). */
+  uint32_t moe_flags_applied_ = UINT32_MAX;
   /** FC weights by data pointer -> their handle(s); see get_or_register_fc.
    *  Values are never erased or moved, so the references it hands out stay
    *  valid (std::unordered_map keeps node addresses across rehash). */

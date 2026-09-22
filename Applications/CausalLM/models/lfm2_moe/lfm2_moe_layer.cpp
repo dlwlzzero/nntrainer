@@ -479,10 +479,14 @@ static bool tryMoeLayerOnAccelerator(
   // experts' halves have to agree, and every expert with every other: the
   // call takes one flag for the layer, and a model that mixed the two would
   // otherwise read half its weights with the wrong layout.
+  // QS4CX_WH_HAD (issue #95) is the same layout with the down_proj folded
+  // by the Hadamard rotation; the kernel then rotates the down input.
   const auto wh = nntrainer::Tdatatype::QS4CX_WH;
+  const auto had = nntrainer::Tdatatype::QS4CX_WH_HAD;
   const auto plain = nntrainer::Tdatatype::QS4CX;
-  const bool weights_wh =
-    context.getWeight(gate_up_indices[0]).getDataType() == wh;
+  const auto tag = context.getWeight(gate_up_indices[0]).getDataType();
+  const bool weights_wh = tag == wh || tag == had;
+  const bool down_hadamard = tag == had;
 
   // Decode's single token normally stays on the ARM side: it cannot amortize
   // the kernel's 64-row pad, which is why the fused path has the same gate.
@@ -508,7 +512,7 @@ static bool tryMoeLayerOnAccelerator(
   for (size_t e = 0; e < n_experts; ++e) {
     nntrainer::Tensor &gu = context.getWeight(gate_up_indices[e]);
     nntrainer::Tensor &dn = context.getWeight(down_indices[e]);
-    const auto want = weights_wh ? wh : plain;
+    const auto want = weights_wh ? tag : plain;
     if (gu.getDataType() != want || dn.getDataType() != want) {
       return false;
     }
@@ -540,7 +544,7 @@ static bool tryMoeLayerOnAccelerator(
   ops->gemm_qs4cx_moe_layer_fp32(
     gu_data, gu_scale, dn_data, dn_scale, row_index, row_count, row_weight,
     input.getData<float>(), output.getData<float>(), total_tokens, hidden_size,
-    intermediate_size, hidden_size, weights_wh);
+    intermediate_size, hidden_size, weights_wh, down_hadamard);
   return true;
 }
 

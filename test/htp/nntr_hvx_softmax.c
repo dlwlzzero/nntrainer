@@ -22,6 +22,7 @@
 #include "nntr_hvx_session.h"
 
 #include "hvx_exp_f32.h"
+#include "hvx_fwht_f32.h"
 #include "hvx_softmax_blocked_f32.h"
 #include "hvx_softmax_f32.h"
 #include "hvx_swiglu_det.h"
@@ -104,6 +105,27 @@ int nntr_hvx_swiglu_det_f32(remote_handle64 handle, const float *gate,
     vr[i] = hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
     vo[i] = hvx_swiglu_det_sf(g, vu[i]);
   }
+  return AEE_SUCCESS;
+}
+
+int nntr_hvx_fwht_rows_f32(remote_handle64 handle, const float *x, int xLen,
+                           uint32 rows, uint32 k, float *y, int yLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s) {
+    return AEE_EBADPARM;
+  }
+  if (xLen != yLen || xLen <= 0 || rows == 0u || k == 0u ||
+      (uint64_t)rows * k != (uint64_t)xLen || k % HVX_FWHT_BLOCK != 0u) {
+    FARF(ERROR, "fwht_rows_f32: bad shape (xLen=%d yLen=%d rows=%u k=%u)", xLen,
+         yLen, (unsigned)rows, (unsigned)k);
+    return AEE_EBADPARM;
+  }
+  /* In place on the output: the kernel is in-place, and FastRPC buffers
+     carry no alignment guarantee, which the kernel's unaligned vector
+     accesses already allow for. Through the pool, as the MoE kernel's
+     block loop calls it. */
+  memcpy(y, x, (size_t)xLen * sizeof(float));
+  hvx_fwht_rows_f32(y, rows, k, s->quant_pool);
   return AEE_SUCCESS;
 }
 

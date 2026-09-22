@@ -8,6 +8,7 @@
 #include "hexkl_probe.h"
 #include "hvx_conv_gate_f32.h"
 #include "hvx_dequant_i32.h"
+#include "hvx_fwht_f32.h"
 #include "hvx_gather_ah_u8.h"
 #include "hvx_gemm_u8i4_wh.h"
 #include "hvx_scale_add_f32.h"
@@ -96,6 +97,15 @@ void hexkl_dma_ring_push2d(void *dst, const void *src, uint32_t ds, uint32_t ss,
   for (uint32_t r = 0; r < nrows; ++r)
     memcpy((uint8_t *)dst + (size_t)r * ds,
            (const uint8_t *)src + (size_t)r * ss, rs);
+}
+
+/* The rotation's stand-in IS its scalar specification: on the host the
+   two are one function, so what the MoE check verifies is that the kernel
+   applies it at every requantization site, not the HVX arithmetic. */
+void hvx_fwht_rows_f32(float *x, uint32_t rows, uint32_t k,
+                       hvx_worker_pool *pool) {
+  (void)pool;
+  fwht_rows_f32_ref(x, rows, k);
 }
 
 /* ---- quant / dequant / swiglu ---- */

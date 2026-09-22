@@ -763,6 +763,7 @@ Tensor &FloatTensor::dot(Tensor const &input, Tensor &output, bool trans,
     dotQs4cx(input, output, trans, trans_in, beta, input.getDataType());
     break;
   case Tdatatype::QS4CX_WH:
+  case Tdatatype::QS4CX_WH_HAD:
     // Reaching a CPU kernel at all is the error. These nibbles are in the
     // HMX unit's weight-tile layout (htp_wh_layout.h), which no kernel here
     // can read, so the weight has to go to the accelerator or not be built

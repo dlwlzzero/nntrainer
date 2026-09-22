@@ -26,7 +26,7 @@ trap 'rm -rf "$OUT"' EXIT
 cc=${CC:-gcc}
 "$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
   -DMOE_TAIL_MAX_ROWS=16u \
-  -I "$HERE/stub" -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+  -I "$HERE/stub" -I "$BACKEND/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
   -o "$OUT/moe_layer_host_check" \
   "$HERE/moe_layer_host_check.c" "$HERE/hvx_scalar_stubs.c" \
   "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" -lm
@@ -39,7 +39,7 @@ cc=${CC:-gcc}
 # add per tap, as the HVX computes it, and the host compiler must not fuse
 # them into an FMA the device does not have.
 "$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
-  -I "$HERE/stub" -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+  -I "$HERE/stub" -I "$BACKEND/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
   -o "$OUT/conv_block_host_check" \
   "$HERE/conv_block_host_check.c" "$HERE/hvx_scalar_stubs.c" \
   "$BACKEND/hmx/hexkl_conv_block.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" -lm
@@ -56,3 +56,12 @@ cc=${CC:-gcc}
   "$HERE/worker_pool_host_check.c" "$BACKEND/hvx/hvx_worker_pool.c"
 
 "$OUT/worker_pool_host_check"
+
+# The FWHT (issue #95) feeds a quantizer, so it is IEEE sf add/sub only:
+# v75 and v79 disagree on qf32 -> sf, and a kernel that used it could not
+# be bit-identical to fwht_det.h on both. Grep, because -Werror cannot see
+# an intrinsic's numeric family.
+if grep -q qf32 "$BACKEND/hvx/hvx_fwht_f32.c"; then
+  echo "hvx_fwht_f32.c uses qf32 -- forbidden (LEDGER rule)"; exit 1
+fi
+echo "FWHT: no qf32 in hvx_fwht_f32.c"
