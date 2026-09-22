@@ -19,13 +19,13 @@ device are labelled `(PR)` and are provisional. Rows labelled
 `R3CY205ZMND` (the second S25 Ultra, SM-S938N; #77 ran there because it
 was the only unit reachable from that workstation) are ~7 % apart in DSP
 clock from ours and do not replace the "now" (LEDGER rule 13); the anchor
-sitting on `R3CY10WM83Y` is #91.
+sitting on `R3CY10WM83Y` is #94 (sitting 2, variant A; #91 folded in).
 
 ## Goals
 
 | goal | now | target | ceiling | status |
 |---|---|---|---|---|
-| decode tok/s, NPU, gen 64 / 512 / 1024 | 20.8 (PR, gen 512, prompt 444); `R3CY205ZMND` #77: **19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0** (two runs per length) | **≥ 50** at each length | 48–52 (730 MB/token ÷ 34–38 GB/s) | provisional until the anchor sitting #91 on `R3CY10WM83Y`; distance on `R3CY205ZMND`: **2.7×** at G=512 |
+| decode tok/s, NPU, gen 64 / 512 / 1024 | 20.8 (PR, gen 512, prompt 444); `R3CY205ZMND` #77: **19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0** (two runs per length) | **≥ 50** at each length | 48–52 (730 MB/token ÷ 34–38 GB/s) | provisional until the anchor sitting #94 (variant A) on `R3CY10WM83Y`; distance on `R3CY205ZMND`: **2.7×** at G=512 |
 | decode tok/s, CPU control (`q40`, 8 threads) | 48 (PR); `R3CY205ZMND` #77: 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5 | — (the floor the NPU must beat) | same ceiling | provisional; the CPU sits on the ceiling and clears 50 at G=64/512, not at G=1024 |
 | prefill tok/s, NPU, prompt 512 | 523–532 (PR, prompt 444); `R3CY205ZMND` #77: 403–541 (median of 6: 490); CPU 231–336 | **≥ −5 % of variant A** in every handoff | — | gate, not a goal; the denominator is variant A of each sitting, never this cell |
 | accuracy | text identical to CPU | identical | — | gate |
@@ -71,6 +71,18 @@ sitting on `R3CY10WM83Y` is #91.
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin` (4,316,133,120 B) | `7b7867fab51845664c0050c0a837073e` | same plus `--moe_dtype QS4CX_WH`; `moe_engine: htp`, `moe_htp_layers: ""` | NPU model (#78) |
 | #77 set, `htp/77-first-handoff` @ `3c6e8397` (table) / `81fd3ec9` (built and pushed, other build path): skel A / novote, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `profile/nntrainer_causallm`, `unittest_hvx_dma_probe` | table `0dd2c303…` / `40007503…` / `53814a39…` / `83955c80…` / `326094f4…` / `ed4e73fc…` / `cf18de2c…`; **device** `47c14253…` / `99556663…` / `170af7a6…` / — / — / `3806b904…` / `9de5715b…` | `77-first-handoff.md` Artifacts + Notes | compiled files differ by build path (LEDGER rule 14); non-compiled files (`libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `77-prompt512.txt` `fc65c158…`, `tokenizer.json` `7b8067a5…`) and both model `.bin`s rebuilt there match bit-for-bit |
 
+**Next sitting (#94) rebuild note, 2026-09-22:** every artifact above was
+built from `htp_moe` @ `2ce38d65` (or the #77 branch). PR #93 (`b6ebc2b7`)
+changed `test/htp/nntr_hvx.idl` (`dma_probe`, `moe_dma_trace_read`,
+`dma_replay`; `mm_u8i4_moe_layer_timed`'s `stage_us` grew) and the probe
+slots, so the reference set for sitting 2 — skel, `nntrainer_causallm`,
+`libcausallm_core.so`, `libnntrainer.so`, `libccapi-nntrainer.so`,
+`unittest_hvx_dma_probe`, `unittest_hvx_mm_u8i4` — **must be rebuilt from
+`htp_moe` @ `750428e8`** and their md5s recorded from the pushed build
+(LEDGER rules 3, 14). The two model `.bin`s are unchanged (quantizer
+format untouched) and keep the md5s above. Pushing an old app with the
+new skel, or the reverse, fails with `AEE_EBADPARM`.
+
 ## Log
 
 | date | what | rows / goals touched |
@@ -78,3 +90,4 @@ sitting on `R3CY10WM83Y` is #91.
 | 2026-09-21 | File created from PR #4327 docs 49 and 50; goals from the contract | all |
 | 2026-09-21 | Weights prepared (#78); first handoff written (#77, `docs/measurements/77-first-handoff.md` on `htp/77-first-handoff`) | artifacts |
 | 2026-09-21 | #77 filled (`e8b930ad`) on unit **`R3CY205ZMND`**, not ours: 12 A rows added, unit-tagged readings next to the provisional "now" (not replaced; anchor sitting #91), side tables A-profile / B / C / ④, artifact md5 note; #77 closed | results, goals (now column annotated, status), artifacts |
+| 2026-09-22 | Cycle 3: #87 closed (PR #93 merged `b6ebc2b7`), #91 folded into #94 (sitting 2 = anchor cells + #87 trace/replay, variant C only if PR #86 merges first); rebuild note for the #94 artifact set; PR #92 guide merged (LEDGER §3a); verdict ① corrected (no FC on the HTP in the NPU config → LEDGER ⑰) | goals (status column), artifacts |
