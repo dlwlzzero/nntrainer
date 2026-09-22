@@ -109,6 +109,20 @@ ninja install`, then `build_android.sh --htp --cache` for the rest
 `build_tokenizer_android.sh` with Rust (`~/.cargo`, target
 `aarch64-linux-android`; env.sh puts cargo on PATH).
 
+Fresh checkout or new `git worktree` (the #105 sitting's rebuild lost
+≈ 15 min to each of these; LEDGER §3a):
+* `subprojects/` starts empty; run `git submodule update --init --depth 1`
+  first, or `build_android.sh` fails late on `iniparser.h`.
+* `Applications/CausalLM/lib/libtokenizers_android_c.a` is per-checkout:
+  copy it from another worktree or run `build_tokenizer_android.sh`.
+* If `libc++_shared.so` is missing under `jni/obj/local/arm64-v8a/`, take
+  it from `$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/`
+  (md5 `b1586b9b…` for r30).
+* Export `HEXKL_ROOT` explicitly (next to `HEXKL_SDK_VER=6.4.0.1`);
+  its location differs between workstations and `env.sh`'s default may
+  point at another package.
+A handoff's rebuild recipe lists these four lines.
+
 ## 4. Device (user only)
 
 Never run here. Write a handoff (`hexagon-handoff` skill), set
