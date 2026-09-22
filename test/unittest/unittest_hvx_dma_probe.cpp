@@ -11,7 +11,9 @@
  * @bug    No known bugs except for NYI items
  *
  * MoeChunkReplay (#87) replays the MoE layer call's own M=1 descriptor
- * list through dma_replay, next to one real traced call.
+ * list through dma_replay, next to one real traced call, then the 16 #100
+ * cells (DMA_REPLAY_X lines, docs/plans/100-dma-chunk-list.md section 3.2)
+ * with a content check that fails on a stale window.
  *
  * Runs on an Android device only. Requires libnntr_hvx_skel.so on
  * ADSP_LIBRARY_PATH; run once with the vote-on skel and once with the
@@ -58,12 +60,12 @@ std::string hex(int err) {
   return os.str();
 }
 
-/** @brief The byte at every 64-aligned offset is 0xA5, so the DSP's
- *  64-stride checksum over any descriptor payload is 0xA5 per sample
- *  whatever the plan put there; the rest varies so the buffer is not one
- *  constant. */
+/** @brief nntr_dma_pattern: the byte at every 64-aligned offset is 0xA5,
+ *  so the DSP's 64-stride coverage checksum over any descriptor payload is
+ *  0xA5 per sample whatever the plan put there; 32 bytes on sits a tag of
+ *  the 4 KiB page (#100), which the replay's res[12] sums. */
 inline uint8_t pattern(size_t i) {
-  return static_cast<uint8_t>(0xA5u ^ (i & 63u));
+  return nntr_dma_pattern(static_cast<uint32_t>(i));
 }
 
 struct Shape {
@@ -586,7 +588,7 @@ TEST_F(HvxDmaProbe, MoeChunkReplay) {
         t_rel =
           it.op == NNTR_MOE_DMA_OP_PUSH ? pp[(ip++) * pw] : wp[(iw++) * ww];
       }
-      const uint32_t words[8] = {(it.op << 8) | it.kind,
+      const uint32_t words[8] = {nntr_moe_dma_word0(&it),
                                  it.expert,
                                  it.src_off,
                                  it.dst_off,
@@ -640,6 +642,79 @@ TEST_F(HvxDmaProbe, MoeChunkReplay) {
   cell(1, 0, 1, 1, 0);
   cell(1, 0, 1, 0, 600);
   cell(1, 0, 1, 1, 600);
+
+  // --- [#100] the cells of plan 100 section 3.2, one run, workers 1 ------
+  // res[12] is the tag sum over every push's VTCM window; the host
+  // simulates the same list (nntr_moe_dma_tag_sum, checked against a byte
+  // copy by replay_cells_host_check) with the skel's region count, so a
+  // transfer that did not land -- or, for fresh = 1, landed a call late --
+  // fails the line. The rates are reported, not asserted. The expectation
+  // takes list order as landing order; only the traced* cells (the packed
+  // gate/up chunks overlap, #99) and iii_chain (a slot rewritten 8 pushes
+  // on) have overlapping destinations in flight at once, every other cell
+  // waits or drains before it rewrites a destination.
+  {
+    static nntr_moe_dma_item items[NNTR_MOE_DMA_PLAN_MAX];
+    static uint8_t samples[(8u << 20) / 64u + 1u];
+    const uint32_t calls = 20;
+    for (uint32_t id = 0; id < NNTR_MOE_DMA_N_CELLS; ++id) {
+      const char *name = "?";
+      uint32_t fresh = 0, load = 0, n_push = 0, modes = 0;
+      const uint32_t n =
+        nntr_moe_dma_cell(id, plan, n_plan, K, I, N, E, items,
+                          NNTR_MOE_DMA_PLAN_MAX, &name, &fresh, &load);
+      ASSERT_NE(n, 0u) << "cell " << id;
+      std::vector<uint32_t> s;
+      for (uint32_t k = 0; k < n; ++k) {
+        const nntr_moe_dma_item &it = items[k];
+        const uint32_t words[8] = {nntr_moe_dma_word0(&it),
+                                   it.expert,
+                                   it.src_off,
+                                   it.dst_off,
+                                   it.row_size,
+                                   it.nrows,
+                                   it.src_stride,
+                                   0u};
+        s.insert(s.end(), words, words + 8);
+        if (it.op == NNTR_MOE_DMA_OP_PUSH) {
+          ++n_push;
+          // flags 0 is the replay's default, packed until #99 lands
+          modes |= (it.flags & NNTR_MOE_DMA_DST_STRIDED) ? 2u : 1u;
+        }
+      }
+      std::vector<uint32_t> res(13, 0);
+      const int err = nntr_hvx_dma_replay(handle_, ch.arena, region, s.data(),
+                                          (int)s.size(), 1, load, 0, fresh, 0,
+                                          calls, res.data(), (int)res.size());
+      if (err != AEE_SUCCESS) {
+        std::cout << "DMA_REPLAY_X name=" << name << " skipped err=" << hex(err)
+                  << "\n";
+        ADD_FAILURE() << name << ": " << hex(err) << " -- a skel without #100?";
+        continue;
+      }
+      const uint32_t want =
+        nntr_moe_dma_tag_sum(items, n, calls, fresh, res[7], region, samples);
+      const double us_per_call = static_cast<double>(res[0]) / calls;
+      const double gbs = us_per_call > 0 ? res[2] / us_per_call / 1e3 : 0.0;
+      static const char *const kMode[] = {"?", "packed", "strided", "mixed"};
+      std::cout << std::fixed << std::setprecision(1)
+                << "DMA_REPLAY_X name=" << name << " dst=" << kMode[modes]
+                << " load=" << load << " fresh=" << fresh << " desc=" << n_push
+                << " bytes_per_call=" << res[2]
+                << " us_per_call=" << us_per_call << " gbs=" << gbs
+                << " wait_us=" << res[3] / (double)calls
+                << " busy_us=" << res[10] / (double)calls << ".."
+                << res[11] / (double)calls << " depth_max=" << res[5]
+                << " regions=" << res[7] << " load_units=" << res[9]
+                << " tag=" << res[12] << "/" << want << " checksum_ok="
+                << (res[12] == want ? "y" : "n")
+                // a skel without #100 leaves res[12] at 0 on the unflagged
+                // cells; a live window never sums to 0 (host check)
+                << (res[12] == 0u ? " stale_skel_or_nothing_landed" : "")
+                << "\n";
+      EXPECT_EQ(res[12], want) << name;
+    }
+  }
 
   for (uint32_t e = 0; e < E; ++e) {
     nntr_hvx_weight_release_u8i4(handle_, h_gu[e]);
