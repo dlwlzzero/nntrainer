@@ -46,6 +46,7 @@
 #include <cpu_ops_table.h>
 #include <htp_act_quant.h>
 #include <htp_backend.h>
+#include <htp_moe_opts.h>
 #include <htp_q4_0_convert.h>
 #include <htp_rpcmem.h>
 #include <htp_wh_layout.h>
@@ -183,11 +184,6 @@ enum {
   HTP_MOE_T_PATH, /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
   HTP_MOE_N_STAGES
 };
-
-/** @brief hexkl_mm_u8i4_moe.h's HEXKL_MOE_FLAG_M1_GEMV restated for the
- *  ARM side (the DSP header does not compile here): the moe_set_opts bit
- *  that lets a call of at most 4 rows take the HVX GEMV path. */
-static constexpr uint32_t HTP_MOE_FLAG_M1_GEMV = 1u;
 
 /**
  * @brief Per-stage timing for the HTP path. Off unless NNTR_HTP_PROFILE is set.
@@ -599,12 +595,15 @@ private:
         // treat it as an upper bound on the matmul, not an exact figure.
         /* mm is the residual, so every named stage has to be subtracted --
            scatter included, or the MoE layer call's scatter time would be
-           reported as matmul. */
-        const double mm_per =
-          dsp_per -
-          (quant_per + swiglu_per + dequant_per + acc_per + drain_per +
-           scatter_per + stage_per + gather_per + requant_per + mm_meas_per +
-           drain_dn_per + push_per + alloc_per);
+           reported as matmul. [#102] Except swiglu on the M=1 GEMV path:
+           there it is the sum of every worker lane's wall time inside the
+           two GEMV stages, not a stage on this clock (htp_moe_opts.h). */
+        const double mm_per = htp_moe_row_rest_us(
+          dsp_per,
+          quant_per + dequant_per + acc_per + drain_per + scatter_per +
+            stage_per + gather_per + requant_per + mm_meas_per + drain_dn_per +
+            push_per + alloc_per,
+          swiglu_per, b.m1_calls != 0);
         std::fprintf(stderr,
                      "  dsp=%7.1f us/call (%4.1f%%) transport=%7.1f us/call"
                      "  [quant %.1f gather %.1f requant %.1f swiglu %.1f "
@@ -639,6 +638,23 @@ private:
                      kb, first_kb, first_us,
                      first_us > 0.0 ? first_kb * 1.024 / first_us : 0.0,
                      dsp_us > 0.0 ? kb * 1.024 / dsp_us : 0.0);
+      } else if (level_ >= 2 && b.calls != 0 && b.m1_calls == b.calls) {
+        // [#102] The GEMV path reads the weights straight from the arena and
+        // never waits on the ring, so there is no first-wait rate to print;
+        // this line keeps the row block's line count and says what swiglu
+        // means on this path (lanes busy = swiglu / mm, 6 lanes on v79).
+        // ponytail: no GB/s here -- the bucket knows K, N_out and M but not
+        // inter, so the rate stays hand arithmetic (weight bytes / mm).
+        // Upgrade: count DMA_KB-style bytes on the GEMV path in the kernel
+        // (a skel change), or pass the bytes to addInvokeMoeLayer.
+        const double mm_us = static_cast<double>(b.mm_us) / b.calls;
+        std::fprintf(stderr,
+                     "\n[HTP-PROFILE]     weight DMA: n/a (direct arena read "
+                     "inside mm, no ring; swiglu = lane-time, %.2f lanes busy "
+                     "over mm)",
+                     mm_us > 0.0
+                       ? static_cast<double>(b.swiglu_us) / b.calls / mm_us
+                       : 0.0);
       }
       if (level_ >= 2 && b.calls != 0 && b.dma_desc != 0) {
         // [#87] How the call used the ring. busy is a bracket, not a point
@@ -1083,30 +1099,31 @@ public:
                    out, M, K, inter, N_out);
   }
 
-  /** [#80] The M=1 GEMV switch: NNTR_MOE_HTP_M1_GEMV=1 in the environment,
-   *  read once, sent to the DSP once per session through moe_set_opts
-   *  (the DSP decides per call on M). Off by default. With the switch on,
-   *  an error or an echo that differs from what was sent throws rather
-   *  than falling back: a silent fallback would let a run report the HMX
-   *  loop's numbers as the GEMV's. With it off, a skel too old to know the
-   *  method is exactly the HMX loop, so that case only logs. The stderr line is
-   * the proof of which path a run took when no profile is on; [HTP-PROFILE]'s
-   * m1_gemv= and blocks= are the per-call proof. */
+  /** [#80] The M=1 GEMV switch, read once from NNTR_MOE_HTP_M1_GEMV and
+   *  sent to the DSP once per session through moe_set_opts (the DSP decides
+   *  per call on M). On by default since #101; NNTR_MOE_HTP_M1_GEMV=0 is the
+   *  opt-out (htp_moe_opts_flags). With the switch on, an error or an echo
+   *  that differs from what was sent throws rather than falling back: a
+   *  silent fallback would let a run report the HMX loop's numbers as the
+   *  GEMV's -- so a skel older than moe_set_opts now fails the first MoE call
+   *  unless the opt-out is set. With it off, such a skel is exactly the HMX
+   *  loop, so that case only logs. The stderr line (source=default|env) is
+   *  the proof of which path a run took when no profile is on;
+   *  [HTP-PROFILE]'s m1_gemv= and blocks= are the per-call proof. */
   void sendMoeOptsOnce(remote_handle64 session) {
     std::call_once(moe_opts_once_, [session]() {
       const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
-      const uint32_t flags =
-        (env != nullptr && std::atoi(env) != 0) ? HTP_MOE_FLAG_M1_GEMV : 0u;
+      const uint32_t flags = htp_moe_opts_flags(env);
+      const char *source = env != nullptr ? "env" : "default";
       uint32_t applied = 0;
       const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
       if (flags == 0u && err != AEE_SUCCESS) {
-        // Nothing was asked for, and a skel that predates moe_set_opts runs
-        // the HMX loop, which is what "off" means: say so and go on rather
-        // than fail a deployment this PR changed nothing for.
+        // The opt-out was asked for, and a skel that predates moe_set_opts
+        // runs the HMX loop, which is what "off" means: say so and go on.
         std::fprintf(stderr,
                      "[HTP] moe m1 gemv: off (moe_set_opts err=0x%08x; the "
-                     "skel predates it)\n",
-                     static_cast<unsigned>(err));
+                     "skel predates it) source=%s\n",
+                     static_cast<unsigned>(err), source);
         return;
       }
       if (err != AEE_SUCCESS || applied != flags) {
@@ -1120,8 +1137,8 @@ public:
           " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
           "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
       }
-      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x)\n",
-                   flags != 0u ? "on" : "off", applied);
+      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x) source=%s\n",
+                   flags != 0u ? "on" : "off", applied, source);
     });
   }
 

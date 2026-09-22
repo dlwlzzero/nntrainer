@@ -57,6 +57,15 @@ cc=${CC:-gcc}
 
 "$OUT/dma_probe_host_check"
 
+# The M=1 GEMV default and the MoE profile row's rest (htp_moe_opts.h,
+# #101/#102): pure arithmetic on #94 sitting 2's printed rows.
+"$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
+  -I "$BACKEND" \
+  -o "$OUT/moe_opts_host_check" \
+  "$HERE/moe_opts_host_check.c" -lm
+
+"$OUT/moe_opts_host_check"
+
 # The MoE call's DMA ring trace (hexkl_dma_trace.c, #87): completion
 # brackets, the union-of-intervals busy time, ring depth and the blocked
 # bit on a scripted timeline whose expected numbers are hand arithmetic.
