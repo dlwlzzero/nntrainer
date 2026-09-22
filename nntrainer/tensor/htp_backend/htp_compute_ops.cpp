@@ -595,12 +595,15 @@ private:
         // treat it as an upper bound on the matmul, not an exact figure.
         /* mm is the residual, so every named stage has to be subtracted --
            scatter included, or the MoE layer call's scatter time would be
-           reported as matmul. */
-        const double mm_per =
-          dsp_per -
-          (quant_per + swiglu_per + dequant_per + acc_per + drain_per +
-           scatter_per + stage_per + gather_per + requant_per + mm_meas_per +
-           drain_dn_per + push_per + alloc_per);
+           reported as matmul. [#102] Except swiglu on the M=1 GEMV path:
+           there it is the sum of every worker lane's wall time inside the
+           two GEMV stages, not a stage on this clock (htp_moe_opts.h). */
+        const double mm_per = htp_moe_row_rest_us(
+          dsp_per,
+          quant_per + dequant_per + acc_per + drain_per + scatter_per +
+            stage_per + gather_per + requant_per + mm_meas_per + drain_dn_per +
+            push_per + alloc_per,
+          swiglu_per, b.m1_calls != 0);
         std::fprintf(stderr,
                      "  dsp=%7.1f us/call (%4.1f%%) transport=%7.1f us/call"
                      "  [quant %.1f gather %.1f requant %.1f swiglu %.1f "
@@ -635,6 +638,23 @@ private:
                      kb, first_kb, first_us,
                      first_us > 0.0 ? first_kb * 1.024 / first_us : 0.0,
                      dsp_us > 0.0 ? kb * 1.024 / dsp_us : 0.0);
+      } else if (level_ >= 2 && b.calls != 0 && b.m1_calls == b.calls) {
+        // [#102] The GEMV path reads the weights straight from the arena and
+        // never waits on the ring, so there is no first-wait rate to print;
+        // this line keeps the row block's line count and says what swiglu
+        // means on this path (lanes busy = swiglu / mm, 6 lanes on v79).
+        // ponytail: no GB/s here -- the bucket knows K, N_out and M but not
+        // inter, so the rate stays hand arithmetic (weight bytes / mm).
+        // Upgrade: count DMA_KB-style bytes on the GEMV path in the kernel
+        // (a skel change), or pass the bytes to addInvokeMoeLayer.
+        const double mm_us = static_cast<double>(b.mm_us) / b.calls;
+        std::fprintf(stderr,
+                     "\n[HTP-PROFILE]     weight DMA: n/a (direct arena read "
+                     "inside mm, no ring; swiglu = lane-time, %.2f lanes busy "
+                     "over mm)",
+                     mm_us > 0.0
+                       ? static_cast<double>(b.swiglu_us) / b.calls / mm_us
+                       : 0.0);
       }
       if (level_ >= 2 && b.calls != 0 && b.dma_desc != 0) {
         // [#87] How the call used the ring. busy is a bracket, not a point
