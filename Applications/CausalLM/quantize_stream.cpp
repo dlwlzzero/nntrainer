@@ -9,6 +9,7 @@
  */
 
 #include <cpu_backend.h>
+#include <fwht_det.h>
 #include <htp_wh_layout.h>
 
 #include <algorithm>
@@ -377,8 +378,11 @@ DType parseDType(const std::string &value) {
     return DType::QS4CX;
   if (dtype == "QS4CX_WH")
     return DType::QS4CX_WH;
-  throw std::invalid_argument("Unsupported dtype: " + value +
-                              " (supported: FP32, Q4_0, Q4_K, Q6_K, QS4CX)");
+  if (dtype == "QS4CX_WH_HAD")
+    return DType::QS4CX_WH_HAD;
+  throw std::invalid_argument(
+    "Unsupported dtype: " + value +
+    " (supported: FP32, Q4_0, Q4_K, Q6_K, QS4CX, QS4CX_WH, QS4CX_WH_HAD)");
 }
 
 const char *dtypeName(DType dtype) {
@@ -395,6 +399,8 @@ const char *dtypeName(DType dtype) {
     return "QS4CX";
   case DType::QS4CX_WH:
     return "QS4CX_WH";
+  case DType::QS4CX_WH_HAD:
+    return "QS4CX_WH_HAD";
   default:
     throw std::invalid_argument("Unknown dtype");
   }
@@ -404,6 +410,21 @@ std::string dtypeSuffix(DType dtype) {
   std::string suffix = lower(dtypeName(dtype));
   suffix.erase(std::remove(suffix.begin(), suffix.end(), '_'), suffix.end());
   return suffix;
+}
+
+/** @brief QS4CX_WH and its Hadamard-tagged twin share every byte rule. */
+bool isWh(DType dtype) {
+  return dtype == DType::QS4CX_WH || dtype == DType::QS4CX_WH_HAD;
+}
+
+/** @brief The one tensor per expert QS4CX_WH_HAD folds: the down_proj,
+ *         named "<layer>_expert<e>_down" by the MoE writers below. */
+bool isMoeDown(const std::string &name) {
+  static const std::string suffix = "_down";
+  return name.size() > suffix.size() &&
+         name.compare(name.size() - suffix.size(), suffix.size(), suffix) ==
+           0 &&
+         name.find("_expert") != std::string::npos;
 }
 
 ml::train::ISA parseIsa(const std::string &value) {
@@ -467,6 +488,7 @@ size_t quantizedSize(DType dtype, size_t rows, size_t columns, bool repack,
     // every nibble first and every scale after (see writeQuantized).
     return checkedMultiply(rows, qs4cxRowBytes(columns) + sizeof(float), name);
   case DType::QS4CX_WH:
+  case DType::QS4CX_WH_HAD:
     // The same nibbles rearranged into HMX weight tiles, which is the same
     // byte count -- a 32x32 tile is 512 bytes either way -- plus a second f32
     // per output channel for the column sum the matmul needs and cannot
@@ -547,7 +569,7 @@ public:
     }
     // An embedding is a lookup, not a matmul against the HMX unit, so there
     // is nothing for a weight-tile layout to be right for.
-    if (dtype == DType::QS4CX_WH) {
+    if (isWh(dtype)) {
       throw std::invalid_argument(
         "QS4CX_WH is a weight layout for the HTP matmul and cannot be used "
         "for an embedding");
@@ -592,6 +614,13 @@ public:
 
     // Validate the complete shape before writing any part of this tensor.
     quantizedSize(dtype, output_size, input_size, true, name);
+    if (dtype == DType::QS4CX_WH_HAD && isMoeDown(name) &&
+        input_size % FWHT_DET_BLOCK != 0) {
+      throw std::invalid_argument(
+        name + ": QS4CX_WH_HAD rotates the down_proj input in blocks of " +
+        std::to_string(FWHT_DET_BLOCK) +
+        ", but K = " + std::to_string(input_size) + " is not a multiple of it");
+    }
     if (dry_run_) {
       expected_input_bytes_ += source_bytes;
       return;
@@ -605,7 +634,7 @@ public:
     // ponytail: the fix if a model ever needs it is to hold the whole WH
     // image -- K*N/2 bytes, 3.5 MB for the largest -- and fill it block by
     // block, not to change the tile order.
-    if (dtype == DType::QS4CX_WH && source_bytes > MAX_TENSOR_BUFFER_BYTES) {
+    if (isWh(dtype) && source_bytes > MAX_TENSOR_BUFFER_BYTES) {
       throw std::invalid_argument(
         name + " is " + std::to_string(source_bytes) + " bytes, over the " +
         std::to_string(MAX_TENSOR_BUFFER_BYTES) +
@@ -773,19 +802,36 @@ private:
         /*is_nxk=*/true);
       writeBytes(nibbles.data(), nibbles.size(), name);
       return;
-    } else if (dtype == DType::QS4CX_WH) {
+    } else if (isWh(dtype)) {
       // Same quantizer, then a repack. Going through quant_qs4cx_f32 rather
       // than quantizing straight into tiles keeps this bit-identical to the
       // QS4CX path above: the values and scales are the ones the device has
       // been running, and only where the nibbles sit changes.
+      //
+      // QS4CX_WH_HAD (issue #95): the expert down_proj is folded with the
+      // block-256 Hadamard rotation along K first -- H^T*W/16, which in this
+      // N x K storage is an FWHT along each row, the same function the DSP
+      // applies to the activation (h*H/16) before requantizing it. The
+      // scales and column sums below then describe the folded weight, which
+      // is what the epilogue must see. gate_up under this dtype is written
+      // untouched: only down's INPUT is rotated. The K % 256 refusal is in
+      // writeFc, before any byte of the tensor is read.
+      std::vector<float> folded;
+      const float *values = source.data();
+      if (dtype == DType::QS4CX_WH_HAD && isMoeDown(name)) {
+        folded = source;
+        fwht_rows_f32_ref(folded.data(), static_cast<uint32_t>(rows),
+                          static_cast<uint32_t>(columns));
+        values = folded.data();
+      }
       std::vector<char> nibbles(
         checkedMultiply(rows, qs4cxRowBytes(columns), name));
       const size_t scale_begin = pending_scales_.size();
       pending_scales_.resize(scale_begin + rows);
-      nntrainer::quant_qs4cx_f32(
-        rows, columns, const_cast<float *>(source.data()), nibbles.data(),
-        pending_scales_.data() + scale_begin,
-        /*is_nxk=*/true);
+      nntrainer::quant_qs4cx_f32(rows, columns, const_cast<float *>(values),
+                                 nibbles.data(),
+                                 pending_scales_.data() + scale_begin,
+                                 /*is_nxk=*/true);
 
       // Unpack to one sign-extended int8 per value in K x N row-major, which
       // is what whPack takes and what htp_qs4cx_from_packed builds at load
@@ -839,7 +885,7 @@ private:
    * once they have written a tensor's last chunk.
    */
   void flushQs4cxScales(DType dtype, const std::string &name) {
-    if (dtype != DType::QS4CX && dtype != DType::QS4CX_WH)
+    if (dtype != DType::QS4CX && !isWh(dtype))
       return;
     if (pending_scales_.empty())
       return;
@@ -1305,13 +1351,20 @@ void printUsage(const char *program) {
     << "Architectures: Qwen3MoeForCausalLM, Lfm2MoeForCausalLM, "
        "Gemma4ForCausalLM,\n"
     << "               Gemma4ForConditionalGeneration\n"
-    << "Supported dtypes: FP32, Q4_0, Q4_K, Q6_K, QS4CX, QS4CX_WH\n"
+    << "Supported dtypes: FP32, Q4_0, Q4_K, Q6_K, QS4CX, QS4CX_WH, "
+       "QS4CX_WH_HAD\n"
     << "QS4CX_WH is QS4CX pre-arranged into HMX weight tiles: it loads "
        "without\n"
     << "the on-device conversion that costs 48% of prefill, and no CPU "
        "kernel can\n"
     << "read it, so a model using it runs its MoE experts on the HTP or "
        "not at all.\n"
+    << "QS4CX_WH_HAD (--moe_dtype only) is QS4CX_WH with the expert "
+       "down_proj\n"
+    << "folded by a block-256 Hadamard rotation along K; the DSP rotates "
+       "the\n"
+    << "down input to match. Requires the MoE intermediate size % 256 == "
+       "0.\n"
     << "Gemma4 MoE FC/expert weights currently support FP32 or Q4_0.\n";
 }
 
@@ -1437,6 +1490,15 @@ int run(int argc, char **argv) {
     parseDType(fc_dtype), parseDType(embedding_dtype), parseDType(lmhead_dtype),
     parseDType(moe_dtype), parseIsa(target_isa)};
 
+  // The fold is defined on the expert down_proj alone (isMoeDown); any
+  // other tensor tagged this way would load as WH and silently skip it.
+  if (quant.fc_dtype == DType::QS4CX_WH_HAD ||
+      quant.embedding_dtype == DType::QS4CX_WH_HAD ||
+      quant.lmhead_dtype == DType::QS4CX_WH_HAD) {
+    throw std::invalid_argument(
+      "QS4CX_WH_HAD is only meaningful as --moe_dtype (the expert "
+      "down_proj input rotation); use QS4CX_WH or QS4CX elsewhere");
+  }
   if (tied_embeddings && quant.embedding_dtype != quant.lmhead_dtype) {
     throw std::invalid_argument(
       "A tied model requires matching embedding and LM head dtypes");
