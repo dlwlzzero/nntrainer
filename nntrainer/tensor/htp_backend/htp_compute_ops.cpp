@@ -301,12 +301,21 @@ public:
    *  the first run of this call put 104.8 ms in a bucket ACC_READ and the
    *  scatter shared, and the profile could not say which. */
   void addInvokeMoeLayer(unsigned M, unsigned K, unsigned N_out,
-                         uint64_t host_us, const uint32_t *stage_us) {
+                         uint64_t host_us, const uint32_t *stage_us,
+                         const HtpRpcBuffer &act_stage,
+                         const HtpRpcBuffer &out_stage, size_t in_arg_bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
     Bucket &b = buckets_[std::make_tuple(K, N_out, M == 1)];
     ++b.calls;
     b.rows += M;
     b.host_us += host_us;
+    // [#88] What this call staged through, for the staging: line. The
+    // class sizes are the max over the bucket's calls (one class per shape
+    // in practice), ion is the AND (one heap fallback voids the number).
+    b.stage_act_bytes = std::max(b.stage_act_bytes, act_stage.size());
+    b.stage_out_bytes = std::max(b.stage_out_bytes, out_stage.size());
+    b.stage_ion = b.stage_ion && act_stage.isIon() && out_stage.isIon();
+    b.in_arg_bytes = std::max<uint64_t>(b.in_arg_bytes, in_arg_bytes);
     if (stage_us != nullptr) {
       b.dsp_us += stage_us[HTP_MOE_T_DSP_TOTAL];
       b.quant_us += stage_us[HTP_MOE_T_QUANT];
@@ -488,6 +497,16 @@ private:
     uint64_t dma_first_ready_us = 0;
     uint64_t dma_last_issue_us = 0;
     uint64_t dma_traces = 0; /**< per-descriptor dumps printed so far */
+    /** [#88] MoE layer call only: the ION staging class the call rode
+        (stage() in HtpComputeOps), whether both landed on ION, and the
+        bytes of the non-ION in-args the stub hands the driver (the 48-byte
+        primitive block plus the five routing/handle sequences). Printed
+        as the staging: line so the transport column has its inventory
+        beside it instead of in a plan. */
+    size_t stage_act_bytes = 0;
+    size_t stage_out_bytes = 0;
+    bool stage_ion = true;
+    uint64_t in_arg_bytes = 0;
   };
 
   HtpProfile() {
@@ -658,6 +677,20 @@ private:
                      static_cast<double>(b.dma_first_ready_us) / n,
                      static_cast<double>(b.dma_last_issue_us) / n,
                      static_cast<double>(b.dsp_us) / n);
+      }
+      if (level_ >= 2 && b.stage_act_bytes != 0) {
+        // [#88] The MoE call's per-call transport inventory. The driver's
+        // cache maintenance covers the whole staging buffer, so the class
+        // size is the number that explains a transport figure; rpc allocs
+        // is process-wide and must not grow with calls; the in-args are the
+        // driver-copied bytes outside ION (prim block + 5 sequences; the
+        // sixth sequence and the rout are the two staging buffers).
+        std::fprintf(stderr,
+                     "\n[HTP-PROFILE]     staging: act %zu B out %zu B ion=%c  "
+                     "rpc allocs=%u (session)  non-ION in-args=6/%llu B",
+                     b.stage_act_bytes, b.stage_out_bytes,
+                     b.stage_ion ? 'y' : 'n', HtpRpcBuffer::allocCount(),
+                     (unsigned long long)b.in_arg_bytes);
       }
       std::fprintf(stderr, "\n");
     }
@@ -1690,10 +1723,12 @@ private:
     const int out_len = static_cast<int>(M) * static_cast<int>(N_out);
 
     std::lock_guard<std::mutex> lock(invoke_mutex_);
-    float *act_f32 = reinterpret_cast<float *>(
-      stage(act_pool_, static_cast<size_t>(act_len) * sizeof(float)).data());
-    float *out_f32 = reinterpret_cast<float *>(
-      stage(out_pool_, static_cast<size_t>(out_len) * sizeof(float)).data());
+    HtpRpcBuffer &act_stage =
+      stage(act_pool_, static_cast<size_t>(act_len) * sizeof(float));
+    HtpRpcBuffer &out_stage =
+      stage(out_pool_, static_cast<size_t>(out_len) * sizeof(float));
+    float *act_f32 = reinterpret_cast<float *>(act_stage.data());
+    float *out_f32 = reinterpret_cast<float *>(out_stage.data());
     stagedMemcpy(act_f32, act, static_cast<size_t>(act_len) * sizeof(float));
 
     HtpProfile &profile = HtpProfile::global();
@@ -1763,8 +1798,15 @@ private:
     }
     stagedMemcpy(out, out_f32, static_cast<size_t>(out_len) * sizeof(float));
     if (profile.level()) {
+      // [#88] The bytes the stub hands the driver outside ION: the 48-byte
+      // primitive block (_primIn[12] in generated/nntr_hvx_stub.c) and the
+      // five uint32/float sequences that are not the staged activation.
+      const size_t in_arg_bytes =
+        48 + sizeof(uint32_t) * (h_gu.size() + h_dn.size() + row_index.size() +
+                                 row_count.size() + row_weight.size());
       profile.addInvokeMoeLayer(M, K, N_out, elapsed,
-                                timed ? stage_us : nullptr);
+                                timed ? stage_us : nullptr, act_stage,
+                                out_stage, in_arg_bytes);
     }
     if (timed) {
       // [#87] The per-descriptor trace of the last repeat, for the first
