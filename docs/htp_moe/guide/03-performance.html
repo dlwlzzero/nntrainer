@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP MoE decode guide — 3. Performance record</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--good:#006300;--warn:#b35c00;--crit:#d03b3b;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.5}
+main{max-width:46em;margin:0 auto;padding:0 1em 3em}
+nav.top{background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none;white-space:nowrap}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+p,li{max-width:60ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0}
+.box{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.8em 1em;margin:1em 0}
+.box.status{border-left:4px solid var(--s1)}
+.box.warn{border-left:4px solid var(--warn)}
+.src{color:var(--ink2);font-size:.85em}
+.src::before{content:"source: "}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:#eef4fc}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.big{font-size:1.9em;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5em,1fr));gap:.6em;margin:.6em 0}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em .8em}
+.tile .lbl{font-size:.8em;color:var(--ink2)}
+.tile .sub{font-size:.8em;color:var(--muted)}
+.legend{display:flex;gap:1.2em;flex-wrap:wrap;font-size:.85em;color:var(--ink2);margin:.3em 0}
+.legend span::before{content:"";display:inline-block;width:.8em;height:.8em;border-radius:50%;margin-right:.35em;vertical-align:-.05em}
+.legend .l1::before{background:var(--s1)}
+.legend .l2::before{background:var(--s2)}
+.legend .lg::before{background:none;border-top:2px dashed var(--ink2);height:0;border-radius:0;vertical-align:.2em}
+dl.gl dt{font-weight:600;margin-top:.6em}
+dl.gl dd{margin:0 0 0 1em;max-width:60ch}
+footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}.big{font-size:1.6em}}
+</style>
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="01-run-it.html">1 Run it</a><a href="02-decode-path.html">2 Decode path</a><a href="03-performance.html" class="here">3 Performance</a><a href="04-glossary.html">4 Glossary</a></nav>
+<main>
+<h1>3. Performance record — every device measurement</h1>
+<p class="src"><code>docs/htp_moe/BENCHMARK.md</code> (Goals, Results, side tables, Artifacts, Log), <code>docs/measurements/77-first-handoff.md</code> (branch <code>htp/77-first-handoff</code>, the only filled handoff), <code>docs/htp_moe/LEDGER.md</code> §1–§2, <code>docs/htp_attention/49</code> §1 and <code>50</code> §3.4 for the PR-author rows.</p>
+<p>Method, once: <code>nntrainer_causallm</code> on the phone, <code>NNTR_NUM_THREADS=8</code>, prompt 512 tokens, generation 64 / 512 / 1024, two runs per cell, the non-profile binary. Decode tok/s is the <code>generation:</code> line (whole generation). Every sitting starts with variant A, the unchanged reference, and results are read as an A/B inside that sitting. <span class="src">BENCHMARK.md "Method"; contract §1.1</span></p>
+
+<h2 id="latest">Latest</h2>
+<div class="box status">
+<p><strong>Unit <code>R3CY205ZMND</code></strong> (the second S25 Ultra, SM-S938N), issue <strong>#77</strong>, 2026-09-21 18:20–18:35 KST, branch <code>htp/77-first-handoff</code> @ <code>81fd3ec9</code> (forward path = PR head <code>2ce38d65</code>), device skel md5 <code>47c14253ee734099f6a76ab90a54e16c</code> (workstation table build <code>0dd2c303…</code> — compiled artifacts differ by build path, LEDGER rule 14), SDK 6.4.0.1, HexKL 6.4.0.1, NDK r30, v79.</p>
+<div class="tiles">
+<div class="tile"><div class="lbl">NPU decode, gen 64</div><div class="big">19.7 / 21.3</div><div class="sub">tok/s, run 1 / run 2</div></div>
+<div class="tile"><div class="lbl">NPU decode, gen 512</div><div class="big">18.4 / 18.2</div><div class="sub">tok/s</div></div>
+<div class="tile"><div class="lbl">NPU decode, gen 1024</div><div class="big">19.0 / 17.0</div><div class="sub">tok/s</div></div>
+<div class="tile"><div class="lbl">Goal</div><div class="big">≥ 50</div><div class="sub">at every length</div></div>
+<div class="tile"><div class="lbl">CPU control (q40), gen 64 / 512 / 1024</div><div class="big" style="font-size:1.3em">54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5</div><div class="sub">tok/s</div></div>
+<div class="tile"><div class="lbl">NPU prefill, prompt 512</div><div class="big" style="font-size:1.3em">403–541</div><div class="sub">tok/s, median of 6: 490; CPU 231–336</div></div>
+</div>
+<p><strong>Status, as BENCHMARK.md states it:</strong> provisional until the anchor sitting #91 on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512. The PR author's numbers (20.8 NPU / 48 CPU, gen 512, prompt 444) stay in the "now" cell next to these and are also provisional. Text: run 1 = run 2 in all 12 cells (greedy). "Last 64" column: not printed by this model (#89).</p>
+<p class="src">BENCHMARK.md "Goals" and "Results"; <code>77-first-handoff.md</code> §A and "Artifacts"</p>
+</div>
+
+<h2 id="history">History</h2>
+<p>One row per measured cell, newest first. Every <code>nntrainer</code> row of BENCHMARK.md "Results" is here. "text = CPU": within-model run 1 = run 2 for #77 (the two models differ by construction).</p>
+<div class="tablewrap"><table>
+<tr><th>date</th><th>issue</th><th>what changed</th><th>unit</th><th>model</th><th class="num">gen</th><th class="num">prefill tok/s</th><th class="num">decode tok/s (all)</th><th class="num">last 64</th><th>text identical</th><th>file</th></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r1</td><td>PR head as-is, MoE FFN on HTP (device skel <code>47c14253…</code>)</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">64</td><td class="num">403.5</td><td class="num">19.68</td><td class="num">n/a</td><td>y (r1 = r2)</td><td><code>77-first-handoff.md</code> §A</td></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">64</td><td class="num">475.4</td><td class="num">21.27</td><td class="num">n/a</td><td>y</td><td>same</td></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r1</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">512</td><td class="num">485.8</td><td class="num">18.38</td><td class="num">n/a</td><td>y</td><td>same</td></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">512</td><td class="num">494.7</td><td class="num">18.24</td><td class="num">n/a</td><td>y</td><td>same</td></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r1</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">1024</td><td class="num">541.2</td><td class="num">19.04</td><td class="num">n/a</td><td>y</td><td>same</td></tr>
+<tr class="hl"><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40-qs4cx-wh</code></td><td class="num">1024</td><td class="num">455.1</td><td class="num">16.96</td><td class="num">n/a</td><td>y</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r1</td><td>CPU control, all Q4_0, 8 threads (<code>htp/77-first-handoff</code> @ <code>81fd3ec9</code>)</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">64</td><td class="num">336.4</td><td class="num">54.10</td><td class="num">n/a</td><td>reference; r1 = r2</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">64</td><td class="num">253.1</td><td class="num">52.94</td><td class="num">n/a</td><td>reference</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r1</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">512</td><td class="num">297.5</td><td class="num">52.67</td><td class="num">n/a</td><td>reference</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">512</td><td class="num">231.5</td><td class="num">51.97</td><td class="num">n/a</td><td>reference</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r1</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">1024</td><td class="num">287.3</td><td class="num">46.44</td><td class="num">n/a</td><td>reference</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>#77 A r2</td><td>same</td><td><code>R3CY205ZMND</code></td><td><code>q40</code></td><td class="num">1024</td><td class="num">288.0</td><td class="num">48.53</td><td class="num">n/a</td><td>reference</td><td>same</td></tr>
+<tr><td>2026-09-21</td><td>(PR)</td><td>+ conv in_proj on HTP (18 layers)</td><td>PR author's</td><td><code>q40-qs4cx-wh</code></td><td class="num">512 (prompt 444)</td><td class="num">532</td><td class="num">16.5 (unexplained drop, no control run)</td><td class="num">—</td><td>identical to the previous run</td><td><code>docs/htp_attention/50</code> §3.4</td></tr>
+<tr><td>2026-09-16/17</td><td>(PR)</td><td>PR head as-is, MoE FFN on HTP</td><td>PR author's</td><td><code>q40-qs4cx-wh</code></td><td class="num">512 (prompt 444)</td><td class="num">523</td><td class="num">20.8</td><td class="num">—</td><td>n/a (different weights from <code>q40</code>)</td><td><code>docs/htp_attention/49</code> §1</td></tr>
+<tr><td>2026-09-16/17</td><td>(PR)</td><td>CPU, all Q4_0, 8 threads</td><td>PR author's</td><td><code>q40</code></td><td class="num">512 (prompt 444)</td><td class="num">334</td><td class="num">48</td><td class="num">—</td><td>reference</td><td><code>docs/htp_attention/49</code> §6.1.1</td></tr>
+</table></div>
+<p class="src">BENCHMARK.md "Results" (15 rows), peak RSS per #77 cell in <code>77-first-handoff.md</code> §A (4 983 988 – 5 910 448 KB)</p>
+
+<h2 id="chart">Decode tok/s over time</h2>
+<figure>
+<svg viewBox="0 0 640 320" role="img" aria-label="Decode tokens per second by sitting: NPU points around 17 to 21, CPU points around 46 to 54, goal line at 50">
+<!-- gridlines -->
+<g stroke="#e1e0d9" stroke-width="1">
+<line x1="60" y1="260" x2="620" y2="260"/><line x1="60" y1="220" x2="620" y2="220"/><line x1="60" y1="180" x2="620" y2="180"/><line x1="60" y1="140" x2="620" y2="140"/><line x1="60" y1="100" x2="620" y2="100"/><line x1="60" y1="20" x2="620" y2="20"/>
+</g>
+<line x1="60" y1="260" x2="620" y2="260" stroke="#c3c2b7"/>
+<g font-size="11" fill="#898781" text-anchor="end">
+<text x="52" y="264">0</text><text x="52" y="224">10</text><text x="52" y="184">20</text><text x="52" y="144">30</text><text x="52" y="104">40</text><text x="52" y="64">50</text><text x="52" y="24">60</text>
+</g>
+<text x="14" y="140" font-size="11" fill="#898781" transform="rotate(-90 14 140)" text-anchor="middle">decode tok/s</text>
+<!-- goal line -->
+<line x1="60" y1="60" x2="620" y2="60" stroke="#52514e" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="618" y="54" font-size="11" fill="#52514e" text-anchor="end">goal ≥ 50</text>
+<!-- CPU series (orange) -->
+<polyline points="150,68 510,53" fill="none" stroke="#eb6834" stroke-width="2" stroke-opacity=".5"/>
+<circle cx="150" cy="68" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, PR author, 2026-09-16/17, gen 512: 48 tok/s</title></circle>
+<circle cx="480" cy="43.6" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77 R3CY205ZMND, gen 64 run 1: 54.10</title></circle>
+<circle cx="480" cy="48.2" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77, gen 64 run 2: 52.94</title></circle>
+<circle cx="510" cy="49.3" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77, gen 512 run 1: 52.67</title></circle>
+<circle cx="510" cy="52.1" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77, gen 512 run 2: 51.97</title></circle>
+<circle cx="540" cy="74.2" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77, gen 1024 run 1: 46.44</title></circle>
+<circle cx="540" cy="65.9" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"><title>CPU q40, #77, gen 1024 run 2: 48.53</title></circle>
+<text x="150" y="88" font-size="11" fill="#52514e" text-anchor="middle">CPU 48</text>
+<text x="560" y="96" font-size="11" fill="#52514e" text-anchor="middle">CPU 46–54</text>
+<!-- NPU series (blue) -->
+<polyline points="150,176.8 330,194 510,186.5" fill="none" stroke="#2a78d6" stroke-width="2" stroke-opacity=".5"/>
+<circle cx="150" cy="176.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU q40-qs4cx-wh, PR author, 2026-09-16/17, gen 512: 20.8 tok/s</title></circle>
+<circle cx="330" cy="194" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU + conv in_proj on HTP, PR author, 2026-09-21, gen 512: 16.5 (no control run)</title></circle>
+<circle cx="480" cy="181.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77 R3CY205ZMND, gen 64 run 1: 19.68</title></circle>
+<circle cx="480" cy="174.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77, gen 64 run 2: 21.27</title></circle>
+<circle cx="510" cy="186.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77, gen 512 run 1: 18.38</title></circle>
+<circle cx="510" cy="187" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77, gen 512 run 2: 18.24</title></circle>
+<circle cx="540" cy="183.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77, gen 1024 run 1: 19.04</title></circle>
+<circle cx="540" cy="192.2" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>NPU, #77, gen 1024 run 2: 16.96</title></circle>
+<text x="150" y="166" font-size="11" fill="#52514e" text-anchor="middle">NPU 20.8</text>
+<text x="330" y="212" font-size="11" fill="#52514e" text-anchor="middle">16.5</text>
+<text x="560" y="210" font-size="11" fill="#52514e" text-anchor="middle">NPU 17–21</text>
+<!-- x labels -->
+<g font-size="11" fill="#898781" text-anchor="middle">
+<text x="150" y="282">2026-09-16/17</text><text x="150" y="296">PR author, gen 512</text>
+<text x="330" y="282">2026-09-21</text><text x="330" y="296">PR author, +in_proj</text>
+<text x="510" y="282">2026-09-21 #77</text><text x="510" y="296">R3CY205ZMND, gen 64 · 512 · 1024</text>
+</g>
+<text x="60" y="314" font-size="11" fill="#898781">Hover a point for value and source. x = sitting order, not a time scale; units differ (rule 13).</text>
+</svg>
+<div class="legend"><span class="l1">NPU model (<code>q40-qs4cx-wh</code>, MoE FFN on HTP)</span><span class="l2">CPU control (<code>q40</code>)</span><span class="lg">goal ≥ 50 tok/s</span></div>
+<figcaption>Data: the History table above. The three #77 clusters within a sitting are gen 64, 512, 1024 from left to right.</figcaption>
+</figure>
+
+<h2 id="side">Side tables from #77 (same sitting, unit <code>R3CY205ZMND</code>)</h2>
+<h3>B — transport floor (NPU model, gen 64, <code>M==1</code> row, 1408 calls, <code>qos_mode</code> 2)</h3>
+<div class="tablewrap"><table>
+<tr><th>level</th><th class="num">host µs/call</th><th class="num">dsp µs/call</th><th class="num">transport µs/call</th><th class="num">weight DMA GB/s (avg over call)</th></tr>
+<tr><td><code>NNTR_HTP_PROFILE=2</code></td><td class="num">1948.6</td><td class="num">1360.9</td><td class="num"><strong>587.7</strong></td><td class="num">16.2</td></tr>
+<tr><td><code>NNTR_HTP_PROFILE=3</code> (5× repeat, min)</td><td class="num">1750.4</td><td class="num">1222.7</td><td class="num"><strong>527.7</strong></td><td class="num">18.0</td></tr>
+<tr><td>prefill row for contrast (<code>M&gt;1</code>, 23 calls)</td><td class="num">18172.5 / 17824.5</td><td class="num">15941.3 / 15701.7</td><td class="num">2231.2 / 2122.9</td><td class="num">10.0 / 10.1</td></tr>
+</table></div>
+<p class="src">BENCHMARK.md side table "Transport floor"; <code>77-first-handoff.md</code> §B</p>
+
+<h3>A (profile) — per-type decode cost, ms/token, <code>--profile</code> build, (sum at G=512 − sum at G=64) / 448</h3>
+<div class="tablewrap"><table>
+<tr><th>type</th><th class="num">NPU model</th><th class="num">CPU model</th></tr>
+<tr><td><code>lfm2_moe</code></td><td class="num"><strong>42.12</strong></td><td class="num"><strong>22.32</strong></td></tr>
+<tr><td><code>fully_connected</code></td><td class="num"><strong>28.16</strong></td><td class="num"><strong>10.29</strong></td></tr>
+<tr><td><code>output_of_causallm</code></td><td class="num">2.85</td><td class="num">3.40</td></tr>
+<tr><td><code>mha_core</code></td><td class="num">2.30</td><td class="num">2.81</td></tr>
+<tr><td><code>addition</code></td><td class="num">0.21</td><td class="num">0.14</td></tr>
+<tr><td><code>rms_norm</code></td><td class="num">0.19</td><td class="num">0.12</td></tr>
+<tr><td><code>custom_multiply</code></td><td class="num">0.15</td><td class="num">0.09</td></tr>
+<tr><td><code>causal_conv1d</code></td><td class="num">0.06</td><td class="num">0.03</td></tr>
+<tr><td><code>split</code></td><td class="num">0.05</td><td class="num">0.05</td></tr>
+<tr><td><code>reshaped_rms_norm</code></td><td class="num">0.06</td><td class="num">0.03</td></tr>
+<tr><td><code>swiglu</code></td><td class="num">0.04</td><td class="num">0.02</td></tr>
+<tr><td>total (profile-inflated; TPS binary gives 54.4 vs 19.0 ms/token)</td><td class="num">76.2</td><td class="num">39.3</td></tr>
+</table></div>
+<p class="src">BENCHMARK.md side table "Per-type decode cost"; <code>77-first-handoff.md</code> §A (profile)</p>
+
+<h3>C — arena DMA probe, GB/s (vote=1 / vote=0), workers 1 → 4; 32/32 <code>checksum_ok=y</code></h3>
+<div class="tablewrap"><table>
+<tr><th>shape</th><th class="num">1 worker</th><th class="num">4 workers</th></tr>
+<tr><td>(i) contiguous 4 KiB × 256</td><td class="num">79.6 / 75.2</td><td class="num">72.0 / 72.2</td></tr>
+<tr><td>(i′) contiguous 1 MiB × 1</td><td class="num">78.4 / 76.6</td><td class="num">72.4 / 72.3</td></tr>
+<tr><td>(ii) 2D 16 KiB × 64 @ 56 KiB pitch</td><td class="num">116.5 / 113.9</td><td class="num">109.7 / 110.2</td></tr>
+<tr><td>(iii) 2D 8 KiB × 64 @ 56 KiB pitch</td><td class="num">111.0 / 109.5</td><td class="num">108.6 / 108.1</td></tr>
+</table></div>
+<p class="src">BENCHMARK.md side table "Arena DMA probe"; <code>77-first-handoff.md</code> §C (all 16 rows there)</p>
+
+<h3>④ — two-reader DDR</h3>
+<p>CPU alone 67.90 GB/s; CPU with the DSP streaming at the same time 39.73 GB/s (−41 %). The DSP side read 3265 / 3113 GB/s, which is cache/VTCM-resident and invalid (refiled as #90). <span class="src">BENCHMARK.md side table "Two-reader DDR"; LEDGER rule 12</span></p>
+
+<h2 id="decided">What each measurement decided</h2>
+<h3>#77 — first handoff (2026-09-21, <code>R3CY205ZMND</code>, filled at <code>e8b930ad</code>)</h3>
+<p>The control runs put the PR head on a second phone under the project's fixed protocol (prompt 512, 8 threads, greedy): the NPU model decodes at 17.0–21.3 tok/s and the CPU model at 46.4–54.1, so the NPU is 2.7× short of the 50 tok/s goal at gen 512 while the CPU clears it at gen 64 and 512 and misses it at 1024; NPU prefill is the one place the HTP wins (403–541 vs 231–336). Because the sitting ran on the second unit (~7 % apart in DSP clock), the numbers were recorded unit-tagged and did not replace the provisional "now"; the anchor sitting on <code>R3CY10WM83Y</code> is #91. Measurement A (the profile build) showed that MoE plus the dense FCs are 92 % of the NPU token and that the MoE on the NPU costs ~2× the CPU path per token, which ranks the levers: the MoE call first, round trips second, lm_head not first (the NPU already wins there). Measurement B settled wall 3: the transport stays at 527.7 µs when the DSP is kept hot (level 3), so it is marshalling, not wake-up; the fix is prebound arguments and persistent staging on plain FastRPC (#88), not a resident worker yet. Measurement C rewrote wall 2: the DMA engine reaches 72–117 GB/s in isolation on the same arena and skel, workers and the bus vote change nothing, so the 16–18 GB/s seen inside the layer call is a property of how the call uses the ring, to be instrumented in situ (#87, LEDGER rule 11). The two-reader probe's DSP side was invalid (rule 12, #90); its CPU side showed −41 % under contention, so any CPU+NPU split pays less than the sum. Three protocol defects were found and filed: the <code>generation(last 64)</code> line never prints for this model (#89), compiled artifacts are not byte-reproducible across build paths (rule 14), and <code>NNTR_HTP_PROFILE=3</code> inflates <code>[M0-PROF] ffn=</code> ~5× (rule 15). <span class="src"><code>77-first-handoff.md</code> Results and Deviations; LEDGER §1 rules 11–16, §2 verdicts ①–④; BENCHMARK.md Log 2026-09-21</span></p>
+
+<h3>PR-author rows (2026-09-16/17 and 2026-09-21, not handoffs)</h3>
+<p>These come from the upstream PR's own documents and set the starting point: with the MoE FFN on the HTP the PR measured decode 20.8 tok/s against a CPU 48 (doc 49 §1), and its decode anatomy (doc 48 §3) named the three walls. A later run with conv in_proj also on the HTP fell to 16.5 tok/s with no code cause and no control run in the sitting (doc 50 §3.4), which is why every sitting in this project starts with the control binary (LEDGER rule 9). These rows are provisional by contract §1 and are never compared across units. <span class="src">BENCHMARK.md Results rows 1–3; contract §1</span></p>
+
+<h2 id="artifacts">Artifacts the rows were measured with</h2>
+<div class="tablewrap"><table>
+<tr><th>artifact</th><th>md5</th><th>built from</th></tr>
+<tr><td>skel <code>libnntr_hvx_skel.so</code> (v79, SDK 6.4.0.1, HexKL 6.4.0.1), reference build</td><td><code>0a3d4b81541799e5a25bbf234c515812</code></td><td><code>htp_moe</code> @ <code>2ce38d65</code></td></tr>
+<tr><td>#77 skel A, workstation table / on device</td><td><code>0dd2c303…</code> / <code>47c14253…</code></td><td><code>htp/77-first-handoff</code> @ <code>3c6e8397</code> / <code>81fd3ec9</code></td></tr>
+<tr><td><code>nntrainer_causallm</code> (<code>--htp</code>, NDK r30), reference / #77 device</td><td><code>53814a39abad75c045dc6d8ae16e67df</code> / <code>99556663…</code></td><td>same</td></tr>
+<tr><td><code>q40/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 768 855 808 B)</td><td><code>d28f55c5bd7adeb8bf73b02de582eb88</code></td><td>#78, byte-identical when rebuilt on another workstation</td></tr>
+<tr><td><code>q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 316 133 120 B)</td><td><code>7b7867fab51845664c0050c0a837073e</code></td><td>#78, same</td></tr>
+</table></div>
+<p class="src">BENCHMARK.md "Artifacts"; <code>77-first-handoff.md</code> "Artifacts" and Deviation 2</p>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Refresh rule: whenever a handoff is filled, this page and the status box on the overview are updated first.</footer>
+</main></body></html>

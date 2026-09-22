@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP MoE decode guide — 1. Run it</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--good:#006300;--warn:#b35c00;--crit:#d03b3b;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.5}
+main{max-width:46em;margin:0 auto;padding:0 1em 3em}
+nav.top{background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none;white-space:nowrap}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+p,li{max-width:60ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0}
+.box{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.8em 1em;margin:1em 0}
+.box.status{border-left:4px solid var(--s1)}
+.box.warn{border-left:4px solid var(--warn)}
+.src{color:var(--ink2);font-size:.85em}
+.src::before{content:"source: "}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:#eef4fc}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.big{font-size:1.9em;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5em,1fr));gap:.6em;margin:.6em 0}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em .8em}
+.tile .lbl{font-size:.8em;color:var(--ink2)}
+.tile .sub{font-size:.8em;color:var(--muted)}
+.legend{display:flex;gap:1.2em;flex-wrap:wrap;font-size:.85em;color:var(--ink2);margin:.3em 0}
+.legend span::before{content:"";display:inline-block;width:.8em;height:.8em;border-radius:50%;margin-right:.35em;vertical-align:-.05em}
+.legend .l1::before{background:var(--s1)}
+.legend .l2::before{background:var(--s2)}
+.legend .lg::before{background:none;border-top:2px dashed var(--ink2);height:0;border-radius:0;vertical-align:.2em}
+dl.gl dt{font-weight:600;margin-top:.6em}
+dl.gl dd{margin:0 0 0 1em;max-width:60ch}
+footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}.big{font-size:1.6em}}
+</style>
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="01-run-it.html" class="here">1 Run it</a><a href="02-decode-path.html">2 Decode path</a><a href="03-performance.html">3 Performance</a><a href="04-glossary.html">4 Glossary</a></nav>
+<main>
+<h1>1. Run it — from a clean clone to a decoded token on the phone</h1>
+<p class="src"><code>.claude/skills/hexagon-gates/SKILL.md</code> (exact workstation commands), <code>tools/htp/env.sh</code>, <code>docs/measurements/77-first-handoff.md</code> "Steps" (install and run lines as they were actually executed), contract §4.1 and §11, <code>Applications/CausalLM/{build_android.sh,install_android.sh}</code>, LEDGER.md rules 1–6.</p>
+
+<p>Two machines are involved. Everything is built on the Ubuntu <strong>workstation</strong>; the phone (a Galaxy S25 Ultra, Hexagon <em>v79</em>) only receives files over <code>adb</code> and runs them. Agents never touch the phone; the user does, from a written handoff. <span class="src">contract §4.1–4.2</span></p>
+
+<h2>0. Toolchain and environment</h2>
+<p>One line sets every path. Put it first in every shell:</p>
+<pre><code>cd /home/j2z0-lee/nntrainer
+source tools/htp/env.sh
+# prints: htp env: SDK …/Hexagon_SDK/6.4.0.1 (toolv19), HexKL …/lib/6.4.0.1, NDK ~/android-ndk-r30, model …, arch v79</code></pre>
+<p>What it sets, and what each thing is:</p>
+<div class="tablewrap"><table>
+<tr><th>variable</th><th>default</th><th>what it is for</th></tr>
+<tr><td><code>HEXAGON_SDK_ROOT</code></td><td><code>/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.4.0.1</code></td><td>Qualcomm's DSP toolchain (hexagon-clang 19) and the FastRPC code generator (<code>qaic</code>). Builds the DSP-side library ("skel").</td></tr>
+<tr><td><code>HEXKL_ROOT</code>, <code>HEXKL_SDK_VER</code></td><td><code>~/Qualcomm/hexkl-1.0-beta.2/hexkl_addon</code>, <code>6.4.0.1</code></td><td>HexKL: Qualcomm's small kernel library that exposes the matrix unit (HMX). <code>libhexkl_micro.a</code> links into the skel, <code>libsdkl.so</code> into the Android app.</td></tr>
+<tr><td><code>ANDROID_NDK</code></td><td><code>~/android-ndk-r30</code></td><td>Cross-compiler for the ARM side (the app and <code>libnntrainer.so</code>). The PR was developed with r26d; r30 is what this workstation has and it works, with one quirk (below).</td></tr>
+<tr><td><code>NNTR_MODEL_DIR</code></td><td><code>/local/mnt/workspace/models/lfm2.5-8b-a1b</code></td><td>Where the weights live (§3).</td></tr>
+<tr><td><code>HEX_ARCH</code></td><td><code>v79</code></td><td>The DSP generation of the Snapdragon 8 Elite.</td></tr>
+</table></div>
+<p class="src"><code>tools/htp/env.sh</code>; contract §4.1 table</p>
+
+<h2>1. Host build (no phone, no SDK; minutes)</h2>
+<p>The host build compiles nntrainer for the workstation itself. It gives you the quantizer (<code>nntr_quantize_stream</code>) that produces the phone's weight files, plus the unit tests that gate every change.</p>
+<pre><code>meson setup build -Denable-transformer=true -Denable-tflite-backbone=false \
+  -Denable-tflite-interpreter=false \
+  -Dc_args=-Wno-error=missing-include-dirs -Dcpp_args=-Wno-error=missing-include-dirs
+ninja -C build
+
+# the host gates ("rung 1")
+./build/test/unittest/unittest_nntrainer_cpu_backend --gtest_filter='*qs4cx*'
+NNTR_QUANTIZE_BIN=$PWD/build/Applications/CausalLM/nntr_quantize \
+NNTR_QUANTIZE_STREAM_BIN=$PWD/build/Applications/CausalLM/nntr_quantize_stream \
+  ./build/Applications/CausalLM/unittest_causallm_models --gtest_filter='*Lfm2Moe*'   # 6 PASSED, none skipped
+bash test/htp/host/run_host_checks.sh     # prints ALL CHECKS PASS and WORKER POOL LANES OK
+bash tools/htp_syntax_check.sh</code></pre>
+<p><code>run_host_checks.sh</code> compiles the DSP kernel sources (<code>hexkl_mm_u8i4_moe.c</code>, the worker pool) on the workstation against scalar stand-ins of the HVX/HMX primitives and checks the kernel's loop structure and bit-identity to a reference. There is no Hexagon simulator in this project; this host check and the phone are the only two places a kernel is proven. <span class="src">hexagon-gates §1; contract §4.1</span></p>
+
+<h2>2. The DSP library ("skel"; seconds)</h2>
+<pre><code>./test/htp/build.sh                      # v79, -Wall -Werror
+md5sum test/htp/build/libnntr_hvx_skel.so   # record it; every handoff quotes it</code></pre>
+<p><code>libnntr_hvx_skel.so</code> is the code that runs <em>on the DSP</em>. <code>build.sh</code> first runs <code>qaic</code> on <code>test/htp/nntr_hvx.idl</code> — the interface file that lists every remote function (<code>mm_u8i4_moe_layer</code>, <code>arena_attach</code>, …) — which generates a <em>stub</em> (ARM side, calls into the DSP) and a <em>skel</em> (DSP side, receives the call), then compiles the kernels under <code>nntrainer/tensor/htp_backend/{hmx,hvx}/</code> and <code>test/htp/*.c</code> into the skel. <span class="src">hexagon-gates §2; <code>test/htp/build.sh</code></span></p>
+<div class="box warn"><strong>Trap.</strong> <code>build_android.sh</code> never rebuilds the skel. Whenever the IDL or any DSP source changes, run <code>test/htp/build.sh</code> again and push the new skel. A stale skel fails on the phone with <code>AEE_EBADPARM (0x8000040E)</code>. <span class="src">LEDGER rule 3</span></div>
+
+<h2>3. The Android app (≈ 10 min from scratch)</h2>
+<pre><code>(cd Applications/CausalLM && ./build_android.sh --htp)       # --cache reuses builddir; --profile = a separate, never-for-tok/s build
+readelf -d builddir/android_build_result/lib/arm64-v8a/libnntrainer.so | grep -E 'libsdkl|libcdsprpc'   # both NEEDED lines must appear
+md5sum Applications/CausalLM/jni/libs/arm64-v8a/{nntrainer_causallm,libcausallm_core.so} \
+       Applications/CausalLM/jni/obj/local/arm64-v8a/{libnntrainer.so,libccapi-nntrainer.so}</code></pre>
+<ul>
+<li><code>--htp</code> passes <code>-Denable-htp=true</code> to meson and needs <code>HEXAGON_SDK_ROOT</code>. Without it the app has no DSP path at all. <span class="src"><code>build_android.sh</code> lines 20–30, 148, 200</span></li>
+<li><strong>Trap.</strong> <code>--clean</code> drops <code>-Denable-htp</code> silently; the <code>readelf</code> line is how you notice (<code>libsdkl.so</code> missing). <span class="src">LEDGER rule 4</span></li>
+<li>With NDK r30 the shared libraries <code>libnntrainer.so</code>, <code>libccapi-nntrainer.so</code>, <code>libc++_shared.so</code> stay in <code>jni/obj/local/arm64-v8a/</code>, while <code>install_android.sh</code> looks in <code>jni/libs/arm64-v8a/</code> first and copies from <code>obj/local</code> only when the file is missing there. Push the <code>obj/local</code> ones (or delete the stale copies in <code>libs/</code>) so the phone never gets an old build. <span class="src">hexagon-gates §3; <code>install_android.sh</code> "DEP_FILES" block</span></li>
+<li>First build on a fresh workstation: <code>tools/package_android.sh</code> ends in <code>ninja install</code> and googletest tries to install to <code>/usr/local</code>; run <code>cd builddir && meson configure -Dprefix=$PWD/android_build_result && ninja install</code> once, then <code>build_android.sh --htp --cache</code>. The tokenizer library needs Rust once (<code>build_tokenizer_android.sh</code>). <span class="src">hexagon-gates §3 "Workstation specifics"</span></li>
+</ul>
+
+<h2>4. The two model files</h2>
+<p>Both are made from the same FP32 conversion of the Hugging Face checkpoint; they differ only in how the 32 × 22 expert matrices are quantized. <span class="src">contract §11; BENCHMARK.md "Artifacts"</span></p>
+<div class="tablewrap"><table>
+<tr><th>directory under <code>$NNTR_MODEL_DIR</code></th><th>role</th><th>how it is made</th><th>file, size, md5</th></tr>
+<tr><td><code>hf/</code></td><td>source</td><td><code>hf download LiquidAI/LFM2.5-8B-A1B</code> (bf16 safetensors, 17.0 GB, 2 shards)</td><td>—</td></tr>
+<tr><td><code>fp32/</code></td><td>intermediate</td><td><code>Applications/CausalLM/res/lfm2_moe/lfm2-8b-a1b/weight_converter.py --model_path hf/</code></td><td><code>nntr_lfm2_8b_a1b_fp32.bin</code> ≈ 31 GB</td></tr>
+<tr><td><code>q40/</code></td><td><strong>CPU control</strong> — everything 4-bit Q4_0, the format the CPU kernels read</td><td><code>nntr_quantize_stream fp32/ -o q40/ --fc_dtype Q4_0 --embd_dtype Q4_0 --lmhead_dtype Q4_0 --isa ARM</code></td><td><code>nntr_lfm2_8b_a1b_q40_arm.bin</code>, 4 768 855 808 B, <code>d28f55c5bd7adeb8bf73b02de582eb88</code></td></tr>
+<tr><td><code>q40-qs4cx-wh/</code></td><td><strong>NPU model</strong> — FC/embedding/lm_head Q4_0, experts <code>QS4CX_WH</code> (per-channel int4, bytes already in the HMX tile order)</td><td>same plus <code>--moe_dtype QS4CX_WH</code>; its <code>nntr_config.json</code> gets <code>"moe_engine": "htp"</code>, <code>"moe_htp_layers": ""</code></td><td><code>nntr_lfm2_8b_a1b_q40_arm.bin</code>, 4 316 133 120 B, <code>7b7867fab51845664c0050c0a837073e</code></td></tr>
+</table></div>
+<ul>
+<li>Always <code>--isa ARM</code>: the <code>_arm.bin</code> suffix must be present; an x86 packing runs silently wrong on the phone. <span class="src">contract §11</span></li>
+<li><code>QS4CX_WH</code> has <strong>no CPU fallback</strong>: the CPU cannot multiply by those bytes (<code>FloatTensor::dot</code> implements no path for them, on purpose). <code>moe_htp_layers</code> must be empty (= all MoE layers on the HTP). A wrong layout gives plausible wrong text, not an error. <span class="src">LEDGER rule 6; <code>lfm2_moe_layer.cpp:486–504</code></span></li>
+<li>The two models produce <em>different</em> text for the same prompt (different expert quantization), so "text identical to CPU" is checked within a model between runs, and across the two only when the same weights are used on both paths. <span class="src"><code>77-first-handoff.md</code> §A; doc 49 §1</span></li>
+</ul>
+
+<h2>5. <code>nntr_config.json</code> switches</h2>
+<p>The app reads one JSON file per model directory. The keys that matter for decode on the NPU: <span class="src">the #78 output files at <code>$NNTR_MODEL_DIR/{q40,q40-qs4cx-wh}/nntr_config.json</code>; <code>lfm2_moe_causallm.cpp:51–53</code>; <code>lfm2_causallm.cpp:337–348</code></span></p>
+<div class="tablewrap"><table>
+<tr><th>key</th><th>values</th><th>meaning</th></tr>
+<tr><td><code>moe_engine</code></td><td><code>"cpu"</code> (default) / <code>"htp"</code></td><td>Which engine runs the MoE expert FFN. The WH model must say <code>htp</code>.</td></tr>
+<tr><td><code>moe_htp_layers</code></td><td><code>""</code> (= all) or a comma list of layer ids</td><td>Which MoE layers go to the HTP. Must be empty for <code>QS4CX_WH</code>.</td></tr>
+<tr><td><code>moe_layer_dtype</code></td><td><code>Q4_0</code> / <code>QS4CX_WH</code></td><td>Written by the quantizer; must match the weight file.</td></tr>
+<tr><td><code>conv_in_proj_engine</code>, <code>conv_out_proj_engine</code>, <code>attn_proj_engine</code>, <code>dense_ffn_engine</code> and their <code>*_htp_layers</code></td><td><code>"cpu"</code> (default) / <code>"htp"</code></td><td>The same switch for the non-MoE matrices (doc 50 line of work). Neither #78 model file sets them, so in every measurement so far these run on the CPU.</td></tr>
+<tr><td><code>init_seq_len</code></td><td>512</td><td>Prompt length the run is configured for (prompt fixed at 512 tokens in this project).</td></tr>
+<tr><td><code>num_to_generate</code></td><td>64 / 512 / 1024</td><td>Generation length; the handoff edits it per run with <code>sed</code>.</td></tr>
+<tr><td><code>bad_word_ids</code></td><td><code>[124900]</code> in the handoff</td><td>Blocks one token id so the generation runs to the exact count.</td></tr>
+<tr><td><code>tokenizer_file</code></td><td>device path</td><td>Points at <code>tokenizer.json</code> on the phone.</td></tr>
+</table></div>
+<p>Also in <code>generation_config.json</code>: <code>"do_sample": false</code> (greedy decoding, so two runs of one model must produce identical text). <span class="src"><code>77-first-handoff.md</code> step 1 "Config edits"</span></p>
+
+<h2>6. Install on the phone</h2>
+<pre><code># binaries and libraries (no models, no skel, no libsdkl.so)
+(cd Applications/CausalLM && ./install_android.sh)      # → /data/local/tmp/nntrainer/causallm/
+
+# the DSP library and the HexKL runtime, by hand
+D=/data/local/tmp/nntrainer/causallm
+adb push test/htp/build/libnntr_hvx_skel.so $D/
+adb push $HEXKL_ROOT/lib/$HEXKL_SDK_VER/armv8_android26/libsdkl.so $D/
+
+# the models (≈ 10 min: 4.7 GB + 4.3 GB)
+M=/local/mnt/workspace/models/lfm2.5-8b-a1b
+adb push $M/q40          $D/models/q40
+adb push $M/q40-qs4cx-wh $D/models/q40-qs4cx-wh
+adb push $M/hf/generation_config.json $D/models/q40/   # only if a model dir lacks it (the app throws without it)</code></pre>
+<div class="box warn"><strong>Never push <code>libcdsprpc.so</code></strong> from the build tree. It is a link-time stub; the phone's own <code>/vendor/lib64/libcdsprpc.so</code> is the real FastRPC driver, and shadowing it makes <code>HtpBackend::enabled()</code> false or silently corrupts results. <span class="src">LEDGER rule 5; <code>mobile_e2e_run_guide.md</code> §5</span></div>
+<p>Note: <code>install_android.sh</code> in this tree takes no arguments and pushes only <code>nntrainer_causallm</code>, <code>nntr_quantize</code>, <code>nntr_safetensors_info</code>, <code>libcausallm_core.so</code>, <code>libnntrainer.so</code>, <code>libccapi-nntrainer.so</code>, <code>libc++_shared.so</code> (the mobile guide's <code>--model=</code> option does not exist here). The <code>run_causallm.sh</code> it drops on the phone sets <code>NNTR_NUM_THREADS=4</code> and no <code>ADSP_LIBRARY_PATH</code>, so do not use it for measurements — use the explicit command below. <span class="src"><code>install_android.sh</code> lines 60–212</span></p>
+
+<h2>7. Run one decode</h2>
+<pre><code>adb shell "cd /data/local/tmp/nntrainer/causallm && \
+  NNTR_NUM_THREADS=8 LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
+  ./nntrainer_causallm ./models/q40-qs4cx-wh \"\$(cat prompt512.txt)\""</code></pre>
+<ul>
+<li><code>ADSP_LIBRARY_PATH=.</code> tells the FastRPC driver where to find <code>libnntr_hvx_skel.so</code> for the DSP. <code>LD_LIBRARY_PATH=.</code> finds <code>libsdkl.so</code> and the nntrainer libraries.</li>
+<li><code>NNTR_NUM_THREADS=8</code> for both CPU and NPU runs — every number in this project is measured that way. <span class="src">contract §1.1</span></li>
+<li><code>prompt512.txt</code> is a text that tokenizes to exactly 512 tokens (<code>docs/measurements/77-prompt512.txt</code> on branch <code>htp/77-first-handoff</code>, md5 <code>fc65c158…</code>). Run the CPU model first: its decode rate is the thermal gate (CPU decode &lt; 30 tok/s means the phone is throttling — cool down and redo). <span class="src"><code>77-first-handoff.md</code> step 2</span></li>
+</ul>
+
+<h3>Reading the output</h3>
+<p>After the generated text the app prints a fixed block (from <code>Applications/CausalLM/models/causal_lm.cpp:699–710</code>):</p>
+<pre><code>=================[ LLM with NNTrainer ]===================
+prefill: 512 tokens, 1054 ms, 485.769 TPS
+generation: 512 tokens, 27861 ms, 18.3756 TPS
+total: 28915 ms
+peak memory: 5323824 KB
+==========================================================</code></pre>
+<ul>
+<li><code>prefill:</code> — tokens in the prompt, the time to process them, and tokens per second. The count must read 512; anything else means a tokenizer mismatch and voids the prefill column. </li>
+<li><code>generation:</code> — tokens generated, wall time, and <strong>decode tok/s over the whole generation</strong>. This is the number the goal is read against. The count must equal <code>num_to_generate</code>.</li>
+<li>A <code>generation(last 64):</code> line (decode tok/s over the last 64 tokens, contract §1.1) is planned but is not printed by this model yet: <code>Lfm2MoeCausalLM</code> reports from the base block in <code>causal_lm.cpp</code>, not from <code>lfm2_causallm.cpp</code>'s block where the line was added (issue #89, LEDGER rule 16).</li>
+<li>Example values above are #77 A, <code>q40-qs4cx-wh</code>, G=512 run 1, unit <code>R3CY205ZMND</code>. <span class="src"><code>77-first-handoff.md</code> §A</span></li>
+</ul>
+
+<h3>Instrumentation switches (environment variables)</h3>
+<div class="tablewrap"><table>
+<tr><th>variable</th><th>what you get</th><th>source</th></tr>
+<tr><td><code>NNTR_HTP_PROFILE=1</code></td><td>Host-side timing of the three stages a weight goes through (conversion, registration, the per-call layer call).</td><td><code>htp_compute_ops.cpp:175–181</code></td></tr>
+<tr><td><code>NNTR_HTP_PROFILE=2</code></td><td>Also routes every layer call through the <code>_timed</code> IDL entry, so the DSP reports its own microseconds per stage and <em>transport = host − dsp</em> becomes a measurement. Printed at exit as a <code>[HTP-PROFILE]</code> table with one row per shape (<code>M==1</code> = decode, <code>M&gt;1</code> = prefill) and a <code>weight DMA:</code> line with the in-call GB/s.</td><td>same; <code>77-first-handoff.md</code> §B pasted lines</td></tr>
+<tr><td><code>NNTR_HTP_PROFILE=3</code></td><td>Same, but each call is repeated 5× on the same input and the fastest is kept — removes DDR/temperature noise from the DSP columns. Output text is unchanged. Caveat: it inflates <code>[M0-PROF] ffn=</code> ~5×; only the <code>[HTP-PROFILE]</code> host/dsp/transport columns are comparable across levels 2 and 3.</td><td><code>htp_compute_ops.cpp:1479–1490</code>; LEDGER rule 15</td></tr>
+<tr><td><code>NNTR_M0_PROFILE=1</code></td><td>ARM-side breakdown of each MoE layer: <code>[M0-PROF] moe_layer[i] … router= topk= gather= ffn= route= scatter=</code> in µs. Prints the same stages under <code>moe_engine=cpu</code>, so CPU vs HTP can be subtracted.</td><td><code>lfm2_moe_layer.cpp:41–80, 432–439</code></td></tr>
+<tr><td><code>NNTR_L2_DIFF=1</code></td><td>Runs both MoE FFN paths and reports their difference (SNR); the accuracy gate's (b).</td><td><code>htp_compute_ops.cpp:571–574</code>; contract §1 accuracy row</td></tr>
+<tr><td><code>NNTR_MOE_HTP_DECODE=1</code></td><td>Measurement-only: on a plain <code>QS4CX</code> (non-WH) model, lets the listed layers take the HTP kernel at M==1 instead of the CPU. Not for the WH model (which has no choice).</td><td><code>lfm2_moe_layer.cpp:498–504</code></td></tr>
+<tr><td><code>--profile</code> build</td><td>A separate app build that prints a <code>[PROFILE]</code> per-node table. <strong>Never read tok/s from it</strong> — it inflates prefill by 83 %. Per-token cost of a node type is computed as (sum at G=512 − sum at G=64) / 448.</td><td>LEDGER rule 1; <code>77-first-handoff.md</code> step 4</td></tr>
+</table></div>
+<p>Two reading rules: read <code>min</code>, not <code>avg</code>, from profiles (averages include the first, registration-heavy call); and never compare tok/s across sittings or units — every sitting starts with the unchanged control binary and results are read as an A/B inside it. <span class="src">LEDGER rules 2, 9, 10, 13</span></p>
+
+<h2>8. What "healthy" looks like</h2>
+<p>On unit <code>R3CY205ZMND</code>, prompt 512, 8 threads (the only filled handoff so far): CPU model decode 46–54 tok/s, prefill 231–336 tok/s; NPU model decode 17–21 tok/s, prefill 403–541 tok/s; peak RSS ≈ 5.0–5.9 GB; two runs of one model print identical text. Full table on <a href="03-performance.html">page 3</a>. <span class="src"><code>77-first-handoff.md</code> §A</span></p>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only.</footer>
+</main></body></html>

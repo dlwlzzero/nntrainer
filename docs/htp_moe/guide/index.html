@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP MoE decode guide — overview</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--s1:#2a78d6;--s2:#eb6834;--good:#006300;--warn:#b35c00;--crit:#d03b3b;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.5}
+main{max-width:46em;margin:0 auto;padding:0 1em 3em}
+nav.top{background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none;white-space:nowrap}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+p,li{max-width:60ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0}
+.box{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.8em 1em;margin:1em 0}
+.box.status{border-left:4px solid var(--s1)}
+.box.warn{border-left:4px solid var(--warn)}
+.src{color:var(--ink2);font-size:.85em}
+.src::before{content:"source: "}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:#eef4fc}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em}
+figure svg{width:100%;height:auto;display:block}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.big{font-size:1.9em;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5em,1fr));gap:.6em;margin:.6em 0}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em .8em}
+.tile .lbl{font-size:.8em;color:var(--ink2)}
+.tile .sub{font-size:.8em;color:var(--muted)}
+.legend{display:flex;gap:1.2em;flex-wrap:wrap;font-size:.85em;color:var(--ink2);margin:.3em 0}
+.legend span::before{content:"";display:inline-block;width:.8em;height:.8em;border-radius:50%;margin-right:.35em;vertical-align:-.05em}
+.legend .l1::before{background:var(--s1)}
+.legend .l2::before{background:var(--s2)}
+.legend .lg::before{background:none;border-top:2px dashed var(--ink2);height:0;border-radius:0;vertical-align:.2em}
+dl.gl dt{font-weight:600;margin-top:.6em}
+dl.gl dd{margin:0 0 0 1em;max-width:60ch}
+footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}.big{font-size:1.6em}}
+</style>
+</head><body>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="01-run-it.html">1 Run it</a><a href="02-decode-path.html">2 Decode path</a><a href="03-performance.html">3 Performance</a><a href="04-glossary.html">4 Glossary</a></nav>
+<main>
+<h1>Making an 8-billion-parameter model decode on a phone's NPU</h1>
+<p class="src">this page: <code>docs/plans/0001-htp-moe-decode-agent-system.md</code> §1–§3, <code>docs/htp_moe/BENCHMARK.md</code> "Goals", <code>docs/htp_attention/48_decode_35_to_15_cause.md</code> §1 (Korean, translated here).</p>
+
+<h2>What the project is</h2>
+<p>The project runs the language model <strong>LFM2.5-8B-A1B</strong> on a Galaxy S25 Ultra (Snapdragon 8 Elite) and moves the heaviest part of every step onto the phone's signal processor (the Hexagon <em>HTP</em>, Qualcomm's name for the NPU built around a DSP). The model has 24 layers — 18 "conv" layers and 6 attention layers — and 22 of them carry a <em>mixture-of-experts</em> feed-forward block (MoE FFN): 32 small expert networks of which every token uses only 4. Hidden width is 2048, the vocabulary 128 000 words, and the output projection (lm_head) is tied to the input embedding.
+<span class="src">contract §1, model row (from the model's <code>config.json</code>)</span></p>
+
+<p>The starting point is an upstream pull request (nntrainer PR #4327) that already runs the MoE FFN on the HTP and wins at <em>prefill</em> — reading the prompt, many tokens at once. This guide is only about <strong>decode</strong>: producing one new token at a time, where the NPU path is still slower than the CPU. The goal: decode at <strong>≥ 50 tokens per second</strong> on the NPU at every generation length, which is about 2.4× the PR's own NPU number and above the phone's CPU.
+<span class="src">contract §1 "Goal" row (user decision Q1 ii)</span></p>
+
+<h2>The one-paragraph mental model</h2>
+<div class="box">
+<p><strong>One token = read 730 MB of weights.</strong> During decode there is one token, so every matrix multiply is a matrix times a single vector. Arithmetic is nearly free; what costs time is pulling every weight byte the token touches out of the phone's main memory (DDR). For this model that is about 730 MB per token: the 4 active experts in each of 22 MoE layers (484 MB), the conv and attention projections (≈ 170 MB) and the lm_head (75 MB). The memory can deliver 34–38 GB/s, so the floor is 19–21 ms per token, i.e. <strong>48–52 tok/s is the physical ceiling</strong>, and the CPU already sits on it. To match or beat it, the DSP must (1) read the weights as fast as the memory allows and (2) be called <strong>once per token</strong>, because every ARM↔DSP call costs about half a millisecond and 22 of them per token is already 12.5 ms.
+<span class="src">doc 48 §1 (byte table), contract §1 "Physical ceiling", doc 48 §3 (transport 0.57 ms × 22)</span></p>
+</div>
+
+<figure>
+<svg viewBox="0 0 640 150" role="img" aria-label="Bytes read per decoded token: MoE experts 484 MB, conv and attention 170 MB, lm_head 75 MB, total 730 MB">
+<text x="0" y="16" font-size="13" fill="#52514e">Bytes one token reads (MB) — the number that sets the speed limit</text>
+<rect x="0" y="30" width="424" height="28" rx="4" fill="#2a78d6"/>
+<rect x="426" y="30" width="149" height="28" rx="4" fill="#6da7ec"/>
+<rect x="577" y="30" width="63" height="28" rx="4" fill="#b7d3f6"/>
+<text x="8" y="49" font-size="13" fill="#ffffff">MoE experts 22 × 4 × 5.5 MB = 484</text>
+<text x="432" y="49" font-size="13" fill="#0b0b0b">conv + attn ≈ 170</text>
+<text x="582" y="49" font-size="12" fill="#0b0b0b">lm_head 75</text>
+<text x="0" y="84" font-size="13" fill="#0b0b0b">≈ 730 MB ÷ 34–38 GB/s = 19–21 ms  ⇒  48–52 tok/s ceiling</text>
+<line x1="0" y1="100" x2="640" y2="100" stroke="#e1e0d9"/>
+<text x="0" y="122" font-size="12" fill="#52514e">CPU (all Q4_0, 8 threads): 46–54 tok/s — on the ceiling.</text>
+<text x="0" y="140" font-size="12" fill="#52514e">NPU (MoE FFN on HTP, PR head): 17–21 tok/s — 2.7× short at 512 tokens.</text>
+</svg>
+<figcaption>Byte budget per token from doc 48 §1; tok/s ranges from BENCHMARK.md "Goals" (#77 rows, unit <code>R3CY205ZMND</code>, provisional).</figcaption>
+</figure>
+
+<h2>Why the NPU is slow today — three walls</h2>
+<p>The PR's own device work measured one MoE layer call at decode: 1.91 ms on the host, of which 1.35 ms is DSP work and 0.57 ms is the ARM↔DSP round trip. Three things hide in that number, and <strong>all three must fall</strong> — removing any one alone leaves the call about where it is (see <a href="02-decode-path.html#walls">page 2</a>):</p>
+<ol>
+<li><strong>The matrix unit computes 64 rows for 1 row.</strong> The HMX tile is 64 rows tall; decode has one row, so 63/64 of the work is padding: 1.03 of the 1.35 ms. Fix: a vector-unit (HVX) matrix-vector kernel for M ≤ 4.</li>
+<li><strong>Weight DMA runs at 16–18 GB/s</strong> inside the layer call while the same engine reaches 72–117 GB/s in an isolated probe. Fix: find out why the layer call sees a quarter of the rate.</li>
+<li><strong>The round trip costs 0.53–0.59 ms per call</strong>, 22 calls per token = 11.6–12.9 ms. Fix: fewer bytes marshalled per call, and eventually one call per token.</li>
+</ol>
+<p class="src">doc 48 §3; measurement <code>77-first-handoff.md</code> §B/§C; LEDGER.md rules 11–12, verdicts ②③</p>
+
+<h2 id="status">Status — where we are (copied from BENCHMARK.md "Goals")</h2>
+<div class="box status">
+<div class="tablewrap">
+<table>
+<tr><th>goal</th><th>now</th><th>target</th><th>ceiling</th><th>status</th></tr>
+<tr><td>decode tok/s, NPU, gen 64 / 512 / 1024</td><td>20.8 (PR, gen 512, prompt 444); <code>R3CY205ZMND</code> #77: <strong>19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0</strong> (two runs per length)</td><td><strong>≥ 50</strong> at each length</td><td>48–52 (730 MB/token ÷ 34–38 GB/s)</td><td>provisional until the anchor sitting #91 on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512</td></tr>
+<tr><td>decode tok/s, CPU control (<code>q40</code>, 8 threads)</td><td>48 (PR); <code>R3CY205ZMND</code> #77: 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5</td><td>— (the floor the NPU must beat)</td><td>same ceiling</td><td>provisional; the CPU sits on the ceiling and clears 50 at G=64/512, not at G=1024</td></tr>
+<tr><td>prefill tok/s, NPU, prompt 512</td><td>523–532 (PR, prompt 444); <code>R3CY205ZMND</code> #77: 403–541 (median of 6: 490); CPU 231–336</td><td><strong>≥ −5 % of variant A</strong> in every handoff</td><td>—</td><td>gate, not a goal; the denominator is variant A of each sitting, never this cell</td></tr>
+<tr><td>accuracy</td><td>text identical to CPU</td><td>identical</td><td>—</td><td>gate</td></tr>
+</table>
+</div>
+<p class="src"><code>docs/htp_moe/BENCHMARK.md</code> "Goals" (log entry 2026-09-21, #77 filled). "Provisional" means: the numbers come from the second S25 Ultra unit, not the project's reference unit; the two differ by ~7 % in DSP clock (LEDGER rule 13).</p>
+</div>
+
+<h2>How the work is organised</h2>
+<ul>
+<li>Decode first, NPU-only first. Order: measure (done, #77) → the three walls in the order the measurements dictate → one FastRPC call per token with the whole layer stack resident on the DSP → prefill residency later. <span class="src">contract §3.1–3.2</span></li>
+<li>Every performance claim comes from a <em>handoff</em>: a document the user runs on the phone in one sitting, always as a full-model end-to-end run, always with the unchanged control binary first. <span class="src">contract §4.2</span></li>
+<li>No Hexagon simulator: kernels are proven by host scalar checks (bit-identity) and then by the device. <span class="src">contract §4.1, decisions log</span></li>
+</ul>
+
+<h2>Pages</h2>
+<ol>
+<li><a href="01-run-it.html">Run it</a> — from a clean clone to a decoded token on the phone.</li>
+<li><a href="02-decode-path.html">The decode path</a> — what happens per token, in order, with diagrams; the three walls.</li>
+<li><a href="03-performance.html">Performance record</a> — every device measurement, newest first, and what each one decided.</li>
+<li><a href="04-glossary.html">Glossary</a> — every acronym on these pages, one line each.</li>
+</ol>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only (user decision 2026-09-21). Sources are named on every number; where a document and the code disagree the code wins and the difference is noted.</footer>
+</main></body></html>
