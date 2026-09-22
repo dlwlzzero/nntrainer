@@ -90,29 +90,39 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <h2>Why the NPU is slow today — three walls</h2>
 <p>The PR's own device work measured one MoE layer call at decode: 1.91 ms on the host, of which 1.35 ms is DSP work and 0.57 ms is the ARM↔DSP round trip. Three things hide in that number, and <strong>all three must fall</strong> — removing any one alone leaves the call about where it is (see <a href="02-decode-path.html#walls">page 2</a>):</p>
 <ol>
-<li><strong>The matrix unit computes 64 rows for 1 row.</strong> The HMX tile is 64 rows tall; decode has one row, so 63/64 of the work is padding: 1.03 of the 1.35 ms. Fix: a vector-unit (HVX) matrix-vector kernel for M ≤ 4.</li>
-<li><strong>Weight DMA runs at 16–18 GB/s</strong> inside the layer call while the same engine reaches 72–117 GB/s in an isolated probe. Fix: find out why the layer call sees a quarter of the rate.</li>
-<li><strong>The round trip costs 0.53–0.59 ms per call</strong>, 22 calls per token = 11.6–12.9 ms. Fix: fewer bytes marshalled per call, and eventually one call per token.</li>
+<li><strong>The matrix unit computes 64 rows for 1 row.</strong> The HMX tile is 64 rows tall; decode has one row, so 63/64 of the work is padding: 1.03 of the 1.35 ms. Fix: a vector-unit (HVX) matrix-vector kernel for M ≤ 4 — <strong>built</strong> (PR #86, merged 2026-09-22, switch <code>NNTR_MOE_HTP_M1_GEMV=1</code>, off by default, bit-identical to the HMX loop on the host and on the device gtest); its tok/s effect is unmeasured until sitting 2 (#94, variant C). See <a href="02-decode-path.html#m1gemv">page 2 §2.2 e′</a>.</li>
+<li><strong>Weight DMA runs at 16–18 GB/s</strong> inside the layer call while the same engine reaches 72–117 GB/s in an isolated probe. Fix: find out why the layer call sees a quarter of the rate — the <strong>instrumentation is built</strong> (PR #93, merged 2026-09-22: a per-descriptor trace of the DMA ring inside the call, a <code>DMA ring:</code> profile line and a device gtest that replays the call's 46 descriptors in isolation); the numbers come from #94.</li>
+<li><strong>The round trip costs 0.53–0.59 ms per call</strong>, 22 calls per token = 11.6–12.9 ms. The plan for #88 (2026-09-22) reads the code and two upstream measurements and finds the cost is <em>not</em> the arguments (≤ 0.5 KiB per call) but (a) the FastRPC driver's cache clean/invalidate over the two staging buffers, which are sized by the prompt (4 MiB + 4 MiB) although decode uses 8 KiB of each, ≈ 290–470 µs, and (b) a 100 µs poll window after which the call falls back to an interrupt wait. Fix: size-class staging and a 5 ms poll window (two upstream commits), then one call per token.</li>
 </ol>
-<p class="src">doc 48 §3; measurement <code>77-first-handoff.md</code> §B/§C; LEDGER.md rules 11–12, verdicts ②③</p>
+<p class="src">doc 48 §3; measurement <code>77-first-handoff.md</code> §B/§C; LEDGER.md rules 11–12, verdicts ②③, open items ⑥ ⑦ ⑯; <code>docs/plans/88-moe-call-marshalling.md</code> "What the 528 µs are"; <code>docs/plans/83-transport-options.md</code> §1</p>
 
 <h2 id="status">Status — where we are (copied from BENCHMARK.md "Goals")</h2>
 <div class="box status">
 <div class="tablewrap">
 <table>
 <tr><th>goal</th><th>now</th><th>target</th><th>ceiling</th><th>status</th></tr>
-<tr><td>decode tok/s, NPU, gen 64 / 512 / 1024</td><td>20.8 (PR, gen 512, prompt 444); <code>R3CY205ZMND</code> #77: <strong>19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0</strong> (two runs per length)</td><td><strong>≥ 50</strong> at each length</td><td>48–52 (730 MB/token ÷ 34–38 GB/s)</td><td>provisional until the anchor sitting #91 on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512</td></tr>
+<tr><td>decode tok/s, NPU, gen 64 / 512 / 1024</td><td>20.8 (PR, gen 512, prompt 444); <code>R3CY205ZMND</code> #77: <strong>19.7 / 21.3 · 18.4 / 18.2 · 19.0 / 17.0</strong> (two runs per length)</td><td><strong>≥ 50</strong> at each length</td><td>48–52 (730 MB/token ÷ 34–38 GB/s)</td><td>provisional until the anchor sitting #94 (variant A) on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512</td></tr>
 <tr><td>decode tok/s, CPU control (<code>q40</code>, 8 threads)</td><td>48 (PR); <code>R3CY205ZMND</code> #77: 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5</td><td>— (the floor the NPU must beat)</td><td>same ceiling</td><td>provisional; the CPU sits on the ceiling and clears 50 at G=64/512, not at G=1024</td></tr>
 <tr><td>prefill tok/s, NPU, prompt 512</td><td>523–532 (PR, prompt 444); <code>R3CY205ZMND</code> #77: 403–541 (median of 6: 490); CPU 231–336</td><td><strong>≥ −5 % of variant A</strong> in every handoff</td><td>—</td><td>gate, not a goal; the denominator is variant A of each sitting, never this cell</td></tr>
 <tr><td>accuracy</td><td>text identical to CPU</td><td>identical</td><td>—</td><td>gate</td></tr>
 </table>
 </div>
-<p class="src"><code>docs/htp_moe/BENCHMARK.md</code> "Goals" (log entry 2026-09-21, #77 filled). "Provisional" means: the numbers come from the second S25 Ultra unit, not the project's reference unit; the two differ by ~7 % in DSP clock (LEDGER rule 13).</p>
+<p class="src"><code>docs/htp_moe/BENCHMARK.md</code> "Goals" (log entries 2026-09-21 #77 filled … 2026-09-22 cycle 4). "Provisional" means: the numbers come from the second S25 Ultra unit, not the project's reference unit; the two differ by ~7 % in DSP clock (LEDGER rule 13). <strong>No handoff has been filled since #77</strong>; the numbers above are still the newest. Sitting 2 (#94) on the reference unit is built and staged (artifacts from <code>htp_moe</code> @ <code>2a75f7d9</code>), not yet run — BENCHMARK.md "Artifacts", #94 note.</p>
 </div>
+
+<h2 id="next">What is in flight (as of 2026-09-22)</h2>
+<div class="tablewrap"><table>
+<tr><th>issue</th><th>what</th><th>state</th><th>what it will tell</th></tr>
+<tr><td>#94 sitting 2</td><td>Anchor cells on the reference unit (CPU and NPU × gen 64/512/1024 × 2), the #87 DMA trace at profile levels 2 and 3, the replay gtest, and variant C = the same binary with the M=1 GEMV switch on</td><td>handoff written, artifacts staged, <code>state:needs-measurement</code></td><td>Replaces the provisional "now"; attributes wall 2 to named causes (plan 87 hypotheses a–g); first decode number for wall 1's fix</td></tr>
+<tr><td>#88 wall 3</td><td>Take upstream's size-class staging and 5 ms poll window, print a <code>staging:</code> inventory line, prebind handles only if the number still asks for it</td><td>planned (<code>docs/plans/88-moe-call-marshalling.md</code>)</td><td>Transport per call ≤ 0.1 ms is "done"; ≥ −30 % is progress</td></tr>
+<tr><td>#95 accuracy</td><td>Hadamard rotation on the down-projection input (fold <code>Hᵀ·W_down</code> offline, a 256-point fast Walsh–Hadamard transform on the DSP before the u8 requant) to reduce the rounding error the PR's diff tool saw on 5 of 32 MoE calls</td><td>planned, nothing implemented (LEDGER open item ⑱)</td><td>Per-call SNR on the 5 recorded calls, text identical to CPU; not expected to move tok/s</td></tr>
+<tr><td>#85 / #81 / #82</td><td>One FastRPC call per token: the rest of the layer at M = 1 on the DSP</td><td>filed, after the walls</td><td>Removes 22 round trips and the ARM remainder</td></tr>
+</table></div>
+<p class="src">LEDGER.md §3 open items ⑥ ⑦ ⑨ ⑯ ⑱; <code>docs/plans/94-sitting-2.md</code> §1, §3.3; <code>docs/plans/88-moe-call-marshalling.md</code> §1; BENCHMARK.md Log 2026-09-22</p>
 
 <h2>How the work is organised</h2>
 <ul>
-<li>Decode first, NPU-only first. Order: measure (done, #77) → the three walls in the order the measurements dictate → one FastRPC call per token with the whole layer stack resident on the DSP → prefill residency later. <span class="src">contract §3.1–3.2</span></li>
+<li>Decode first, NPU-only first. Order: measure (done, #77) → the three walls in the order the measurements dictate (wall 1's fix and wall 2's instrumentation are merged, unmeasured; wall 3 is planned) → one FastRPC call per token with the whole layer stack resident on the DSP → prefill residency later. <span class="src">contract §3.1–3.2; LEDGER §3</span></li>
 <li>Every performance claim comes from a <em>handoff</em>: a document the user runs on the phone in one sitting, always as a full-model end-to-end run, always with the unchanged control binary first. <span class="src">contract §4.2</span></li>
 <li>No Hexagon simulator: kernels are proven by host scalar checks (bit-identity) and then by the device. <span class="src">contract §4.1, decisions log</span></li>
 </ul>
@@ -124,5 +134,5 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <li><a href="03-performance.html">Performance record</a> — every device measurement, newest first, and what each one decided.</li>
 <li><a href="04-glossary.html">Glossary</a> — every acronym on these pages, one line each.</li>
 </ol>
-<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only (user decision 2026-09-21). Sources are named on every number; where a document and the code disagree the code wins and the difference is noted.</footer>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (PR #93 DMA trace, PR #86 M=1 GEMV, plans 88/83, LEDGER ⑱). Decode only (user decision 2026-09-21). Sources are named on every number; where a document and the code disagree the code wins and the difference is noted.</footer>
 </main></body></html>
