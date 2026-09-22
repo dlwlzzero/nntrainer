@@ -2247,6 +2247,10 @@ private:
       for (unsigned int r = 0; r < M; ++r)
         row_index[c * M + r] = r;
     }
+    // The MoE options are session state: a QS4CX_WH_HAD layer before this
+    // one leaves DOWN_HADAMARD set, and these chunks' down weights are not
+    // folded (issue #95).
+    setMoeOpts(session, 0u);
     invokeMoeLayer(session, dh.h_gu, dh.h_dn, row_index, row_count, row_weight,
                    act, out, M, K, dh.w, N, /*kind=*/1);
   }
