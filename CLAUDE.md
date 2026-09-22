@@ -61,3 +61,22 @@ cd build && meson test <target> --print-errorlogs
 
 Use `build`. The `builddir` on the original machine is configured for an Android
 cross build and cannot run host tests.
+
+## htp_moe (fork dlwlzzero/nntrainer, since 2026-09-21)
+
+This tree is the base of the HTP MoE **decode** project. The contract for
+that work — goal (decode ≥ 50 tok/s on the NPU, above the CPU), measurement
+definition, gates, roles, branch rules — is
+`docs/plans/0001-htp-moe-decode-agent-system.md`. Start there; `docs/htp_moe/`
+holds the benchmark table and the ledger, `.claude/` the agents and skills,
+`tools/htp/env.sh` the workstation environment.
+
+## htp_hadamard (2026-09-22)
+
+This branch is upstream PR nnstreamer/nntrainer#4327 head `3006d255` plus
+this tooling commit only. It exists to build and measure issue #95
+(Hadamard rotation on the MoE down_proj input) against the upstream tree,
+where `NNTR_PPL` is available. Wherever `.claude/` says `htp_moe`, read
+`htp_hadamard`: work branches are `htp/95-<slug>` off this branch, PRs
+target this branch, docs/htp_moe/ does not exist here. The contract doc
+and ledger stay on `htp_moe`; issue #95 is the spec.
