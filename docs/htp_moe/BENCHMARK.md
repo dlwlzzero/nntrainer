@@ -25,8 +25,13 @@ PR author's device are labelled `(PR)`. Every row of this project so far
 merged) run with `NNTR_MOE_HTP_M1_GEMV=1`, i.e. the path PR #108 (#101)
 makes the default; with the switch unset `htp_moe` still runs #88's
 variant B path (24.50 / 23.80 / 23.52, `3f9fa38d`). The two readings come
-from different sittings, so their gap is not a verdict (rules 9, 20); #108's
-own sitting reads GEMV off vs on as an A/B. The CPU "now" stays from #94
+from different sittings, so their gap is not a verdict (rules 9, 20).
+**PR #108 merged as `8e121dbe` (cycle 10): from now on every variant A is
+the GEMV default** (`[HTP] moe m1 gemv: on (applied=0x1) source=default`;
+an A log without it voids the sitting). #108 had no sitting of its own;
+its ride-along cells (`101-ride-along.md`: GEMV default vs
+`NNTR_MOE_HTP_M1_GEMV=0` as an in-sitting A/A0, the fixed M==1 row) go
+into the next sitting, which is #100's handoff. The CPU "now" stays from #94
 sitting 2 (`dad0f476`); neither #88 nor #105 ran a CPU cell.
 
 ## Goals
@@ -184,3 +189,4 @@ Pushing an old app with the new skel, or the reverse, fails with
 | 2026-09-22 | Cycle 8: #95 filled (`origin/htp/95-down-hadamard` @ `3a566761`). It ran on the **side tree `htp_hadamard`** (upstream `3006d255` + tooling), not on `htp_moe`, so **no row is added here**. This file has no off-tree section, and the tree differs from `htp_moe` in the M=1 path (no GEMV, no DMA trace). Verdict and numbers are in LEDGER ⑱ §2 (PPL −12.7 %, below the CPU) and rules 24–25. #95 closed, port filed as #110. No merge, no upstream move (`a996b4bf`) | none (log only) |
 | 2026-09-22 | Cycle 9: #105 filled (`origin/htp/105-m1-gemv-compute` @ `da41340b`, user's run, unit `R3CY205ZMND`). 24 tok/s rows (A/B1/B2/B3, B rows condensed per variant), the #105 side tables, the device artifact row. **Gate failed for B1/B2/B3** (best B3: `mm` −4.3 %, inside ±5 %; decode +2.62 / +2.24 / −1.65 %); accuracy passed everywhere; prefill gate passed on the M>1 `dsp` reading. **NPU "now" replaced: 27.74 / 26.88 / 24.83** (#105 A = GEMV-on path on `htp_moe` @ `48fd2420`, PR #108's default), distance 1.86× at G=512; budget re-estimated (MoE dsp 22.7 / transport 4.0 / outside ≈ 10.5 ms at G=512); contract §1 updated. LEDGER ㉒ (feed ≈ 74 % of `mm` under the one-row loop), rules 26–27, PR #107 held (LEDGER §2); #105 → `state:review` + p1 (waits on #100), #100 re-scoped to plan 100 §0 and raised to p0. No merge; upstream unchanged at `a996b4bf` | goals (NPU now, prefill now, status), results, artifacts, method |
 | 2026-09-22 | PR #108 (#101 + #102): M=1 GEMV path default on (`source=default`), GEMV profile row fixed; staged set, no device cell yet (ride-along) | artifacts |
+| 2026-09-22 | Cycle 10: PR #108 merged as `8e121dbe` (#101, #102 closed by the user); variant A = GEMV default from here on, #101's ride-along cells move to #100's handoff. No filled handoff, no row added. The #77 and #94 filled docs and `77-prompt512.txt` (md5 `fc65c158…` checked) copied docs-only onto `htp_moe` from `origin/htp/77-first-handoff` @ `e8b930ad` and `origin/htp/94-sitting2-anchor-trace` @ `dad0f476`, so their `file` cells resolve on `htp_moe` | goals (now note) |
