@@ -69,8 +69,9 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <div class="tile"><div class="lbl">CPU control (q40), gen 64 / 512 / 1024</div><div class="big" style="font-size:1.3em">54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5</div><div class="sub">tok/s</div></div>
 <div class="tile"><div class="lbl">NPU prefill, prompt 512</div><div class="big" style="font-size:1.3em">403–541</div><div class="sub">tok/s, median of 6: 490; CPU 231–336</div></div>
 </div>
-<p><strong>Status, as BENCHMARK.md states it:</strong> provisional until the anchor sitting #91 on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512. The PR author's numbers (20.8 NPU / 48 CPU, gen 512, prompt 444) stay in the "now" cell next to these and are also provisional. Text: run 1 = run 2 in all 12 cells (greedy). "Last 64" column: not printed by this model (#89).</p>
-<p class="src">BENCHMARK.md "Goals" and "Results"; <code>77-first-handoff.md</code> §A and "Artifacts"</p>
+<p><strong>Status, as BENCHMARK.md states it:</strong> provisional until the anchor sitting #94 (sitting 2, variant A; #91 folded in) on <code>R3CY10WM83Y</code>; distance on <code>R3CY205ZMND</code>: <strong>2.7×</strong> at G=512. The PR author's numbers (20.8 NPU / 48 CPU, gen 512, prompt 444) stay in the "now" cell next to these and are also provisional. Text: run 1 = run 2 in all 12 cells (greedy). "Last 64" column: not printed by this model (#89).</p>
+<p><strong>As of 2026-09-22 no handoff has been filled since #77.</strong> Two code PRs merged in between (PR #93, the DMA ring trace; PR #86, the M=1 GEMV dispatch) and neither has a device number yet; their first numbers come from sitting 2 (#94), whose handoff is written and whose artifacts are built from <code>htp_moe</code> @ <code>2a75f7d9</code> and staged (<a href="#artifacts">below</a>). Until it runs, every number on this page is #77's or the PR author's.</p>
+<p class="src">BENCHMARK.md "Goals", "Results", "Artifacts" (#94 note) and Log 2026-09-22 cycles 3–4; <code>77-first-handoff.md</code> §A and "Artifacts"</p>
 </div>
 
 <h2 id="history">History</h2>
@@ -202,7 +203,11 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <tr><td><code>nntrainer_causallm</code> (<code>--htp</code>, NDK r30), reference / #77 device</td><td><code>53814a39abad75c045dc6d8ae16e67df</code> / <code>99556663…</code></td><td>same</td></tr>
 <tr><td><code>q40/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 768 855 808 B)</td><td><code>d28f55c5bd7adeb8bf73b02de582eb88</code></td><td>#78, byte-identical when rebuilt on another workstation</td></tr>
 <tr><td><code>q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 316 133 120 B)</td><td><code>7b7867fab51845664c0050c0a837073e</code></td><td>#78, same</td></tr>
+<tr><td colspan="3"><strong>Sitting 2 (#94) set — built and staged 2026-09-22, not yet run; no row above was measured with it.</strong> Workstation md5s from the staged <code>md5.txt</code>; the device <code>md5sum</code> lines are filled by the sitting (LEDGER rule 14).</td></tr>
+<tr><td>#94 skel A <code>libnntr_hvx_skel.so</code></td><td><code>20fb9801…</code></td><td><code>htp/94-sitting2-anchor-trace</code> @ <code>8029b76e</code>, code = <code>htp_moe</code> @ <code>2a75f7d9</code> (PR #93 + PR #86: new IDL entries, 30 stage slots, <code>moe_set_opts</code>)</td></tr>
+<tr><td>#94 <code>tps/nntrainer_causallm</code> / <code>libcausallm_core.so</code> / <code>libnntrainer.so</code> / <code>libccapi-nntrainer.so</code></td><td><code>dc3f4b8f…</code> / <code>68574a5c…</code> / <code>b74ae822…</code> / <code>b11b0ef1…</code></td><td>same; variant A = this binary with <code>NNTR_MOE_HTP_M1_GEMV</code> unset, variant C = the same binary with it set</td></tr>
+<tr><td>#94 <code>gtest/unittest_hvx_dma_probe</code> / <code>gtest/unittest_hvx_mm_u8i4</code></td><td><code>26db4bfe…</code> / <code>51ba46f5…</code></td><td>same; <code>MoeChunkReplay</code> and <code>MoeLayerM1GemvMatchesHmx</code> (<a href="01-run-it.html#gtests">page 1</a>)</td></tr>
 </table></div>
-<p class="src">BENCHMARK.md "Artifacts"; <code>77-first-handoff.md</code> "Artifacts" and Deviation 2</p>
-<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Refresh rule: whenever a handoff is filled, this page and the status box on the overview are updated first.</footer>
+<p class="src">BENCHMARK.md "Artifacts" (#77 and #94 rows and the sitting-2 rebuild note); <code>77-first-handoff.md</code> "Artifacts" and Deviation 2</p>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (status text, #94 staged artifacts; no new measurement). Refresh rule: whenever a handoff is filled, this page and the status box on the overview are updated first.</footer>
 </main></body></html>

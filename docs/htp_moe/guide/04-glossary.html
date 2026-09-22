@@ -64,8 +64,11 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>AH tile</dt><dd>"Activation, HMX order": 64 rows × 32 k-values of u8, 2048 B, the layout of the activation operand the HMX reads.</dd>
 <dt>arena (ION arena)</dt><dd>3840 MiB of ION memory in 256 MiB chunks, mapped once into the DSP, holding all 1408 expert weight matrices in WH order.</dd>
 <dt>ARM</dt><dd>The phone's CPU cores (Cortex big.LITTLE), where the app and everything not on the DSP runs.</dd>
+<dt>blocked wait / dry wait</dt><dd>A DMA wait that found its descriptor still in flight (blocked) vs one that returned at once; counted per call by the ring trace (<code>waits=… (blocked …)</code>).</dd>
 <dt>bus vote</dt><dd>A request the DSP makes for DDR bandwidth (40 GB/s at session open); the <code>novote</code> skel drops it. Worth ≤ 4 % in #77.</dd>
+<dt>cache maintenance (clean / invalidate)</dt><dd>What the FastRPC driver does to a <em>cached</em> ION buffer on every call so the DSP sees the ARM's writes and vice versa; it covers the whole buffer, not the bytes used (plan 88's finding for wall 3).</dd>
 <dt>cDSP</dt><dd>The compute DSP domain of the Snapdragon; the FastRPC session opens with <code>_dom=cdsp</code>.</dd>
+<dt>cold / warm call</dt><dd>A single-shot MoE call after the ~0.6 ms FastRPC gap (profile level 2) vs the last of five back-to-back repeats (level 3); the DMA trace is printed for both.</dd>
 <dt>control (variant A)</dt><dd>The unchanged reference binary that opens every sitting.</dd>
 <dt>conv block / causal_conv1d</dt><dd>LFM2's non-attention mixer: two FCs around a short depthwise convolution with two gating multiplies.</dd>
 <dt>CPU control</dt><dd>The <code>q40</code> model on the CPU: the tok/s floor the NPU must beat.</dd>
@@ -73,7 +76,10 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>decode</dt><dd>Generating tokens one at a time after the prompt; M = 1 everywhere.</dd>
 <dt>DDR (LPDDR5X)</dt><dd>The phone's main memory; 34–38 GB/s measured for one reader, the speed limit of decode.</dd>
 <dt>dequant / requant / quant</dt><dd>int32 → f32 with scales (dequant), f32 → u8 for the next matrix (requant), the first f32 → u8 of the activation row (quant).</dd>
+<dt>descriptor</dt><dd>One DMA job: row bytes × row count at a source stride, to a VTCM address. An M=1 MoE call pushes 46 (4 experts × 11 + 2 copies).</dd>
 <dt>DMA</dt><dd>Direct memory access: the DSP's copy engine, driven by descriptors (2D: row bytes, stride, row count) through a ring; how weights get from DDR to VTCM.</dd>
+<dt>DMA ring trace (<code>[HTP-DMA]</code>, <code>DMA ring:</code>)</dt><dd>PR #93's bookkeeping of every push and wait on the ring inside a timed MoE call, read back through <code>moe_dma_trace_read</code> and printed by the ARM; off unless <code>NNTR_HTP_PROFILE ≥ 2</code>.</dd>
+<dt>dma_replay / MoeChunkReplay</dt><dd>A skel entry and device gtest that push the M=1 call's descriptor schedule with no compute in between, to time the engine on the in-situ list alone.</dd>
 <dt>drain</dt><dd>Profile column: time spent waiting for a DMA transfer that was not hidden behind compute.</dd>
 <dt>DSP</dt><dd>Digital signal processor; here the Hexagon core inside the HTP.</dd>
 <dt>dspqueue</dt><dd>Hexagon SDK's low-latency ARM↔DSP queue; deferred alternative to plain FastRPC calls.</dd>
@@ -82,6 +88,7 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>FC (fully_connected)</dt><dd>A dense matrix multiply layer (in_proj, out_proj, q/k/v/o, dense FFN).</dd>
 <dt>FFN</dt><dd>Feed-forward network: the gate/up → SwiGLU → down block of a layer; MoE or dense.</dd>
 <dt>GEMM / GEMV</dt><dd>General matrix–matrix / matrix–vector multiply. Decode is GEMV (M = 1).</dd>
+<dt>FWHT / Hadamard rotation</dt><dd>Fast Walsh–Hadamard transform: an orthogonal ±1 butterfly that spreads a vector's values evenly; #95 plans a 256-point one before the down-projection requant, with the inverse folded into the weights offline.</dd>
 <dt>gather / scatter</dt><dd>Gather: bring a block's activation rows (and scale/zp) to where the HMX reads; scatter: <code>out[row] += weight · result</code>, the weighted sum of the experts.</dd>
 <dt>gen (G)</dt><dd>Generation length in tokens: 64 / 512 / 1024 in every handoff.</dd>
 <dt>greedy decoding</dt><dd><code>do_sample: false</code>; the argmax token every step, so runs are repeatable.</dd>
@@ -102,6 +109,7 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>M, K, N</dt><dd>Matrix shapes: M rows of activation, K reduction length, N output columns. Expert gate_up: M × 2048 × 3584.</dd>
 <dt>M0-PROF</dt><dd><code>NNTR_M0_PROFILE=1</code>'s ARM-side per-MoE-layer stage line.</dd>
 <dt>marshalling</dt><dd>Packing call arguments for FastRPC; #77 B's verdict for what the transport cost is.</dd>
+<dt>M=1 GEMV path (<code>NNTR_MOE_HTP_M1_GEMV</code>, <code>moe_set_opts</code>)</dt><dd>PR #86's branch inside the MoE kernel: at M ≤ 4 the four experts run on the HVX GEMV from the arena with no DMA and no HMX; enabled per session by the IDL method <code>moe_set_opts</code>; default off.</dd>
 <dt>md5</dt><dd>Checksum used to identify every pushed binary and model file.</dd>
 <dt>mm</dt><dd>Profile column: HMX instruction issue time, timed by difference.</dd>
 <dt>MoE</dt><dd>Mixture of experts: a router picks a few experts per token; here top-4 of 32 in 22 layers.</dd>
@@ -109,7 +117,7 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>NPU</dt><dd>Neural processing unit; in this project the HTP.</dd>
 <dt>one call per token</dt><dd>The target shape: the whole layer stack resident on the DSP so a token costs one FastRPC round trip (LEDGER ⑨).</dd>
 <dt>PD (unsigned PD)</dt><dd>Process domain on the DSP; "unsigned" lets a non-signed skel run.</dd>
-<dt>poll QoS (<code>qos_mode=2</code>)</dt><dd>The latency setting that keeps a DSP thread polling instead of sleeping between calls.</dd>
+<dt>poll QoS (<code>qos_mode=2</code>) / poll window</dt><dd>The latency setting that keeps the CPU polling for the DSP's reply for a set time (100 µs on <code>htp_moe</code>; upstream <code>NNTR_HTP_POLL_US</code> defaults to 5000) before falling back to an interrupt wait; a <code>qos_mode=1</code> in the profile header means the driver refused the value.</dd>
 <dt>PR (#4327)</dt><dd>The upstream pull request this branch is frozen from; its docs are <code>docs/htp_attention/*</code>.</dd>
 <dt>prefill</dt><dd>Processing the prompt (512 tokens) in one pass; M ≫ 1; the −5 % gate on every change.</dd>
 <dt>profile build (<code>--profile</code>)</dt><dd>An app build that prints per-node totals; never read for tok/s (rule 1).</dd>
@@ -123,7 +131,9 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>rung / gate</dt><dd>The verification ladder: 0 format, 1 host build + checks, 2 skel, 3 Android app + device gtest, 4 device handoff.</dd>
 <dt>SDK (Hexagon SDK 6.4.0.1)</dt><dd>Qualcomm's DSP toolchain.</dd>
 <dt>SiLU / SwiGLU</dt><dd>silu(x) = x · sigmoid(x); SwiGLU = silu(gate) · up, the FFN's non-linearity.</dd>
+<dt>size-class staging</dt><dd>Upstream's fix (<code>fb0f02b9</code>): one cached ION staging buffer per power-of-two size from 64 KiB, picked per call, so a decode call no longer rides a 4 MiB buffer sized by the prompt.</dd>
 <dt>sitting</dt><dd>One uninterrupted session on the phone; the unit within which numbers are comparable.</dd>
+<dt>SNR</dt><dd>Signal-to-noise ratio in dB between two paths' outputs; <code>NNTR_L2_DIFF</code>'s accuracy measure, the gate for #95.</dd>
 <dt>SMMU</dt><dd>The IOMMU that maps ION buffers into the DSP's address space.</dd>
 <dt>stage</dt><dd>Profile column: DMA copies of the activation in and the output out of the ION buffers.</dd>
 <dt>tok/s, TPS</dt><dd>Tokens per second; the app prints "TPS".</dd>
@@ -136,5 +146,5 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>worker pool</dt><dd>Three DSP threads with HVX contexts that run epilogues, requant and scatter behind the HMX.</dd>
 <dt>zp (zero point)</dt><dd>The offset of an asymmetric u8 quantization, per row, alongside its scale.</dd>
 </dl>
-<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>. Decode only.</footer>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (terms from PRs #93, #86 and plans 88/83, #95). Decode only.</footer>
 </main></body></html>
