@@ -75,6 +75,25 @@ FFN that way. `04a2fcc4` is the one commit with a bearing on our decode
 work (wall 3); the rest is prefill/accuracy. A merge decision can still
 wait; if merged, the IDL from `7f81560b` forces a skel + app rebuild.
 
+**Cycle 4 (seen 2026-09-22 ~02:30 UTC): PR head moved `0a0c0402` →
+`b0a384d6` (updated 2026-09-22 01:54 UTC), three more commits. Files:
+`htp_compute_ops.cpp` (profile accounting), `htp_backend.cpp` (FastRPC
+poll default), docs 00/51. No IDL, ring, weight-layout or MoE-kernel
+change. Still not merged; user decision.** Oldest first:
+
+| sha | subject | touches |
+|---|---|---|
+| `6f8f7791` | [HTP] Keep the conv row's hidden worker time out of the mm residual | `htp_compute_ops.cpp` — `[HTP-PROFILE]` residual arithmetic for the conv row; prefill-only row, but the same table #94 B reads |
+| `faba38d1` | [docs] 51: correct why the dense FFN is expensive -- down's depth, not the chunking | doc 51 |
+| `b0a384d6` | [HTP] Poll the FastRPC reply for 5 ms by default | `htp_backend.cpp` — makes `04a2fcc4`'s `NNTR_HTP_POLL_US` knob default to 5 ms. **Transport-side (wall 3): the #88 plan must read this and state what #77 B's 528 µs/call becomes under a 5 ms poll on the author's unit (doc 51), because it changes the baseline #88 is measured against if the user merges** |
+
+Reading: `b0a384d6` is the second upstream commit in #88's area (after
+`04a2fcc4`). Two consequences: (1) the #88 planner reads doc 51's poll
+numbers before writing the design; (2) if the user merges before #88's
+handoff, variant A of that sitting already carries the 5 ms poll and #88
+is read against it — cleaner than merging in between. Nothing here touches
+#94's artifact set.
+
 What this changes for us: (1) the "net-new" causal conv1d + gating of §4
 now exists upstream in prefill shape — #82 lifts it instead of deriving
 it; (2) the ARM decode path of the conv block is still the CPU one there
@@ -167,6 +186,7 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
 | # | item | expected | depends on |
 |---|---|---|---|
 | ① | ~~Measurement A~~ **measured (#77) → §2.** Follow-on: the dense FC's 28.2 ms/token on the NPU path is the second-largest lever after MoE; **it is not a round-trip cost** (no FC is on the HTP in that config, §2 correction) — see ⑰ | — | ⑰ |
+| ⑱ | **Accuracy, filed as #95 (p1):** Hadamard rotation on the MoE down_proj input — fold `Hᵀ·W_down` offline (new dtype `QS4CX_WH_HAD`, block 256, 1792 = 7 × 256, 1/16 both sides), FWHT-256 in IEEE `sf` add/sub on the DSP right before the existing u8 requant at all three requant sites of `hexkl_mm_u8i4_moe.c`. Targets the recorded gap (doc 43, 2026-09-09: 5 of 32 MoE calls at 67–80 dB SNR, each from exactly one of 1792 elements crossing a u8 level — boundary rounding, not row outliers; column-wise outliers never measured). **First accuracy item in this table**; it does not move tok/s by design and may show no effect — a "no effect" result closes it with the numbers. Gate = `NNTR_L2_DIFF` per-call SNR / `total_flips` on vs off on the 5 recorded calls + full-model handoff with prefill/decode TPS and text-identical-to-CPU; prefill gate applies (it touches the weight layout and the requant stage). Rules that bind: no qf32 (v75/v79), host scalar `fwht_rows_f32_ref` bit-identical to the HVX kernel, CPU `QS4CX` run stays the reference (no CPU kernel for `_HAD`, rule 6 applies to it too) | requant SNR on the 5 bad calls ↑; text-identical-to-CPU unchanged or better; TPS within noise | none; can run in parallel with the walls (touches quantizer + requant only) |
 | ② | ~~Measurement B~~ **measured (#77) → marshalling → ⑦ / #88** | — | — |
 | ③ | ~~Measurement C~~ **measured (#77) → shape only; in-situ gap is the wall → ⑥ / #87** | — | — |
 | ④ | Two-reader DDR probe — **DSP side invalid in #77 (rule 12); refiled as #90** (stream > VTCM+L2 or use the DMA ring, bounded result). CPU side: −41 % under contention, so any split pays less than the sum | decides whether the CPU+NPU split (contract §3.2) can ever pay | #90, ride-along step in a later sitting |
@@ -181,7 +201,7 @@ Learned in this project (#77, unit `R3CY205ZMND`, 2026-09-21):
 | ⑬ | (withdrawn 2026-09-21: no simulator in this project, user decision) | — | — |
 | ⑭ | `generation(last 64)` in the base report block (**#89**) | fills the contract §1.1 column from the next handoff on | — |
 | ⑮ | Anchor sitting on `R3CY10WM83Y` — ~~#91~~ **folded into #94 (sitting 2, variant A; #91 closed as duplicate)** | replaces the provisional "now" in BENCHMARK.md and contract §1; measures rule 13's ratio | user's phone time (#94, ≤ 90 min all in) |
-| ⑯ | Device A/B of #80 / PR #86 (M=1 GEMV switch on vs off): the first lever against `lfm2_moe` 42.1 ms/token. **Cycle 3: PR #86 needs a rebase onto `750428e8` (conflicts in 7 files with #93's IDL/probe tails; #80 back to `state:in-progress`). If it merges before #94's implementer builds, it rides as variant C (`NNTR_MOE_HTP_M1_GEMV=1`) of sitting 2; otherwise it is sitting 3 on its own** | MoE DSP 1.35 → ≈ 0.3 ms/call if the arena read keeps up; if not, the number says what ⑥ must deliver | PR #86 rebase + user merge; #94 |
+| ⑯ | Device A/B of #80 / PR #86 (M=1 GEMV switch on vs off): the first lever against `lfm2_moe` 42.1 ms/token. **Cycle 4: PR #86 merged as `2a75f7d9` (2026-09-22 02:00 UTC) before #94's set was pushed, so it rides as variant C (`NNTR_MOE_HTP_M1_GEMV=1`, 6 NPU cells + one level-2 run + `*MoeLayerM1GemvMatchesHmx*`) of sitting 2 — handoff rebuilt from `2a75f7d9` (`htp/94-sitting2-anchor-trace` @ `8029b76e`). A on that head = the same binary with the switch off (`[HTP] moe m1 gemv: off (applied=0x0)`, `blocks=5632 m1_gemv=0/1408`); a C log that prints `on` in an A cell voids the run.** | MoE DSP 1.35 → ≈ 0.3 ms/call if the arena read keeps up; if not, the number says what ⑥ must deliver | #94 (user's phone time) |
 | ⑰ | **`fully_connected` 28.2 vs 10.3 ms/token on the NPU run with no FC on the HTP** (§2 ① correction). Not a round trip; candidates: CPU thread over-splitting / contention with the FastRPC poll thread (doc 48 §2 ③), CPU DVFS while the DSP runs. 18 ms/token is the second-largest single lever after MoE and needs no DSP code if it is a threading matter. Decide with one extra profile cell (`NNTR_NUM_THREADS=4` on the NPU model, or the non-WH `QS4CX` model with `NNTR_MOE_HTP_DECODE` off/on) — candidate ride-along for #94 or its own issue | up to −18 ms/token on the NPU path | #94 profile run |
 
 ## 3a. Guide and tooling notes

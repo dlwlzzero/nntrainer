@@ -70,18 +70,20 @@ sitting on `R3CY10WM83Y` is #94 (sitting 2, variant A; #91 folded in).
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40/nntr_lfm2_8b_a1b_q40_arm.bin` (4,768,855,808 B) | `d28f55c5bd7adeb8bf73b02de582eb88` | `nntr_quantize_stream` from `htp_moe` @ `2ce38d65`, `--isa ARM`, all Q4_0 | CPU control (#78) |
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin` (4,316,133,120 B) | `7b7867fab51845664c0050c0a837073e` | same plus `--moe_dtype QS4CX_WH`; `moe_engine: htp`, `moe_htp_layers: ""` | NPU model (#78) |
 | #77 set, `htp/77-first-handoff` @ `3c6e8397` (table) / `81fd3ec9` (built and pushed, other build path): skel A / novote, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `profile/nntrainer_causallm`, `unittest_hvx_dma_probe` | table `0dd2c303…` / `40007503…` / `53814a39…` / `83955c80…` / `326094f4…` / `ed4e73fc…` / `cf18de2c…`; **device** `47c14253…` / `99556663…` / `170af7a6…` / — / — / `3806b904…` / `9de5715b…` | `77-first-handoff.md` Artifacts + Notes | compiled files differ by build path (LEDGER rule 14); non-compiled files (`libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `77-prompt512.txt` `fc65c158…`, `tokenizer.json` `7b8067a5…`) and both model `.bin`s rebuilt there match bit-for-bit |
+| #94 set, `htp/94-sitting2-anchor-trace` @ `8029b76e` (code = `htp_moe` @ `2a75f7d9`): skel A, `tps/nntrainer_causallm`, `libcausallm_core.so`, `libnntrainer.so`, `libccapi-nntrainer.so`, `gtest/unittest_hvx_dma_probe`, `gtest/unittest_hvx_mm_u8i4` | `20fb9801…` / `dc3f4b8f…` / `68574a5c…` / `b74ae822…` / `b11b0ef1…` / `26db4bfe…` / `51ba46f5…` (staged `md5.txt`; the device `md5sum` lines are filled by the sitting) | `94-sitting2-anchor-trace.md` Artifacts | `nntrainer_causallm`, `libcausallm_core.so`, `libccapi-nntrainer.so` are byte-identical to the discarded `0038cce2` build; #86 lives in the skel, `libnntrainer.so` and both gtests. `libc++_shared.so` `b1586b9b…`, `libsdkl.so` `0ad4e22a…`, `prompt512.txt` `fc65c158…` == #77 |
 
-**Next sitting (#94) rebuild note, 2026-09-22:** every artifact above was
-built from `htp_moe` @ `2ce38d65` (or the #77 branch). PR #93 (`b6ebc2b7`)
-changed `test/htp/nntr_hvx.idl` (`dma_probe`, `moe_dma_trace_read`,
-`dma_replay`; `mm_u8i4_moe_layer_timed`'s `stage_us` grew) and the probe
-slots, so the reference set for sitting 2 — skel, `nntrainer_causallm`,
-`libcausallm_core.so`, `libnntrainer.so`, `libccapi-nntrainer.so`,
-`unittest_hvx_dma_probe`, `unittest_hvx_mm_u8i4` — **must be rebuilt from
-`htp_moe` @ `750428e8`** and their md5s recorded from the pushed build
-(LEDGER rules 3, 14). The two model `.bin`s are unchanged (quantizer
-format untouched) and keep the md5s above. Pushing an old app with the
-new skel, or the reverse, fails with `AEE_EBADPARM`.
+**Sitting 2 (#94) artifact set, 2026-09-22 — built and staged, not yet
+run.** Every artifact above was built from `htp_moe` @ `2ce38d65` (or the
+#77 branch). PR #93 (`b6ebc2b7`) changed `test/htp/nntr_hvx.idl` and PR #86
+(`2a75f7d9`) added `moe_set_opts` and a 30th MoE stage slot, so the
+reference set for sitting 2 was rebuilt from **`htp_moe` @ `2a75f7d9`**
+(handoff `htp/94-sitting2-anchor-trace` @ `8029b76e`, worktree
+`/home/j2z0-lee/nntrainer-94`, staged at `/local/mnt/workspace/htp_moe/94/`,
+`md5.txt` there = the row below). Variant A of that sitting is this binary
+with `NNTR_MOE_HTP_M1_GEMV` unset; variant C is the same binary with it set
+(LEDGER ⑯). The two model `.bin`s are unchanged and keep the md5s above.
+Pushing an old app with the new skel, or the reverse, fails with
+`AEE_EBADPARM` (LEDGER rule 3).
 
 ## Log
 
@@ -91,3 +93,4 @@ new skel, or the reverse, fails with `AEE_EBADPARM`.
 | 2026-09-21 | Weights prepared (#78); first handoff written (#77, `docs/measurements/77-first-handoff.md` on `htp/77-first-handoff`) | artifacts |
 | 2026-09-21 | #77 filled (`e8b930ad`) on unit **`R3CY205ZMND`**, not ours: 12 A rows added, unit-tagged readings next to the provisional "now" (not replaced; anchor sitting #91), side tables A-profile / B / C / ④, artifact md5 note; #77 closed | results, goals (now column annotated, status), artifacts |
 | 2026-09-22 | Cycle 3: #87 closed (PR #93 merged `b6ebc2b7`), #91 folded into #94 (sitting 2 = anchor cells + #87 trace/replay, variant C only if PR #86 merges first); rebuild note for the #94 artifact set; PR #92 guide merged (LEDGER §3a); verdict ① corrected (no FC on the HTP in the NPU config → LEDGER ⑰) | goals (status column), artifacts |
+| 2026-09-22 | Cycle 4: no filled handoff (#94 tables empty, still `state:needs-measurement`); PR #86 merged `2a75f7d9` → #94 rebuilt from it with variant C on (LEDGER ⑯); #94 artifact row added, rebuild note rewritten; #95 (Hadamard on down_proj input, accuracy) recorded as LEDGER ⑱; upstream head `0a0c0402` → `b0a384d6` (LEDGER cycle 4) | artifacts |
