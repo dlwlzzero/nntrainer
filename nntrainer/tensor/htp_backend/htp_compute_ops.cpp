@@ -46,6 +46,7 @@
 #include <cpu_ops_table.h>
 #include <htp_act_quant.h>
 #include <htp_backend.h>
+#include <htp_moe_opts.h>
 #include <htp_q4_0_convert.h>
 #include <htp_rpcmem.h>
 #include <htp_wh_layout.h>
@@ -183,11 +184,6 @@ enum {
   HTP_MOE_T_PATH, /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
   HTP_MOE_N_STAGES
 };
-
-/** @brief hexkl_mm_u8i4_moe.h's HEXKL_MOE_FLAG_M1_GEMV restated for the
- *  ARM side (the DSP header does not compile here): the moe_set_opts bit
- *  that lets a call of at most 4 rows take the HVX GEMV path. */
-static constexpr uint32_t HTP_MOE_FLAG_M1_GEMV = 1u;
 
 /**
  * @brief Per-stage timing for the HTP path. Off unless NNTR_HTP_PROFILE is set.
@@ -1083,30 +1079,31 @@ public:
                    out, M, K, inter, N_out);
   }
 
-  /** [#80] The M=1 GEMV switch: NNTR_MOE_HTP_M1_GEMV=1 in the environment,
-   *  read once, sent to the DSP once per session through moe_set_opts
-   *  (the DSP decides per call on M). Off by default. With the switch on,
-   *  an error or an echo that differs from what was sent throws rather
-   *  than falling back: a silent fallback would let a run report the HMX
-   *  loop's numbers as the GEMV's. With it off, a skel too old to know the
-   *  method is exactly the HMX loop, so that case only logs. The stderr line is
-   * the proof of which path a run took when no profile is on; [HTP-PROFILE]'s
-   * m1_gemv= and blocks= are the per-call proof. */
+  /** [#80] The M=1 GEMV switch, read once from NNTR_MOE_HTP_M1_GEMV and
+   *  sent to the DSP once per session through moe_set_opts (the DSP decides
+   *  per call on M). On by default since #101; NNTR_MOE_HTP_M1_GEMV=0 is the
+   *  opt-out (htp_moe_opts_flags). With the switch on, an error or an echo
+   *  that differs from what was sent throws rather than falling back: a
+   *  silent fallback would let a run report the HMX loop's numbers as the
+   *  GEMV's -- so a skel older than moe_set_opts now fails the first MoE call
+   *  unless the opt-out is set. With it off, such a skel is exactly the HMX
+   *  loop, so that case only logs. The stderr line (source=default|env) is
+   *  the proof of which path a run took when no profile is on;
+   *  [HTP-PROFILE]'s m1_gemv= and blocks= are the per-call proof. */
   void sendMoeOptsOnce(remote_handle64 session) {
     std::call_once(moe_opts_once_, [session]() {
       const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
-      const uint32_t flags =
-        (env != nullptr && std::atoi(env) != 0) ? HTP_MOE_FLAG_M1_GEMV : 0u;
+      const uint32_t flags = htp_moe_opts_flags(env);
+      const char *source = env != nullptr ? "env" : "default";
       uint32_t applied = 0;
       const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
       if (flags == 0u && err != AEE_SUCCESS) {
-        // Nothing was asked for, and a skel that predates moe_set_opts runs
-        // the HMX loop, which is what "off" means: say so and go on rather
-        // than fail a deployment this PR changed nothing for.
+        // The opt-out was asked for, and a skel that predates moe_set_opts
+        // runs the HMX loop, which is what "off" means: say so and go on.
         std::fprintf(stderr,
                      "[HTP] moe m1 gemv: off (moe_set_opts err=0x%08x; the "
-                     "skel predates it)\n",
-                     static_cast<unsigned>(err));
+                     "skel predates it) source=%s\n",
+                     static_cast<unsigned>(err), source);
         return;
       }
       if (err != AEE_SUCCESS || applied != flags) {
@@ -1120,8 +1117,8 @@ public:
           " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
           "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
       }
-      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x)\n",
-                   flags != 0u ? "on" : "off", applied);
+      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x) source=%s\n",
+                   flags != 0u ? "on" : "off", applied, source);
     });
   }
 
