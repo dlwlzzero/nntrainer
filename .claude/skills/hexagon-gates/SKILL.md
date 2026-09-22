@@ -65,7 +65,10 @@ a device gtest second.
 ./test/htp/build.sh                       # v79; HEXKL_ROOT / HEXKL_SDK_VER from env.sh
 md5sum test/htp/build/libnntr_hvx_skel.so
 ```
-Pass: `test/htp/build/libnntr_hvx_skel.so` exists, `-Wall -Werror` clean.
+Pass: `test/htp/build/libnntr_hvx_skel.so` exists, `-Wall -Werror` clean,
+and `build.sh` printed `UNDEFINED SYMBOLS OK (<n> runtime imports)` (a
+project symbol left out of `SRCS` links fine and fails on the device with
+`0x80000406`, #97; the guard prints the offending names and exits 1).
 `build.sh` regenerates the FastRPC stub/skel from `test/htp/nntr_hvx.idl`;
 when the IDL changed, the host side must be rebuilt too (rung 1 and 3),
 or the device fails with `AEE_EBADPARM (0x8000040E)`. Variants:
