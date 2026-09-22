@@ -15,10 +15,10 @@ today, and faster than the same phone's CPU**.
 | item | value | source |
 |---|---|---|
 | Model | LFM2.5-8B-A1B: 24 layers = 18 conv + 6 attention, 22 MoE FFN layers (32 experts, top-4), hidden 2048, vocab 128000, tied lm_head | `config.json` of `LiquidAI/LFM2.5-8B-A1B` |
-| "Now", NPU (MoE FFN on HTP, `htp_moe` @ `2a75f7d9`, switch off) | decode **17.72 / 17.03 / 17.30 tok/s** at gen 64 / 512 / 1024, prefill 389–527 tok/s (prompt 512) | #94 sitting 2, `R3CY205ZMND`, 2026-09-22 (`dad0f476`); replaces the PR author's 20.8 / 523 (doc 49 §1, prompt 444) |
-| "Now", CPU (all Q4_0, 8 threads) | decode **52.43 / 49.22 / 48.31 tok/s**, prefill 268–340 tok/s | same sitting; replaces the PR author's 48 / 334 |
-| First lever measured | M=1 HVX GEMV (PR #86, switch on): **18.83 / 18.33 / 17.59** (+6.2 / +7.7 / +1.7 %), text identical | same sitting, variant C (LEDGER ⑯) |
-| **Goal** | decode **≥ 50 tok/s** at every measured generation length (2.9× the NPU "now" at gen 512, above the CPU) | user decision Q1 (ii) |
+| "Now", NPU (MoE FFN on HTP, `htp_moe` @ `ad714de7` = PR #103 code `f3e99176`, GEMV switch off) | decode **24.50 / 23.80 / 23.52 tok/s** at gen 64 / 512 / 1024, prefill 430–506 tok/s (prompt 512) | #88 variant B, `R3CY205ZMND`, 2026-09-22 (`3f9fa38d`); replaces #94 sitting 2's 17.72 / 17.03 / 17.30, prefill 389–527 (`dad0f476`), which had replaced the PR author's 20.8 / 523 (doc 49 §1, prompt 444) |
+| "Now", CPU (all Q4_0, 8 threads) | decode **52.43 / 49.22 / 48.31 tok/s**, prefill 268–340 tok/s | #94 sitting 2 (#88 had no CPU cell); replaces the PR author's 48 / 334 |
+| Levers measured | (1) M=1 HVX GEMV (PR #86, switch on): **18.83 / 18.33 / 17.59** (+6.2 / +7.7 / +1.7 % vs 17.72 / 17.03 / 17.30), text identical — #94 sitting 2 variant C (LEDGER ⑯); (2) wall 3, size-class staging + 5 ms poll (PR #103, merged): **+30.9 / +41.4 / +42.9 %** vs its own A 18.72 / 16.83 / 16.46, transport 401 → 88 µs/call, text identical — #88 (LEDGER ⑦, closed). The two have not yet run together (#101) | #94 s2 `dad0f476`; #88 `3f9fa38d` |
+| **Goal** | decode **≥ 50 tok/s** at every measured generation length (2.1× the NPU "now" at gen 512, above the CPU) | user decision Q1 (ii) |
 | Physical ceiling | 730 MB of weights per token ÷ 34–38 GB/s measured DDR rate = 19–21 ms ⇒ **48–52 tok/s**. The CPU already sits on it | doc 48 §1 |
 | Prefill gate | never below **−5 % of the current NPU prefill** (≈ 523–532 tok/s, i.e. ≥ 497) | user decision Q12 |
 | Accuracy gate | doc 45 §3.4, all three: (a) kernel bit-identical to its scalar spec, (b) real-model diff (`NNTR_L2_DIFF`) = 0, (c) generated text identical to the CPU run of the same weights | user decision Q4 |
@@ -27,7 +27,10 @@ The "now" numbers were replaced on 2026-09-22 (cycle 5) by #94 sitting 2,
 the first sitting with all 12 control cells on one binary set (§4.3's
 intent; #77 had measured the same cells a day earlier on the same unit:
 NPU 18.2–21.3, CPU 46.4–54.1, prefill 403–541 — all in BENCHMARK.md).
-They are read against the sitting they came from: one unit drifts up to
+On the same day (cycle 7) #88's variant B replaced the NPU row: it is the
+code of `htp_moe` @ `ad714de7` measured against its own same-sitting A
+(same unit); the CPU row stays #94 sitting 2's, since #88 ran no CPU
+cell. They are read against the sitting they came from: one unit drifts up to
 ±9 % (CPU) / −16 % (NPU tok/s) between sittings while its DSP profile
 columns move ≤ 4 % (LEDGER rules 9, 20), and two S25 Ultra units differed
 by 6–8.6 % on one binary in `hvx_impl`. Hence every verdict is a

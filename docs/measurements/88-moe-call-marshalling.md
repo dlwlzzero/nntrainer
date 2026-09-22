@@ -229,50 +229,150 @@ grep -l 'HTP-PROFILE' $W/logs/[ABC]_G*_r*.log                         # nothing
 Then fill the tables below, commit this file on the same branch, push, set
 #88 to `state:measured`.
 
-## Results (fill in)
+## Results (filled 2026-09-22, 15:35–16:20 KST)
 
-Unit (serial from `adb devices`): ______  Battery / °C at checkpoints 1–3: ______
+Unit (serial from the bridge's `getprop ro.serialno`): **`R3CY205ZMND`**
+(SM-S938N, S25 Ultra). The measurement ran through the ADF SSH adb bridge
+(`adf.sraisys.com`), not local USB — the bridge accepts only
+`shell`/`push`/`pull`, so every device-side command in §2–§6 was pushed as
+a `/system/bin/sh` script (`d88_cfg.sh`, `d88_run.sh`, `d88_runenv.sh`,
+`d88_therm.sh`) and invoked as `shell sh <path>`; the cool-downs ran
+device-side (`shell "sleep 60"`). Battery 100 % / charger in at every
+checkpoint. `thermal_zone0`: **28.7 °C** at checkpoint 1 (before A),
+**48.8 °C** at checkpoint 2 (after A's 6 cells), **56.6 °C** at checkpoint
+3 (after B's 6 cells), 51.2 °C after the A re-run. `df -h /data`: 36 G free.
 
 | variant | gen | run | prefill tok/s | decode tok/s (all) | decode tok/s (last 64) | peak RSS (KB) | text = A run 1? | run1 = run2? | libnntrainer.so md5 (device) |
 |---|---|---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | n/a (#89) | | reference | | |
-| A | 64 | 2 | | | n/a | | | | |
-| A | 512 | 1 | | | n/a | | reference | | |
-| A | 512 | 2 | | | n/a | | | | |
-| A | 1024 | 1 | | | n/a | | reference | | |
-| A | 1024 | 2 | | | n/a | | | | |
-| B | 64 | 1 | | | n/a | | | | |
-| B | 64 | 2 | | | n/a | | | | |
-| B | 512 | 1 | | | n/a | | | | |
-| B | 512 | 2 | | | n/a | | | | |
-| B | 1024 | 1 | | | n/a | | | | |
-| B | 1024 | 2 | | | n/a | | | | |
-| C | 64 | 1 | | | n/a | | | — | |
-| A | 64 | 3 (after B) | | | n/a | | | | |
+| A | 64 | 1 | 534.447 | 19.536 | n/a (#89) | 5342272 | reference | same | `5db71a2e…` |
+| A | 64 | 2 | 530.021 | 17.907 | n/a | 5348812 | same | same | `5db71a2e…` |
+| A | 512 | 1 | 475.836 | 16.906 | n/a | 5367020 | reference | same | `5db71a2e…` |
+| A | 512 | 2 | 474.513 | 16.763 | n/a | 5349484 | same | same | `5db71a2e…` |
+| A | 1024 | 1 | 425.603 | 16.431 | n/a | 5346388 | reference | same | `5db71a2e…` |
+| A | 1024 | 2 | 478.058 | 16.482 | n/a | 5350616 | same | same | `5db71a2e…` |
+| B | 64 | 1 | 503.441 | **24.531** | n/a | 5373120 | same | same | `3cf06450…` |
+| B | 64 | 2 | 489.952 | **24.465** | n/a | 5380524 | same | same | `3cf06450…` |
+| B | 512 | 1 | 469.725 | **23.865** | n/a | 5361716 | same | same | `3cf06450…` |
+| B | 512 | 2 | 429.891 | **23.728** | n/a | 5369552 | same | same | `3cf06450…` |
+| B | 1024 | 1 | 505.929 | **23.509** | n/a | 5372612 | same | same | `3cf06450…` |
+| B | 1024 | 2 | 492.308 | **23.531** | n/a | 5378936 | same | same | `3cf06450…` |
+| C | 64 | 1 | 439.485 | 21.821 | n/a | 5377868 | same | — | `3cf06450…` |
+| A | 64 | 3 (after B) | 503.937 | 17.822 | n/a | 5255492 | same | = A run 1 | `5db71a2e…` |
 
-Transport (`[HTP-PROFILE]`, G = 64, one run each):
+Every log carries exactly one `[HTP] moe m1 gemv: off (applied=0x0)` line,
+`prefill: 512 tokens` and `generation: <G> tokens` in all 14 cells, and no
+`[HTP-PROFILE]` residue (`grep -l 'HTP-PROFILE' logs/[ABC]_G*_r*.log` is
+empty) — no env leak, no voided cell. No `AEE_*`, no `0x8000…`, no `FARF`
+error in any of the 18 logs.
 
-| profile | qos_mode | M==1 calls | M==1 host / dsp / transport (µs/call) | M>1 calls | M>1 host / dsp / transport | staging: line |
+Transport (`[HTP-PROFILE]`, G = 64, one run each; µs/call):
+
+| profile | qos_mode | M==1 calls | M==1 host / dsp / transport | M>1 calls | M>1 host / dsp / transport | staging: line |
 |---|---|---|---|---|---|---|
-| A level 2 | | | | | | (none) |
-| B level 2 | | | | | | |
-| B level 3 | | | | | | |
-| C level 2 (poll 100) | | | | | | |
+| A level 2 | **2** | 1408 | 1812.1 / 1410.8 / **401.3** | 23 | 18948.5 / 16454.0 / 2494.6 | (none — field did not exist) |
+| B level 2 | **2** | 1408 | 1471.2 / 1383.3 / **87.9** | 23 | 18213.5 / 16443.2 / **1770.3** | M==1 `act 65536 B out 65536 B ion=y rpc allocs=19 (session) non-ION in-args=6/464 B`; M>1 `act 4194304 B out 4194304 B ion=y rpc allocs=19 non-ION in-args=6/16816 B` |
+| B level 3 | **2** | 1408 | 1350.1 / 1267.8 / **82.3** | 23 | 18127.0 / 16259.0 / 1868.0 | identical, `rpc allocs=19` — **same as level 2**, so nothing allocates per call |
+| C level 2 (poll 100) | **2** | 1408 | 1564.0 / 1408.5 / **155.5** | 23 | 18948.5 / 16559.6 / 2388.9 | identical to B (the staging fix is in the binary) |
 
-Verdict (plan §1): B M==1 transport ≤ 100 µs → **done**; (A − B)/A ≥ 30 %
-→ progress; < 15 % → no change (back to #83 §4). C − B = the poll's share;
-B − (A − C + B) ≈ the staging's share. Prefill gate: B prompt-512 tok/s ≥
-−5 % of A and the M>1 transport not above A's.
+Both `staging:` lines read exactly what the plan's inventory predicted: the
+decode call rides a **64 KiB** class instead of the 4 MiB pair prompt 512
+grew, both buffers are on ION, and only 464 B cross the stub outside ION at
+M==1.
 
-Reference (other unit `R3CY205ZMND`, #77 B): M==1 transport 587.7 µs/call
-at level 2, 527.7 at level 3; M>1 2231 / 2123. #77 A decode 18.2–21.3
-tok/s, prefill 404–541. Author's unit: decode call transport 553 → ≈ 161
-(staging, doc 50 §3.7) and 158 → 83 µs (poll, doc 51 §2.20). Goal ≥ 50
-decode tok/s, prefill ≥ 497.
+### Verdict (plan §1): **done** — ⑦ closes, prebind is not built
+
+* **B M==1 transport = 87.9 µs/call ≤ 100 µs** → the gate's "done" branch.
+  Against its own A in the same sitting: 401.3 → 87.9 = **−78.1 %**, far
+  past the ≥ −30 % "progress" bar and the −15 % no-change floor. Plan
+  §3.3's prebind (step 5) is therefore **not built** — the remaining 88 µs
+  is 6 % of the 1471 µs host call, and 464 B of arguments is already the
+  inventory floor.
+* **Split of the 313.4 µs** (C = B's binary with the poll back at 100 µs):
+  poll window **67.6 µs** (155.5 − 87.9, 22 %), size-class staging
+  **245.8 µs** (401.3 − 155.5, 78 %, both at poll 100). The plan's
+  attribution — driver cache maintenance over the whole 4 MiB cached ION
+  pair as the dominant term, the 100 µs poll window as the second — is
+  confirmed in that order and magnitude (the plan estimated 290–470 µs for
+  the staging term and the author's unit read 158 → 83 µs for the poll).
+* **Prefill gate: passes.** B prompt-512 prefill mean 481.9 tok/s vs A
+  486.4 (**−0.9 %**, inside −5 %; per-cell spread is ±13 % in this sitting,
+  so the mean is the honest read), and B's M>1 transport 1770.3 µs/call is
+  **below** A's 2494.6 (−29 %) with M>1 `dsp=` unmoved (16443 vs 16454,
+  −0.07 %) — prefill got faster, not slower, and the DSP side is untouched.
+* **Bit-identity: passes.** A vs B text identical at G = 64, 512 and 1024;
+  run 1 = run 2 in all six A/B cells; C = B at G = 64; the A re-run's text
+  = A run 1. `NNTR_L2_DIFF` and text-vs-CPU stay n/a for `QS4CX_WH`.
+* **Decode tok/s, same sitting:** G=64 19.54 / 17.91 → 24.53 / 24.46
+  (means 18.72 → 24.50, **+30.9 %**); G=512 16.91 / 16.76 → 23.87 / 23.73
+  (16.83 → 23.80, **+41.4 %**); G=1024 16.43 / 16.48 → 23.51 / 23.53
+  (16.46 → 23.52, **+42.9 %**). C at G=64: 21.82 (+16.6 % over A's mean,
+  i.e. the staging fix alone carries most of the tok/s too). This is the
+  largest single-issue decode gain recorded on this branch; the goal is
+  ≥ 50 tok/s, so the distance at G=512 falls from 3.0× to **2.1×**.
+* **Thermal control:** the A re-run after B reads 17.82 tok/s at G=64
+  against A run 1's 19.54 and run 2's 17.91 at 28.7 °C — A's own spread
+  (and the 28.7 → 51.2 °C drift) is ±5 %, well below the +31 % B/A gap, so
+  the gain is code, not order. B ran *hotter* than A throughout (48.8 →
+  56.6 °C) and still won every cell.
+* **Peak RSS:** A 5.342–5.367 GB, B 5.362–5.381 GB (**+0.3 %**) — the
+  power-of-two size classes keep both the 64 KiB and the 4 MiB pair alive,
+  at 13.5 MB over A's peak. Recorded, not a gate.
 
 ## Notes from the run
 
-<serial, thermal at checkpoints, first-run page faults, FARF/AEE errors,
-the provenance md5 lines, anything stale. A `qos_mode=1` header, an
-`AEE_EBADPARM (0x8000040E)` or a `0x80000406` open failure goes here with
-the exact line.>
+* **Serial / bridge.** `R3CY205ZMND` (the #77 B unit, so the §"Reference"
+  row is the same silicon one day earlier — but a different sitting, and
+  cross-sitting tok/s is not a verdict, LEDGER rule 9). Screen off, charger
+  in, battery 100 % throughout.
+* **Deviation 1 — the artifacts were rebuilt on this workstation.** Nothing
+  was staged under `/local/mnt/workspace/htp_moe/88/` when the sitting
+  started (only `77/` and `94/` existed) and the worktrees the Artifacts
+  table names (`/home/j2z0-lee/nntrainer-88{,-A}`) do not exist on this
+  box. A and B were therefore rebuilt here from the exact commits the table
+  names — A in a detached worktree at `htp_moe` `08afbb10`, B at
+  `f3e99176` — with `Applications/CausalLM/build_android.sh --htp` then
+  `--htp --cache`, `HEXKL_ROOT=~/Downloads/hexkl_addon`,
+  `HEXKL_SDK_VER=6.4.0.1`, `ANDROID_NDK=~/android-ndk-r30`,
+  `HEXAGON_SDK_ROOT=/local/mnt/workspace/Qualcomm/Hexagon_SDK/6.4.0.1`,
+  and the skel with `./test/htp/build.sh` at `f3e99176`. Build logs:
+  `$W/build_{A,B}_{1,2}.log`, `$W/build_skel.log`. **The md5s below are the
+  ones that ran**; they differ from the Artifacts table's predictions
+  (LEDGER rule 14, a different build path), which is why every row of the
+  results table carries the device md5:
+
+  | staged file | md5 that ran | note |
+  |---|---|---|
+  | `$W/libnntr_hvx_skel.so` | `2bd7311f3ada308777d02b324ed1a73c` (172,624 B) | `test/htp/build.sh` @ `f3e99176`, `-Wall -Werror` clean, `UNDEFINED SYMBOLS OK (46 runtime imports)` — the #97 guard is present on this tree and passed; predicted `ce85595d…` |
+  | `$W/A/nntrainer_causallm` | `bcb8996012adf675ec5120a7bb831c7e` | @ `08afbb10`; `strings … \| grep -c 'per-layer-type totals'` = 0 |
+  | `$W/A/libcausallm_core.so` | `93c9ca9c994098a4ac6693b5335612a4` | same |
+  | `$W/A/libnntrainer.so` | `5db71a2e74ff0383a3b287f4869d78c9` | same; `readelf -d` lists `libsdkl.so` and `libcdsprpc.so` |
+  | `$W/A/libccapi-nntrainer.so` | `9afca609f7569564af7b7f18abf82fcf` | same |
+  | `$W/B/nntrainer_causallm` | `e86ffa5756c3b6b22723b0b105acf2c2` | @ `f3e99176`; profile-strings count 0 |
+  | `$W/B/libcausallm_core.so` | `29e6d6e220cbf50474aa561d20d7753d` | same |
+  | `$W/B/libnntrainer.so` | `3cf06450fc811d0f81498bd2efbda825` | same — **differs from A's, as the table requires** (the one file that carries PR #103) |
+  | `$W/B/libccapi-nntrainer.so` | `d3051a4d1540b405f97ab9c1d62090a1` | same |
+  | `$W/libc++_shared.so` | `b1586b9b512712800fd36a24abac1c0a` | == table (== #77 / #94) |
+  | `$W/libsdkl.so` | `0ad4e22a70e4f135bce38ad8fd1e001b` | == table, HexKL `lib/6.4.0.1/armv8_android26` |
+  | `$W/prompt512.txt` | `fc65c1588dc66dd764c7013fe96cbb75` | == table |
+  | model `nntr_lfm2_8b_a1b_q40_arm.bin` | `7b7867fab51845664c0050c0a837073e` (4,316,133,120 B) | == table, already on the device; re-hashed on the device before the runs |
+  | `models/q40-qs4cx-wh/tokenizer.json` | `7b8067a580173d3eb1697afae3b456f5` | == table |
+
+  `$W/md5.txt` was regenerated from these files. `find $W -name 'libcdsprpc*'`
+  = 0. Unlike the table's expectation, A's and B's `nntrainer_causallm`,
+  `libcausallm_core.so` and `libccapi-nntrainer.so` are *not* byte-identical
+  (two worktrees, embedded paths differ) — allowed by rule 14, and
+  irrelevant: the only source difference between the two commits is
+  `htp_backend/{htp_backend.cpp,htp_compute_ops.cpp,htp_rpcmem.h}` plus
+  docs, and the DSP skel is one file shared by A, B and C.
+* **Deviation 2 — the gtests were not run** (the handoff already marks them
+  a rung-3 ride-along, "not run in this sitting"), and the config edit was
+  applied to the `q40-qs4cx-wh` dir only; the `q40` CPU control is not part
+  of this sitting.
+* **Config echo before the runs**, exactly as §1 expects: `"do_sample":
+  false`, `"bad_word_ids": [124900]`, `"init_seq_len": 512`, `"moe_engine":
+  "htp"`, `"moe_htp_layers": ""`.
+* **Print defects.** None of the level-2/3 blocks showed the #94-era
+  `swiglu`/`rest<=` defect; the `weight DMA:` and `DMA ring:` lines are
+  present in every row.
+* Logs: `$W/logs/{A,B,C}_G<G>_r<n>.log` (14) and
+  `$W/logs/prof_{A_L2,B_L2,B_L3,C_L2}.log` (4).
