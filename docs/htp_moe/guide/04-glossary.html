@@ -60,7 +60,8 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>A/B</dt><dd>Two variants run in the same sitting on the same phone; only their ratio is a verdict (LEDGER rule 9).</dd>
 <dt>acc, acc_read</dt><dd>The HMX accumulator (64 rows × 32 int32) and the instruction that copies it out to VTCM; the HMX stalls while it is read. Profile column <code>acc</code>.</dd>
 <dt>adb</dt><dd>Android Debug Bridge: the USB tool that pushes files to the phone and runs commands on it. Agents never run it.</dd>
-<dt>AEE_EBADPARM (0x8000040E)</dt><dd>FastRPC's "bad parameter" error; on this project it almost always means a stale skel (rule 3).</dd>
+<dt>0x80000406 (skel does not load)</dt><dd>FastRPC error from <code>remote_handle_open_domain</code>, logcat <code>dlerror RX VA 0xFFF00000 outside ELF segment</code>: the DSP loader refused the skel image. On this project it meant undefined project symbols in the skel (#97); not a segment-layout bug. See <a href="01-run-it.html">page 1 §2</a>.</dd>
+<dt>AEE_EBADPARM (0x8000040E)</dt><dd>FastRPC's "bad parameter" error; on this project it almost always means a skel that loaded but does not match the app's IDL — a stale skel or app (rule 3). Distinct from <code>0x80000406</code> above and from <code>[Engine] htp Context is not registered</code> (app-side: the <code>htp</code> context exists only in an <code>ENABLE_HEXKL</code> build, <code>engine.cpp:70–72</code>).</dd>
 <dt>AH tile</dt><dd>"Activation, HMX order": 64 rows × 32 k-values of u8, 2048 B, the layout of the activation operand the HMX reads.</dd>
 <dt>arena (ION arena)</dt><dd>3840 MiB of ION memory in 256 MiB chunks, mapped once into the DSP, holding all 1408 expert weight matrices in WH order.</dd>
 <dt>ARM</dt><dd>The phone's CPU cores (Cortex big.LITTLE), where the app and everything not on the DSP runs.</dd>
@@ -76,10 +77,12 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>decode</dt><dd>Generating tokens one at a time after the prompt; M = 1 everywhere.</dd>
 <dt>DDR (LPDDR5X)</dt><dd>The phone's main memory; 34–38 GB/s measured for one reader, the speed limit of decode.</dd>
 <dt>dequant / requant / quant</dt><dd>int32 → f32 with scales (dequant), f32 → u8 for the next matrix (requant), the first f32 → u8 of the activation row (quant).</dd>
-<dt>descriptor</dt><dd>One DMA job: row bytes × row count at a source stride, to a VTCM address. An M=1 MoE call pushes 46 (4 experts × 11 + 2 copies).</dd>
+<dt>descriptor</dt><dd>One DMA job: row bytes × row count at a source stride, to a VTCM address (with its own destination stride). An M=1 MoE call pushes 46 (4 experts × 11 + 2 copies).</dd>
+<dt>descriptor list (chunk list)</dt><dd>The ordered 46 descriptors and 30 wait points one M=1 MoE call issues on the ring, over 32 arena regions; recorded by the DMA ring trace and replayed by <code>MoeChunkReplay</code>. Row h of #94 found this list alone runs at 40 GB/s where a probe of the same per-descriptor shape does 107 (LEDGER rule 19, #100).</dd>
 <dt>DMA</dt><dd>Direct memory access: the DSP's copy engine, driven by descriptors (2D: row bytes, stride, row count) through a ring; how weights get from DDR to VTCM.</dd>
 <dt>DMA ring trace (<code>[HTP-DMA]</code>, <code>DMA ring:</code>)</dt><dd>PR #93's bookkeeping of every push and wait on the ring inside a timed MoE call, read back through <code>moe_dma_trace_read</code> and printed by the ARM; off unless <code>NNTR_HTP_PROFILE ≥ 2</code>.</dd>
-<dt>dma_replay / MoeChunkReplay</dt><dd>A skel entry and device gtest that push the M=1 call's descriptor schedule with no compute in between, to time the engine on the in-situ list alone.</dd>
+<dt>dma_replay / MoeChunkReplay</dt><dd>A skel entry and device gtest that push the M=1 call's descriptor schedule with no compute in between, to time the engine on the in-situ list alone; 11 cells (workers × pacing × competitor × fresh pages × gap). Its content check failed in #94 because it wrote VTCM packed instead of strided (#99); the timings stand.</dd>
+<dt>DMA_PROBE / DmaProbeShapes</dt><dd>The isolated arena-rate gtest (16 lines: four shapes × workers 1–4). Shape iii = 8 KiB × 64 rows @ 56 KiB stride is the gate/up chunk geometry; 106.9 GB/s cool / 88.8 hot in #94 (rule 18).</dd>
 <dt>drain</dt><dd>Profile column: time spent waiting for a DMA transfer that was not hidden behind compute.</dd>
 <dt>DSP</dt><dd>Digital signal processor; here the Hexagon core inside the HTP.</dd>
 <dt>dspqueue</dt><dd>Hexagon SDK's low-latency ARM↔DSP queue; deferred alternative to plain FastRPC calls.</dd>
@@ -109,12 +112,14 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>M, K, N</dt><dd>Matrix shapes: M rows of activation, K reduction length, N output columns. Expert gate_up: M × 2048 × 3584.</dd>
 <dt>M0-PROF</dt><dd><code>NNTR_M0_PROFILE=1</code>'s ARM-side per-MoE-layer stage line.</dd>
 <dt>marshalling</dt><dd>Packing call arguments for FastRPC; #77 B's verdict for what the transport cost is.</dd>
-<dt>M=1 GEMV path (<code>NNTR_MOE_HTP_M1_GEMV</code>, <code>moe_set_opts</code>)</dt><dd>PR #86's branch inside the MoE kernel: at M ≤ 4 the four experts run on the HVX GEMV from the arena with no DMA and no HMX; enabled per session by the IDL method <code>moe_set_opts</code>; default off.</dd>
+<dt>M=1 GEMV path (<code>NNTR_MOE_HTP_M1_GEMV</code>, <code>moe_set_opts</code>)</dt><dd>PR #86's branch inside the MoE kernel: at M ≤ 4 the four experts run on the HVX GEMV from the arena with no DMA and no HMX; enabled per session by the IDL method <code>moe_set_opts</code>; default off (to flip: #101). Measured in #94 as variant C: +6.2 / +7.7 / +1.7 % decode, text identical, dsp 1414 → 1044 µs but <code>mm</code> 783 → 975 µs (LEDGER ⑯).</dd>
 <dt>md5</dt><dd>Checksum used to identify every pushed binary and model file.</dd>
 <dt>mm</dt><dd>Profile column: HMX instruction issue time, timed by difference.</dd>
 <dt>MoE</dt><dd>Mixture of experts: a router picks a few experts per token; here top-4 of 32 in 22 layers.</dd>
 <dt>NDK</dt><dd>Android Native Development Kit: the ARM cross-compiler (r30 here).</dd>
 <dt>NPU</dt><dd>Neural processing unit; in this project the HTP.</dd>
+<dt>packed vs strided (VTCM writes)</dt><dd>Where a DMA descriptor's rows land in VTCM: <em>strided</em> = destination stride equals the source stride (the kernel: an expert's eight gate/up chunks tile one 3.67 MB window exactly once); <em>packed</em> = destination stride equals the row size (the probe, and the replay before #99: rows contiguous, chunks overlapping in 569 KB). The DDR read is the same either way; only the write geometry and the checksum footprint differ (plan 99 §3).</dd>
+<dt>paced / unpaced replay</dt><dd><code>pace=1</code> replays the descriptors at the traced in-situ wait points (reproduces the in-call 15.6–18.6 GB/s); <code>pace=0</code> issues them as fast as the ring allows (40.2 GB/s in #94, the row-h number).</dd>
 <dt>one call per token</dt><dd>The target shape: the whole layer stack resident on the DSP so a token costs one FastRPC round trip (LEDGER ⑨).</dd>
 <dt>PD (unsigned PD)</dt><dd>Process domain on the DSP; "unsigned" lets a non-signed skel run.</dd>
 <dt>poll QoS (<code>qos_mode=2</code>) / poll window</dt><dd>The latency setting that keeps the CPU polling for the DSP's reply for a set time (100 µs on <code>htp_moe</code>; upstream <code>NNTR_HTP_POLL_US</code> defaults to 5000) before falling back to an interrupt wait; a <code>qos_mode=1</code> in the profile header means the driver refused the value.</dd>
@@ -123,6 +128,8 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>profile build (<code>--profile</code>)</dt><dd>An app build that prints per-node totals; never read for tok/s (rule 1).</dd>
 <dt>Q4_0</dt><dd>4-bit block quantization (32 weights per scale) the CPU kernels read.</dd>
 <dt>QS4CX / QS4CX_WH</dt><dd>4-bit per-channel quantization; the WH variant is pre-arranged in HMX tile order and has no CPU path.</dd>
+<dt>region (arena region)</dt><dd>One 256 MiB ION chunk of the arena as seen by the DMA engine; the M=1 list touches 32 per call (<code>regions=32</code> in the replay is its <code>fresh=1</code> rotation pool, not the expert count — plan 99 §3).</dd>
+<dt>row h</dt><dd>The eighth row of plan 87's wall-2 attribution table, added by the device in #94: the real chunk list is slow on its own (40 vs 107 GB/s), ≈ 60–70 % of the isolated-vs-in-situ gap. Fix issue #100.</dd>
 <dt>RMSNorm</dt><dd>Root-mean-square normalization, before each mixer and each FFN.</dd>
 <dt>RoPE</dt><dd>Rotary position embedding applied to q and k in attention.</dd>
 <dt>router / top-k</dt><dd>The small FP32 matrix and the sigmoid + bias ranking that choose 4 experts and their weights.</dd>
@@ -132,12 +139,16 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>SDK (Hexagon SDK 6.4.0.1)</dt><dd>Qualcomm's DSP toolchain.</dd>
 <dt>SiLU / SwiGLU</dt><dd>silu(x) = x · sigmoid(x); SwiGLU = silu(gate) · up, the FFN's non-linearity.</dd>
 <dt>size-class staging</dt><dd>Upstream's fix (<code>fb0f02b9</code>): one cached ION staging buffer per power-of-two size from 64 KiB, picked per call, so a decode call no longer rides a 4 MiB buffer sized by the prompt.</dd>
+<dt>same-unit drift</dt><dd>How much one phone's tok/s moves between sittings with no code cause: up to −16 % (NPU) / ±9 % (CPU) per cell in #94 vs #77 while the DSP profile columns moved ≤ 4 % (LEDGER rules 9, 20). Recorded as a note, never as a verdict.</dd>
 <dt>sitting</dt><dd>One uninterrupted session on the phone; the unit within which numbers are comparable.</dd>
 <dt>SNR</dt><dd>Signal-to-noise ratio in dB between two paths' outputs; <code>NNTR_L2_DIFF</code>'s accuracy measure, the gate for #95.</dd>
 <dt>SMMU</dt><dd>The IOMMU that maps ION buffers into the DSP's address space.</dd>
 <dt>stage</dt><dd>Profile column: DMA copies of the activation in and the output out of the ION buffers.</dd>
+<dt>thermal_zone0</dt><dd>The phone's SoC temperature sensor the handoff samples at each checkpoint (29 °C cool → 51–55 °C after the twelve A cells in #94); probe readings are quoted with it (rule 18).</dd>
 <dt>tok/s, TPS</dt><dd>Tokens per second; the app prints "TPS".</dd>
-<dt>unit</dt><dd>A specific phone: <code>R3CY10WM83Y</code> (reference), <code>R3CY205ZMND</code> (second unit, #77), <code>R5KL30G6MLT</code> (PR author).</dd>
+<dt>UND symbols / undefined-symbol guard</dt><dd><code>UND</code> is readelf's mark for a symbol a shared object imports rather than defines. A Hexagon skel legitimately imports ~46 runtime symbols (<code>HAP_*</code>, <code>qurt_*</code>, libc…) that the DSP image resolves at load; a project symbol left <code>UND</code> (a <code>.c</code> missing from <code>build.sh</code>) links fine and fails only on the device with <code>0x80000406</code>. Since PR #98 <code>build.sh</code> checks this and prints <code>UNDEFINED SYMBOLS OK (&lt;n&gt; runtime imports)</code> (LEDGER rule 17).</dd>
+<dt>unit</dt><dd>A specific phone, identified by its adb serial. Since 2026-09-22 no particular unit is required (contract §12): a handoff names none, the filled handoff records the one used. So far every nntrainer row ran on <code>R3CY205ZMND</code> (#77, #94); the PR author's rows are from <code>R5KL30G6MLT</code>. Two S25 Ultras were 6–8.6 % apart on one binary in an earlier project, which is why numbers are compared only inside a sitting (rule 13).</dd>
+<dt>variant A / B / C</dt><dd>A = the unchanged control binary that opens every sitting; B, C = the variants read against it. In #94, C was the same binary with the M=1 GEMV switch on.</dd>
 <dt>v79</dt><dd>The Hexagon architecture version in the Snapdragon 8 Elite.</dd>
 <dt>vrmpy</dt><dd>HVX multiply-accumulate of four u8 × i8 products per lane; the GEMV's inner instruction.</dd>
 <dt>VTCM</dt><dd>Vector tightly-coupled memory: 8 MiB of on-chip SRAM the HMX reads from; filled only by DMA.</dd>
@@ -146,5 +157,5 @@ footer{margin-top:3em;font-size:.8em;color:var(--muted);border-top:1px solid var
 <dt>worker pool</dt><dd>Three DSP threads with HVX contexts that run epilogues, requant and scatter behind the HMX.</dd>
 <dt>zp (zero point)</dt><dd>The offset of an asymmetric u8 quantization, per row, alongside its scale.</dd>
 </dl>
-<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (terms from PRs #93, #86 and plans 88/83, #95). Decode only.</footer>
+<footer>Guide written 2026-09-21 against <code>htp_moe</code> @ <code>7ee82501</code>; refreshed 2026-09-22 against <code>d5eded3c</code> (terms from PRs #93, #86 and plans 88/83, #95) and again against <code>e9c2c907</code> (sitting 2: descriptor list, packed vs strided, UND symbols, 0x80000406, row h, same-unit drift, unit rule). Decode only.</footer>
 </main></body></html>
