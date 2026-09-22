@@ -39,6 +39,8 @@ next layer's ARM ops, router, `buildExpertAssignments`,
 prefill-shaped call); the arena is attached at load. The DSP side is
 tiny and already measured (`stage` 4.6 µs, `alloc` 0.2 µs, #77 B).
 
+**Measured on device:** the B/C columns of `docs/measurements/88-moe-call-marshalling.md` (PR #103) fill this inventory's cost side; the host side prints it as the `staging:` line under the M==1 row (`act <class> B out <class> B ion=y rpc allocs=<n> non-ION in-args=6/464 B`).
+
 **Reading.** Non-ION bytes crossing the stub per call: 464 (48 + 416).
 The FastRPC driver copies small non-ION `in` buffers into its per-call
 message; that is microseconds, not hundreds. The two ION buffers are 16
