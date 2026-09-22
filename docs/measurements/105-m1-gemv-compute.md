@@ -89,6 +89,32 @@ strings $W/app/nntrainer_causallm | grep -c 'per-layer-type totals'  # 0 (not a 
 find $W -name 'libcdsprpc*' | wc -l                                 # 0
 ```
 
+### If `$W` is not on the workstation you measure from
+
+The #88 sitting ran on a workstation without the staging directory. Rebuild
+the set from the commits instead; skel builds are not byte-reproducible, so
+the md5s will differ from the table. Record the ones you push under "Notes
+from the run" (rules 14 and 21). Build from a clean checkout, NDK r30,
+SDK 6.4.0.1, HexKL 6.4.0.1 (`source tools/htp/env.sh` or the same exports).
+
+```
+W=/local/mnt/workspace/htp_moe/105; mkdir -p $W/app $W/gtest
+git fetch origin && git worktree add /tmp/n105A 48fd2420 && git worktree add /tmp/n105B a0ae8b29
+(cd /tmp/n105A && HEXKL_SDK_VER=6.4.0.1 ./test/htp/build.sh && cp test/htp/build/libnntr_hvx_skel.so $W/libnntr_hvx_skel.A.so)
+for v in B1:0u B2:64u B3:192u; do
+  (cd /tmp/n105B && HEX_EXTRA_CFLAGS=-DHVX_GEMV_PF_LEAD_KB=${v#*:} HEXKL_SDK_VER=6.4.0.1 ./test/htp/build.sh \
+     && cp test/htp/build/libnntr_hvx_skel.so $W/libnntr_hvx_skel.${v%%:*}.so)
+done                                                    # each build prints UNDEFINED SYMBOLS OK (46 runtime imports)
+# One app set serves A and every B (this PR changes no ARM source). Build it from a0ae8b29:
+(cd /tmp/n105B/Applications/CausalLM && ./build_android.sh --htp)   # fresh builddir: see the hexagon-gates skill, rung 3
+cp /tmp/n105B/Applications/CausalLM/jni/libs/arm64-v8a/{nntrainer_causallm,libcausallm_core.so} $W/app/
+cp /tmp/n105B/Applications/CausalLM/jni/obj/local/arm64-v8a/{libnntrainer.so,libccapi-nntrainer.so,libc++_shared.so} $W/app/
+strings $W/app/libnntrainer.so | grep -c 'staging: act'           # 1: PR #103 is in the app (else stale --cache: ninja install, rebuild)
+# gtest: ndk-build unittest_hvx_mm_u8i4 in /tmp/n105B/test/jni (rung 3), copy it and libc++_shared.so to $W/gtest/
+# libsdkl.so into both dirs from $HEXKL_ROOT/lib/6.4.0.1/armv8_android26/; prompt512.txt = docs/measurements/77-prompt512.txt
+(cd $W && md5sum libnntr_hvx_skel.*.so app/* gtest/* prompt512.txt > md5.txt)
+```
+
 ## Steps (workstation, phone on USB)
 
 Shell setup once:
