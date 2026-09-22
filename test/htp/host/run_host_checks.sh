@@ -26,9 +26,10 @@ trap 'rm -rf "$OUT"' EXIT
 cc=${CC:-gcc}
 "$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
   -DMOE_TAIL_MAX_ROWS=16u \
-  -I "$HERE/stub" -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+  -I "$HERE/stub" -I "$HERE/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
   -o "$OUT/moe_layer_host_check" \
-  "$HERE/moe_layer_host_check.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" -lm
+  "$HERE/moe_layer_host_check.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" \
+  "$BACKEND/hmx/hexkl_dma_trace.c" -lm
 
 "$OUT/moe_layer_host_check"
 
@@ -42,3 +43,24 @@ cc=${CC:-gcc}
   "$HERE/worker_pool_host_check.c" "$BACKEND/hvx/hvx_worker_pool.c"
 
 "$OUT/worker_pool_host_check"
+
+# The DMA probe's descriptor plan (test/htp/nntr_dma_probe_plan.h): the
+# skel runs the same header-only function, so the geometry checked here --
+# disjoint rows, in-bounds destinations, worker balance -- is what the
+# device DMAs. Bandwidth is measured on the device, never here.
+"$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
+  -I "$HERE/.." \
+  -o "$OUT/dma_probe_host_check" \
+  "$HERE/dma_probe_host_check.c"
+
+"$OUT/dma_probe_host_check"
+
+# The MoE call's DMA ring trace (hexkl_dma_trace.c, #87): completion
+# brackets, the union-of-intervals busy time, ring depth and the blocked
+# bit on a scripted timeline whose expected numbers are hand arithmetic.
+"$cc" -std=c99 -O1 -Wall -Wextra -Wno-unused-parameter \
+  -I "$HERE/stub" -I "$BACKEND/hmx" \
+  -o "$OUT/dma_trace_host_check" \
+  "$HERE/dma_trace_host_check.c" "$BACKEND/hmx/hexkl_dma_trace.c"
+
+"$OUT/dma_trace_host_check"

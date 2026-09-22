@@ -161,7 +161,10 @@ int nntr_hvx_open(const char *uri, remote_handle64 *handle) {
        what the isolated probe reached. Same best-effort policy as above.
        ponytail: an unconditional vote for the session's lifetime, which
        is the measurement; if it is what moves DMA_FIRST, the product
-       shape is a vote around the layer call, or a lower figure. */
+       shape is a vote around the layer call, or a lower figure.
+       -DNNTR_HVX_NO_BUS_VOTE (HEX_EXTRA_CFLAGS in build.sh) builds the
+       skel without this vote so the DMA probe can measure its worth. */
+#ifndef NNTR_HVX_NO_BUS_VOTE
     memset(&req, 0, sizeof(req));
     req.type = HAP_power_set_mips_bw;
     req.mips_bw.set_bus_bw = 1;
@@ -170,6 +173,7 @@ int nntr_hvx_open(const char *uri, remote_handle64 *handle) {
     if (HAP_power_set((void *)s, &req) != AEE_SUCCESS) {
       FARF(HIGH, "nntr_hvx_open: bus bandwidth vote rejected (continuing)");
     }
+#endif
   }
 #endif
 

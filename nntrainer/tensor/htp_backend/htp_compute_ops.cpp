@@ -74,6 +74,8 @@
 
 #include <remote.h>
 
+#include <hmx/hexkl_dma_trace.h>
+
 #include <nntr_hvx.h>
 
 namespace nntrainer {
@@ -166,6 +168,19 @@ enum {
   HTP_MOE_T_PUSH,
   HTP_MOE_T_STAGE,
   HTP_MOE_T_ACC_STRIDE,
+  /* PR #86's HTP_MOE_T_PATH belongs here, before the #87 slots below. */
+  /** [#87] The DMA ring trace's per-call numbers, hexkl_probe.h's
+      HEXKL_PROBE_DMA_* in the same order. Counts unless named _US. */
+  HTP_MOE_T_DMA_DESC,
+  HTP_MOE_T_DMA_WAITS,
+  HTP_MOE_T_DMA_WAITS_BLOCKED,
+  HTP_MOE_T_DMA_WAIT_US,
+  HTP_MOE_T_DMA_WAIT_ACT_US,
+  HTP_MOE_T_DMA_BUSY_LO_US,
+  HTP_MOE_T_DMA_BUSY_HI_US,
+  HTP_MOE_T_DMA_DEPTH_MAX,
+  HTP_MOE_T_DMA_FIRST_READY_US,
+  HTP_MOE_T_DMA_LAST_ISSUE_US,
   HTP_MOE_N_STAGES
 };
 
@@ -306,6 +321,80 @@ public:
       b.alloc_us += stage_us[HTP_MOE_T_ALLOC];
       b.push_us += stage_us[HTP_MOE_T_PUSH];
       b.drain_us += stage_us[HTP_MOE_T_DRAIN];
+      b.dma_desc += stage_us[HTP_MOE_T_DMA_DESC];
+      b.dma_waits += stage_us[HTP_MOE_T_DMA_WAITS];
+      b.dma_waits_blocked += stage_us[HTP_MOE_T_DMA_WAITS_BLOCKED];
+      b.dma_wait_us += stage_us[HTP_MOE_T_DMA_WAIT_US];
+      b.dma_wait_act_us += stage_us[HTP_MOE_T_DMA_WAIT_ACT_US];
+      b.dma_busy_lo_us += stage_us[HTP_MOE_T_DMA_BUSY_LO_US];
+      b.dma_busy_hi_us += stage_us[HTP_MOE_T_DMA_BUSY_HI_US];
+      if (stage_us[HTP_MOE_T_DMA_DEPTH_MAX] > b.dma_depth_max) {
+        b.dma_depth_max = stage_us[HTP_MOE_T_DMA_DEPTH_MAX];
+      }
+      b.dma_first_ready_us += stage_us[HTP_MOE_T_DMA_FIRST_READY_US];
+      b.dma_last_issue_us += stage_us[HTP_MOE_T_DMA_LAST_ISSUE_US];
+    }
+  }
+
+  /** @brief [#87] Whether this call's per-descriptor trace should be
+   *  dumped: the first NNTR_HTP_DMA_TRACE (default 3) timed calls of each
+   *  bucket. Returns the 1-based call ordinal to print, or 0. */
+  unsigned dmaTraceOrdinal(unsigned K, unsigned N_out, unsigned M) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Bucket &b = buckets_[std::make_tuple(K, N_out, M == 1)];
+    if (b.dma_traces >= dma_trace_calls_) {
+      return 0;
+    }
+    return static_cast<unsigned>(++b.dma_traces);
+  }
+
+  /**
+   * @brief [#87] Prints one traced call, one line per push and per wait,
+   *        as read back by moe_dma_trace_read. Ticks are 19.2 MHz.
+   *
+   * At level 3 the trace is the last of the repeats -- a warm call -- which
+   * the header states as rep=; level 2 prints single-shot (cold) calls.
+   * Both are wanted (plan 87 hypothesis g).
+   */
+  static void dumpDmaTrace(unsigned ordinal, unsigned M, int reps,
+                           const uint32_t *w, uint32_t n_words) {
+    static const char *const kKind[] = {"act", "gate", "up", "down", "copy"};
+    static const char *const kSite[] = {"act", "gu", "dn", "copy_in",
+                                        "copy_out"};
+    auto us = [](uint32_t ticks) { return ticks / 19.2; };
+    if (n_words < HEXKL_DMA_TRACE_HDR_WORDS) {
+      std::fprintf(stderr, "[HTP-DMA] call=%u M=%u trace unavailable\n",
+                   ordinal, M);
+      return;
+    }
+    const uint32_t n_push = w[0], n_wait = w[1], pw = w[6], ww = w[7];
+    if (pw != HEXKL_DMA_TRACE_PUSH_WORDS || ww != HEXKL_DMA_TRACE_WAIT_WORDS ||
+        n_words < HEXKL_DMA_TRACE_HDR_WORDS + n_push * pw + n_wait * ww) {
+      std::fprintf(stderr, "[HTP-DMA] call=%u M=%u trace layout mismatch\n",
+                   ordinal, M);
+      return;
+    }
+    std::fprintf(stderr,
+                 "[HTP-DMA] call=%u M=%u rep=%d/%d desc=%u waits=%u blocked=%u "
+                 "depth_max=%u dropped=%u end=%.1fus\n",
+                 ordinal, M, reps, reps, n_push, n_wait, w[2], w[3], w[4],
+                 us(w[5]));
+    const uint32_t *p = w + HEXKL_DMA_TRACE_HDR_WORDS;
+    for (uint32_t k = 0; k < n_push; ++k, p += pw) {
+      std::fprintf(stderr,
+                   "[HTP-DMA] call=%u push k=%u t=%.1f kind=%s e=%u c=%u "
+                   "bytes=%u row=%u nrows=%u stride=%u idx=%u depth=%u "
+                   "done=%.1f..%.1f\n",
+                   ordinal, k, us(p[0]), p[1] < 5 ? kKind[p[1]] : "?", p[2],
+                   p[3], p[4], p[5], p[6], p[7], p[8], p[9], us(p[10]),
+                   us(p[11]));
+    }
+    for (uint32_t k = 0; k < n_wait; ++k, p += ww) {
+      std::fprintf(stderr,
+                   "[HTP-DMA] call=%u wait k=%u site=%s idx=%u t=%.1f..%.1f "
+                   "blocked=%s\n",
+                   ordinal, k, p[3] < 5 ? kSite[p[3]] : "?", p[2], us(p[0]),
+                   us(p[1]), p[4] ? "y" : "n");
     }
   }
 
@@ -374,11 +463,27 @@ private:
     uint64_t dequant_us = 0;
     uint64_t acc_us = 0;
     uint64_t drain_us = 0;
+    /** [#87] The DMA ring trace's per-call numbers, summed over calls
+        (depth_max is the max). Printed on the DMA ring: line under weight
+        DMA:, never folded into the columns above. */
+    uint64_t dma_desc = 0;
+    uint64_t dma_waits = 0;
+    uint64_t dma_waits_blocked = 0;
+    uint64_t dma_wait_us = 0;
+    uint64_t dma_wait_act_us = 0;
+    uint64_t dma_busy_lo_us = 0;
+    uint64_t dma_busy_hi_us = 0;
+    uint64_t dma_depth_max = 0;
+    uint64_t dma_first_ready_us = 0;
+    uint64_t dma_last_issue_us = 0;
+    uint64_t dma_traces = 0; /**< per-descriptor dumps printed so far */
   };
 
   HtpProfile() {
     const char *env = std::getenv("NNTR_HTP_PROFILE");
     level_ = (env != nullptr) ? std::atoi(env) : 0;
+    const char *trace_env = std::getenv("NNTR_HTP_DMA_TRACE");
+    dma_trace_calls_ = (trace_env != nullptr) ? std::atoi(trace_env) : 3;
     // Captured at construction, not at static-destruction time in dump():
     // HtpProfile::global() is always reached through a HtpBackend::global()
     // call first (every accelerated entry point fetches the session handle
@@ -503,6 +608,44 @@ private:
                      first_us > 0.0 ? first_kb * 1.024 / first_us : 0.0,
                      dsp_us > 0.0 ? kb * 1.024 / dsp_us : 0.0);
       }
+      if (level_ >= 2 && b.calls != 0 && b.dma_desc != 0) {
+        // [#87] How the call used the ring. busy is a bracket, not a point
+        // (hexkl_dma_trace.h), so the engine rate is a range: bytes over
+        // busy_hi up to bytes over busy_lo. gu / dn restate the drain
+        // columns above so the three wait sites read side by side.
+        const double n = static_cast<double>(b.calls);
+        const double kb = static_cast<double>(b.dma_kb) / n;
+        const double busy_lo = static_cast<double>(b.dma_busy_lo_us) / n;
+        const double busy_hi = static_cast<double>(b.dma_busy_hi_us) / n;
+        std::fprintf(
+          stderr,
+          "\n[HTP-PROFILE]     DMA ring: desc=%.0f/call waits=%.0f (blocked "
+          "%.1f) wait=%.1f us [act %.1f gu %.1f+dn %.1f]",
+          static_cast<double>(b.dma_desc) / n,
+          static_cast<double>(b.dma_waits) / n,
+          static_cast<double>(b.dma_waits_blocked) / n,
+          static_cast<double>(b.dma_wait_us) / n,
+          static_cast<double>(b.dma_wait_act_us) / n,
+          static_cast<double>(b.drain_us) / n,
+          static_cast<double>(b.drain_dn_us) / n);
+        if (busy_hi > 0.0) {
+          std::fprintf(stderr, " busy=%.0f..%.0f us -> engine %.1f..%.1f GB/s",
+                       busy_lo, busy_hi, kb * 1.024 / busy_hi,
+                       busy_lo > 0.0 ? kb * 1.024 / busy_lo : 0.0);
+        } else {
+          // The skel refuses the union when a call pushed more than the
+          // trace table holds (prefill can); the counts above still stand.
+          std::fprintf(stderr, " busy=n/a (trace truncated past %u pushes)",
+                       static_cast<unsigned>(HEXKL_DMA_TRACE_MAX_PUSH));
+        }
+        std::fprintf(stderr,
+                     "  depth max=%llu  first expert ready at %.0f us  last "
+                     "issue at %.0f us of %.0f",
+                     (unsigned long long)b.dma_depth_max,
+                     static_cast<double>(b.dma_first_ready_us) / n,
+                     static_cast<double>(b.dma_last_issue_us) / n,
+                     static_cast<double>(b.dsp_us) / n);
+      }
       std::fprintf(stderr, "\n");
     }
 
@@ -521,6 +664,7 @@ private:
   }
 
   int level_ = 0;
+  int dma_trace_calls_ = 3;
   int qos_mode_ = 0;
   std::mutex mutex_;
   uint64_t reg_calls_ = 0;
@@ -1542,6 +1686,27 @@ private:
     if (profile.level()) {
       profile.addInvokeMoeLayer(M, K, N_out, elapsed,
                                 timed ? stage_us : nullptr);
+    }
+    if (timed) {
+      // [#87] The per-descriptor trace of the last repeat, for the first
+      // NNTR_HTP_DMA_TRACE calls of this bucket. Read now, while the skel's
+      // static tables still hold this call; printed now, so the lines sit
+      // next to the token they came from.
+      const unsigned ordinal = profile.dmaTraceOrdinal(K, N_out, M);
+      if (ordinal != 0) {
+        std::vector<uint32_t> words(HEXKL_DMA_TRACE_MAX_WORDS);
+        uint32_t n_words = 0;
+        const int terr = nntr_hvx_moe_dma_trace_read(
+          session, words.data(), static_cast<int>(words.size()), &n_words);
+        if (terr == AEE_SUCCESS) {
+          HtpProfile::dumpDmaTrace(ordinal, M, reps, words.data(), n_words);
+        } else {
+          std::fprintf(stderr,
+                       "[HTP-DMA] call=%u M=%u moe_dma_trace_read err=%d "
+                       "(older skel?)\n",
+                       ordinal, M, terr);
+        }
+      }
     }
   }
 
