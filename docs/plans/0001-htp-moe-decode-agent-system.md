@@ -15,23 +15,23 @@ today, and faster than the same phone's CPU**.
 | item | value | source |
 |---|---|---|
 | Model | LFM2.5-8B-A1B: 24 layers = 18 conv + 6 attention, 22 MoE FFN layers (32 experts, top-4), hidden 2048, vocab 128000, tied lm_head | `config.json` of `LiquidAI/LFM2.5-8B-A1B` |
-| "Now", NPU (MoE FFN on HTP) | decode **20.8 tok/s**, prefill 523 tok/s (444-token prompt, 512 generated) | PR #4327 doc 49 §1, author's device, 2026-09-16/17 |
-| "Now", CPU (all Q4_0, 8 threads) | decode **48 tok/s**, prefill 334 tok/s | same run |
-| **Goal** | decode **≥ 50 tok/s** at every measured generation length (2.4× the NPU "now", above the CPU) | user decision Q1 (ii) |
+| "Now", NPU (MoE FFN on HTP, `htp_moe` @ `2a75f7d9`, switch off) | decode **17.72 / 17.03 / 17.30 tok/s** at gen 64 / 512 / 1024, prefill 389–527 tok/s (prompt 512) | #94 sitting 2, `R3CY205ZMND`, 2026-09-22 (`dad0f476`); replaces the PR author's 20.8 / 523 (doc 49 §1, prompt 444) |
+| "Now", CPU (all Q4_0, 8 threads) | decode **52.43 / 49.22 / 48.31 tok/s**, prefill 268–340 tok/s | same sitting; replaces the PR author's 48 / 334 |
+| First lever measured | M=1 HVX GEMV (PR #86, switch on): **18.83 / 18.33 / 17.59** (+6.2 / +7.7 / +1.7 %), text identical | same sitting, variant C (LEDGER ⑯) |
+| **Goal** | decode **≥ 50 tok/s** at every measured generation length (2.9× the NPU "now" at gen 512, above the CPU) | user decision Q1 (ii) |
 | Physical ceiling | 730 MB of weights per token ÷ 34–38 GB/s measured DDR rate = 19–21 ms ⇒ **48–52 tok/s**. The CPU already sits on it | doc 48 §1 |
 | Prefill gate | never below **−5 % of the current NPU prefill** (≈ 523–532 tok/s, i.e. ≥ 497) | user decision Q12 |
 | Accuracy gate | doc 45 §3.4, all three: (a) kernel bit-identical to its scalar spec, (b) real-model diff (`NNTR_L2_DIFF`) = 0, (c) generated text identical to the CPU run of the same weights | user decision Q4 |
 
-The two "now" numbers are **provisional**: they come from the PR author's
-unit. The first handoff (§4.3) re-measures both on our unit with the PR
-head unchanged and replaces them; the goal is then read against our own
-numbers. Two S25 Ultra units differed by 6–8.6 % on one binary in the
-`hvx_impl` work, and one unit drifts ±5 % between sittings.
-(Status 2026-09-21, cycle 2: the first handoff #77 ran on the second unit
-`R3CY205ZMND`, so the table above is still provisional; its readings —
-NPU decode 18.2–21.3, CPU decode 46.4–54.1, NPU prefill 403–541 tok/s at
-prompt 512 — are in BENCHMARK.md unit-tagged, and the anchor sitting on
-`R3CY10WM83Y` is #91.)
+The "now" numbers were replaced on 2026-09-22 (cycle 5) by #94 sitting 2,
+the first sitting with all 12 control cells on one binary set (§4.3's
+intent; #77 had measured the same cells a day earlier on the same unit:
+NPU 18.2–21.3, CPU 46.4–54.1, prefill 403–541 — all in BENCHMARK.md).
+They are read against the sitting they came from: one unit drifts up to
+±9 % (CPU) / −16 % (NPU tok/s) between sittings while its DSP profile
+columns move ≤ 4 % (LEDGER rules 9, 20), and two S25 Ultra units differed
+by 6–8.6 % on one binary in `hvx_impl`. Hence every verdict is a
+same-sitting A/B (§4.2) and no unit is named (decision 2026-09-22).
 
 2× the CPU (96 tok/s) is **not** a goal: it needs 70 GB/s from a 38 GB/s
 memory system. Anything that raises the ceiling itself (fewer bytes per
@@ -155,8 +155,13 @@ and by the device (gate 4); nothing in between.
 
 ### 4.2 Device (user only)
 
-Galaxy S25 Ultra, unit `R3CY10WM83Y` (the `hvx_impl` unit; the PR author
-also used `R5KL30G6MLT`). Agents never touch it. A task that needs
+Galaxy S25 Ultra — **any unit** (user decision 2026-09-22; two units,
+`R3CY205ZMND` and `R3CY10WM83Y`, exist and the PR author used
+`R5KL30G6MLT`). A handoff never names a serial; the filled handoff
+records the serial that ran (`adb devices`), BENCHMARK.md tags every row
+with it, and results are compared only inside one sitting (A/B); when two
+sittings happen to share a unit the same-unit drift is noted (LEDGER
+rule 13). Agents never touch the phone. A task that needs
 silicon numbers ends in a **measurement handoff**
 (`docs/measurements/<issue#>-<slug>.md`, template in
 `.claude/skills/hexagon-handoff`) that the user runs in one sitting.
@@ -319,4 +324,5 @@ recorded in BENCHMARK.md's artifact section once built.
 | date | decision |
 |---|---|
 | 2026-09-21 | No simulator in this project: host bit checks + device only |
+| 2026-09-22 | **Any device serial.** The same-device requirement (`R3CY10WM83Y` as the anchor unit, per-cell unit ratio) is dropped: any S25 Ultra may run an `htp_moe` handoff, handoffs name no serial, the filled handoff records the serial used, results are compared only inside one sitting (A/B) plus same-unit drift where the unit happens to repeat. The second-unit anchor sitting (#91 → #94 ⑮) is withdrawn, not re-filed. Same day: #94 sitting 2 replaces the provisional "now" (§1); its variant C (M=1 GEMV) is accepted as the LEDGER ⑯ verdict although the device skel was the user's own build of the same sources (rule 14 → rule 21) |
 | 2026-09-21 | Base tree = PR #4327 head (Q1 b); model LFM2.5-8B-A1B; goal ≥ 50 tok/s decode (Q1 ii); decode on the NPU is the product condition, CPU decode stays the control (Q2); decode-first order (Q3); NPU-only first, CPU+NPU later (Q10); Q11 rule deferred to the user; prompt 512 + gen 64/512/1024 (Q6'); prefill gate −5 % of NPU now (Q12); control run per sitting (Q13); upstream-shaped commits (Q14); hvx_impl frozen (Q15); htp_moe frozen at the PR head, merges by user (Q16); English + decode-only guide (Q17); first handoff bundles control + doc 48 A/B/C + two-reader probe (Q18); on-demand measurements, ≤ 4 variants (Q19) |

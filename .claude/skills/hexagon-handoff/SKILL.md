@@ -44,7 +44,7 @@ Branch `htp/<issue#>-<slug>` @ `<sha>` — estimated device time: <N> min
 
 ## Steps (workstation, phone on USB)
 1. `git fetch && git checkout htp/<issue#>-<slug>`; `source tools/htp/env.sh`; rebuild or reuse the artifacts above (`md5sum` must match the table).
-2. `adb devices` shows `R3CY10WM83Y device`. Note battery % and whether the phone is warm.
+2. `adb devices` lists exactly one device; record its serial under Notes (any S25 Ultra is allowed, contract §4.2 — the handoff never names one). Note battery % and whether the phone is warm.
 3. Install once: `(cd Applications/CausalLM && ./install_android.sh --model=<model dir>)` for each model dir, then
    `adb push test/htp/build/libnntr_hvx_skel.A.so /data/local/tmp/nntrainer/causallm/libnntr_hvx_skel.so`.
    Never push `builddir/jni/arm64-v8a/libcdsprpc.so`.
