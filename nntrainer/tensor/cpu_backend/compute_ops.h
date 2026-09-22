@@ -292,6 +292,11 @@ public:
   // so the implementation registers them as they are instead of converting
   // and baking. It is a flag rather than a colsum pointer because the sums
   // sit immediately after the scales and the callee already knows N.
+  //
+  // down_hadamard says the down weights were folded offline by the block-256
+  // Hadamard rotation (QS4CX_WH_HAD, fwht_det.h), so the implementation must
+  // rotate the SwiGLU output the same way before requantizing it for the
+  // down matmul. A layer property: every expert of the call shares it.
   virtual bool supports_gemm_qs4cx_moe_layer_fp32() const { return false; }
   virtual void gemm_qs4cx_moe_layer_fp32(
     const std::vector<void *> &gate_up_data,
@@ -302,7 +307,7 @@ public:
     const std::vector<unsigned int> &row_count,
     const std::vector<float> &row_weight, const float *act, float *out,
     unsigned int M, unsigned int K, unsigned int inter, unsigned int N_out,
-    bool weights_wh);
+    bool weights_wh, bool down_hadamard);
 
   // Registers one K x N expert weight with the accelerator ahead of its
   // first use, so a model's load pays that cost rather than its first
