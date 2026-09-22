@@ -16,6 +16,7 @@
 
 #include <nntrainer_log.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -72,10 +73,24 @@ HtpBackend::HtpBackend() {
   // Best effort: an SDK or device without the control just keeps the old
   // interrupt-driven behavior, logged so a slow transport number is
   // explainable rather than silently misread as the kernel being slow.
+  // NNTR_HTP_POLL_US: how long the host polls for the DSP's reply before
+  // falling back to the interrupt wait. Measured on device (doc 51
+  // section 2.20): at 100 us the MoE layer call's transport read 2.19 ms
+  // and decode's 158 us; at 5000, 1.13 ms and 83 us, which is prefill
+  // -30 ms and decode 20.6 -> 23.7 TPS. 10000 was refused by the driver
+  // (the control call fails and the session falls back to PM QoS, which
+  // the profile's first line reports as qos_mode=1), so 5000 is the
+  // default and the ceiling between the two is still to be found. The
+  // cost is a core spinning for up to 5 ms per call while it waits.
   struct remote_rpc_control_latency lat;
   std::memset(&lat, 0, sizeof(lat));
   lat.enable = RPC_POLL_QOS;
-  lat.latency = 100;
+  lat.latency = 5000;
+  if (const char *poll_us = std::getenv("NNTR_HTP_POLL_US")) {
+    lat.latency = static_cast<uint32_t>(std::strtoul(poll_us, nullptr, 10));
+    ml_logi("HtpBackend: poll QoS latency %u us (NNTR_HTP_POLL_US)",
+            static_cast<unsigned>(lat.latency));
+  }
   int qos_err =
     remote_handle64_control(h, DSPRPC_CONTROL_LATENCY, &lat, sizeof(lat));
   if (qos_err == AEE_SUCCESS) {
