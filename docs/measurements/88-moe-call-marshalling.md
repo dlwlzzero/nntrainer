@@ -1,6 +1,6 @@
 # Measurement 88: the MoE call's per-call transport after size-class staging and the 5 ms poll (wall 3)
 
-Branch `htp/88-moe-call-marshalling` (PR #103; code head `d604177c`, this
+Branch `htp/88-moe-call-marshalling` (PR #103; code head `f3e99176`, rebased from `d604177c` with no code change, this
 file on the same branch) — estimated device time: **≈ 45 min**
 
 Plan: `docs/plans/88-moe-call-marshalling.md` §4 step 4. Issue #88 (tracker
@@ -39,19 +39,19 @@ text = CPU `q40` n/a (different weights) — the accuracy column is A = B.
 Staged under **`W=/local/mnt/workspace/htp_moe/88/`**; `$W/md5.txt` is the
 `md5sum` of every staged file and is reproduced here. A was built in the
 detached worktree `/home/j2z0-lee/nntrainer-88-A` @ `08afbb10`, B and the
-skel in `/home/j2z0-lee/nntrainer-88` @ `d604177c` (both
+skel in `/home/j2z0-lee/nntrainer-88` @ `f3e99176` (both
 `build_android.sh --htp`, then the fresh-builddir `meson configure
 -Dprefix` + `ninja install` step, then `--htp --cache`; `readelf -d
 libnntrainer.so` lists `libsdkl.so` and `libcdsprpc.so` in both).
 
 | file (staged as) | md5 | built from |
 |---|---|---|
-| `$W/libnntr_hvx_skel.so` (→ device as `libnntr_hvx_skel.so`; serves A, B, C) | `ce85595dc016db93dec68fbec5941dad` | `test/htp/build.sh` @ `d604177c`; `-Wall -Werror` clean, `UNDEFINED SYMBOLS OK (46 runtime imports)` (#97 guard). DSP sources identical to `08afbb10` |
+| `$W/libnntr_hvx_skel.so` (→ device as `libnntr_hvx_skel.so`; serves A, B, C) | `ce85595dc016db93dec68fbec5941dad` | `test/htp/build.sh` @ `f3e99176`; `-Wall -Werror` clean, `UNDEFINED SYMBOLS OK (46 runtime imports)` (#97 guard). DSP sources identical to `08afbb10` |
 | `$W/A/nntrainer_causallm` | `01bd38f6af041e7d3d028b485bf40193` | `htp_moe` @ `08afbb10` (`jni/libs/arm64-v8a/`) |
 | `$W/A/libcausallm_core.so` | `0a700c028c3fede5990a95e245716b51` | same |
 | `$W/A/libnntrainer.so` | `341d57621737fa61c44a04782959e6e5` | same (`jni/obj/local/arm64-v8a/`) |
 | `$W/A/libccapi-nntrainer.so` | `571c0ff2168dc6b82381a1e393895981` | same |
-| `$W/B/nntrainer_causallm` | `5a977ff86addc774b8cb7caa15f54391` | this branch @ `d604177c` |
+| `$W/B/nntrainer_causallm` | `5a977ff86addc774b8cb7caa15f54391` | this branch @ `f3e99176` |
 | `$W/B/libcausallm_core.so` | `db004ee3e3eb9cbbdbb0c5dfb88b3410` | same |
 | `$W/B/libnntrainer.so` | `4f6c90dd9963229aa3da639f40dd9498` | same — the one file that carries PR #103 (`htp_backend/`) |
 | `$W/B/libccapi-nntrainer.so` | `df7cc241def803d997fd8a0581064936` | same |
