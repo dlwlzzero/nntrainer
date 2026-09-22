@@ -33,7 +33,9 @@
 #include <AEEStdErr.h>
 #include <remote.h>
 
+#include <fwht_det.h>
 #include <htp_wh_layout.h>
+#include <swiglu_det.h>
 
 #include "nntr_hvx.h"
 
@@ -1346,6 +1348,238 @@ TEST_F(HmxMmU8I4Layer, MoeLayerMatchesTwoCallReference) {
     EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_gu[e]), AEE_SUCCESS);
     EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_dn[e]), AEE_SUCCESS);
   }
+}
+
+/**
+ * @brief [issue 95] MoE layer with HEXKL_MOE_FLAG_DOWN_HADAMARD, bit for
+ *        bit against the two-call path with the rotation in between.
+ *
+ * The reference is the existing pattern with one extra step: gate_up via
+ * mm_u8i4_layer, swiglu_det on the host (the same bits the kernel's fused
+ * epilogue produces), fwht_rows_f32_ref on the intermediate, then the
+ * down matmul via mm_u8i4_layer on the ROTATED f32 -- which requantizes
+ * with the same hvx_quant_rows_u8_params the kernel uses -- and the
+ * routing multiply and scatter-add on the host. Every stage but the FWHT
+ * was already shown identical between the two paths, so a mismatch here
+ * is the FWHT's placement or its bits (HvxFwht.MatchesScalarBitExact
+ * separates the two).
+ *
+ * The second half is the fold identity on silicon: the same experts with
+ * UNFOLDED down weights and the flag off, against an f64 reference with
+ * unquantized weights. The folded run must not sit below the unfolded one
+ * by more than int4 noise: both carry an independent int4 quantization of
+ * W, so "close to each other" is not a property they have -- "equally
+ * close to the truth" is.
+ *
+ * 8 experts, not 32: heap-baked weights at this shape are 5.5 MB each and
+ * the DSP heap is about 182 MiB (doc 46 section 41).
+ */
+TEST_F(HmxMmU8I4Layer, MoeLayerHadamardMatchesTwoCallReference) {
+  const uint32_t K = 2048, I = 1792, N = 2048, M = 200, NE = 8;
+  constexpr uint32_t kFlagDownHadamard = 2u;
+
+  uint32_t applied = 0;
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, kFlagDownHadamard, &applied),
+            AEE_SUCCESS);
+  ASSERT_EQ(applied, kFlagDownHadamard) << "skel does not know the flag";
+
+  // gu as usual; dn from a folded copy of its f32 weight (an FWHT along K
+  // for each output column n), quantized by the same helper.
+  std::vector<Weight> gu(NE), dn(NE), dn_plain(NE);
+  std::vector<uint32_t> h_gu(NE), h_dn(NE), h_dn_plain(NE);
+  std::vector<std::vector<float>> w_true(NE);
+  for (uint32_t e = 0; e < NE; ++e) {
+    ASSERT_NO_FATAL_FAILURE(MakeAndRegister(K, 2 * I, 0xB0E00000u + e, gu[e]));
+    ASSERT_NO_FATAL_FAILURE(
+      MakeAndRegister(I, N, 0xD0000000u + e, dn_plain[e]));
+    w_true[e] = dn_plain[e].w_f32; // K x N row-major: w[k*N + n]
+    std::vector<float> folded = w_true[e];
+    std::vector<float> col(I);
+    for (uint32_t n = 0; n < N; ++n) {
+      for (uint32_t k = 0; k < I; ++k)
+        col[k] = folded[static_cast<size_t>(k) * N + n];
+      fwht_rows_f32_ref(col.data(), 1, I);
+      for (uint32_t k = 0; k < I; ++k)
+        folded[static_cast<size_t>(k) * N + n] = col[k];
+    }
+    dn[e].N = N;
+    dn[e].w_f32 = folded;
+    quantize_weights_qs4cx(folded, I, N, dn[e].q_w, dn[e].d, dn[e].colsum);
+    dn[e].bias = dn_plain[e].bias;
+    dn[e].handle = 0xFFFFFFFFu;
+    int err = nntr_hvx_weight_register_u8i4(
+      handle_, I, N, dn[e].q_w.data(), static_cast<int>(dn[e].q_w.size()),
+      dn[e].d.data(), static_cast<int>(dn[e].d.size()), dn[e].colsum.data(),
+      static_cast<int>(dn[e].colsum.size()), dn[e].bias.data(),
+      static_cast<int>(dn[e].bias.size()), &dn[e].handle);
+    ASSERT_EQ(err, AEE_SUCCESS) << "register folded down: " << hex(err);
+    h_gu[e] = gu[e].handle;
+    h_dn[e] = dn[e].handle;
+    h_dn_plain[e] = dn_plain[e].handle;
+  }
+
+  std::vector<float> x(static_cast<size_t>(M) * K);
+  fill_deterministic(x, 0x5EED0095u);
+
+  // Multi-block, empty, exactly a block, small, and a single row.
+  const std::vector<uint32_t> row_count = {70u, 0u, 64u, 33u, 5u, 16u, 90u, 1u};
+  std::vector<uint32_t> row_index;
+  std::vector<float> row_weight;
+  {
+    uint32_t st = 0x95C0FFEEu;
+    for (uint32_t e = 0; e < NE; ++e) {
+      std::vector<bool> taken(M, false);
+      for (uint32_t i = 0; i < row_count[e]; ++i) {
+        uint32_t r;
+        do {
+          st = st * 1664525u + 1013904223u;
+          r = (st >> 8) % M;
+        } while (taken[r]);
+        taken[r] = true;
+        row_index.push_back(r);
+        st = st * 1664525u + 1013904223u;
+        row_weight.push_back(0.1f + 0.9f * ((st >> 8) % 1000u) / 1000.0f);
+      }
+    }
+  }
+
+  // --- reference: two calls per expert with the rotation in between, and
+  // the f64 truth with unquantized weights beside it.
+  std::vector<float> want(static_cast<size_t>(M) * N, 0.0f);
+  std::vector<double> truth(static_cast<size_t>(M) * N, 0.0);
+  {
+    uint32_t base = 0;
+    for (uint32_t e = 0; e < NE; ++e) {
+      const uint32_t n_e = row_count[e];
+      if (n_e == 0)
+        continue;
+      std::vector<float> xe(static_cast<size_t>(n_e) * K);
+      for (uint32_t i = 0; i < n_e; ++i) {
+        std::memcpy(&xe[static_cast<size_t>(i) * K],
+                    &x[static_cast<size_t>(row_index[base + i]) * K],
+                    sizeof(float) * K);
+      }
+      std::vector<float> gu_out(static_cast<size_t>(n_e) * 2 * I, 0.0f);
+      int err = nntr_hvx_mm_u8i4_layer(
+        handle_, n_e, K, &h_gu[e], 1, xe.data(), static_cast<int>(xe.size()),
+        gu_out.data(), static_cast<int>(gu_out.size()));
+      ASSERT_EQ(err, AEE_SUCCESS) << "reference gate_up: " << hex(err);
+      std::vector<float> mid(static_cast<size_t>(n_e) * I);
+      for (uint32_t m = 0; m < n_e; ++m)
+        for (uint32_t j = 0; j < I; ++j)
+          mid[static_cast<size_t>(m) * I + j] =
+            swiglu_det_one(gu_out[static_cast<size_t>(m) * 2 * I + j],
+                           gu_out[static_cast<size_t>(m) * 2 * I + I + j]);
+      // the truth uses the unrotated intermediate and the f32 weight
+      for (uint32_t i = 0; i < n_e; ++i) {
+        double *dst = &truth[static_cast<size_t>(row_index[base + i]) * N];
+        const double w = row_weight[base + i];
+        for (uint32_t k = 0; k < I; ++k) {
+          const double a = mid[static_cast<size_t>(i) * I + k] * w;
+          const float *wr = &w_true[e][static_cast<size_t>(k) * N];
+          for (uint32_t c = 0; c < N; ++c)
+            dst[c] += a * wr[c];
+        }
+      }
+      fwht_rows_f32_ref(mid.data(), n_e, I);
+      std::vector<float> ye(static_cast<size_t>(n_e) * N, 0.0f);
+      err = nntr_hvx_mm_u8i4_layer(handle_, n_e, I, &h_dn[e], 1, mid.data(),
+                                   static_cast<int>(mid.size()), ye.data(),
+                                   static_cast<int>(ye.size()));
+      ASSERT_EQ(err, AEE_SUCCESS) << "reference down: " << hex(err);
+      for (uint32_t i = 0; i < n_e; ++i) {
+        float *dst = &want[static_cast<size_t>(row_index[base + i]) * N];
+        const float *src = &ye[static_cast<size_t>(i) * N];
+        const float w = row_weight[base + i];
+        for (uint32_t c = 0; c < N; ++c) {
+          const float p = src[c] * w; // two statements: no FMLA
+          dst[c] = dst[c] + p;
+        }
+      }
+      base += n_e;
+    }
+  }
+
+  // --- the layer call, flag on, folded weights
+  std::vector<float> got(static_cast<size_t>(M) * N, 1.0f);
+  int err = nntr_hvx_mm_u8i4_moe_layer(
+    handle_, M, K, I, N, h_gu.data(), static_cast<int>(h_gu.size()),
+    h_dn.data(), static_cast<int>(h_dn.size()), row_index.data(),
+    static_cast<int>(row_index.size()), row_count.data(),
+    static_cast<int>(row_count.size()), row_weight.data(),
+    static_cast<int>(row_weight.size()), x.data(), static_cast<int>(x.size()),
+    got.data(), static_cast<int>(got.size()));
+  ASSERT_EQ(err, AEE_SUCCESS) << "mm_u8i4_moe_layer (hadamard): " << hex(err);
+
+  size_t bad = 0, first = got.size();
+  uint32_t max_ulp = 0;
+  for (size_t i = 0; i < got.size(); ++i) {
+    if (std::memcmp(&got[i], &want[i], sizeof(float)) != 0) {
+      if (bad == 0)
+        first = i;
+      ++bad;
+      uint32_t a, b;
+      std::memcpy(&a, &got[i], sizeof a);
+      std::memcpy(&b, &want[i], sizeof b);
+      max_ulp = std::max(max_ulp, (a > b) ? (a - b) : (b - a));
+    }
+  }
+  std::cout << "U8I4_FIELD path=moe_layer_hadamard field=bad_elems value="
+            << bad << " of " << got.size() << " max_ulp=" << max_ulp
+            << std::endl;
+  if (bad != 0) {
+    std::cout << "  first at " << first << " (row " << first / N << " col "
+              << first % N << "): got " << std::hexfloat << got[first]
+              << " want " << want[first] << std::defaultfloat << std::endl;
+  }
+  EXPECT_EQ(bad, 0u) << "the rotated MoE layer differs from the two-call "
+                        "path with fwht_rows_f32_ref in between";
+
+  // --- flag off, unfolded weights: the same model without the rotation.
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, 0u, &applied), AEE_SUCCESS);
+  ASSERT_EQ(applied, 0u);
+  std::vector<float> got_off(static_cast<size_t>(M) * N, 1.0f);
+  err = nntr_hvx_mm_u8i4_moe_layer(
+    handle_, M, K, I, N, h_gu.data(), static_cast<int>(h_gu.size()),
+    h_dn_plain.data(), static_cast<int>(h_dn_plain.size()), row_index.data(),
+    static_cast<int>(row_index.size()), row_count.data(),
+    static_cast<int>(row_count.size()), row_weight.data(),
+    static_cast<int>(row_weight.size()), x.data(), static_cast<int>(x.size()),
+    got_off.data(), static_cast<int>(got_off.size()));
+  ASSERT_EQ(err, AEE_SUCCESS) << "mm_u8i4_moe_layer (plain): " << hex(err);
+
+  std::vector<float> truth_f(truth.size());
+  for (size_t i = 0; i < truth.size(); ++i)
+    truth_f[i] = static_cast<float>(truth[i]);
+  const double snr_on = snr_db(truth_f, got);
+  const double snr_off = snr_db(truth_f, got_off);
+  std::cout << "U8I4_FIELD path=moe_layer_hadamard field=snr_db_folded value="
+            << snr_on << std::endl;
+  std::cout << "U8I4_FIELD path=moe_layer_hadamard field=snr_db_unfolded value="
+            << snr_off << std::endl;
+  EXPECT_GT(snr_on, 15.0) << "the fold is on the wrong axis or the flag "
+                             "rotated the wrong buffer";
+  EXPECT_GT(snr_on, snr_off - 3.0)
+    << "the rotated path is worse against the truth than the plain one by "
+       "more than int4 noise";
+
+  for (uint32_t e = 0; e < NE; ++e) {
+    EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_gu[e]), AEE_SUCCESS);
+    EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_dn[e]), AEE_SUCCESS);
+    EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_dn_plain[e]),
+              AEE_SUCCESS);
+  }
+}
+
+/** @brief [issue 95] moe_set_opts keeps the known bits and echoes them. */
+TEST_F(HmxMmU8I4Layer, MoeSetOptsEchoesKnownBits) {
+  uint32_t applied = 7u;
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, 2u, &applied), AEE_SUCCESS);
+  EXPECT_EQ(applied, 2u);
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, 0xFFFFu, &applied), AEE_SUCCESS);
+  EXPECT_EQ(applied, 2u) << "unknown bits must be dropped, not applied";
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, 0u, &applied), AEE_SUCCESS);
+  EXPECT_EQ(applied, 0u);
 }
 
 TEST_F(HmxMmU8I4Layer, SwigluSurvivesExtremeNegativeGate) {
