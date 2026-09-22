@@ -229,6 +229,12 @@ interface nntr_hvx : remote_handle64 {
                             rout sequence<float> exp_out,
                             rout sequence<float> recip_out);
 
+   // [issue 95] hvx_fwht_rows_f32 on its own, for the bit-identity gate
+   // against fwht_det.h's scalar reference (HvxFwht.MatchesScalarBitExact).
+   // x is rows x k, k a multiple of 256; y receives the rotation.
+   AEEResult fwht_rows_f32(in sequence<float> x, in uint32 rows, in uint32 k,
+                           rout sequence<float> y);
+
    AEEResult softmax_f32(in uint32 M, in uint32 K, in uint32 m_first,
                          in float scale, in sequence<float> x,
                          rout sequence<float> y);
@@ -338,6 +344,14 @@ interface nntr_hvx : remote_handle64 {
                                      in sequence<float> act_f32,
                                      rout sequence<float> out_f32,
                                      rout sequence<uint32> stage_us);
+
+   // [issue 95] Session-wide options for the two mm_u8i4_moe_layer* calls
+   // (HEXKL_MOE_FLAG_* in hexkl_mm_u8i4_moe.h). A layer property carried
+   // by the model file's dtype (QS4CX_WH_HAD sets DOWN_HADAMARD), so it is
+   // set once per change rather than passed on every call. applied echoes
+   // the bits this skel knows and stored; a caller whose flags come back
+   // different is talking to a skel that predates them.
+   AEEResult moe_set_opts(in uint32 flags, rout uint32 applied);
 
    // [doc 51 section 2] An LFM2 conv block -- in_proj, a*c, causal conv1d,
    // *b, out_proj -- in one call, so its four M x C f32 intermediates never

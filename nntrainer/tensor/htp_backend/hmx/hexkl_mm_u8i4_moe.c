@@ -48,6 +48,7 @@
 #include "hexkl_micro.h"
 #include "hexkl_probe.h"
 #include "hvx_dequant_i32.h"
+#include "hvx_fwht_f32.h"
 #include "hvx_gather_ah_u8.h"
 #include "hvx_gemm_u8i4_wh.h"
 #include "hvx_quant_u8.h"
@@ -297,6 +298,7 @@ typedef struct {
   float *res; /**< this tail's m x N_out, read by its expert's scatter */
   uint32_t m, k_tiles, inter, inter_ktiles, inter_ntiles, gu_ntiles, dn_ntiles,
     N_out;
+  uint32_t flags; /**< the call's HEXKL_MOE_FLAG_* bits */
 } moe_tail_ctx;
 
 /** @brief Worker time spent inside tail units, summed across workers,
@@ -350,6 +352,11 @@ static void moe_tail_requant_unit(uint32_t n_units, uint32_t u, void *v) {
   if (m4 > t->m) {
     memset(sh->gate_f32 + (size_t)t->m * t->inter, 0,
            sizeof(float) * (size_t)(m4 - t->m) * t->inter);
+  }
+  /* Same rotation the HMX block loop applies before ITS requantization;
+     inside a pool unit already, so no pool here. */
+  if (t->flags & HEXKL_MOE_FLAG_DOWN_HADAMARD) {
+    hvx_fwht_rows_f32(sh->gate_f32, t->m, t->inter, NULL);
   }
   hvx_quant_rows_u8_params(sh->gate_f32, t->m, HEXKL_HMX_INT8_BLOCK_N_ROW,
                            t->inter, sh->rq_scale, sh->rq_zp, NULL);
@@ -521,11 +528,19 @@ int hexkl_mm_u8i4_moe_layer_run(
   uint32_t n_experts, const uint32_t *h_gate_up, const uint32_t *h_down,
   const uint32_t *row_index, const uint32_t *row_count, const float *row_weight,
   const float *act_f32, float *out_f32, hvx_worker_pool *pool,
-  hexkl_moe_scratch *scratch) {
+  hexkl_moe_scratch *scratch, uint32_t flags) {
 
   if (!tbl || !vtcm_base || !h_gate_up || !h_down || !row_index || !row_count ||
       !row_weight || !act_f32 || !out_f32 || !scratch || M == 0u ||
       n_experts == 0u) {
+    return AEE_EBADPARM;
+  }
+  /* The rotation is defined in whole 256-blocks of the intermediate; a
+     partial block would rotate a different subset than the converter
+     folded, so the shape is refused rather than rotated part way. */
+  if ((flags & ~HEXKL_MOE_FLAGS_KNOWN) != 0u ||
+      ((flags & HEXKL_MOE_FLAG_DOWN_HADAMARD) &&
+       (inter % HVX_FWHT_BLOCK) != 0u)) {
     return AEE_EBADPARM;
   }
 
@@ -844,6 +859,7 @@ int hexkl_mm_u8i4_moe_layer_run(
     tc->gu_ntiles = gu_ntiles;
     tc->dn_ntiles = dn_ntiles;
     tc->N_out = N_out;
+    tc->flags = flags;
     hvx_bg_job *jb = &jobs[1u + 3u * t];
     uint8_t *dn = tail_done + (size_t)t * (inter_ntiles + 1u + dn_ntiles);
     jb[0].func = moe_tail_pair_unit;
@@ -1065,8 +1081,15 @@ int hexkl_mm_u8i4_moe_layer_run(
       }
 
       /* gate_off holds silu(gate)*up for this block. Requantize it for
-         down -- on the pool, synchronously: down's HMX needs all of mid. */
+         down -- on the pool, synchronously: down's HMX needs all of mid.
+         Under DOWN_HADAMARD the block is rotated first (issue #95); it
+         sits inside the REQUANT probe window, so the profile's requant
+         column carries the FWHT. */
       HEXKL_PROBE_T0(p0);
+      if (flags & HEXKL_MOE_FLAG_DOWN_HADAMARD) {
+        hvx_fwht_rows_f32((float *)(vtcm_base + L.gate_off), m_blk, inter,
+                          pool);
+      }
       hvx_quant_rows_u8_params((const float *)(vtcm_base + L.gate_off), m_blk,
                                BR, inter, scale, zp, pool);
       rc =
