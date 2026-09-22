@@ -13,7 +13,7 @@ PR nntrainer/nntrainer#4327, branch `claude/htp-lfm2-moe-ffn` on
 (2026-09-21 06:45 UTC, "[CausalLM] Route conv out_proj and the dense FFN to
 the HTP by config"), plus the three cherry-picks `fb0f02b9` / `04a2fcc4` /
 `b0a384d6` that PR #103 carried (merged by the user as `ad714de7`, cycle 6).
-Upstream watch sha: **`a996b4bf`** (cycle 7).
+Upstream watch sha: **`a996b4bf`** (cycle 7; unchanged in cycle 8).
 
 **New commits since (seen 2026-09-21, cycle 1; PR head `7f81560b`,
 updated 08:10 UTC, fast-forward from `2ce38d65`, 31 files, +3490/−636).
@@ -167,6 +167,15 @@ Reading: nothing for the decode goal. It shares the requant stage with #95
 verdict should know an int-requant rewrite of the same stage is the
 author's next prefill topic; a merge would conflict there, not in the M=1
 GEMV path.
+
+**Cycle 8 (seen 2026-09-22 ~08:30 UTC): PR head unchanged at `a996b4bf`
+(updated 06:55 UTC).** One relevant fact from the #95 sitting: the
+side tree `htp_hadamard` (upstream `3006d255` + tooling) reads decode
+**25.08 / 24.40 / 23.83 tok/s** on its own control A (`R3CY205ZMND`,
+same day). `htp_moe`'s #88 B read 24.50 / 23.80 / 23.52 in another
+sitting. Rule 9 forbids reading this as a verdict. It is only
+consistent with both trees carrying the same transport fix (`fb0f02b9` /
+`b0a384d6`) and neither having the GEMV on.
 
 What this changes for us: (1) the "net-new" causal conv1d + gating of §4
 now exists upstream in prefill shape — #82 lifts it instead of deriving
@@ -336,6 +345,36 @@ Learned in this project (#88, unit `R3CY205ZMND`, 2026-09-22):
     and its cluster clock up between calls; cache maintenance around the
     call; not decided).
 
+Learned in this project (#95, side tree `htp_hadamard`, unit
+`R3CY205ZMND`, 2026-09-22):
+
+24. **v79 HVX IEEE `sf` arithmetic keeps subnormals. It does not flush
+    them to zero.** `HvxFwht.MatchesScalarBitExact` fed a row of ±1e-39 /
+    ±1e-40 (all subnormal). The DSP (`Q6_Vsf_vadd/vsub_VsfVsf`, then
+    `Q6_Vsf_vmpy_VsfVsf` by 1/16, `-mhvx-ieee-fp`) returned
+    `0x1.7f4b4p-127` at index 1. That is exactly 8·(1e-39 + 1e-40), the
+    unflushed IEEE result, and itself subnormal. The scalar spec
+    (`fwht_det_ftz` on every input and result) returned `+0`. Only the two
+    non-zero outputs of that row differed (`bad_gated = bad_subnormal_row
+    = 2`). The spec's premise ("HVX sf flushes them") was host reasoning,
+    and the device refutes it: this is not a flushed-zero *sign*. A `_det`
+    scalar spec for HVX `sf` code is plain IEEE RNE with no FTZ, and the host
+    side must not run under a flush either (`-ffast-math` /
+    `crtfastmath` can set aarch64 FPCR.FZ). Fix carried by #110. The
+    same test's overflow row (±3e38, `bad_overflow_row=127 of 256`) is
+    ungated and not yet explained (inf/NaN encoding is the candidate).
+25. **A synthetic single-shape gtest cannot give an accuracy verdict. It
+    gates bit-exactness only.** `MoeLayerHadamardMatchesTwoCallReference`
+    matched its two-call host reference bit for bit (`bad_elems=0 of
+    409600`, `max_ulp=0`). It still failed its own SNR assertion: rotated
+    17.51 dB vs unrotated 23.32 dB, −5.8 dB on its uniform synthetic input.
+    The full model in the same sitting improved +8.0 dB median requant SNR
+    over about 6.2 k real expert calls, and PPL dropped −12.7 %. The two
+    disagree in sign. Accuracy verdicts come from the full-model columns
+    (`NNTR_PPL`, `[L2-DIFF-MOE]` over a run, text vs A). A gtest prints
+    its SNR as a field and asserts only the bit-identity to its scalar
+    reference (gate (a)).
+
 ## 2. Verdicts (measured, closed)
 
 | item | verdict | source |
@@ -357,6 +396,7 @@ Learned in this project (#88, unit `R3CY205ZMND`, 2026-09-22):
 | **⑦ Wall 3, transport (PR #103: upstream size-class ION staging `fb0f02b9` + 5 ms poll `04a2fcc4`/`b0a384d6` + `staging:` line) — #88, one sitting A/B/C, `R3CY205ZMND`** | **Closed; the largest single-issue gain so far.** M==1 transport **401.3 → 87.9 µs/call (−78.1 %)** at level 2 (82.3 at level 3), `qos_mode=2` in all four profiles, gate ≤ 0.1 ms met → plan 88 §3.3 prebind **not built**. C (B + `NNTR_HTP_POLL_US=100`) 155.5 → the 313.4 µs cut = **staging 245.8 (78 %) + poll 67.6 (22 %)**, the plan's order and size. `staging:` M==1 `act 65536 out 65536 ion=y rpc allocs=19 non-ION 6/464 B`, `allocs` flat at level 3 (no per-call allocation). Decode 18.72 / 16.83 / 16.46 → **24.50 / 23.80 / 23.52 tok/s (+30.9 / +41.4 / +42.9 %)**, C at G=64 21.82 (+16.6 %); text bit-identical A = B = C at every G, run 1 = run 2; prefill −0.9 % (six-cell means 486.4 → 481.9), M>1 transport 2494.6 → 1770.3 with M>1 `dsp=` −0.07 %; peak RSS +0.3 % (both size classes stay alive). Thermal: B ran hotter (48.8 → 56.6 °C) and still won every cell; A re-run after B 17.82 (inside A's own spread). Only ≈ 6.9 of the 12.6 ms/token gain is in the transport column; ≈ 5 ms landed outside the MoE call (rule 23). Provenance: A/B/skel rebuilt on the user's workstation from `08afbb10` / `f3e99176` — accepted under rule 22 | `88-moe-call-marshalling.md` @ `3f9fa38d` |
 | **Per-token budget at `htp_moe` head (cycle 7 estimate, not a measurement: TPS token time minus 22 × the level-2 M==1 `host` of the same sitting's G=64 profile)** | #88 B, G=512: token **42.0 ms** = MoE dsp 22 × 1.383 = **30.4 (72 %)** + transport 22 × 0.088 = **1.9 (5 %)** + outside the MoE call **≈ 9.6 (23 %)** (8.4 at G=64: FC, conv, attention, norms, lm_head, sampling). Floors at 38 GB/s: MoE 484 MB/token (22 × 22.02 MB) → **12.7 ms**, the rest 246 MB (lm_head Q4_0 alone 147 MB) → **≈ 6.5 ms** — so the MoE dsp column is **2.4× its floor (17.7 ms of excess)**, the outside-the-call time **≈ 1.5× (≈ 3 ms of excess)**, transport 1.9. **Biggest lever = MoE dsp (walls 1–2).** Ladder (projections): + #101 (GEMV default, #94 C: dsp −370 µs/call) ≈ −8 ms → ≈ 34 ms (≈ 29 tok/s, if C's +100 µs transport does not return under the new staging); + #105's gate (`mm` 975 → 600) ≈ −8 ms → ≈ 26 ms (≈ 39 tok/s); MoE at its floor → ≈ 24 ms (≈ 41 tok/s). 50 tok/s = 20 ms also needs transport + outside-the-call ≤ ≈ 7 ms → ⑨ (#85) and ⑧. ⑰ in TPS terms is ≈ 2–3 ms, not the profile's 18 (the `--profile` build adds ≈ 20 ms/token to both paths, #77 76.2 vs 54.4 and 39.3 vs 19.0), so it is not the biggest lever and gets no issue of its own | #88 B / A / C profiles + TPS; #94 s2 A / C; #77 profile |
 | **Plan 87 §3.2 attribution a–h (wall 2): in-situ B levels 2/3 + `MoeChunkReplay` + `DMA_PROBE`, one sitting** | **a refuted** (wait 10.2 / 19.0 % of dsp, depth 9–11), **b refuted** (pushed shapes = probe iii), **c refuted, provisional #99** (workers 1/2/4 → 40.2 / 39.1 / 36.5 GB/s), **d sensitivity, not cause** (DDR competitor +1620 % wait, HVX competitor 0), **e refuted, sign reversed** (expert 0 fastest), **f confirmed 9.7 / 10.3 %** (the single blocked `site=act` wait = gather), **g real 11.0 / 7.1 %, unexplained** (`fresh` and `gap_us` controls both null), **h new, ≈ 60–70 % of the gap, provisional #99** (rule 19). **Wall-2 fix = row h → #100**; f (hide the first expert's 3.5 MiB behind gather / the previous layer) and g (cold-call penalty) are the remaining ~20 % and are filed after h. Plan 87 §0 expected f + g large: they are real but small; h was not foreseen | #94 s2 attribution table |
+| **⑱ Hadamard rotation on the MoE down_proj input (`QS4CX_WH_HAD`, FWHT-256 before the u8 requant), #95. One sitting A/B/C/D on the side tree `htp_hadamard` (upstream `3006d255` + tooling: HMX block loop only, no M=1 GEMV, no DMA trace, 5 ms poll), `R3CY205ZMND`. Off-tree, so the numbers are not in BENCHMARK.md's `htp_moe` rows** | **Carry it over. Accuracy win, cost within noise.** **PPL (`NNTR_PPL`, 511 prompt tokens):** D CPU `q40` **109.759**, A **115.095**, B **115.095** (= A to the last digit), C **100.497**. C is −12.7 % vs A and −8.4 % vs the CPU, the first NPU variant below the CPU. **Requant SNR** (`[L2-DIFF-MOE]`, min / p10 / median dB, about 6.2 k calls): B 25.01 / 31.27 / 34.68 → C **39.68 / 41.67 / 42.67** (+14.7 / +10.4 / +8.0). `had=0` on all 6246 B lines, `had=1` on all 6274 C lines. **Gates:** B text byte-identical to A at G 64 / 512 / 1024 (after stripping the `[HTP-MOE] opts` line). C diverges from A at generated word 52, and both NPU variants diverge from D at word 43 at every G (a property of the weights). **Cost** (`[HTP-PROFILE]` level 2, G=64, mean µs/call): `requant` M>1 1097.3 / 1121.2 / **1567.4** (A / B / C, +446 µs), M==1 41.9 / 42.0 / **46.6**. Whole-call `dsp=`: M>1 15915.6 / 16061.7 / **16491.0** (C vs B **+2.7 %**), M==1 1333.5 / 1334.3 / **1338.5** (**+0.3 %**). **Decode tok/s:** A 25.08 / 24.40 / 23.83, B 24.82 / 24.12 / 23.75, C 24.49 / 23.65 / 23.53. A's own G=64 cell drifted −2.6 % from the sitting's start to its end (29 → 58 °C), so every B and C delta is inside that drift. C vs A's end re-run is +0.3 %. **Prefill tok/s cannot be read** (A 466.8 → B 433.8 → C 403.2, but A's re-run at the end read 404.7: order and heat, not code). The M>1 `dsp=` +2.7 % is the prefill reading, inside the −5 % gate. **Gtests:** `RejectsPartialBlock` and `MoeSetOptsEchoesKnownBits` OK. `MatchesScalarBitExact` failed only in the subnormal row (rule 24). `MoeLayerHadamardMatchesTwoCallReference` was bit-exact but failed its SNR assertion (rule 25). **Provenance:** everything was rebuilt on the user's workstation (Deviation 1). Device md5s match the rebuilt set. `git diff 63167235 6c89a912` is exactly the #95 commits. The model `a2829cd9…` equals the predicted hash and differs from `q40-qs4cx-wh` only in the 704 `down` tensors. The verdict is B vs C, one binary set switched by the model's dtype (rule 21). **Side reading on the accuracy gate:** A's PPL is +4.9 % over the CPU `q40`, and its text leaves the CPU's at word 43. That is the size of the "n/a (different weights)" that every NPU row in BENCHMARK.md carries, measured for the first time. Remainder (spec fix, gtest assertion, port incl. the M=1 GEMV requant site, `NNTR_PPL`): **#110** | `95-down-hadamard.md` @ `3a566761` (`origin/htp/95-down-hadamard`) |
 | Control, #94 sitting 2 (`R3CY205ZMND`, 13 A + 6 C cells, one binary set `2a75f7d9` + #98 skel) | NPU **17.72 / 17.03 / 17.30**, CPU **52.43 / 49.22 / 48.31**, NPU prefill 389–527: **the "now"** (BENCHMARK, contract §1). Distance to 50: 2.9× at G=512 (2.7× with C). Same-unit drift vs #77: CPU −9..+4 %, NPU −16..+5 % per cell with DSP profile columns ≤ 4 % apart (rule 20) | #94 s2 §A/§B |
 | CPU control re-run on `R3CY205ZMND` (#94 first attempt, 6 cells, next day) | 53.0 / 53.5 · 51.1 / 51.2 · 49.7 / 48.4 tok/s vs #77's 54.1 / 52.9 · 52.7 / 52.0 · 46.4 / 48.5: **one unit drifts ≤ 7 % per cell day to day** (rule 9 quantified for the CPU path); G=1024 stays 46–50, i.e. the CPU does not reliably clear 50 there. No NPU cell (#97). Not the anchor; not a verdict on any lever | #94 `ec7ad296` |
 
@@ -365,7 +405,7 @@ Learned in this project (#88, unit `R3CY205ZMND`, 2026-09-22):
 | # | item | expected | depends on |
 |---|---|---|---|
 | ① | ~~Measurement A~~ **measured (#77) → §2.** Follow-on: the dense FC's 28.2 ms/token on the NPU path is the second-largest lever after MoE; **it is not a round-trip cost** (no FC is on the HTP in that config, §2 correction) — see ⑰ | — | ⑰ |
-| ⑱ | **Accuracy, filed as #95 (p1):** Hadamard rotation on the MoE down_proj input — fold `Hᵀ·W_down` offline (new dtype `QS4CX_WH_HAD`, block 256, 1792 = 7 × 256, 1/16 both sides), FWHT-256 in IEEE `sf` add/sub on the DSP right before the existing u8 requant at all three requant sites of `hexkl_mm_u8i4_moe.c`. Targets the recorded gap (doc 43, 2026-09-09: 5 of 32 MoE calls at 67–80 dB SNR, each from exactly one of 1792 elements crossing a u8 level — boundary rounding, not row outliers; column-wise outliers never measured). **First accuracy item in this table**; it does not move tok/s by design and may show no effect — a "no effect" result closes it with the numbers. Gate = `NNTR_L2_DIFF` per-call SNR / `total_flips` on vs off on the 5 recorded calls + full-model handoff with prefill/decode TPS and text-identical-to-CPU; prefill gate applies (it touches the weight layout and the requant stage). Rules that bind: no qf32 (v75/v79), host scalar `fwht_rows_f32_ref` bit-identical to the HVX kernel, CPU `QS4CX` run stays the reference (no CPU kernel for `_HAD`, rule 6 applies to it too) | requant SNR on the 5 bad calls ↑; text-identical-to-CPU unchanged or better; TPS within noise | none; can run in parallel with the walls (touches quantizer + requant only) |
+| ⑱ | **Measured by #95 on the side tree `htp_hadamard` → §2 (cycle 8): carry it over. PPL −12.7 % (100.5 vs A 115.1, CPU 109.8), requant SNR median +8.0 dB, cost +2.7 % / +0.3 % of the M>1 / M==1 `dsp=`, decode inside drift. #95 closed. Remainder filed as #110 (p2, `state:needs-plan`):** (a) `fwht_det.h` drops its FTZ (rule 24); (b) the synthetic SNR assertion becomes a printed field (rule 25); (c) port to `htp_moe` with the M=1 GEMV requant site (about `:509`), plus the HMX block loop (about `:1415`) and the tail (about `:370`); the HAD opts bit must not clear PR #108's default-on GEMV bit; (d) `NNTR_PPL` as a separate upstream cherry-pick (`32b46e32`, user decision at merge). Gate = an `htp_moe` handoff: B ≡ A (text + PPL), C PPL ≤ A, SNR median ≥ B + 5 dB, M==1 `dsp=` ≤ +2 %, prefill −5 %. p2 because it does not move decode tok/s; it becomes p1 if the user adopts PPL as the accuracy column for `QS4CX_WH*` models. History: **Accuracy, filed as #95 (p1):** Hadamard rotation on the MoE down_proj input — fold `Hᵀ·W_down` offline (new dtype `QS4CX_WH_HAD`, block 256, 1792 = 7 × 256, 1/16 both sides), FWHT-256 in IEEE `sf` add/sub on the DSP right before the existing u8 requant at all three requant sites of `hexkl_mm_u8i4_moe.c`. Targets the recorded gap (doc 43, 2026-09-09: 5 of 32 MoE calls at 67–80 dB SNR, each from exactly one of 1792 elements crossing a u8 level — boundary rounding, not row outliers; column-wise outliers never measured). **First accuracy item in this table**; it does not move tok/s by design and may show no effect — a "no effect" result closes it with the numbers. Gate = `NNTR_L2_DIFF` per-call SNR / `total_flips` on vs off on the 5 recorded calls + full-model handoff with prefill/decode TPS and text-identical-to-CPU; prefill gate applies (it touches the weight layout and the requant stage). Rules that bind: no qf32 (v75/v79), host scalar `fwht_rows_f32_ref` bit-identical to the HVX kernel, CPU `QS4CX` run stays the reference (no CPU kernel for `_HAD`, rule 6 applies to it too) | requant SNR on the 5 bad calls ↑; text-identical-to-CPU unchanged or better; TPS within noise | none; can run in parallel with the walls (touches quantizer + requant only) |
 | ② | ~~Measurement B~~ **measured (#77) → marshalling → ⑦ / #88 → closed by #88's sitting 2026-09-22** | — | — |
 | ③ | ~~Measurement C~~ **measured (#77) → shape only; in-situ gap is the wall → ⑥ / #87** | — | — |
 | ④ | Two-reader DDR probe — **DSP side invalid in #77 (rule 12); refiled as #90** (stream > VTCM+L2 or use the DMA ring, bounded result). CPU side: −41 % under contention, so any split pays less than the sum | decides whether the CPU+NPU split (contract §3.2) can ever pay | #90, ride-along step in a later sitting |
