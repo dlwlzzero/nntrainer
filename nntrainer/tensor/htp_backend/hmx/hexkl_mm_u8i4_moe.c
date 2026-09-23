@@ -339,10 +339,12 @@ static void moe_tail_pair_unit(uint32_t n_units, uint32_t j, void *v) {
   HEXKL_PROBE_T0(t0);
   const moe_tail_ctx *t = (const moe_tail_ctx *)v;
   int32_t *tiles = t->sh->acc_gu + (size_t)j * 2u * MOE_TAIL_TILE_I32;
+  /* rows1 = 0: the tail is a prefill shape, so a lone last row stays on
+     gemm_rows4; HVX_GEMV_M1_ROWS1 is the M=1 path's knob (moe_m1_*). */
   hvx_gemm_u8i4_wh_col(t->act_ah, t->m, t->k_tiles, t->g->wh_bytes,
-                       t->gu_ntiles, j, tiles);
+                       t->gu_ntiles, j, 0u, tiles);
   hvx_gemm_u8i4_wh_col(t->act_ah, t->m, t->k_tiles, t->g->wh_bytes,
-                       t->gu_ntiles, t->inter_ntiles + j,
+                       t->gu_ntiles, t->inter_ntiles + j, 0u,
                        tiles + MOE_TAIL_TILE_I32);
   hvx_dequant_swiglu_acc_tiles_to_f32(
     (const uint8_t *)tiles, MOE_TAIL_TILE_BYTES, 1u, j,
@@ -383,7 +385,7 @@ static void moe_tail_down_unit(uint32_t n_units, uint32_t nt, void *v) {
   int32_t *tile = t->sh->acc_dn + (size_t)nt * MOE_TAIL_TILE_I32;
   const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
   hvx_gemm_u8i4_wh_col(t->sh->mid_ah, t->m, t->inter_ktiles, t->d->wh_bytes,
-                       t->dn_ntiles, nt, tile);
+                       t->dn_ntiles, nt, 0u, tile);
   hvx_dequant_acc_tile_to_f32(tile, HEXKL_HMX_INT8_BLOCK_N_COL, t->m,
                               t->sh->rq_scale, t->sh->rq_zp,
                               t->d->colsum_w + c0, t->d->w_scale + c0,
@@ -414,14 +416,18 @@ static uint32_t moe_tail_rows(uint32_t n_e) {
  * Foreground lane only. The tail path lost on device because its
  * background units held workers the HMX epilogues then waited for (doc 47
  * section 21.1); here there is no HMX loop to hide under, so each stage is
- * one hvx_worker_pool_run across the four HVX contexts and nothing is left
- * in flight: A = gate/up column pairs with the fused SwiGLU epilogue, B =
+ * one hvx_worker_pool_run across the pool's lanes (n_hvx - 1 workers plus
+ * the caller, 6 on v79) and nothing is left in flight: A = gate/up column
+ * pairs with the fused SwiGLU epilogue, B =
  * one requantization per expert, C = down columns with their dequant, then
  * the scatter inline on the caller in expert order and row order -- the add
  * sequence moe_scatter_worker produces (blocks sequential across experts,
  * rows distinct inside one), so the f32 bytes are the HMX path's. The int32
  * sums are the HMX's own (hvx_gemm_u8i4_wh.h). A lane takes a contiguous,
- * expert-major slice of the units so its l2fetch stream stays in one weight.
+ * expert-major slice of the units so its l2fetch stream stays in one weight:
+ * a lane's consecutive units are adjacent 512-byte tiles, so one 2D l2fetch
+ * covers a block of them, and the lane issues block b+1's box before it
+ * computes block b (HVX_GEMV_PF_LEAD_KB, hexkl_mm_u8i4_moe.h).
  *
  * Taken only with HEXKL_MOE_FLAG_M1_GEMV set and M <= MOE_M1_MAX_ROWS with
  * at most MOE_M1_MAX_EXPERTS active experts (the top-4 bound at M = 4), so a
@@ -431,9 +437,9 @@ static uint32_t moe_tail_rows(uint32_t n_e) {
  * LFM2 shape, only when a decode call comes before any prefill call (a
  * prefill call's 12.8 MB already covers it).
  *
- * ponytail: gemm_rows4 issues all four row accumulators at m = 1, and the
- * arena feed is whatever the DSP's mapping of uncached ION gives vector
- * loads; both are LEDGER (6), decided by the device A/B of this path.
+ * ponytail: the arena feed is whatever the DSP's mapping of uncached ION
+ * gives vector loads behind an l2fetch; staging each expert's weight into
+ * VTCM by DMA is the upgrade (LEDGER (22) feed half, #100).
  */
 #define MOE_M1_MAX_ROWS 4u
 #define MOE_M1_MAX_EXPERTS 16u
@@ -460,6 +466,9 @@ typedef struct {
   moe_m1_expert ex[MOE_M1_MAX_EXPERTS];
   uint32_t n_active, k_tiles, inter, inter_ktiles, inter_ntiles, gu_ntiles,
     dn_ntiles, N_out;
+  uint32_t lead_kb; /**< this call's l2fetch lead, KB per lane; 0 = each
+                         column issues its own fetch (hexkl_moe_flags_*) */
+  uint32_t rows1;   /**< this call's row loop: 1 = gemm_row1 for a lone row */
 } moe_m1_ctx;
 
 /** @brief Lane @a i's contiguous share [lo, hi) of @a n_units. */
@@ -469,27 +478,86 @@ static inline void moe_m1_slice(uint32_t n_units, uint32_t n_lanes, uint32_t i,
   *hi = (uint32_t)((uint64_t)n_units * (i + 1u) / n_lanes);
 }
 
+/** @brief End of the lead block that starts at unit @a u: at most @a d
+ *         units, inside the lane's slice (@a hi), one expert (@a per units
+ *         each) -- so the block is adjacent columns of one weight. */
+static inline uint32_t moe_m1_block_end(uint32_t u, uint32_t d, uint32_t per,
+                                        uint32_t hi) {
+  const uint32_t e_end = (u / per + 1u) * per;
+  uint32_t end = u + d;
+  if (end > e_end) {
+    end = e_end;
+  }
+  return end < hi ? end : hi;
+}
+
+/** @brief Units per lead block for a unit of @a unit_bytes weight, for a
+ *         lead of @a lead_kb KB. Clamped to 127 units: hvx_gemm_u8i4_wh's
+ *         l2fetch width field is 16 bits over tiles of 512 B, so a box of
+ *         128 tiles or more would not fit. The block-end clamp below cuts
+ *         it further to the lane's slice and to one expert. */
+static inline uint32_t moe_m1_lead_units(uint32_t lead_kb,
+                                         uint32_t unit_bytes) {
+  const uint32_t d = (uint32_t)((uint64_t)lead_kb * 1024u / unit_bytes);
+  if (d > 127u) {
+    return 127u;
+  }
+  return d ? d : 1u;
+}
+
+/** @brief Stage A's box for units [b0, b1): gate (@a half 0) or up (1). */
+static inline void moe_m1_pf_gu(const moe_m1_ctx *c, uint32_t b0, uint32_t b1,
+                                uint32_t half) {
+  hvx_gemm_u8i4_wh_prefetch(
+    c->ex[b0 / c->inter_ntiles].g->wh_bytes, c->gu_ntiles,
+    half * c->inter_ntiles + b0 % c->inter_ntiles, b1 - b0, c->k_tiles);
+}
+
 /** @brief Stage A. Unit u = (expert u / inter_ntiles, pair u % inter_ntiles):
- *         moe_tail_pair_unit's body on that expert's buffers. */
+ *         moe_tail_pair_unit's body on that expert's buffers.
+ *
+ * With a lead, block b+1's gate box goes out before block b's first gate
+ * column and its up box after block b's last gate column. The hardware
+ * queues three l2fetch per thread and stalls on a fourth, so this keeps
+ * at most three outstanding: by the time the fourth box goes out, every
+ * column of block b's gate box has been read. */
 static void moe_m1_pair_worker(uint32_t n_lanes, uint32_t i, void *v) {
   const moe_m1_ctx *c = (const moe_m1_ctx *)v;
-  uint32_t lo, hi;
+  const int lead = c->lead_kb != 0u;
+  const uint32_t d = moe_m1_lead_units(c->lead_kb, 2u * c->k_tiles * 512u);
+  uint32_t lo, hi, b1, n1;
   uint64_t t0 = 0;
   HEXKL_PROBE_T0(t0);
   moe_m1_slice(c->n_active * c->inter_ntiles, n_lanes, i, &lo, &hi);
-  for (uint32_t u = lo; u < hi; ++u) {
-    const moe_m1_expert *e = &c->ex[u / c->inter_ntiles];
-    const uint32_t j = u % c->inter_ntiles;
-    int32_t *tiles = e->acc_gu + (size_t)j * 2u * MOE_M1_TILE_I32;
-    hvx_gemm_u8i4_wh_col(e->act_ah, e->m, c->k_tiles, e->g->wh_bytes,
-                         c->gu_ntiles, j, tiles);
-    hvx_gemm_u8i4_wh_col(e->act_ah, e->m, c->k_tiles, e->g->wh_bytes,
-                         c->gu_ntiles, c->inter_ntiles + j,
-                         tiles + MOE_M1_TILE_I32);
-    hvx_dequant_swiglu_acc_tiles_to_f32(
-      (const uint8_t *)tiles, MOE_M1_TILE_BYTES, 1u, j,
-      HEXKL_HMX_INT8_BLOCK_N_COL, e->m, e->act_scale, e->act_zp, e->g->colsum_w,
-      e->g->w_scale, e->g->bias, c->inter, e->gate_f32, c->inter, NULL);
+  b1 = lo < hi ? moe_m1_block_end(lo, d, c->inter_ntiles, hi) : lo;
+  if (lead && lo < b1) {
+    moe_m1_pf_gu(c, lo, b1, 0u);
+    moe_m1_pf_gu(c, lo, b1, 1u);
+  }
+  for (uint32_t b0 = lo; b0 < hi; b0 = b1, b1 = n1) {
+    n1 = b1 < hi ? moe_m1_block_end(b1, d, c->inter_ntiles, hi) : b1;
+    for (uint32_t u = b0; u < b1; ++u) {
+      const moe_m1_expert *e = &c->ex[u / c->inter_ntiles];
+      const uint32_t j = u % c->inter_ntiles;
+      int32_t *tiles = e->acc_gu + (size_t)j * 2u * MOE_M1_TILE_I32;
+      if (lead && u == b0 && b1 < n1) {
+        moe_m1_pf_gu(c, b1, n1, 0u);
+      }
+      (lead ? hvx_gemm_u8i4_wh_col_nopf
+            : hvx_gemm_u8i4_wh_col)(e->act_ah, e->m, c->k_tiles, e->g->wh_bytes,
+                                    c->gu_ntiles, j, c->rows1, tiles);
+      if (lead && u + 1u == b1 && b1 < n1) {
+        moe_m1_pf_gu(c, b1, n1, 1u);
+      }
+      (lead ? hvx_gemm_u8i4_wh_col_nopf : hvx_gemm_u8i4_wh_col)(
+        e->act_ah, e->m, c->k_tiles, e->g->wh_bytes, c->gu_ntiles,
+        c->inter_ntiles + j, c->rows1, tiles + MOE_M1_TILE_I32);
+      hvx_dequant_swiglu_acc_tiles_to_f32(
+        (const uint8_t *)tiles, MOE_M1_TILE_BYTES, 1u, j,
+        HEXKL_HMX_INT8_BLOCK_N_COL, e->m, e->act_scale, e->act_zp,
+        e->g->colsum_w, e->g->w_scale, e->g->bias, c->inter, e->gate_f32,
+        c->inter, NULL);
+    }
   }
   moe_tail_probe_add(t0);
 }
@@ -513,25 +581,45 @@ static void moe_m1_requant_worker(uint32_t n_lanes, uint32_t i, void *v) {
   }
 }
 
+/** @brief Stage C's box for units [b0, b1): adjacent down columns. */
+static inline void moe_m1_pf_dn(const moe_m1_ctx *c, uint32_t b0, uint32_t b1) {
+  hvx_gemm_u8i4_wh_prefetch(c->ex[b0 / c->dn_ntiles].d->wh_bytes, c->dn_ntiles,
+                            b0 % c->dn_ntiles, b1 - b0, c->inter_ktiles);
+}
+
 /** @brief Stage C. Unit u = (expert u / dn_ntiles, column u % dn_ntiles):
- *         moe_tail_down_unit's body. */
+ *         moe_tail_down_unit's body. With a lead, block b+1's box goes out
+ *         before block b is computed: two outstanding at most. */
 static void moe_m1_down_worker(uint32_t n_lanes, uint32_t i, void *v) {
   const moe_m1_ctx *c = (const moe_m1_ctx *)v;
-  uint32_t lo, hi;
+  const int lead = c->lead_kb != 0u;
+  const uint32_t d = moe_m1_lead_units(c->lead_kb, c->inter_ktiles * 512u);
+  uint32_t lo, hi, b1, n1;
   uint64_t t0 = 0;
   HEXKL_PROBE_T0(t0);
   moe_m1_slice(c->n_active * c->dn_ntiles, n_lanes, i, &lo, &hi);
-  for (uint32_t u = lo; u < hi; ++u) {
-    const moe_m1_expert *e = &c->ex[u / c->dn_ntiles];
-    const uint32_t nt = u % c->dn_ntiles;
-    int32_t *tile = e->acc_dn + (size_t)nt * MOE_M1_TILE_I32;
-    const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
-    hvx_gemm_u8i4_wh_col(e->mid_ah, e->m, c->inter_ktiles, e->d->wh_bytes,
-                         c->dn_ntiles, nt, tile);
-    hvx_dequant_acc_tile_to_f32(tile, HEXKL_HMX_INT8_BLOCK_N_COL, e->m,
-                                e->rq_scale, e->rq_zp, e->d->colsum_w + c0,
-                                e->d->w_scale + c0, e->d->bias + c0,
-                                e->res + c0, c->N_out, 0);
+  b1 = lo < hi ? moe_m1_block_end(lo, d, c->dn_ntiles, hi) : lo;
+  if (lead && lo < b1) {
+    moe_m1_pf_dn(c, lo, b1);
+  }
+  for (uint32_t b0 = lo; b0 < hi; b0 = b1, b1 = n1) {
+    n1 = b1 < hi ? moe_m1_block_end(b1, d, c->dn_ntiles, hi) : b1;
+    if (lead && b1 < n1) {
+      moe_m1_pf_dn(c, b1, n1);
+    }
+    for (uint32_t u = b0; u < b1; ++u) {
+      const moe_m1_expert *e = &c->ex[u / c->dn_ntiles];
+      const uint32_t nt = u % c->dn_ntiles;
+      int32_t *tile = e->acc_dn + (size_t)nt * MOE_M1_TILE_I32;
+      const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
+      (lead ? hvx_gemm_u8i4_wh_col_nopf : hvx_gemm_u8i4_wh_col)(
+        e->mid_ah, e->m, c->inter_ktiles, e->d->wh_bytes, c->dn_ntiles, nt,
+        c->rows1, tile);
+      hvx_dequant_acc_tile_to_f32(tile, HEXKL_HMX_INT8_BLOCK_N_COL, e->m,
+                                  e->rq_scale, e->rq_zp, e->d->colsum_w + c0,
+                                  e->d->w_scale + c0, e->d->bias + c0,
+                                  e->res + c0, c->N_out, 0);
+    }
   }
   moe_tail_probe_add(t0);
 }
@@ -1090,6 +1178,10 @@ int hexkl_mm_u8i4_moe_layer_run(
     m1.gu_ntiles = gu_ntiles;
     m1.dn_ntiles = dn_ntiles;
     m1.N_out = N_out;
+    /* The (loop, lead) pair, resolved once per call: the flags word when
+       the caller set the tune bit, else the build's defaults (#113). */
+    m1.lead_kb = hexkl_moe_flags_lead_kb(flags);
+    m1.rows1 = hexkl_moe_flags_rows1(flags);
 
     /* MM is the wall of the two GEMV stages on the caller; SWIGLU their
        summed worker-time (moe_tail_probe_add), so SWIGLU / lanes ~ MM says

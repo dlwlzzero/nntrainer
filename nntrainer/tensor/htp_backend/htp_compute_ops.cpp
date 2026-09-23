@@ -1113,11 +1113,13 @@ public:
   void sendMoeOptsOnce(remote_handle64 session) {
     std::call_once(moe_opts_once_, [session]() {
       const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
-      const uint32_t flags = htp_moe_opts_flags(env);
+      const char *lead_env = std::getenv("NNTR_MOE_HTP_GEMV_LEAD_KB");
+      const char *rows1_env = std::getenv("NNTR_MOE_HTP_GEMV_ROWS1");
+      const uint32_t flags = htp_moe_opts_flags(env, lead_env, rows1_env);
       const char *source = env != nullptr ? "env" : "default";
       uint32_t applied = 0;
       const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
-      if (flags == 0u && err != AEE_SUCCESS) {
+      if ((flags & HTP_MOE_FLAG_M1_GEMV) == 0u && err != AEE_SUCCESS) {
         // The opt-out was asked for, and a skel that predates moe_set_opts
         // runs the HMX loop, which is what "off" means: say so and go on.
         std::fprintf(stderr,
@@ -1126,7 +1128,12 @@ public:
                      static_cast<unsigned>(err), source);
         return;
       }
-      if (err != AEE_SUCCESS || applied != flags) {
+      // Off: only bit 0 has to be echoed. The tune bits are always sent
+      // (htp_moe_opts_flags) but mean nothing on the HMX loop, so a skel
+      // that predates them must not fail an opt-out run.
+      const uint32_t must_match =
+        (flags & HTP_MOE_FLAG_M1_GEMV) != 0u ? ~0u : HTP_MOE_FLAG_M1_GEMV;
+      if (err != AEE_SUCCESS || ((applied ^ flags) & must_match) != 0u) {
         char buf[160];
         std::snprintf(buf, sizeof(buf),
                       "nntr_hvx_moe_set_opts failed: err=0x%08x sent=0x%x "
@@ -1137,8 +1144,18 @@ public:
           " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
           "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
       }
-      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x) source=%s\n",
-                   flags != 0u ? "on" : "off", applied, source);
+      // The measured cell of #113's (loop x lead) matrix, in the same
+      // line. Both knobs are always sent (htp_moe_opts_flags: the env's
+      // value or the D192 default), and the echo above confirmed them,
+      // so an unset run reads lead=192KB rows1=1 and applied=0x103c1.
+      // source= still refers to the M1 GEMV switch alone (LEDGER 16).
+      std::fprintf(
+        stderr,
+        "[HTP] moe m1 gemv: %s (applied=0x%x) lead=%uKB rows1=%u source=%s\n",
+        (flags & HTP_MOE_FLAG_M1_GEMV) != 0u ? "on" : "off", applied,
+        ((flags >> HTP_MOE_GEMV_LEAD_SHIFT) & HTP_MOE_GEMV_LEAD_BITS) *
+          HTP_MOE_GEMV_LEAD_KB_UNIT,
+        (flags & HTP_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u, source);
     });
   }
 

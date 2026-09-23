@@ -25,7 +25,12 @@ trap 'rm -rf "$OUT"' EXIT
 
 cc=${CC:-gcc}
 # -O2: the M=1 cases run the HMX stand-in at the real shape (64 rows a
-# tile, scalar), about a minute at -O2 and several at -O1.
+# tile, scalar); about half a minute at -O2 and several at -O1, since the
+# HMX reference is computed once per (shape, M) and reused. One build since
+# #113: the l2fetch lead and the GEMV row loop are a per-call field of the
+# moe_set_opts word, so the check itself sweeps the whole
+# {0, 192, 384, 768, 1536} KB x {rows4, rows1} matrix plus the build's own
+# defaults, instead of this loop compiling one configuration at a time.
 "$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
   -DMOE_TAIL_MAX_ROWS=16u \
   -I "$HERE/stub" -I "$HERE/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
@@ -100,3 +105,40 @@ cc=${CC:-gcc}
   "$BACKEND/hvx/hvx_worker_pool.c"
 
 "$OUT/dma_replay_host_check"
+
+# The real HVX GEMV (hvx_gemm_u8i4_wh.c, the skel's own source) on x86
+# against the Hexagon tools' HVX emulation, libnative: every stand-in above
+# replaces the kernel, this runs it. g++ links because libnative.a is C++.
+# Then a mutation self-test: the same check against a copy of the kernel
+# with one token changed must fail, or the check is not looking.
+LIBNATIVE="${DEFAULT_HEXAGON_TOOLS_ROOT:-}/Tools/libnative"
+if [ -f "$LIBNATIVE/lib/libnative.a" ]; then
+  gemv_native() { # gemv_native <kernel.c> <exe>
+    "$cc" -std=gnu99 -O1 -fno-strict-aliasing -DHVX_UVector=HEXAGON_Vect1024 \
+      -I "$LIBNATIVE/include" -I "$BACKEND/hvx" -c "$1" -o "$2.k.o"
+    "$cc" -std=gnu99 -O1 -Wall -Wextra -I "$BACKEND/hvx" \
+      -c "$HERE/gemv_native_check.c" -o "$2.c.o"
+    g++ -o "$2" "$2.c.o" "$2.k.o" "$LIBNATIVE/lib/libnative.a"
+  }
+  gemv_native "$BACKEND/hvx/hvx_gemm_u8i4_wh.c" "$OUT/gemv_native_check"
+  "$OUT/gemv_native_check"
+  # One mutant per loop: the one-row loop's final shift (caught only on
+  # the lone rows m = 1, 5, 9, 13, which is how this shows that loop runs)
+  # and the four-row loop's. Sending m = 1 to the four-row loop is not a
+  # mutant: its row 0 is the same int32 by construction.
+  for mut in 's/vasr_VwR(acc, 4)/vasr_VwR(acc, 3)/' \
+    's/vasr_VwR(acc0, 4)/vasr_VwR(acc0, 3)/'; do
+    sed "$mut" "$BACKEND/hvx/hvx_gemm_u8i4_wh.c" > "$OUT/mutant.c"
+    if cmp -s "$OUT/mutant.c" "$BACKEND/hvx/hvx_gemm_u8i4_wh.c"; then
+      echo "HVX GEMV MUTATION DID NOT APPLY: $mut"; exit 1
+    fi
+    gemv_native "$OUT/mutant.c" "$OUT/gemv_mutant"
+    if "$OUT/gemv_mutant" > "$OUT/mutant.log"; then
+      echo "HVX GEMV MUTANT PASSED (the check is blind): $mut"; exit 1
+    fi
+    echo "HVX GEMV MUTANT CAUGHT: $mut ($(grep -o 'bad=[0-9]*' "$OUT/mutant.log" | tail -1))"
+  done
+else
+  echo "HVX GEMV NATIVE CHECK SKIPPED (no $LIBNATIVE/lib/libnative.a;" \
+    "source tools/htp/env.sh)"
+fi

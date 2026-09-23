@@ -1061,8 +1061,11 @@ int nntr_hvx_moe_set_opts(remote_handle64 handle, uint32 flags,
     return AEE_EBADPARM;
   }
   /* Only the bits this skel knows are kept; the echo is how the ARM side
-     tells "took" from "ignored by an older skel". */
-  s->moe_flags = flags & HEXKL_MOE_FLAG_M1_GEMV;
+     tells "took" from "ignored by an older skel". Since #113 that covers
+     the tune bit and the (lead, rows1) field beside it, so a skel without
+     them echoes a different word and the ARM side throws rather than
+     measuring the wrong cell of the matrix. */
+  s->moe_flags = flags & HEXKL_MOE_FLAGS_KNOWN;
   *applied = s->moe_flags;
   return AEE_SUCCESS;
 }
