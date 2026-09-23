@@ -514,8 +514,9 @@ TEST_F(HvxDmaProbe, MoeChunkReplay) {
   }
   // test/htp/nntr_hvx_mm_u8i4.c's MOE_N_STAGES (mirrored as
   // HTP_MOE_N_STAGES in htp_compute_ops.cpp): 19 before #87 + 10 (#87's
-  // DMA slots) + 1 (#80's MOE_T_PATH, after them).
-  const int kMoeStages = 30;
+  // DMA slots) + 1 (#80's MOE_T_PATH) + 1 (#117's MOE_T_M1_FEED, after
+  // them; the slots read below did not move).
+  const int kMoeStages = 31;
   std::vector<uint32_t> stage(kMoeStages, 0);
   std::vector<uint32_t> trace;
   uint32_t n_words = 0;
