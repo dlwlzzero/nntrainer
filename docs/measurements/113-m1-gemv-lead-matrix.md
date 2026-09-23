@@ -345,37 +345,82 @@ cat $W/logs/skel.log $W/logs/therm.log
 Then fill the tables below, commit this file on the same branch, push, set
 #113 to `state:measured`.
 
-## Results (fill in)
+## Results (2026-09-23, unit `R3CY205ZMND`)
 
-Unit (serial from `adb devices`): **`________`**. Battery %, charger,
-screen state:
-`thermal_zone0` (m°C) at checkpoints 0 / 1 / 2 / 3 / 4 / 5:
+Unit (serial from `adb devices`): **`R3CY205ZMND`** (SM-S938N,
+`ro.board.platform=sun`, v79) — the same unit as #100 and #105, so the
+cross-sitting references below are same-silicon. Battery 100 %, charger
+in, screen off. Driven over the ADF SSH bridge (no local USB): an `adb`
+shim plus device-side `.sh` scripts, because the bridge splits a remote
+command on `|`.
 
-`L*` chosen in step 3: **______ KB** — because:
+`thermal_zone0` (m°C) at the checkpoints: **0** (cool start) 27100 ·
+before/after the DMA probe 27900 / 29400 · before/after the matrix
+27500 / 31000 · **1** (before the profiles) 27500 · **2** (after the
+profiles, hottest cell) 57700 · after a 6-min device-side cooldown 26700 ·
+**3** (G = 64 block) 26700 → 60100 · **4** (G = 512) 58100 → 60500 ·
+**5** (G = 1024) 61200 → 63200.
+
+`L*` chosen in step 3: **384 KB** — under the handoff's own fallback
+clause. The rule is "the best `arena` four-row lead > 0", and that is 192;
+but 192 is also B, so the clause "if 192 KB is already the best four-row
+cell, take the runner-up above it (384) so C still tests past 192"
+applies. The reason 192 wins that column is not that the lead helps: on
+the four-row loop **every** lead is far worse than no lead (below), so
+"best lead > 0" degenerates to "least-bad lead".
+
+**`$W` was not present on this workstation, so everything was rebuilt from
+`5be9c4ba` per rule 22.** The rebuilt md5s are in Notes; `libc++_shared.so`,
+`libsdkl.so` and `prompt512.txt` reproduced the table's md5s exactly.
 
 ### Ride-along (step 2)
 
 | cell | µs/call | GB/s | reads as |
 |---|---|---|---|
-| `DMA_REPLAY workers=1 load=0 pace=0` | | | #94's 561.5 / 40.2 → drift is a session effect · #100's 719.6 / 31.4 → the engine bound is real |
+| `DMA_REPLAY workers=1 load=0 pace=0` | **724.0** | **31.2** | **#100's 719.6 / 31.4 → the engine bound is real** |
+
+Run cold (27900 m°C) on a binary whose source has not changed since #94.
+It reads #100, not #94: rule 30's ≈ 22 % drift is **not** a session
+effect, 31–32 GB/s is the real DMA engine bound, and LEDGER ㉒'s feed half
+**stays closed**. (`checksum_ok=n` on all 11 `DMA_REPLAY workers=` lines
+and the resulting `FAILED` are #99's known pre-existing condition, counted
+and accepted the same way in #100 — 11 lines, want 11. Not a regression.)
 
 ### The matrix (step 3) — `ns_per_tile`, lower is better
 
 | cell | lead 0 | 192 | 384 | 768 | 1536 |
 |---|---|---|---|---|---|
-| arena, rows1=0 (four-row) | | | | | |
-| arena, rows1=1 (one-row) | | | | | |
-| hot, rows1=0 | | | | | |
-| hot, rows1=1 | | | | | |
-| heap | (rows1=0, lead 0): | (rows1=1, lead 192): | | | |
+| arena, rows1=0 (four-row) | **133.51** | 282.34 | 316.41 | 323.08 | 328.40 |
+| arena, rows1=1 (one-row) | 154.34 | **129.05** | 139.37 | 147.34 | 155.23 |
+| hot, rows1=0 | 72.15 | 73.07 | 71.69 | 73.53 | 73.07 |
+| hot, rows1=1 | 42.74 | **31.25** | 31.71 | 34.01 | 32.63 |
+| heap | (rows1=0, lead 0): **123.44** | (rows1=1, lead 192): 139.07 | | | |
 
-Reference from #105 (different sitting, rule 23 — for orientation only):
-arena four-row lead 0 **111.72**; arena one-row 0 / 64 / 192 =
-**145.23 / 137.46 / 120.23**; hot one-row 192 = 31.25; hot four-row lead 0
-= 70.77.
+22 `path=m1_bench` lines, no `INVALID`, `[  PASSED  ] 2 tests`.
+`inflight_kb` is 2 × the lead as designed (0 / 384 / 768 / 1536 / 3072).
 
-Where did the arena four-row column turn (the L2 budget answer), and what
-`inflight_kb` was that (× 6 lanes = the L2 footprint)?
+**The issue's hypothesis is not merely unconfirmed — it is inverted.**
+The four-row loop is *harmed* by a lead, monotonically and by a factor of
+2.1–2.5× on the `arena` cell (133.51 → 282.34 → 316.41 → 323.08 →
+328.40), and the `hot` cell shows the same loop is completely flat under
+the lead (71.7–73.5 throughout). The one-row loop keeps exactly the shape
+#105 measured: it improves to a minimum at 192 KB and then degrades.
+
+Where did the arena four-row column turn? **Immediately** — between lead 0
+and lead 192, at `inflight_kb=384` (× 6 lanes ≈ 2.25 MB). So this sitting
+does not measure an L2-capacity ceiling for that loop at all; the damage
+starts at the very first non-zero lead and then grows slowly, which is the
+signature of *interference*, not of eviction at a capacity boundary. The
+one-row column does show a capacity-shaped turn, at 192 KB →
+`inflight_kb=384` (≈ 2.25 MB over 6 lanes), degrading thereafter — the
+same place #105 put it.
+
+The mechanism is consistent with rule 26 read the other way round: the
+four-row loop already keeps 8 `vrmpy` worth of loads in flight per
+quarter-tile, so it is not latency-starved, and the `l2fetch` box then
+competes with its own demand loads for the same L2 and the same bus,
+costing more than the latency it hides. The one-row loop *is*
+latency-starved, so the same box pays for itself — up to 192 KB.
 
 **Read the lead as an ordinal, not a byte count.** The hardware allows
 three outstanding `l2fetch` per thread, so stage A issues block b+1's
@@ -385,80 +430,195 @@ two column-computes. Half of stage A's traffic therefore runs at well
 under the nominal KB, and a fourth outstanding box — giving the up half
 its own lead — is #114's, not this sitting's.
 
-Accuracy: `bad_elems_M1` ___ of 20480 · `bad_elems_M4` ___ of 81920 ·
-`bit_identical` ___ · any `bad_cell_M*` line:
+Accuracy: `bad_elems_M1` **0** of 20480 · `bad_elems_M4` **0** of 81920 ·
+`bit_identical` **yes** · no `bad_cell_M*` line. All ten (loop, lead)
+pairs compared. **Accuracy gate (a): PASS.**
 
 ### Profiles (step 4), `[HTP-PROFILE]` level 2, G = 64, µs/call
 
 | variant | applied | qos_mode | M==1 `mm` | M==1 `dsp` | M==1 host / transport | blocks / m1_gemv | M>1 `dsp` | M>1 m1_gemv |
 |---|---|---|---|---|---|---|---|---|
-| A | `0x1` | | | | | | | |
-| B | `0x381` | | | | | | | |
-| C | | | | | | | | |
-| D | | | | | | | | |
+| A (four-row, lead 0) | `0x1` | 2 | **1000.2** | 1059.4 | 1240.2 / 180.8 | 0 / 1408⁄1408 | 16244.0 | 0/23 |
+| B (four-row, 192) | `0x381` | 2 | **1925.5** | 1985.9 | 2168.5 / 182.6 | 0 / 1408⁄1408 | 16240.7 | 0/23 |
+| C (four-row, 384 = `L*`) | `0x681` | 2 | **2126.9** | 2187.1 | 2369.3 / 182.1 | 0 / 1408⁄1408 | 16236.7 | 0/23 |
+| D (one-row, 384 = `L*`) | `0x106c1` | 2 | **1042.8** | 1103.8 | 1288.8 / 185.0 | 0 / 1408⁄1408 | 16246.9 | 0/23 |
+| **D192** (one-row, 192) — added | `0x103c1` | 2 | **937.0** | 995.5 | 1175.0 / 179.5 | 0 / 1408⁄1408 | 16233.4 | 0/23 |
 
-`mm` vs A (%): B ___ · C ___ · D ___. **Gate: ≤ 840.0 µs on at least
-one.** Reference: #100 A_L2 **980.9**, #105 A 973.0, #105 B3 930.9.
+`mm` vs A (%): B **+92.5** · C **+112.6** · D **+4.3** · D192 **−6.3**.
+**Gate: ≤ 840.0 µs on at least one — FAILED on all five.** The best cell
+in the sitting, D192, is 937.0 (+11.5 % over the gate, −4.5 % vs #100
+A_L2's 980.9, and within 0.7 % of #105 B3's 930.9, which it reproduces).
+Reference: #100 A_L2 **980.9**, #105 A 973.0, #105 B3 930.9. A here reads
+1000.2, ≈ 2–3 % above the two references — the runtime knob itself is
+free (it is the branch's compile-time default path), and A ran at the
+*coldest* point of the block, so the gap is sitting drift, not the knob.
+
+**D192 is an addition to the handoff's four variants** (≈ 1 min). It was
+run because `L*`'s rule sent both C and D past the microbench's optimum,
+which would have left the only cell with a chance at the gate unmeasured.
+It is the one-row loop at its own best lead, i.e. the exact
+(loop, lead) pair PR #107 proposes, and it still misses 840.
+
+Thermal caveat, and it runs the safe way: the profiles ran 27500 →
+57700 m°C in issue order, so later cells are the *hotter* ones. D192 was
+the hottest cell and is still the fastest by 6 %; B and C were cooler than
+D192 and are 2× slower. No ordering in this table is a thermal artefact.
+
+**Prefill gate: PASS.** M>1 `dsp` spans 16233.4–16246.9, i.e. every
+variant within **0.08 %** of A (budget 2.5 %), and `m1_gemv=0/23`
+everywhere, so the shared `hvx_gemm_u8i4_wh.c` tail path is untouched by
+both knobs.
 
 ### E2E (NPU model, prompt 512, 8 threads)
 
-| variant | gen | run | prefill tok/s | decode tok/s (all) | peak RSS (KB) | text = A (same G, run)? | applied (from the log) |
+**Reduced block, by decision mid-sitting.** Step 4 had already failed the
+`mm` clause of the gate on all five variants, so no E2E result could
+change the verdict; B and C were additionally measured at +92 % and
++113 % `mm` and are dead cells. The 26-min block was therefore spent on
+the one question still live — whether the matrix's best cell turns into an
+end-to-end decode win, which is PR #107's actual question. **A vs D192,
+mirrored, at all three G** (~13 min), after a 6-min cooldown to 26700 m°C.
+B, C and D were **not** run at E2E; their rows are marked *not run*.
+
+| variant | gen | run | prefill tok/s | decode tok/s | peak RSS (KB) | text = A (same G, run)? | applied (from the log) |
 |---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | | reference | |
-| B | 64 | 1 | | | | | |
-| C | 64 | 1 | | | | | |
-| C | 64 | 2 | | | | | |
-| B | 64 | 2 | | | | | |
-| A | 64 | 2 | | | | reference | |
-| D | 64 | 1 | | | | | |
-| D | 64 | 2 | | | | | |
-| A | 512 | 1 | | | | reference | |
-| B | 512 | 1 | | | | | |
-| C | 512 | 1 | | | | | |
-| C | 512 | 2 | | | | | |
-| B | 512 | 2 | | | | | |
-| A | 512 | 2 | | | | reference | |
-| A | 1024 | 1 | | | | reference | |
-| B | 1024 | 1 | | | | | |
-| C | 1024 | 1 | | | | | |
-| C | 1024 | 2 | | | | | |
-| B | 1024 | 2 | | | | | |
-| A | 1024 | 2 | | | | reference | |
+| A | 64 | 1 | 547.594 | 27.4443 | 5325468 | reference | `0x1` |
+| D192 | 64 | 1 | 532.225 | 28.5205 | 5326688 | **same** | `0x103c1` |
+| D192 | 64 | 2 | 532.778 | 28.6225 | 5326232 | **same** | `0x103c1` |
+| A | 64 | 2 | 525.667 | 27.4443 | 5325532 | reference | `0x1` |
+| A | 512 | 1 | 534.447 | 27.0542 | 5316696 | reference | `0x1` |
+| D192 | 512 | 1 | 523.517 | 27.7386 | 5327576 | **same** | `0x103c1` |
+| D192 | 512 | 2 | 510.978 | 27.6832 | 4965996 | **same** | `0x103c1` |
+| A | 512 | 2 | 499.512 | 26.6029 | 5039212 | reference | `0x1` |
+| A | 1024 | 1 | 415.584 | 26.0321 | 5059164 | reference | `0x1` |
+| D192 | 1024 | 1 | 436.488 | 27.1661 | 5203632 | **same** | `0x103c1` |
+| D192 | 1024 | 2 | 435.374 | 26.9042 | 5105848 | **same** | `0x103c1` |
+| A | 1024 | 2 | 424.896 | 25.8279 | 5322368 | reference | `0x1` |
+| B | 64/512/1024 | — | *not run* | *not run* | — | — | — |
+| C | 64/512/1024 | — | *not run* | *not run* | — | — | — |
+| D | 64 | — | *not run* | *not run* | — | — | — |
+
+Every log: `prefill: 512 tokens`, `generation: <G> tokens`, exactly one
+`[HTP] moe m1 gemv: on` banner with the variant's word, no `[HTP-PROFILE]`
+block, and the same skel md5 `c78d1ef1…`. Text is **byte-identical to A**
+at all three G in both mirrored runs (banner and md5 lines excluded).
 
 Decode means (of the two mirrored runs) and deltas against A:
 
-| G | A | B | C | D |
-|---|---|---|---|---|
-| 64 | | | | |
-| 512 | | | | n/a |
-| 1024 | | | | n/a |
+| G | A | B | C | D | **D192** |
+|---|---|---|---|---|---|
+| 64 | 27.444 | n/r | n/r | n/r | **28.572 (+4.11 %)** |
+| 512 | 26.829 | n/r | n/r | n/a | **27.711 (+3.29 %)** |
+| 1024 | 25.930 | n/r | n/r | n/a | **27.035 (+4.26 %)** |
 
 Prefill means (G = 64 / 512 / 1024), read with rule 27's mirrored-order
-caveat — a single cell's −5 % is position drift, the M>1 `dsp` column
-above is the tie-breaker:
+caveat: A **536.63 / 516.98 / 420.24**, D192 **532.50 / 517.25 / 435.93**
+→ **−0.77 % / +0.05 % / +3.73 %**. All three inside the −5 % budget, and
+the M>1 `dsp` tie-breaker is within 0.08 %, so prefill is clean.
 
 Reference, #105's sitting: decode A **27.743 / 26.879 / 24.826**; prefill
 A 498.5 / 453.5 / 380.7. Goal ≥ 50 decode, prefill ≥ 497.
 
-## Verdict (fill in)
+## Verdict
 
-* **Gate** = M==1 `mm` ≤ **840.0 µs** on at least one variant **and** that
-  variant's decode mean ≥ A at G = 64, 512 **and** 1024 **and** text
-  identical to A at all three G.
-* **Accuracy gate (a)** = `bit_identical yes`, `bad_elems_M1/M4 = 0`. A
-  single non-zero voids the pair; the lead and the loop change no
-  arithmetic.
-* **Prefill (standing)** = M>1 `dsp` within 2.5 % of A and prefill tok/s
-  ≥ −5 % of A under rule 27.
-* **PR #107's fate:** a four-row variant (B or C) winning closes it and
-  keeps only the lead machinery (already on this branch); D winning lands
-  the one-row loop as the default (`HVX_GEMV_M1_ROWS1 = 1u`).
-* **The landed defaults** become the winning pair: set
-  `HVX_GEMV_PF_LEAD_KB` and `HVX_GEMV_M1_ROWS1` in
-  `nntrainer/tensor/htp_backend/hmx/hexkl_mm_u8i4_moe.h`. The two env vars
-  stay as documented measurement switches, like `HTP_MM_NO_PREFETCH`.
+**The gate FAILS. No variant reaches 840.0 µs.** Best in the sitting:
+D192 (one-row + 192 KB) at **937.0 µs**, 11.5 % over the gate.
+
+* **Gate** (M==1 `mm` ≤ 840.0 **and** decode ≥ A at all three G **and**
+  text identical): **FAIL on the `mm` clause for every variant** —
+  A 1000.2, B 1925.5, C 2126.9, D 1042.8, D192 937.0. D192 satisfies the
+  other two clauses outright (decode +4.11 / +3.29 / +4.26 %, text
+  byte-identical at all three G), so the gate fails on `mm` alone.
+* **Accuracy gate (a)**: **PASS** — `bit_identical yes`,
+  `bad_elems_M1/M4 = 0` across all ten (loop, lead) pairs.
+* **Prefill (standing)**: **PASS** — M>1 `dsp` within 0.08 % of A on every
+  variant (budget 2.5 %); prefill tok/s −0.77 / +0.05 / +3.73 % (budget
+  −5 %).
+* **Ride-along (rule 30)**: 724.0 µs / 31.2 GB/s = **#100, not #94**. The
+  drift is not a session effect; the DMA engine bound is real and ㉒'s
+  feed half **closes**.
+
+**The issue's hypothesis is dead, and in the informative direction.** The
+four-row loop × lead cell — the cheapest cell on the board, never
+measured before — is not a win but a 2× regression, at every lead, on both
+the `arena` and (flat, no benefit) the `hot` cell. Rule 26's own logic
+explains it: the four-row loop is not latency-starved, so the `l2fetch`
+box buys nothing and costs contention. **The lead helps only the loop that
+needs it**, and only to 192 KB. There is no (loop, lead) pair left
+unmeasured that could plausibly reach 840: the whole 2 × 5 matrix is on
+the board and its minimum is D192.
+
+**PR #107's fate: close it, keep the machinery.** Its proposed default is
+exactly D192, and D192 misses the gate — by 11.5 %, having already been
+measured at essentially the same number in #105 (930.9 vs 937.0). Landing
+it would move the baseline for a −6.3 % `mm` that the gate was written to
+reject. **But note what D192 does deliver**, and it is not nothing:
+decode **+3.3 to +4.3 % at all three G** with byte-identical text and a
+clean prefill — the first decode win any GEMV variant has produced across
+#100, #105 and #113. Whether a sub-gate but consistent +4 % decode is
+worth landing is a call for the tracker (#76), not for this sitting; this
+sitting's own gate says no.
+
+* **The landed defaults**: **unchanged**. `HVX_GEMV_PF_LEAD_KB = 0u` and
+  `HVX_GEMV_M1_ROWS1 = 0u` stay as they are (= variant A = today's
+  `htp_moe`). The runtime knobs, the native check and the swept microbench
+  are worth keeping regardless — they are what made this a one-skel,
+  one-sitting answer, and they are what proved the lead is harmful rather
+  than leaving it an open question for a fourth sitting.
+* **Follow-ups this sitting justifies:** #114's fourth outstanding box
+  (the up half never gets the nominal lead) is now the *only* untested
+  form of the lead idea, and it should be re-scoped — on this evidence it
+  would only ever help the one-row loop, which is 6 % behind on `mm` even
+  at its best. The feed half of ㉒ is closed by the ride-along, so the
+  remaining `mm` headroom is on the compute side, not the feed side.
 
 ## Notes from the run
 
-<serial, battery, thermal, first-run page faults, FARF/AEE errors, rebuilt
-md5s if `$W` was not present, anything stale>
+* **Unit** `R3CY205ZMND` (SM-S938N, `sun`, v79), battery 100 % on charger,
+  screen off, Android 16. Same unit as #100 and #105.
+* **No local USB.** Everything ran over the ADF SSH bridge
+  (`adf.sraisys.com`), which accepts only `shell` / `push` / `pull`. Two
+  quirks worth recording: the bridge word-splits a remote command on `|`,
+  so every multi-command step was pushed as a device-side `.sh` and run
+  with `shell sh <path>`; and password auth needs
+  `SSH_ASKPASS` + `setsid -w` (no `sshpass` on this box).
+* **`$W` was absent → full rebuild from `5be9c4ba` (rule 22).** Fresh
+  worktree; `subprojects/{iniparser,googletest,benchmark,CLBlast,OpenBLAS,ruy}`
+  and `Applications/CausalLM/lib/libtokenizers_android_c.a` copied from an
+  existing worktree first. Skel: `HEXKL_ROOT=~/Downloads/hexkl_addon`,
+  `HEXKL_SDK_VER=6.4.0.1` pinned explicitly → `built: … (v79, hexkl
+  6.4.0.1)`, `UNDEFINED SYMBOLS OK (46 runtime imports)`.
+* **Rebuilt md5s** (these, not the table's, are what ran):
+
+  | file | md5 (this sitting) | table |
+  |---|---|---|
+  | `libnntr_hvx_skel.so` | `c78d1ef14b804fe648c88529d842c96b` | `7e8eed5f…` (skel is not byte-reproducible) |
+  | `nntrainer_causallm` | `1ad4cad1c2d3af1610e8c163d9cdbefb` | `d0cba1cd…` |
+  | `libcausallm_core.so` | `ed743e4940b84d98c3ac84fb27abea63` | `aff4e219…` |
+  | `libnntrainer.so` | `2650a9db0776b687bf46c08457232017` | `4ef373c9…` |
+  | `libccapi-nntrainer.so` | `1b67f5f6df6717ce6db811c99c175a66` | `cf83b88c…` |
+  | `unittest_hvx_mm_u8i4` | `496c5e481883df6de2096d551221ad49` | `31724757…` |
+  | `unittest_hvx_dma_probe` | `a5c086feffd7b6a088a69439473c2ca0` | `9372c5dd…` |
+  | `libc++_shared.so` | `b1586b9b512712800fd36a24abac1c0a` | **match** |
+  | `libsdkl.so` | `0ad4e22a70e4f135bce38ad8fd1e001b` | **match** |
+  | `prompt512.txt` | `fc65c1588dc66dd764c7013fe96cbb75` | **match** |
+
+  All four workstation sanity checks passed (`md5sum -c` 0 failures, no
+  `per-layer-type totals` in the app, exactly one `rows1=default` in
+  `libnntrainer.so`, no staged `libcdsprpc`). Device md5s equal the staged
+  ones, and both `$D` and `$T` carry the same skel.
+* **Model reused**, not pushed: `nntr_lfm2_8b_a1b_q40_arm.bin`
+  4316133120 B `7b7867fab51845664c0050c0a837073e`, `tokenizer.json`
+  `7b8067a580173d3eb1697afae3b456f5` — both equal the table.
+* **Config**: `do_sample false`, `bad_word_ids [124900]` (already set from
+  the previous sitting, as a multi-line array — the handoff's `sed` for
+  `[]` was a no-op; value verified by eye), `init_seq_len 512`,
+  `moe_engine "htp"`, `moe_htp_layers ""`.
+* No FARF/AEE errors, no first-run page-fault anomalies. `[  PASSED  ] 2
+  tests` on the matrix run; the DMA probe's `FAILED` is #99's known
+  `checksum_ok=n` (11 lines, want 11).
+* **Deviations from the handoff**, both deliberate and both argued above:
+  one extra profile cell (D192 = one-row + 192 KB, the microbench's
+  optimum, which `L*`'s rule would otherwise have skipped), and a reduced
+  E2E block (A vs D192 mirrored at all three G instead of A/B/C mirrored
+  + D) once step 4 had already failed the gate on every variant.
