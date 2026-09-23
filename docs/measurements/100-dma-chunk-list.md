@@ -291,7 +291,79 @@ therm                                                                   # checkp
 Then fill the tables below, commit this file on the branch, push, and
 set #100 to `state:measured`.
 
-## Results (fill in)
+## Results
+
+Run on **2026-09-23**, unit **R3CY205ZMND** (SM-S938N, SM8750, v79),
+over the ADF SSH bridge. This is the **same unit** #94 sitting 2 and
+#105 ran on (#94's handoff asked for `R3CY10WM83Y` and got
+`R3CY205ZMND`, its Deviation 2), so the cross-sitting DMA comparison
+below is same-unit. The artifacts were rebuilt from the commit with the
+§"Rebuild recipe" (rule 22) because `$W` did not exist on this
+workstation; the md5 table is therefore replaced by the one under Notes.
+
+### Verdict
+
+* **Row h's cause: H0, and row h dissolves.** `c_star` = 26.3 GB/s is
+  **0.36 ×** the same log's `DMA_PROBE shape=iii workers=1` (73.2), far
+  under the 0.80 trigger, and `c_star` is `checksum_ok=y`. Exactly one
+  row of plan §3.3 fires: H1 misses (`iii_dmstart`/probe iii = 0.41,
+  needs ≥ 0.80) and the list row misses (`traced`/`iii_chain` = 0.99,
+  needs ≤ 0.60). Against the validated ceiling the traced list is
+  `traced`/`c_star` = **1.19**, i.e. the list is *faster* than the
+  ceiling, so there is no list-side loss to fix. The "2.7×" of rule 11
+  and the 4–7× isolated-vs-in-situ gap were measured against a number
+  (probe iii) that no tag-validated per-call path reproduces.
+* **Feed shape: FAIL as measured — but the absolute half of the gate is
+  confounded, so do not close ㉒ on this sitting alone.** The best `f`
+  cell is `f2` (8 descriptors, `dst=strided`, depth 2): `load=0` /
+  `c_star` = **1.21** (≥ 0.80, **pass**) but `load=2` = **31.6 GB/s**,
+  under the 37.0 gate (**fail**). `f1` and `f3` read 31.4 GB/s at
+  `load=2`. Both halves are required, so the literal verdict is FAIL and
+  the bound as measured is 31.6 GB/s. **The confound:** this whole
+  sitting's DMA runs ≈ 22 % slower than #94 sitting 2 on the *same
+  unit*. The evidence is the cell that this PR does not touch —
+  `DMA_REPLAY workers=1 load=0 pace=0`, the 11 old lines' first cell —
+  which read `us_per_call=561.5`, **40.2 GB/s** in #94 and reads
+  `us_per_call=719.6`, **31.4 GB/s** here (see "Session drift" below).
+  Scaled by that same factor, `f2`'s `load=2` would read ≈ 40 GB/s,
+  i.e. **over** the gate. The ratio half of the gate (`load=0 / c_star`,
+  within-run) is unaffected and passes. **Recommendation:** one repeat
+  of the gtest cell alone on a sitting whose `DMA_REPLAY workers=1
+  load=0 pace=0` reproduces #94's 40.2 GB/s, before ㉒'s feed half is
+  closed or #107 is committed to as the sole path. If that cell cannot
+  be brought back to 40.2, the FAIL stands and 31.6 GB/s is the bound.
+* Note *why* it fails: HVX streaming VTCM is not the cause. `load=2`
+  costs 0.1–0.3 % against `load=0` on all three shapes (699.8 → 700.5,
+  695.5 → 697.6, 700.5 → 701.8 µs). The DMA engine itself tops out near
+  31 GB/s on every validated per-call cell in this run, whatever the
+  descriptor count (8, 24, 28, 36, 46), the chaining mode or `dst`.
+* **Confirmed cooled** (`G_replay_cool.log`, `thermal_zone0` 31 800 m°C
+  vs 46 500 for the protocol run): every ratio reproduces within 1 %
+  (H0 0.36, `traced`/`c_star` 1.18, `f2` `load=2` 31.3 GB/s). So nothing
+  here is a *within-sitting* thermal artefact. This repeat is an
+  addition to the handoff.
+
+**Session drift against #94, same unit.** Every DMA reading in this
+sitting is well below #94 sitting 2's on `R3CY205ZMND`, and the cooled
+repeat at 31 800 m°C does not recover it, so it is not this sitting's
+thermals:
+
+| cell (identical code in both sittings) | #94 s2 | here (protocol) | here (cooled) | ratio |
+|---|---|---|---|---|
+| `DMA_REPLAY workers=1 load=0 pace=0` (us_per_call) | 561.5 | 719.6 | — | 1.28 × slower |
+| the same, GB/s | 40.2 | 31.4 | — | 0.78 |
+| `DMA_PROBE shape=iii w=1` | 88.8 hot / 106.9 cool | 73.2 | 72.5 | 0.68–0.82 |
+| `DMA_PROBE shape=i w=1` | 66.4 hot / 69.3 cool | 59.2 | — | 0.85–0.89 |
+| `DMA_PROBE shape=iii w=4` | 105.3 hot / 108.1 cool | 101.4 | — | 0.94–0.96 |
+
+The one-worker rows are 15–30 % low while the four-worker rows are
+within 6 %, so whatever it is bites single-queue issue rate, not
+aggregate DDR bandwidth. Unexplained; the candidates this sitting cannot
+separate are a DSP/DDR clock or governor difference between sessions and
+a skel difference between #94's build and `a8642bd1` (this PR is
+test-only for the *model* path, but the skel was rebuilt). **This is the
+one number the next sitting should re-read first**, because the H0
+verdict does not depend on it but the feed verdict does.
 
 Reference (other sittings, so context only, not a verdict; rules 9 and
 20):
@@ -305,51 +377,219 @@ Reference (other sittings, so context only, not a verdict; rules 9 and
 
 | variant | gen | run | prefill tok/s | decode tok/s (all) | decode tok/s (last 64) | peak RSS (KB) | text = A run 1? | `source=default` line | libnntrainer.so md5 (device) |
 |---|---|---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | n/a (#89) | | reference | | |
-| A | 64 | 2 | | | n/a | | | | |
-| A | 512 | 1 | | | n/a | | reference | | |
-| A | 512 | 2 | | | n/a | | | | |
-| A | 1024 | 1 | | | n/a | | reference | | |
-| A | 1024 | 2 | | | n/a | | | | |
-| A0 | 64 | 1 | | | n/a | | | `off … source=env` | |
-| A | 64 | 3 (after the rest) | | | n/a | | | | |
+| A | 64 | 1 | 421.05 | 27.887 | n/a (#89) | 4 619 692 | reference | yes (×1) | `cbc308a0ead6d5117d7daa1d08d076ac` |
+| A | 64 | 2 | 540.08 | 27.814 | n/a | 5 332 352 | same | yes (×1) | same |
+| A | 512 | 1 | 532.23 | 27.334 | n/a | 5 336 904 | reference | yes (×1) | same |
+| A | 512 | 2 | 522.98 | 26.854 | n/a | 5 331 284 | same | yes (×1) | same |
+| A | 1024 | 1 | 455.11 | 26.429 | n/a | 5 322 988 | reference | yes (×1) | same |
+| A | 1024 | 2 | 469.29 | 26.469 | n/a | 5 322 556 | same | yes (×1) | same |
+| A0 | 64 | 1 | 506.43 | 24.578 | n/a | 5 329 444 | same | `off (applied=0x0) source=env` | same |
+| A | 64 | 3 (after the rest) | 436.12 | **16.710** | n/a | 5 326 928 | same | yes (×1) | same |
+
+R1 (`grep -c 'moe m1 gemv: on (applied=0x1) source=default'`) = **1 in
+every A log**, so A is a valid GEMV reference. No A log carries a
+`[HTP-PROFILE]` block. `prefill: 512` and `generation: <G>` in all eight.
+
+* **#101 ride-along, A vs A0 at G = 64**: 27.887 vs 24.578 decode tok/s,
+  **A is +13.5 %** (the handoff expected A0 ≈ 6 % below A; it is 11.9 %
+  below). Not 0 %, so the default took. Prefill A0 506.43 vs A r2 540.08
+  (+6.2 % for A) and A r1 421.05 (cold first run, model page-in); A is
+  not below −5 % of A0 on the warm runs.
+* **Text = A**: the `diff` recipe in step 4/6 reports `DIFFERENT` for
+  A0 vs A only because it compares the `[HTP] moe m1 gemv:` banner
+  itself, which necessarily differs. Excluding that one line
+  (`grep -v '^\[HTP\]'`) the two are **identical**, so the accuracy gate
+  passes. r1 = r2 at all three G, and r3 = r1, with the recipe as given.
+* **A r3 is a thermal reading, not a regression.** It ran straight after
+  A0 and the two level-2 profiles, with `thermal_zone0` at 55 800 m°C:
+  16.71 tok/s, −40 % against r1. Text is still identical to r1. The
+  sitting reached 59 300 m°C at checkpoint 2; this unit throttles hard.
 
 Profiles (G = 64, µs/call):
 
 | profile | qos_mode | M==1 row (`blocks`, `m1_gemv`, host / dsp / transport / mm / swiglu / rest) | `weight DMA:` line | `staging:` | M>1 row (`m1_gemv`, host / dsp / transport) |
 |---|---|---|---|---|---|
-| A_L2 (R2) | | | | | |
-| A0_L2 (R4) | | | | | |
+| A_L2 (R2) | 2 | `blocks=0 m1_gemv=1408/1408`, 1227.2 / 1041.5 / 185.8 / mm 980.9 / swiglu 5653.8 / rest ≤ 10.1 (**0.8 %** of host) | `n/a (direct arena read inside mm, no ring; swiglu = lane-time, 5.76 lanes busy over mm)` | `act 65536 B out 65536 B ion=y rpc allocs=19 (session) non-ION in-args=6/464 B` | `m1_gemv=0/23`, 18425.0 / 16485.9 / 1939.1 |
+| A0_L2 (R4) | 2 | `blocks=5632 m1_gemv=0/1408`, 1469.2 / 1384.6 / 84.6 / mm 783.1 / swiglu 0.0 / rest ≤ 21.5 (1.5 %) | `21504 KB/call, first 1024 KB took 0 us = 8294.4 GB/s; averaged over the call 15.9 GB/s` | `act 65536 B out 65536 B ion=y rpc allocs=19 (session) non-ION in-args=6/464 B` | `m1_gemv=0/23`, 17995.8 / 16414.5 / 1581.3 |
 
-Transport GEMV / HMX = … / … µs/call (Δ …).
+All of the handoff's expectations for R2/R4 hold: `qos_mode=2`,
+`blocks=0 m1_gemv=1408/1408` and `swiglu / mm` = 5653.8 / 980.9 = **5.76**
+(matching the `5.76 lanes busy` text) for A_L2, `blocks=5632
+m1_gemv=0/1408` with a normal `weight DMA:` line for A0_L2, and
+`m1_gemv=0/23` on both M>1 rows.
 
-#100 gtest (`G_replay.log`, `thermal_zone0` = … m°C before it):
+**Transport GEMV / HMX = 185.8 / 84.6 µs/call (Δ +101.2, GEMV costs
+2.20 ×).** The `act`/`out` classes are equal (65536 B each) on both, as
+expected. The GEMV wins anyway on `dsp`: 1041.5 vs 1384.6 µs/call
+(−24.8 %), and on host 1227.2 vs 1469.2 (−16.5 %). A0's M==1 ring is the
+46-descriptor list at `engine 20.4..29.1 GB/s`; A's M==1 ring is
+`desc=2/call`, confirming the body's "desc 46 → 2".
+
+#100 gtest (`G_replay.log`, `thermal_zone0` = **46 500** m°C before it):
 
 | line | gbs | us_per_call | busy_us lo..hi | depth_max | wait_us | checksum_ok |
 |---|---|---|---|---|---|---|
-| `DMA_PROBE shape=iii workers=1` | | (us) | — | — | — | |
-| traced | | | | | | |
-| traced_f | | | | | | |
-| traced_nowait | | | | | | |
-| traced_gu | | | | | | |
-| traced_dn | | | | | | |
-| iii_chain | | | | | | |
-| iii_dmstart | | | | | | |
-| iii_link1 | | | | | | |
-| iii_strided | | | | | | |
-| **c_star** | | | | | | |
-| f1 (load 0) | | | | | | |
-| f1_load (load 2) | | | | | | |
-| f2 (load 0) | | | | | | |
-| f2_load (load 2) | | | | | | |
-| f3 (load 0) | | | | | | |
-| f3_load (load 2) | | | | | | |
+| `DMA_PROBE shape=iii workers=1` | 73.2 | 10983 (us, whole cell) | — | — | — | y |
+| traced | 31.3 | 720.2 | 582.6..716.7 | 11 | 710.2 | y |
+| traced_f | 28.1 | 802.5 | 631.9..798.9 | 11 | 791.7 | y |
+| traced_nowait | 31.2 | 722.9 | 4.5..719.3 | 45 | 0.0 | y |
+| traced_gu | 31.4 | 466.9 | 3.2..463.8 | 32 | 0.0 | y |
+| traced_dn | 30.9 | 237.4 | 0.9..235.1 | 8 | 0.0 | y |
+| iii_chain | 31.5 | 466.8 | 2.8..463.8 | 28 | 0.0 | y |
+| iii_dmstart | 30.2 | 486.8 | 0.8..481.9 | 1 | 481.1 | y |
+| iii_link1 | 30.2 | 485.4 | 0.8..480.0 | 1 | 479.1 | y |
+| iii_strided | 31.1 | 472.2 | 2.8..469.2 | 28 | 0.0 | y |
+| **c_star** | **26.3** | 558.5 | 0.8..553.1 | 1 | 552.2 | y |
+| f1 (load 0) | 31.5 | 699.8 | 688.4..697.1 | 2 | 692.9 | y |
+| f1_load (load 2) | 31.4 | 700.5 | 688.8..697.5 | 2 | 693.1 | y |
+| f2 (load 0) | **31.7** | 695.5 | 631.6..693.2 | 2 | 691.7 | y |
+| f2_load (load 2) | **31.6** | 697.6 | 633.1..694.9 | 2 | 693.2 | y |
+| f3 (load 0) | 31.4 | 700.5 | 667.0..697.6 | 2 | 691.3 | y |
+| f3_load (load 2) | 31.4 | 701.8 | 667.9..698.6 | 2 | 692.1 | y |
 
-Paste the `awk` read-out (the §3.3 ratios) here, together with the
-`DmaProbeShapes` / `MoeChunkReplay` result lines and the failure
-locations (`:633` × 11 expected).
+Every `DMA_REPLAY_X` line is `checksum_ok=y` with `tag=N/N`, including
+the five (`traced`, `traced_f`, `traced_nowait`, `traced_gu`,
+`iii_chain`) the handoff allowed to fail on overlapping in-flight
+writes. So no cell's rate has to be discarded.
+
+Counts, exactly as the handoff's read-out asks:
+
+```
+DMA_PROBE  .. checksum_ok=y            16   (want 16)
+DMA_REPLAY_X .. checksum_ok=y          16   (want 16)
+DMA_REPLAY workers .. checksum_ok=n    11   (want 11, #99)
+grep -E 'skipped|stale_skel'            0   (want nothing)
+DMA_REPLAY_TRACE dsp_us=1222 desc=46 waits=30 blocked=3 wait_us=81 wait_act_us=77
+  busy_us=536..812 depth_max=9 first_ready_us=105 last_issue_us=941
+  trace_words=710 plan_shape_ok=y
+```
+
+Result lines and failure locations — exactly the expected shape:
+
+```
+[       OK ] HvxDmaProbe.DmaProbeShapes (852 ms)
+[  FAILED  ] HvxDmaProbe.MoeChunkReplay (1286 ms)
+[  PASSED  ] 1 test.   [  FAILED  ] 1 test: HvxDmaProbe.MoeChunkReplay
+11 × unittest_hvx_dma_probe.cpp:633   (res[6] = 1467840 vs want_sum = 9461760)
+0 × :715   0 × :692
+```
+
+All 11 failures are `:633`, i.e. #99 on the old `DMA_REPLAY` lines,
+unchanged by this PR. Nothing at `:715` or `:692`, so **no #100 cell
+failed**.
+
+The `awk` read-out (plan §3.3 ratios), protocol run:
+
+```
+H0: c_star/probe_iii = 26.3/73.2 = 0.36 (fires < 0.80)
+H1: iii_dmstart/probe_iii = 0.41 (>= 0.80), iii_chain/iii_dmstart = 1.04 (<= 0.60), iii_link1/iii_dmstart = 1.00
+list: iii_chain/iii_dmstart >= 0.80 and traced/iii_chain = 0.99 (<= 0.60); traced/c_star = 1.19
+  H3 traced_nowait/traced = 1.00 (>= 1.25)  H2 traced_gu/traced_dn = 1.02 (>= 1.5 either way)  H4 traced_f/traced = 0.90 (15%)  H5 iii_strided/iii_chain = 0.99 (15%)
+feed f1: load0/c_star = 1.20 (>= 0.80), load2 = 31.4 GB/s (>= 37.0)
+feed f2: load0/c_star = 1.21 (>= 0.80), load2 = 31.6 GB/s (>= 37.0)
+feed f3: load0/c_star = 1.19 (>= 0.80), load2 = 31.4 GB/s (>= 37.0)
+```
+
+Cooled repeat (`G_replay_cool.log`, 31 800 m°C, same counts 16/16/11 and
+the same 11 × `:633`):
+
+```
+H0: c_star/probe_iii = 26.4/72.5 = 0.36 (fires < 0.80)
+H1: iii_dmstart/probe_iii = 0.42 (>= 0.80), iii_chain/iii_dmstart = 1.04 (<= 0.60), iii_link1/iii_dmstart = 1.00
+list: traced/iii_chain = 0.99 (<= 0.60); traced/c_star = 1.18
+  H3 traced_nowait/traced = 1.00  H2 traced_gu/traced_dn = 1.02  H4 traced_f/traced = 0.90  H5 iii_strided/iii_chain = 1.00
+feed f1: load0/c_star = 1.19 (>= 0.80), load2 = 31.3 GB/s (>= 37.0)
+feed f2: load0/c_star = 1.19 (>= 0.80), load2 = 31.3 GB/s (>= 37.0)
+feed f3: load0/c_star = 1.18 (>= 0.80), load2 = 31.2 GB/s (>= 37.0)
+```
+
+For the record, the full `DMA_PROBE` sweep of the protocol run (probe
+iii reads 73.2 / 84.9 / 96.5 / 101.4 GB/s for workers 1–4, against
+88.8 hot / 106.9 cool … 105.3 hot for w=4 that #94 s2 read on this same
+unit — see "Session drift" above):
+
+```
+shape=i    w1..w4  59.2  62.1  70.1  69.9
+shape=i1   w1..w4  58.8  60.9  70.2  69.9
+shape=ii   w1..w4  71.8  90.2 103.0 104.8
+shape=iii  w1..w4  73.2  84.9  96.5 101.4
+```
 
 ## Notes from the run
 
-<serial, battery %, `thermal_zone0` at checkpoints 0–4, the provenance
-md5 line, anything stale (FARF/AEE errors, `0x8000…`), deviations>
+**Unit**: `R3CY205ZMND`, SM-S938N (S25 Ultra), SM8750, v79. Reached over
+the ADF SSH bridge (`adf.sraisys.com:51281`), not USB, so `adb` is a
+shim over `shell`/`push`/`pull` and every device-side one-liner was
+pushed as a `/system/bin/sh` script (`t100_therm.sh`, `t100_cfg.sh`,
+`t100_prov.sh`, `t100_run.sh`, `t100_gtest.sh`). Charger in the whole
+time; battery stayed at level 100.
+
+Thermal checkpoints (`thermal_zone0` m°C / battery °C):
+
+| checkpoint | when | tz0 | batt |
+|---|---|---|---|
+| 0 | before install | 28 300 | 26.2 |
+| 1 | after A G=64 r1, before the rest of A | 34 900 | 26.9 |
+| 2 | after the six A cells | 59 300 | 33.6 |
+| (gtest) | printed by `t100_gtest.sh` | 46 500 | — |
+| 3 | after the gtest, before A0 | 38 400 | 33.8 |
+| 4 | after the profiles and A r3 | 55 800 | 34.7 |
+| (cool) | after a 300 s device-side cool-down | 31 800 | 27.6 |
+
+Provenance, read back from the device (`t100_prov.sh`); the three
+non-built files match the handoff table exactly, the five rebuilt ones
+do not and cannot (rule 14 / another build path):
+
+```
+ca117552f4e3d0ff38b1c6c099542706  libnntr_hvx_skel.so        (handoff 25f85189…, rebuilt)
+e5695f7d17325687989cd9618c56077d  nntrainer_causallm         (handoff 9ed4e439…, rebuilt)
+cbc308a0ead6d5117d7daa1d08d076ac  libnntrainer.so            (handoff dcd57fc1…, rebuilt)
+3ba0e0d286edae9eaf0d40b50979d16f  libcausallm_core.so        (handoff 7c84f335…, rebuilt)
+1e6412e69dbfbfb3688eac97b55ca32c  libccapi-nntrainer.so      (handoff c57dd47f…, rebuilt)
+c3c961bd11e23045366637c8d67f1907  unittest_hvx_dma_probe     (handoff 0f6d5341…, rebuilt)
+b1586b9b512712800fd36a24abac1c0a  libc++_shared.so           == handoff
+0ad4e22a70e4f135bce38ad8fd1e001b  libsdkl.so                 == handoff
+fc65c1588dc66dd764c7013fe96cbb75  prompt512.txt              == handoff
+7b8067a580173d3eb1697afae3b456f5  models/…/tokenizer.json    == handoff
+7b7867fab51845664c0050c0a837073e  models/…/nntr_lfm2_8b_a1b_q40_arm.bin (4316133120 B) == handoff
+```
+
+The skel and the six binaries were rebuilt from `a8642bd1` with the
+recipe in §"Rebuild recipe": `HEXKL_SDK_VER=6.4.0.1`, HexKL
+`~/Downloads/hexkl_addon`, Hexagon SDK 6.4.0.1, NDK r30. `test/htp/build.sh`
+printed `UNDEFINED SYMBOLS OK (46 runtime imports)`. The workstation
+sanity checks pass on the rebuilt set: `per-layer-type totals` = 0 in
+`nntrainer_causallm`, `source=%s` = **2** in `libnntrainer.so`,
+`readelf -d` lists `libsdkl.so` and `libcdsprpc.so`, and no
+`libcdsprpc*` was staged. `git diff --stat db7c6eb2 a8642bd1 --
+nntrainer/ Applications/ test/htp/nntr_hvx.idl` is empty, so there is no
+model binary change. New md5 manifest: `$W/md5.txt` on this workstation.
+The model was already on the device from the #105 sitting and matched,
+so nothing was pushed for it.
+
+Nothing stale: no `FARF`, no `AEE`, no `0x8000…`, no `ERROR` in any log
+of the sitting.
+
+**Deviations from the handoff.**
+
+1. `$W=/local/mnt/workspace/htp_moe/100/` did not exist on this
+   workstation, so the artifacts were rebuilt from the commit (rule 22)
+   instead of `md5sum -c md5.txt`. Consequence: six of the eleven md5s
+   differ from the table, as the table itself says a skel rebuild will.
+2. The first A cell (`A_G64_r1`) ran between checkpoints 0 and 1 rather
+   than after checkpoint 1. Its prefill (421.05) is the cold-page-in
+   number; the warm A prefills are 455–540.
+3. One extra cell: the gtest was repeated after a 300 s device-side
+   cool-down, because the protocol run sat at 46 500 m°C in a sitting
+   that had already touched 59 300 and the feed verdict is a
+   single-run decision. It reproduces within 1 % and is reported above
+   as `G_replay_cool.log`.
+4. `sleep` is blocked in the harness that drove this sitting, so all
+   cool-downs were `adb shell "sleep N"` on the device.
+5. The step 4/6 text diff compares the `[HTP] moe m1 gemv:` banner,
+   which differs between A and A0 by construction. Suggested fix for the
+   next handoff: pipe both sides through `grep -v '^\[HTP\]'`.
+
+Logs: `$W/logs/{A_G64_r1,A_G64_r2,A_G512_r1,A_G512_r2,A_G1024_r1,
+A_G1024_r2,A0_G64_r1,A_G64_r3,prof_A_L2,prof_A0_L2,G_replay,
+G_replay_cool}.log`.
