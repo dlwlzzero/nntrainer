@@ -479,26 +479,100 @@ Reference: #113's sitting, decode A (= this A0) **27.444 / 26.829 /
 536.63 / 516.98 / 420.24, D192 532.50 / 517.25 / 435.93. Goal ≥ 50
 decode, prefill ≥ 497.
 
-## Verdict
+## Second sitting (same unit, phone cooled first)
+
+The user cooled the phone and asked for a re-run, 2026-09-23 16:05–16:25.
+Same unit `R3CY10WM83Y`, same pushed files (device `md5sum` = the table,
+`logs2/provenance.log`), steps 2–5 in full. One change to the steps: a
+cool-down before each profile and each G block (until battery ≤ 33.0 °C
+and zone0 < 38 °C, capped at 5 min; the waits were 0–45 s). Battery
+30.8 °C at the start, 33.7 °C at the end (sitting 1: 28.3 → 39.5 °C);
+zone0 still reads 55–60 °C during every E2E run.
+
+* **Anchor**: `DMA_REPLAY workers=1 load=0 pace=0 … us_per_call=605.3 …
+  gbs=37.3 … busy_us=477.6..601.8 … checksum_ok=n`; `f2` 588.7 / 37.4,
+  `f2_load` 587.4 / 37.5.
+* **Matrix**: `bad_elems_M1` 0 of 40960, `bad_elems_M4` 0 of 163840,
+  `bit_identical` yes, 25 `m1_bench` lines, no `INVALID`, `[  PASSED  ]
+  2 tests`. `mm_min_us` (ns/tile): vtcm 579 (27.58) / **579 (27.99)** /
+  606 (61.48); arena 990 (136.77) / **838 (116.42)** / 858 (118.75); hot
+  19 (40.90) / 14 (32.17) / 30 (73.53).
+* **Profiles** (level 2, `qos_mode=2`, G = 64), M==1 `mm` / `dsp` /
+  host / transport: A **931.9** / 995.1 / 1185.4 / 190.3; B **676.4** /
+  711.9 / 804.2 / 92.3 (`blocks=0 m1_gemv=1408/1408 feed=1408/1408`,
+  `DMA ring: desc=10/call waits=10 (blocked 9.9) wait=443.3 us busy=640..682
+  us -> engine 32.3..34.4 GB/s depth max=4 first expert ready at 122 us
+  last issue at 500 us of 712`, `weight DMA: 21504 KB/call, first 3584 KB
+  took 110 us = 33.2 GB/s; averaged over the call 30.9 GB/s`); A0
+  **997.4** / 1059.4 / 1244.6 / 185.2. M>1 `dsp` A 16469.9, B 16463.0
+  (−0.04 %), A0 16447.2; `m1_gemv=0/23 feed=0/23`. B `dsp` drop 283.2 vs
+  `mm` drop 255.5 (27.7 µs apart, favourable side again). Scaled: literal
+  676.4 × 31.2 / 37.3 = 565.8; on a 31.2 GB/s engine 676.4 × 37.3 / 31.2
+  = 808.7.
+* **Text**: the generated line hashes identically across all six logs of
+  each G (`52dd9e54` / `06c8f3df` / `e21f1ba0`, the same hashes as sitting
+  1). Every log has one banner with the variant's word and skel md5
+  `5cea0a5a…`, no `HTP-PROFILE`.
+
+| variant | gen | run | prefill tok/s | decode tok/s | peak RSS (KB) |
+|---|---|---|---|---|---|
+| A | 64 | 1 | 517.172 | 28.7124 | 5320228 |
+| A0 | 64 | 1 | 506.429 | 27.4678 | 5322116 |
+| B | 64 | 1 | 501.961 | 37.1877 | 5317848 |
+| B | 64 | 2 | 489.016 | 37.5807 | 5315676 |
+| A0 | 64 | 2 | 492.782 | 27.6458 | 5315672 |
+| A | 64 | 2 | 507.433 | 27.7296 | 5323408 |
+| A | 512 | 1 | 453.097 | 27.911 | 5326096 |
+| A0 | 512 | 1 | 452.297 | 26.7642 | 5323860 |
+| B | 512 | 1 | 434.266 | 36.2119 | 5334188 |
+| B | 512 | 2 | 474.513 | 36.7737 | 5315876 |
+| A0 | 512 | 2 | 465.032 | 26.7852 | 5325136 |
+| A | 512 | 2 | 413.236 | 27.8655 | 5318612 |
+| A | 1024 | 1 | 528.926 | 27.3929 | 5319692 |
+| A0 | 1024 | 1 | 433.164 | 26.2665 | 5313744 |
+| B | 1024 | 1 | 452.297 | 35.1805 | 5326452 |
+| B | 1024 | 2 | 399.688 | 34.8335 | 5328756 |
+| A0 | 1024 | 2 | 401.884 | 26.1411 | 5326636 |
+| A | 1024 | 2 | 401.884 | 27.0656 | 5318452 |
+
+| G | decode A | A0 | A vs A0 | B | B vs A | prefill A | A0 | B | B vs A |
+|---|---|---|---|---|---|---|---|---|---|
+| 64 | 28.221 | 27.557 | +2.41 % | **37.384** | **+32.47 %** | 512.30 | 499.61 | 495.49 | −3.28 % |
+| 512 | 27.888 | 26.775 | +4.16 % | **36.493** | **+30.86 %** | 433.17 | 458.66 | 454.39 | +4.90 % |
+| 1024 | 27.229 | 26.204 | +3.91 % | **35.007** | **+28.56 %** | 465.41 | 417.52 | 425.99 | **−8.47 %** |
+
+Prefill over the three G: A 470.29, B 458.62 → −2.48 %. The G = 1024
+cell is over the −5 % budget on its own: A's run 1 (528.9, first after
+the cool-down, the coolest slot) is the sitting's highest prefill and A's
+run 2 (401.9) equals A0's run 2 — rule 27's mirrored-order spread, not a
+path difference (the feed is M==1-only; M>1 `dsp` −0.04 %,
+`feed=0/23`). Decode in this cooler sitting is 1–9 % above sitting 1 for
+every variant, most at G = 1024 (B 31.47 → 35.01).
+
+## Verdict (both sittings)
 
 * **Gate** (B M==1 `mm` ≤ 760.0 **and** decode ≥ A at all three G **and**
-  text = A): **pass as measured** — `mm` 676.6, decode +25.2 / +35.7 /
-  +23.2 %, text identical everywhere. Caveat for the reader: this unit's
-  DMA engine is 19 % faster than #113's; normalised to a 31.2 GB/s engine
-  the `mm` reads ≈ 804.5 (> 760). The decode half of the gate does not
-  depend on that reading.
-* **Accuracy gate (a)**: **pass** (0 / 0, `bit_identical=yes`, three
-  `cell=vtcm` lines, no `INVALID`).
-* **Prefill (standing)**: **pass** (−0.6 / −3.3 / −4.1 %, M>1 `dsp`
-  +0.04 %, `m1_gemv=0/23 feed=0/23` on every M>1 row); absolute prefill is
-  below 497 at G ≥ 512 because the phone ran at 55–62 °C.
+  text = A): **pass as measured, twice** — `mm` 676.6 / 676.4; decode B vs
+  A +25.2 / +35.7 / +23.2 % (sitting 1) and +32.5 / +30.9 / +28.6 %
+  (sitting 2); text identical in all 36 runs. Caveat for the reader: this
+  unit's DMA engine (anchor 37.1 / 37.3 GB/s) is ≈ 19 % faster than #113's
+  (31.2); on a 31.2 GB/s engine the `mm` would read ≈ 805–809 (> 760).
+  The decode half of the gate does not depend on that reading.
+* **Accuracy gate (a)**: **pass** in both (0 / 0, `bit_identical=yes`,
+  three `cell=vtcm` lines, no `INVALID`).
+* **Prefill (standing)**: M>1 `dsp` +0.04 % / −0.04 % → **pass**. Prefill
+  tok/s B vs A: sitting 1 −0.6 / −3.3 / −4.1 % (pass); sitting 2 −3.3 /
+  +4.9 / **−8.5 %** — the G = 1024 cell is outside −5 % on its own,
+  attributed to run-order spread (see the second-sitting section); over
+  all three G −2.5 % in both sittings. Absolute prefill is below 497 in
+  most cells: zone0 reaches 55–60 °C in every run.
 * **Anchor** (rules 30 / 32) and **in-situ engine ≥ 28 GB/s**: anchor
-  **607.9 µs / 37.1 GB/s** (moved +19 % vs #113, different unit); in-situ
-  engine **32.3..34.4 GB/s** → **pass**.
-* **A vs A0** (#113's confirmation): **+3.56 / +2.41 / +3.93 %**, text
-  identical — reproduced (slightly below #113's +4.11 / +3.29 / +4.26) →
-  BENCHMARK's "now" moves to A (28.48 / 26.47 / 25.55); B is 35.66 /
-  35.93 / 31.47.
+  607.9 / 37.1 and 605.3 / 37.3 (moved +19 % vs #113, different unit);
+  in-situ engine **32.3..34.4 GB/s** in both → **pass**.
+* **A vs A0** (#113's confirmation): +3.56 / +2.41 / +3.93 % and +2.41 /
+  +4.16 / +3.91 %, text identical — reproduced → BENCHMARK's "now" moves
+  to A; from the cooler sitting A 28.22 / 27.89 / 27.23, B 37.38 / 36.49 /
+  35.01.
 
 ## Notes from the run
 
@@ -525,5 +599,6 @@ decode, prefill ≥ 497.
   steady within each variant except A / A0 at G = 512 run 2 (−9 % / −5 %
   vs run 1). Mirrored order keeps the A/B read fair; absolute numbers are
   a warm phone's.
+* Sitting 2's logs are under `$W/logs2/`, sitting 1's under `$W/logs/`.
 * No FARF/AEE errors seen; every E2E log has one banner with the
   variant's word, the skel md5 line `5cea0a5a…`, and no `HTP-PROFILE`.
