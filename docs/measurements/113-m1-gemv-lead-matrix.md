@@ -559,9 +559,11 @@ clean prefill — the first decode win any GEMV variant has produced across
 worth landing is a call for the tracker (#76), not for this sitting; this
 sitting's own gate says no.
 
-* **The landed defaults**: **unchanged**. `HVX_GEMV_PF_LEAD_KB = 0u` and
-  `HVX_GEMV_M1_ROWS1 = 0u` stay as they are (= variant A = today's
-  `htp_moe`). The runtime knobs, the native check and the swept microbench
+* **The landed defaults**: **unchanged** was this sitting's verdict
+  (`HVX_GEMV_PF_LEAD_KB = 0u`, `HVX_GEMV_M1_ROWS1 = 0u` = variant A =
+  today's `htp_moe`) — **overridden by the user's decision, see "Landed
+  defaults (after the sitting)" at the end of this document.** The
+  runtime knobs, the native check and the swept microbench
   are worth keeping regardless — they are what made this a one-skel,
   one-sitting answer, and they are what proved the lead is harmful rather
   than leaving it an open question for a fourth sitting.
@@ -622,3 +624,37 @@ sitting's own gate says no.
   optimum, which `L*`'s rule would otherwise have skipped), and a reduced
   E2E block (A vs D192 mirrored at all three G instead of A/B/C mirrored
   + D) once step 4 had already failed the gate on every variant.
+
+## Landed defaults (after the sitting): D192, by decision
+
+The gate said no (937.0 vs 840 µs on `mm`); the user decided (2026-09-23,
+"1번으로 진행", LEDGER rule 33, contract §12) to land the consistent
+sub-gate decode win anyway. PR #115 therefore flips the two defaults to
+**D192**: `HVX_GEMV_M1_ROWS1 1u`, `HVX_GEMV_PF_LEAD_KB 192u` in
+`hexkl_mm_u8i4_moe.h`, and the ARM side (`htp_moe_opts.h`) now sends the
+same pair explicitly whenever the env names nothing, so an unset run
+prints exactly one
+
+```
+[HTP] moe m1 gemv: on (applied=0x103c1) lead=192KB rows1=1 source=default
+```
+
+`NNTR_MOE_HTP_GEMV_LEAD_KB=0 NNTR_MOE_HTP_GEMV_ROWS1=0` still reaches the
+old four-row, no-lead cell and prints `applied=0xc1`. The M>1 prefill tail
+keeps `gemm_rows4` (its three call sites pass `rows1 = 0u` themselves).
+The workstation sanity line `grep -c 'rows1=default'` above is obsolete:
+the banner's format string is now `lead=%uKB rows1=%u`, and that is what
+a fresh `libnntrainer.so` must contain exactly once.
+
+**No new handoff.** Device confirmation rides along in the next sitting
+(#117's, or whichever comes first): its variant **A** is the flipped
+default (`applied=0x103c1`) and its **A0** is `LEAD_KB=0 ROWS1=0`
+(`applied=0xc1`) — the same-sitting reproduction of this document's
+A vs D192 (+4.11 / +3.29 / +4.26 % at G = 64 / 512 / 1024, text
+byte-identical). BENCHMARK's "now" moves to that A, not before. The
+prefill gate is inherited: M>1 `dsp` within 2.5 % of A0, prefill tok/s
+≥ −5 % under rule 27.
+
+The staged set under `/local/mnt/workspace/htp_moe/113/` was replaced by
+the flipped build (md5s in PR #115's body); the md5s listed above and in
+the "Rebuilt md5s" table stay as the record of what this sitting ran.
