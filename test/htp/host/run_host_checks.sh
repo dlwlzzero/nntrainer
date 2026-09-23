@@ -75,3 +75,28 @@ cc=${CC:-gcc}
   "$HERE/dma_trace_host_check.c" "$BACKEND/hmx/hexkl_dma_trace.c"
 
 "$OUT/dma_trace_host_check"
+
+# The #100 replay cells (nntr_moe_dma_plan.h): the 16 lists the gtest
+# replays, inside the skel's parse rules and the VTCM bound, and the tag
+# sum the gtest expects, simulated and held against a byte-by-byte copy.
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
+  -I "$HERE/.." \
+  -o "$OUT/replay_cells_host_check" \
+  "$HERE/replay_cells_host_check.c"
+
+"$OUT/replay_cells_host_check"
+
+# The skel's dma_replay entry itself (nntr_hvx_dma_probe.c, compiled as-is
+# against replay_stub/: a descriptor lands whole when started or linked):
+# every #100 cell's res[12] equals the tag simulator the gtest uses. The
+# device's DMA timing and interleaving are not modelled here.
+# (memalign is in the Hexagon libc's stdlib.h, in glibc's malloc.h.)
+"$cc" -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -pthread \
+  -include malloc.h -I "$HERE/replay_stub" -I "$HERE/stub" -I "$HERE/.." \
+  -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+  -o "$OUT/dma_replay_host_check" \
+  "$HERE/dma_replay_host_check.c" "$HERE/../nntr_hvx_dma_probe.c" \
+  "$BACKEND/hmx/hexkl_dma_ring.c" "$BACKEND/hmx/hexkl_dma_trace.c" \
+  "$BACKEND/hvx/hvx_worker_pool.c"
+
+"$OUT/dma_replay_host_check"
