@@ -15,10 +15,10 @@ today, and faster than the same phone's CPU**.
 | item | value | source |
 |---|---|---|
 | Model | LFM2.5-8B-A1B: 24 layers = 18 conv + 6 attention, 22 MoE FFN layers (32 experts, top-4), hidden 2048, vocab 128000, tied lm_head | `config.json` of `LiquidAI/LFM2.5-8B-A1B` |
-| "Now", NPU (MoE FFN on HTP, `htp_moe` @ `48fd2420` with `NNTR_MOE_HTP_M1_GEMV=1` = the default PR #108 sets) | decode **27.74 / 26.88 / 24.83 tok/s** at gen 64 / 512 / 1024, prefill 391–540 tok/s (prompt 512) | #105 variant A, `R3CY205ZMND`, 2026-09-22 (`da41340b`); with the switch unset `htp_moe` reads #88 B's 24.50 / 23.80 / 23.52, prefill 430–506 (`3f9fa38d`, another sitting); earlier #94 sitting 2's 17.72 / 17.03 / 17.30 (`dad0f476`) and the PR author's 20.8 / 523 (doc 49 §1, prompt 444) |
+| "Now", NPU (MoE FFN on HTP, `htp_moe` head with the M=1 GEMV on by default since PR #108) | decode **27.85 / 27.09 / 26.45 tok/s** at gen 64 / 512 / 1024, prefill 421–540 tok/s (prompt 512) | #100 variant A, `R3CY205ZMND`, 2026-09-23 (`4bf1fdac`); it reproduces #105 A's 27.74 / 26.88 / 24.83 (`da41340b`) within +0.4 / +0.8 / +6.5 % on the same unit and path. Opting out in the same sitting (`NNTR_MOE_HTP_M1_GEMV=0`, G=64) reads 24.58, so the GEMV default is **+13.5 %** — the first in-sitting A/B of it. Earlier: #88 B 24.50 / 23.80 / 23.52 (`3f9fa38d`), #94 sitting 2's 17.72 / 17.03 / 17.30 (`dad0f476`), the PR author's 20.8 / 523 (doc 49 §1, prompt 444) |
 | "Now", CPU (all Q4_0, 8 threads) | decode **52.43 / 49.22 / 48.31 tok/s**, prefill 268–340 tok/s | #94 sitting 2 (#88 had no CPU cell); replaces the PR author's 48 / 334 |
 | Levers measured | (1) M=1 HVX GEMV (PR #86, switch on): **18.83 / 18.33 / 17.59** (+6.2 / +7.7 / +1.7 % vs 17.72 / 17.03 / 17.30), text identical — #94 sitting 2 variant C (LEDGER ⑯); (2) wall 3, size-class staging + 5 ms poll (PR #103, merged): **+30.9 / +41.4 / +42.9 %** vs its own A 18.72 / 16.83 / 16.46, transport 401 → 88 µs/call, text identical — #88 (LEDGER ⑦, closed); (1) + (2) together = #105's A above (not yet read against GEMV off in one sitting, #101 / PR #108); (3) GEMV compute side (PR #107, one-row loop + `l2fetch` lead): gate **failed**, best B3 `mm` −4.3 %, decode +2.6 / +2.2 / −1.7 %, text identical; the GEMV is feed-bound (#105, LEDGER ㉒) | #94 s2 `dad0f476`; #88 `3f9fa38d`; #105 `da41340b` |
-| **Goal** | decode **≥ 50 tok/s** at every measured generation length (1.86× the NPU "now" at gen 512, above the CPU) | user decision Q1 (ii) |
+| **Goal** | decode **≥ 50 tok/s** at every measured generation length (1.85× the NPU "now" at gen 512, above the CPU) | user decision Q1 (ii) |
 | Physical ceiling | 730 MB of weights per token ÷ 34–38 GB/s measured DDR rate = 19–21 ms ⇒ **48–52 tok/s**. The CPU already sits on it | doc 48 §1 |
 | Prefill gate | never below **−5 % of the current NPU prefill** (≈ 523–532 tok/s, i.e. ≥ 497) | user decision Q12 |
 | Accuracy gate | doc 45 §3.4, all three: (a) kernel bit-identical to its scalar spec, (b) real-model diff (`NNTR_L2_DIFF`) = 0, (c) generated text identical to the CPU run of the same weights | user decision Q4 |
@@ -32,7 +32,10 @@ code of `htp_moe` @ `ad714de7` measured against its own same-sitting A
 (same unit); the CPU row stays #94 sitting 2's, since #88 ran no CPU
 cell. In cycle 9 #105's variant A replaced it again: the same `htp_moe`
 code with the M=1 GEMV switched on, which PR #108 makes the default. That
-variant was the control of its own sitting, not a lever under test. They are read against the sitting they came from: one unit drifts up to
+variant was the control of its own sitting, not a lever under test. In
+cycle 11 #100's variant A replaced it once more — the same code with the
+GEMV now on by default (PR #112 is test-only), reproducing #105 A within
++0.4 / +0.8 / +6.5 % on the same unit. They are read against the sitting they came from: one unit drifts up to
 ±9 % (CPU) / −16 % (NPU tok/s) between sittings while its DSP profile
 columns move ≤ 4 % (LEDGER rules 9, 20), and two S25 Ultra units differed
 by 6–8.6 % on one binary in `hvx_impl`. Hence every verdict is a
@@ -71,6 +74,15 @@ From the PR's own device work (`docs/htp_attention/44`–`50`):
   not yet measured — measurement A of doc 48 §5) must shrink to a few ms,
   which means one FastRPC call per token with the whole layer stack
   resident on the DSP (doc 45 Phase E), M=1 shape first (§3.1).
+* **Wall 2 is not a descriptor-list problem** (#100, 2026-09-23): against
+  the tag-validated per-call ceiling `c_star` the traced 46-descriptor
+  M=1 list runs at 1.19×, i.e. *faster*. Wall 2's "4–7×" (rule 11) and
+  "2.7×" (rule 19) were ratios against an isolated `DMA_PROBE` that no
+  validated path reproduces (LEDGER rule 28). What remains of wall 2 at
+  M=1 is the read rate itself — DMA ≈ 31.6 GB/s, the GEMV's direct HVX
+  arena read 21–27 — and that read is bound by DDR *latency*, not
+  bandwidth (rule 26). So the lever there is the `l2fetch` lead, not a
+  better descriptor shape.
 * **Moving an FC to the HTP is not a lever by itself**: conv in_proj on
   the HTP saved 13 ms of 848 in prefill because the round trip (4.9 ms)
   is larger than the HMX work (2.0) (doc 50 §3.4). Removing round trips is
