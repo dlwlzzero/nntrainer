@@ -447,4 +447,48 @@ interface nntr_hvx : remote_handle64 {
    // a caller can tell a stale skel (AEE_EUNSUPPORTED from the stub, or
    // applied != flags) from a switch that took. Default 0 = the HMX loop.
    AEEResult moe_set_opts(in uint32 flags, rout uint32 applied);
+
+   // [#85] One FastRPC call per token, the skeleton. graph_init takes the
+   // decode step's op list (htp_graph_desc.h words: header, layer kinds,
+   // one 76-word record per op with its kind, shapes, activation slots,
+   // next_mm and, for a MoE op, its 32 + 32 registered weight handles),
+   // validates it once and keeps it; n_ops echoes the count. A second init
+   // without a release is AEE_EBADSTATE; a handle a resident op names
+   // cannot be released while the graph lives (AEE_EBADSTATE from
+   // weight_release_u8i4). Validation codes are the header's: never
+   // AEE_EBADPARM, which stays the stale-skel symptom.
+   AEEResult graph_init(in sequence<uint32> desc, rout uint32 n_ops);
+   AEEResult graph_release();
+
+   // forward runs ops [start_op, ...) while they carry the resident bit
+   // and returns the index of the first that does not in resume_at. act_in
+   // is the start op's input (its K floats), copied into the op's slot;
+   // act_out receives the last run op's output, or is untouched when the
+   // start op is not resident (then resume_at == start_op). pos is the
+   // token position (checked < max_seq; the attention and RoPE kinds read
+   // it). row_index / row_count / row_weight are the routing of the first
+   // MoE op run, in mm_u8i4_moe_layer's layout, while the router stays on
+   // the ARM; empty otherwise.
+   AEEResult forward(in uint32 start_op, in uint32 pos,
+                     in sequence<uint32> row_index,
+                     in sequence<uint32> row_count,
+                     in sequence<float> row_weight,
+                     in sequence<float> act_in, rout sequence<float> act_out,
+                     rout uint32 resume_at);
+
+   // Same, at most n_ops_limit ops, plus op_pcycles[n_ops_limit] (the
+   // HAP_perf_get_pcycles bracket of each op run, 0 for the rest) and
+   // stage_us in mm_u8i4_moe_layer_timed's layout for the whole call
+   // (slot 0 is the call's DSP time; the MoE stages are the probe's).
+   // DEBUG ONLY.
+   AEEResult forward_debug(in uint32 start_op, in uint32 n_ops_limit,
+                           in uint32 pos,
+                           in sequence<uint32> row_index,
+                           in sequence<uint32> row_count,
+                           in sequence<float> row_weight,
+                           in sequence<float> act_in,
+                           rout sequence<float> act_out,
+                           rout uint32 resume_at,
+                           rout sequence<uint32> op_pcycles,
+                           rout sequence<uint32> stage_us);
 };

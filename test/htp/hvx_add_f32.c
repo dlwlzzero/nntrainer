@@ -186,6 +186,9 @@ int nntr_hvx_close(remote_handle64 handle) {
   if (!s) {
     return AEE_SUCCESS;
   }
+  /* [#85] The graph names weight handles, so it goes before the tables. */
+  hexkl_graph_free(s->graph);
+  s->graph = NULL;
   for (uint32_t i = 0; i < HEXKL_MM_U8I4_MAX_WEIGHTS; ++i) {
     if (s->weights_u8i4.slots[i].in_use) {
       hexkl_weight_u8i4_release(&s->weights_u8i4, i);
