@@ -1,113 +1,159 @@
-# LFM2.5-8B-A1B decode on the Hexagon NPU — technical overview
+# nntrainer on the Hexagon NPU (HTP backend) — technical overview
 
-As of **2026-09-23**, `htp_moe` @ `192b44dd` (fork `dlwlzzero/nntrainer`).
+As of **2026-09-23**, `htp_moe` @ `9fb1a3bc` (fork `dlwlzzero/nntrainer`).
 Device: Samsung Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79).
+Model: LFM2.5-8B-A1B, an 8B-parameter mixture-of-experts language model.
 
-## Summary (one page)
+This tree holds two bodies of work, tagged throughout these docs:
 
-**Goal.** Run the decode step of LFM2.5-8B-A1B (an 8B-parameter
-mixture-of-experts language model) on the phone's NPU at **≥ 50 tokens/s**,
-faster than the phone's CPU, with generated text identical to the CPU run.
+- **`upstream PR #4327`**: the HTP backend itself. It includes FastRPC
+  plumbing, integer matrix multiply on the matrix unit (HMX), attention and
+  FC kernels, and the MoE FFN on the NPU. That PR is frozen here at
+  `2ce38d65` (2026-07-08 to 2026-09-21).
+- **`htp_moe`**: the work after it, aimed at decode speed. It covers the
+  call transport, a vector-unit (HVX) decode path for the MoE FFN, weight
+  prefetch and streaming, and measurement tooling (2026-09-21 onward).
 
-**Where we are.**
+## Summary
 
-| | gen 64 | gen 512 | gen 1024 | tok/s, prompt 512 |
-|---|---:|---:|---:|---|
-| NPU, `htp_moe` today | 28.22 | 27.89 | 27.23 | #117 variant A, 2026-09-23 |
-| NPU + VTCM weight feed (PR #118, not merged yet) | 37.38 | 36.49 | 35.01 | #117 variant B, same sitting, text identical |
-| CPU, 8 threads (the bar to beat) | 52.43 | 49.22 | 48.31 | #94 sitting 2, 2026-09-22 |
-| **target** | **50** | **50** | **50** | |
+### What runs on the NPU today
 
-Once the feed lands, the NPU is **1.37× short** of the target at gen 512.
-Prefill (reading the prompt) is already faster on the NPU (≈ 400–530 tok/s
-vs the CPU's 270–340) and is only guarded here: no change may slow it by
-more than 5 %.
+| operation (layers per token) | prefill (many tokens at once) | decode (one token at a time) | origin |
+|---|---|---|---|
+| **MoE FFN** (22) | **On the NPU**, matrix-unit path | **On the NPU**, vector-unit path | PR #4327 (prefill), htp_moe (decode) |
+| Attention core (6) | CPU. NPU kernels built and tested, **off** | CPU | PR #4327 |
+| FC projections: conv in/out, attention q/k/v/o, dense FFN | CPU. NPU route built, **off** by config | CPU | PR #4327 |
+| Norms, RoPE, conv1d, router, lm_head | CPU | CPU | — |
+
+In the measured configuration only the MoE FFN runs on the NPU. The other
+NPU kernels exist, but switching them on did not pay in this setup. Moving
+*every* layer onto the NPU is the plan for decode ([roadmap](roadmap.md)).
+
+### Results
+
+| | NPU | CPU (8 threads) | |
+|---|---:|---:|---|
+| **Prefill** tok/s, prompt 512 | ≈ 400–530 | ≈ 270–340 | NPU is ahead, ≈ 1.6× |
+| **Decode** tok/s, gen 512: reference, before the feed | 27.89 | **49.22** | NPU is behind |
+| **Decode** tok/s, gen 512: VTCM weight feed, the default since PR #118 | **36.49** | | +31 % in the same sitting, text identical |
+| **Decode target** | **≥ 50** | | see below: not reachable by bytes with today's CPU/NPU split |
+
+Sources: NPU #117 (2026-09-23), CPU #94 (2026-09-22). The feed was
+measured as a variant against the reference in #117 and merged as the
+default the same day. It becomes the reference row once a sitting measures
+it as its own control. The full table is in [measurement.md](measurement.md).
+
+**Why decode is the hard part.** Decode speed is set by how fast weights
+are read: each token reads ≈ 893 MB on the NPU model. The NPU reads its
+484 MB of experts through one DMA stream at 31–37 GB/s, depending on the
+phone. The CPU reads the other 408 MB at ≈ 50 GB/s (the CPU model reads
+953 MB at 52 tok/s). Done one after the other, the floor is ≈ 21–24 ms per
+token (≈ 42–47 tok/s). That is above the 20 ms that 50 tok/s needs
+([roadmap.md](roadmap.md) §1).
+
+```mermaid
+pie showData
+    title "Weight MB read per decode token, NPU model"
+    "MoE experts, on the NPU" : 484
+    "Conv projections, CPU" : 170
+    "lm_head, CPU" : 147
+    "Dense FFN, CPU" : 50
+    "Attention projections, CPU" : 35
+    "Routers, CPU" : 6
+```
 
 ```mermaid
 xychart-beta
     title "NPU decode tok/s at gen 512, by landed change"
-    x-axis ["Start (PR as-is)", "Transport fix", "HVX GEMV", "Prefetch lead", "VTCM feed*"]
+    x-axis ["Start (PR as-is)", "Transport fix", "HVX GEMV", "Prefetch lead", "VTCM feed"]
     y-axis "tok/s" 0 --> 55
     bar [18.3, 23.8, 27.1, 27.9, 36.5]
     line [50, 50, 50, 50, 50]
 ```
 
-The line is the 50 tok/s target. `*` = measured, PR open. Each bar comes
-from a different sitting (#77, #88, #100, #117 A, #117 B). Phones drift up
-to ~16 % between sittings, so only an A/B inside one sitting counts as a
-verdict. The bars show direction, not exact gains.
+The line is the target. The bars come from
+different sittings (#77, #88, #100, #117 A, #117 B). Only an A/B inside one
+sitting is a verdict, so the bars show direction, not exact gains.
 
-**Why it is hard.** Decoding one token reads about **730 MB of weights**.
-The phone's memory delivers 34–38 GB/s, so no processor can do better than
-about 19–21 ms per token, which is **48–52 tok/s**. The CPU already runs at
-that ceiling. The target is at the physical limit, not far below it.
+**Where a decode token's time goes** (gen 512):
+
+| | before the feed | with the feed (default now) | needed for 50 tok/s |
+|---|---:|---:|---:|
+| MoE on the NPU (22 calls) | 21.9 ms | 15.7 ms | 13.0–15.5 (byte floor) |
+| CPU ↔ NPU round trips | 4.2 ms | 2.0 ms | ≈ 0 |
+| Everything else, on the CPU | 9.8 ms | 9.7 ms | ≈ 8.2 (byte floor) |
+| **token** | **35.9 ms** | **27.4 ms** | **20 ms**, but the floors add up to ≈ 21–24 |
+
+### What is next
+
+1. Measure the feed default as its own sitting's control. That makes
+   ≈ 36.5 tok/s the reference number.
+2. **Decide how to get under the byte floor.** The options are:
+   - CPU and NPU reading at the same time,
+   - fewer bytes per token,
+   - a faster NPU read.
+
+   The planned one-call-per-token track (#85 → #82 → #81) removes the
+   2 ms of round trips. But it moves the CPU's 408 MB onto the NPU's
+   slower DMA stream, so it needs a bandwidth measurement first.
+3. Sync the ≈ 40 newer upstream PR commits (#120). They add fused conv,
+   q/k/v and dense-FFN block calls.
+4. The project's earlier "48–52 tok/s physical ceiling" came from an
+   estimate of 730 MB per token and 34–38 GB/s of memory bandwidth. Both
+   were low, and it is withdrawn ([lessons.md](lessons.md) D1).
+
+### Timeline
 
 ```mermaid
-pie showData
-    title "Weight bytes read per token (MB)"
-    "MoE experts, 22 layers x 4 of 32" : 484
-    "lm_head (tied embedding, Q4_0)" : 147
-    "Conv / attention / dense-FFN projections" : 99
+gantt
+    title HTP backend work
+    dateFormat YYYY-MM-DD
+    axisFormat %m/%d
+    section upstream PR #4327
+    HVX bring-up, FastRPC            :2026-08-03, 2026-08-05
+    HMX integer matmul (HexKL)       :2026-08-04, 2026-08-07
+    Attention and FC kernels         :2026-08-05, 2026-08-10
+    LFM2-MoE on the CPU              :2026-08-11, 2026-08-12
+    MoE FFN on the NPU               :2026-09-03, 2026-09-10
+    One call per MoE layer           :2026-09-10, 2026-09-14
+    Weight format, ION arena         :2026-09-14, 2026-09-15
+    Prefill tuning                   :2026-09-15, 2026-09-17
+    FC projections route             :2026-09-18, 2026-09-21
+    section htp_moe
+    Baseline on our phones           :2026-09-21, 1d
+    Transport fix, HVX GEMV decode   :2026-09-22, 1d
+    Prefetch lead, VTCM feed         :2026-09-23, 1d
 ```
-
-**Where a token's time goes now** (gen 512, estimated from tok/s and the
-per-call profile of the same sitting):
-
-| | today (A) | with the feed (B) | needed for 50 tok/s |
-|---|---:|---:|---:|
-| MoE on the DSP (22 calls) | 21.9 ms | 15.7 ms | 13.0–15.5 (byte floor) |
-| ARM ↔ DSP round trips | 4.2 ms | 2.0 ms | ≈ 0 |
-| Everything else, on the CPU | 9.8 ms | 9.7 ms | ≈ 6.5 (byte floor) |
-| **token** | **35.9 ms** | **27.4 ms** | **20 ms** |
-
-**What is next.**
-1. Land the VTCM feed (PR #118). It is measured, and making it the default
-   is the next step.
-2. **One DSP call per token** (issues #85 → #82 → #81). Move every
-   remaining layer op onto the DSP so the CPU is no longer in the loop
-   between MoE layers. This is the only lever left for the ≈ 5 ms that
-   remain after the feed.
-3. The target sits at the physical ceiling, so 50 tok/s is reachable only
-   on units whose DMA runs at ≈ 37 GB/s. On a 31 GB/s unit the NPU tops out
-   near 45 tok/s unless each token reads fewer bytes.
-
-## What was built
-
-Three bottlenecks ("walls") stood between the upstream starting point
-(18 tok/s) and the target. Their state:
-
-| wall | what it was | state |
-|---|---|---|
-| 1. Matrix unit pads 1 row to 64 | The HMX computes 64-row tiles; decode has one row, so 63/64 of the work was waste | **Fixed.** Decode now runs on a vector-unit (HVX) matrix-vector kernel. Its cost is now waiting for weights from memory, which the prefetch lead and then the VTCM feed attack |
-| 2. Weight DMA at 16–18 GB/s | The DSP's DMA ran far below an isolated probe (72–117 GB/s) | **Dissolved.** The probe numbers are unreachable by any real per-call copy; the engine's real rate is 31–37 GB/s, depending on the unit |
-| 3. ARM ↔ DSP call cost | 0.53–0.59 ms per call × 22 calls per token | **Fixed** to ≈ 0.09–0.19 ms per call (right-sized shared buffers, longer poll). The remainder goes only with one call per token |
-
-How the pieces fit: [architecture.md](architecture.md).
 
 ## Chapters
 
-Written:
-- [architecture.md](architecture.md): the whole system in one pass. Which
-  processor runs what, one token end to end, one MoE call step by step, the
-  memory tiers and the code map.
+| chapter | what it covers |
+|---|---|
+| [architecture.md](architecture.md) | The whole system in one pass: hardware, who runs what, one token, one MoE call, code map |
+| [foundation.md](foundation.md) | FastRPC, the IDL and skel, sessions, shared memory, call cost, build and deploy |
+| [hmx-matmul.md](hmx-matmul.md) | Integer matrix multiply on the HMX, tile layouts, the DMA ring, VTCM |
+| [weight-format.md](weight-format.md) | From the checkpoint to NPU bytes: formats, the offline packer, bytes per token |
+| [moe-ffn.md](moe-ffn.md) | The MoE FFN kernel: the prefill (HMX) path, the decode (HVX GEMV) path, the VTCM feed |
+| [measurement.md](measurement.md) | How we measure, how to read a profile, the verification ladder, **the benchmark table** |
+| [lessons.md](lessons.md) | Rules learned on silicon, closed questions, negative results |
+| [roadmap.md](roadmap.md) | What is left, one call per token, upstream sync, prior work |
 
-Planned (this list is revised after the first two chapters are reviewed):
-transport, weight format, MoE FFN on the matrix unit, decode GEMV on the
-vector unit, attention and FC kernels, model integration, measurement
-(including the benchmark table and how to update it), lessons (rules learned
-on silicon), roadmap.
+Written after the upstream sync (#120): attention, FC and block calls,
+model integration.
 
 ## Reading the numbers
 
 - **Sitting.** One session on one phone. Variant A (the unchanged
-  reference binary) runs first, then the other variants. Every tok/s
-  comparison in these docs is inside one sitting.
-- **Gen 64 / 512 / 1024.** The number of generated tokens after a 512-token
-  prompt. Decode tok/s covers the whole generation.
-- **Unit.** Two S25 Ultra phones were used. Their DMA engines differ by
-  ≈ 19 % (31.2 vs 37.3 GB/s on an untouched test cell), so per-call DSP
-  times are never compared across units unscaled.
-- **Text identical.** The NPU model's weights (`QS4CX_WH`) differ from the
-  CPU model's (`Q4_0`), so the NPU is checked against its own control, not
-  against the CPU's text. Kernels are additionally proven bit-identical to
-  the reference path by host and device tests.
+  reference) runs first, and every comparison is inside one sitting.
+  Phones drift up to ~16 % between sittings.
+- **Gen 64 / 512 / 1024.** Tokens generated after a 512-token prompt.
+- **Unit.** Two S25 Ultra phones were used. Their NPU DMA engines differ by
+  ≈ 19 % (31.2 vs 37.3 GB/s), so per-call NPU times are not compared across
+  them unscaled.
+- **(PR author's device).** Numbers the upstream PR measured on its
+  author's phone, with its own method. They are shown for context and never
+  compared directly with ours.
+- **Text identical.** The NPU model's expert weights (`QS4CX_WH`) differ
+  from the CPU model's (`Q4_0`), so NPU runs are checked against their own
+  control, and kernels are proven bit-identical to the reference path by
+  tests.

@@ -1,11 +1,14 @@
 # Architecture
 
-As of **2026-09-23**, `htp_moe` @ `192b44dd`. All numbers are from the
+As of **2026-09-23**, `htp_moe` @ `9fb1a3bc`. All numbers are from the
 Galaxy S25 Ultra. Code is named by path and symbol, not by line number.
 
 This chapter walks the system once, top-down. It covers the hardware, which
 processor runs which part of the model, one token end to end, one MoE call
-step by step, where the weight bytes travel, and where the code lives.
+step by step, where the weight bytes travel, and where the code lives. Each
+later chapter goes deeper into one part. Sections are tagged
+`upstream PR #4327` (the backend as the PR built it) or `htp_moe` (the
+decode work after it).
 
 ## 1. The hardware
 
@@ -22,9 +25,9 @@ flowchart LR
             L2["L2 cache"]
         end
     end
-    DDR[("LPDDR5X<br/>34–38 GB/s")]
+    DDR[("LPDDR5X DRAM")]
     CPU <-- "FastRPC call<br/>(one per MoE layer)" --> SC
-    CPU <--> DDR
+    CPU <-- "≈ 50 GB/s<br/>(CPU decode)" --> DDR
     DMA -- "31–37 GB/s" --> VTCM
     DDR --> DMA
     DDR -- "vector loads + l2fetch<br/>≈ 23.5 GB/s" --> L2 --> HVX
@@ -84,11 +87,13 @@ flowchart TB
 
 Orange means the DSP, blue means the CPU. In the NPU configuration **only
 the 22 MoE FFN blocks leave the CPU**. Kernels also exist for attention and
-for the FC projections on the DSP (§7). They are switched per model config
-(`*_engine` keys) and are **off** in the measured configuration.
+for the FC projections on the DSP (§7, `upstream PR #4327`). The FC route
+is switched per model config (`*_engine` keys) and is **off** in the
+measured configuration. The fused attention kernel runs only in its device
+tests; the app's attention (`mha_core`) runs on the CPU.
 
-The CPU still reads ≈ 246 MB of the ≈ 730 MB each token needs (lm_head 147,
-projections 99). That, plus the 22 round trips, is why the long-term design
+The CPU still reads ≈ 408 MB of the ≈ 893 MB each token needs (lm_head
+147, conv and attention projections 205, dense FFN 50, routers 6). That, plus the 22 round trips, is why the long-term design
 is **one DSP call per token** (§8).
 
 ## 3. One token, end to end
@@ -129,6 +134,10 @@ pie showData
 
 ## 4. One MoE call, step by step
 
+`upstream PR #4327` built the call and the HMX path; `htp_moe` added the
+size-class staging, the options word and the HVX decode path. Full detail:
+[moe-ffn.md](moe-ffn.md).
+
 ### 4.1 On the ARM
 
 | step | what happens | code |
@@ -152,8 +161,8 @@ flowchart TD
     Q --> C{"GEMV flag on<br/>and M ≤ 4<br/>and ≤ 16 active experts?"}
     C -- "no (prefill, M > 4)" --> HMX["HMX path<br/>64-row tiles, weights DMA'd into VTCM<br/>through a descriptor ring"]
     C -- "yes (decode)" --> F{"feed flag on?"}
-    F -- "no (today's default)" --> ARENA["HVX GEMV, arena read<br/>vector loads from DDR<br/>behind a 192 KB l2fetch lead"]
-    F -- "yes (PR #118)" --> VFEED["HVX GEMV, VTCM feed<br/>each expert DMA'd into VTCM<br/>one expert ahead of compute"]
+    F -- "yes (default)" --> VFEED["HVX GEMV, VTCM feed<br/>each expert DMA'd into VTCM<br/>one expert ahead of compute"]
+    F -- "no (opt-out)" --> ARENA["HVX GEMV, arena read<br/>vector loads from DDR<br/>behind a 192 KB l2fetch lead"]
     HMX --> S["weighted sum of 4 experts → output row"]
     ARENA --> S
     VFEED --> S
@@ -166,6 +175,8 @@ Prefill (M > 4) never enters the GEMV branch, so decode work cannot slow
 prefill by construction.
 
 ### 4.3 The decode path (HVX GEMV)
+
+`htp_moe`.
 
 The GEMV path runs on a worker pool with one lane per HVX context (6 on v79)
 and synchronizes with barriers:
@@ -180,7 +191,7 @@ flowchart LR
 
 Per call (gen 64, level-2 profile, unit `R3CY10WM83Y`):
 
-| | today (arena read) | VTCM feed |
+| | arena read (before PR #118) | VTCM feed (default) |
 |---|---:|---:|
 | `mm`: matrix work incl. waiting for weights | 931.9 µs | 676.4 µs |
 | `dsp`: whole call on the DSP | 995.1 µs | 711.9 µs |
@@ -194,14 +205,16 @@ arrive**, and each improvement to it has been an improvement to that feed:
 
 1. Prefetch lead (default since PR #115): the one-row loop asks the L2
    cache for the next 192 KB before it needs it. It gives +3–4 % decode.
-2. VTCM feed (PR #118): the DMA engine copies each expert into VTCM while
-   HVX computes on the previous one. This hides the arithmetic under the
-   copy and gives +29–33 % decode.
+2. VTCM feed (default since PR #118): the DMA engine copies each expert
+   into VTCM while HVX computes on the previous one. This hides the
+   arithmetic under the copy and gives +29–33 % decode.
 
 The floor is the bytes divided by the DMA rate: 22.02 MB at 37.3 GB/s is
 ≈ 590 µs per call, so there is little left inside the call.
 
 ### 4.4 The prefill path (HMX)
+
+`upstream PR #4327`.
 
 The path upstream shipped, kept for prefill and as an opt-out
 (`NNTR_MOE_HTP_M1_GEMV=0`). VTCM is carved into fixed regions (activation
@@ -212,6 +225,8 @@ dequantize, apply SwiGLU, requantize and scatter. At M = 1, 63 of the 64
 rows are padding. That is why decode moved off this path.
 
 ## 5. The weight format
+
+`upstream PR #4327`. Full detail: [weight-format.md](weight-format.md).
 
 Expert weights use **`QS4CX_WH`**: 4-bit signed weights with one scale per
 output channel, stored as 32 × 32 tiles of 512 bytes in the order the HMX
@@ -232,7 +247,8 @@ CPU.
 | `moe_engine` (`nntr_config.json`) | `cpu` | `htp` sends the MoE FFN to the DSP |
 | `attn_proj_engine`, `conv_in_proj_engine`, `conv_out_proj_engine`, `dense_ffn_engine` | `cpu` | route those projections to the DSP; off in the measured config |
 | `NNTR_MOE_HTP_M1_GEMV` | on | `0` sends decode back to the HMX path |
-| `NNTR_MOE_HTP_GEMV_ROWS1`, `NNTR_MOE_HTP_GEMV_LEAD_KB` | `1`, `192` | the GEMV loop shape and prefetch lead |
+| `NNTR_MOE_HTP_GEMV_FEED` | `1` | `0` reads the weights straight from DDR instead of staging them in VTCM |
+| `NNTR_MOE_HTP_GEMV_ROWS1`, `NNTR_MOE_HTP_GEMV_LEAD_KB` | `1`, `192` | the GEMV loop shape and the prefetch lead (the lead is forced off under the feed) |
 | `NNTR_HTP_POLL_US` | 5000 | how long the ARM polls for the DSP's reply |
 | `NNTR_HTP_PROFILE` | off | `2`/`3`: per-stage µs per call (`[HTP-PROFILE]`), DMA ring line |
 | `NNTR_HTP_DMA_TRACE` | off | a per-descriptor DMA dump |
@@ -281,3 +297,4 @@ The steps:
 
 None of these saves time alone. The call count drops only when every op
 between two MoE layers is resident.
+Plans and budget: [roadmap.md](roadmap.md).

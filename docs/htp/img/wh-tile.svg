@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="430" viewBox="0 0 820 430" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <rect x="0" y="0" width="820" height="430" fill="#ffffff"/>
+  <text x="20" y="26" font-size="15" font-weight="bold" fill="#000">One WH tile: 32 x 32 int4 weights = 1024 nibbles = 512 bytes</text>
+
+  <!-- Left: the tile as 4 row bands -->
+  <text x="20" y="56" fill="#000">r = input row (k), c = output column (n)</text>
+  <g stroke="#333" stroke-width="1">
+    <rect x="20" y="70" width="256" height="64" fill="#f4d9b0"/>
+    <rect x="20" y="134" width="256" height="64" fill="#d6e4f5"/>
+    <rect x="20" y="198" width="256" height="64" fill="#f4d9b0"/>
+    <rect x="20" y="262" width="256" height="64" fill="#d6e4f5"/>
+  </g>
+  <g fill="#000">
+    <text x="30" y="98">rows 0-7</text><text x="30" y="116">-&gt; bytes 0-127</text>
+    <text x="30" y="162">rows 8-15</text><text x="30" y="180">-&gt; bytes 128-255</text>
+    <text x="30" y="226">rows 16-23</text><text x="30" y="244">-&gt; bytes 256-383</text>
+    <text x="30" y="290">rows 24-31</text><text x="30" y="308">-&gt; bytes 384-511</text>
+  </g>
+  <!-- column 0 of band 0 highlighted -->
+  <rect x="236" y="70" width="8" height="64" fill="#b5651d" stroke="#333"/>
+  <text x="200" y="128" fill="#7a3f0f" font-size="11">col c</text>
+  <line x1="244" y1="102" x2="330" y2="102" stroke="#b5651d" stroke-width="1.5"/>
+
+  <!-- Middle: one column of one band, 8 rows -> 4 bytes -->
+  <text x="330" y="56" fill="#000">column c of one band: 8 weights -&gt; 4 bytes</text>
+  <g stroke="#333" stroke-width="1" fill="#f4d9b0">
+    <rect x="330" y="70" width="60" height="30"/><rect x="330" y="100" width="60" height="30"/>
+    <rect x="330" y="130" width="60" height="30"/><rect x="330" y="160" width="60" height="30"/>
+  </g>
+  <g stroke="#333" stroke-width="1" fill="#d6e4f5">
+    <rect x="330" y="190" width="60" height="30"/><rect x="330" y="220" width="60" height="30"/>
+    <rect x="330" y="250" width="60" height="30"/><rect x="330" y="280" width="60" height="30"/>
+  </g>
+  <text x="398" y="140" fill="#000" font-size="11">r0-r3: low</text>
+  <text x="398" y="240" fill="#000" font-size="11">r4-r7: high</text>
+  <g fill="#000" text-anchor="middle">
+    <text x="360" y="90">r0</text><text x="360" y="120">r1</text><text x="360" y="150">r2</text><text x="360" y="180">r3</text>
+    <text x="360" y="210">r4</text><text x="360" y="240">r5</text><text x="360" y="270">r6</text><text x="360" y="300">r7</text>
+  </g>
+  <g stroke="#333" stroke-width="1">
+    <rect x="470" y="82" width="70" height="36" fill="#d6e4f5"/><rect x="540" y="82" width="70" height="36" fill="#f4d9b0"/>
+    <rect x="470" y="132" width="70" height="36" fill="#d6e4f5"/><rect x="540" y="132" width="70" height="36" fill="#f4d9b0"/>
+    <rect x="470" y="182" width="70" height="36" fill="#d6e4f5"/><rect x="540" y="182" width="70" height="36" fill="#f4d9b0"/>
+    <rect x="470" y="232" width="70" height="36" fill="#d6e4f5"/><rect x="540" y="232" width="70" height="36" fill="#f4d9b0"/>
+  </g>
+  <g fill="#000" text-anchor="middle">
+    <text x="505" y="77" font-size="11">high nibble</text><text x="575" y="77" font-size="11">low nibble</text>
+    <text x="505" y="105">r4</text><text x="575" y="105">r0</text>
+    <text x="505" y="155">r5</text><text x="575" y="155">r1</text>
+    <text x="505" y="205">r6</text><text x="575" y="205">r2</text>
+    <text x="505" y="255">r7</text><text x="575" y="255">r3</text>
+  </g>
+  <g fill="#000">
+    <text x="620" y="105">byte 4c + 0</text><text x="620" y="155">byte 4c + 1</text>
+    <text x="620" y="205">byte 4c + 2</text><text x="620" y="255">byte 4c + 3</text>
+  </g>
+    <text x="470" y="300" fill="#000">so a band is col 0 (bytes 0-3), col 1 (4-7),</text>
+  <text x="470" y="318" fill="#000">... col 31 (124-127) = 128 bytes</text>
+
+  <!-- Formula -->
+  <rect x="20" y="346" width="780" height="70" fill="#f2f2f2" stroke="#999"/>
+  <text x="32" y="368" fill="#000" font-family="Menlo, Consolas, monospace">byte(r, c) = (r / 8) * 128 + c * 4 + (r % 4)</text><text x="470" y="368" fill="#000" font-family="Menlo, Consolas, monospace">nibble = (r / 4) % 2  (0 = low)</text>
+  <text x="32" y="390" fill="#000" font-family="Menlo, Consolas, monospace">tile (kt, nt) of a K x N weight starts at byte (kt * (N / 32) + nt) * 512   (k-major)</text>
+  <text x="32" y="410" fill="#000">One byte holds two k values of the same output column, four rows apart. Code: whSlot / whPack in nntrainer/tensor/htp_wh_layout.h</text>
+</svg>
