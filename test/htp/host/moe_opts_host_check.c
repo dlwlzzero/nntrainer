@@ -31,11 +31,56 @@ static void expect(int ok, const char *what) {
 }
 
 int main(void) {
-  expect(htp_moe_opts_flags(NULL) == HTP_MOE_FLAG_M1_GEMV, "unset is on");
-  expect(htp_moe_opts_flags("0") == 0u, "0 is off");
-  expect(htp_moe_opts_flags("1") == HTP_MOE_FLAG_M1_GEMV, "1 is on");
+  expect(htp_moe_opts_flags(NULL, NULL, NULL) == HTP_MOE_FLAG_M1_GEMV,
+         "unset is on");
+  expect(htp_moe_opts_flags("0", NULL, NULL) == 0u, "0 is off");
+  expect(htp_moe_opts_flags("1", NULL, NULL) == HTP_MOE_FLAG_M1_GEMV,
+         "1 is on");
   if (!g_fail)
     printf("MOE M1 GEMV OPTS: unset=on 0=off 1=on\n");
+
+  /* #113's (loop, lead) fields. Each knob is overridden only by its own
+     variable, so naming one leaves the other at the DSP's build default
+     instead of resetting it to zero. */
+  expect((htp_moe_opts_flags(NULL, NULL, NULL) &
+          (HTP_MOE_FLAG_GEMV_LEAD_SET | HTP_MOE_FLAG_GEMV_ROWS1_SET)) == 0u,
+         "no tune bit when neither variable is set");
+  expect(htp_moe_opts_flags(NULL, "192", NULL) ==
+           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
+            (3u << HTP_MOE_GEMV_LEAD_SHIFT)),
+         "192 KB is 3 units of 64 KB, and the loop stays at the default");
+  expect(htp_moe_opts_flags(NULL, "1536", "1") ==
+           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
+            (24u << HTP_MOE_GEMV_LEAD_SHIFT) | HTP_MOE_FLAG_GEMV_ROWS1_SET |
+            HTP_MOE_FLAG_GEMV_ROWS1),
+         "1536 KB + rows1");
+  expect(htp_moe_opts_flags(NULL, NULL, "1") ==
+           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_ROWS1_SET |
+            HTP_MOE_FLAG_GEMV_ROWS1),
+         "rows1 alone does not force the lead to 0");
+  expect(htp_moe_opts_flags(NULL, "192", "0") ==
+           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
+            (3u << HTP_MOE_GEMV_LEAD_SHIFT) | HTP_MOE_FLAG_GEMV_ROWS1_SET),
+         "rows1=0 is an explicit four-row loop, not 'unset'");
+  expect(htp_moe_opts_flags("0", NULL, "1") ==
+           (HTP_MOE_FLAG_GEMV_ROWS1_SET | HTP_MOE_FLAG_GEMV_ROWS1),
+         "the opt-out keeps bit 0 clear and still carries the loop");
+  /* Rounding to the nearest unit, the >= 0 floor and the 127-unit clamp
+     the l2fetch width field imposes. */
+  expect(htp_moe_gemv_lead_units(NULL) == 0u, "unset lead is 0");
+  expect(htp_moe_gemv_lead_units("0") == 0u, "0 KB is 0 units");
+  expect(htp_moe_gemv_lead_units("-64") == 0u, "a negative lead is 0");
+  expect(htp_moe_gemv_lead_units("31") == 0u, "31 KB rounds down to 0");
+  expect(htp_moe_gemv_lead_units("32") == 1u, "32 KB rounds up to 1");
+  expect(htp_moe_gemv_lead_units("64") == 1u, "64 KB is 1 unit");
+  expect(htp_moe_gemv_lead_units("100") == 2u, "100 KB rounds to 2 units");
+  expect(htp_moe_gemv_lead_units("999999") == HTP_MOE_GEMV_LEAD_MAX_UNITS,
+         "clamped to 127 units");
+  expect((htp_moe_gemv_lead_units("999999") & ~HTP_MOE_GEMV_LEAD_BITS) == 0u,
+         "the clamped field still fits bits [15:8]");
+  if (!g_fail)
+    printf("MOE GEMV TUNE OPTS: per-knob tune bits, 64 KB units, "
+           "round+clamp 127\n");
 
   /* C: dsp 1044.0, swiglu 5601.2, printed rest -5588.2 -> the other named
      stages (mm 974.7 among them) sum to 1044.0 + 5588.2 - 5601.2 = 1031.0;

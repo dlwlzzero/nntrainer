@@ -44,13 +44,21 @@
  *                 prefetched)
  * @param n_col    the weight's n-tile count (tile row stride)
  * @param nt       the n-tile column to compute
+ * @param rows1    non-zero: a lone last row (m = 1, 5, 9, 13) runs the
+ *                 one-accumulator loop gemm_row1; zero: every row group
+ *                 runs gemm_rows4. The two knobs of #113 -- this one and
+ *                 the caller's l2fetch lead -- are independent, so the
+ *                 (loop, lead) matrix can be swept; LEDGER rule 26 says
+ *                 the choice is a latency-hiding question, not a compute
+ *                 one, so there is no a-priori winner.
  * Accumulation order, per output int32: kt ascending, then the four
  * 128-byte quarters g ascending, then the quarter's low-nibble rows before
  * its high-nibble rows, all into one accumulator per row, then one
- * arithmetic shift by 4. Rows go four at a time (gemm_rows4) and a lone
- * last row (m = 1, 5, 9, 13) alone (gemm_row1); both follow that order.
- * The integer sums are exact either way, so the order is documented for
- * the review list, not needed for the equality.
+ * arithmetic shift by 4. Rows go four at a time (gemm_rows4) and, when
+ * @a rows1 is set, a lone last row alone (gemm_row1); both follow that
+ * order. The integer sums are exact either way, so @a rows1 changes no
+ * result bit and the order is documented for the review list, not needed
+ * for the equality.
  *
  * @param out      m x 32 int32, row-major, row stride 32 -- the same shape
  *                 hexkl_micro_hmx_acc_read_int32 lands with row_stride 32,
@@ -58,14 +66,15 @@
  */
 void hvx_gemm_u8i4_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                           const uint8_t *wh, uint32_t n_col, uint32_t nt,
-                          int32_t *out);
+                          uint32_t rows1, int32_t *out);
 
 /** @brief hvx_gemm_u8i4_wh_col without its own l2fetch: for a caller that
  *         already issued hvx_gemm_u8i4_wh_prefetch over this column ahead
  *         of time. Same arguments, same result. */
 void hvx_gemm_u8i4_wh_col_nopf(const uint8_t *act_ah, uint32_t m,
                                uint32_t k_tiles, const uint8_t *wh,
-                               uint32_t n_col, uint32_t nt, int32_t *out);
+                               uint32_t n_col, uint32_t nt, uint32_t rows1,
+                               int32_t *out);
 
 /**
  * @brief One 2D l2fetch of the @a n_tiles adjacent columns [nt, nt+n_tiles)

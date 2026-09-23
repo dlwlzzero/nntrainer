@@ -1113,11 +1113,13 @@ public:
   void sendMoeOptsOnce(remote_handle64 session) {
     std::call_once(moe_opts_once_, [session]() {
       const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
-      const uint32_t flags = htp_moe_opts_flags(env);
+      const char *lead_env = std::getenv("NNTR_MOE_HTP_GEMV_LEAD_KB");
+      const char *rows1_env = std::getenv("NNTR_MOE_HTP_GEMV_ROWS1");
+      const uint32_t flags = htp_moe_opts_flags(env, lead_env, rows1_env);
       const char *source = env != nullptr ? "env" : "default";
       uint32_t applied = 0;
       const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
-      if (flags == 0u && err != AEE_SUCCESS) {
+      if ((flags & HTP_MOE_FLAG_M1_GEMV) == 0u && err != AEE_SUCCESS) {
         // The opt-out was asked for, and a skel that predates moe_set_opts
         // runs the HMX loop, which is what "off" means: say so and go on.
         std::fprintf(stderr,
@@ -1137,8 +1139,28 @@ public:
           " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
           "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
       }
-      std::fprintf(stderr, "[HTP] moe m1 gemv: %s (applied=0x%x) source=%s\n",
-                   flags != 0u ? "on" : "off", applied, source);
+      // The measured cell of #113's (loop x lead) matrix, in the same
+      // line: "default" is the skel's own build default, a number is what
+      // this run asked for and the echo above confirmed.
+      // "default" means the skel's own build default, a number what this
+      // run asked for and the echo above confirmed. source= still refers
+      // to the M1 GEMV switch alone (LEDGER 16), so these two fields are
+      // what says which cell ran.
+      char lead[24] = "lead=default", rows1[24] = "rows1=default";
+      if ((flags & HTP_MOE_FLAG_GEMV_LEAD_SET) != 0u) {
+        std::snprintf(
+          lead, sizeof(lead), "lead=%uKB",
+          ((flags >> HTP_MOE_GEMV_LEAD_SHIFT) & HTP_MOE_GEMV_LEAD_BITS) *
+            HTP_MOE_GEMV_LEAD_KB_UNIT);
+      }
+      if ((flags & HTP_MOE_FLAG_GEMV_ROWS1_SET) != 0u) {
+        std::snprintf(rows1, sizeof(rows1), "rows1=%u",
+                      (flags & HTP_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u);
+      }
+      std::fprintf(stderr,
+                   "[HTP] moe m1 gemv: %s (applied=0x%x) %s %s source=%s\n",
+                   (flags & HTP_MOE_FLAG_M1_GEMV) != 0u ? "on" : "off", applied,
+                   lead, rows1, source);
     });
   }
 

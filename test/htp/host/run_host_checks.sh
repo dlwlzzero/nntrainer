@@ -25,21 +25,20 @@ trap 'rm -rf "$OUT"' EXIT
 
 cc=${CC:-gcc}
 # -O2: the M=1 cases run the HMX stand-in at the real shape (64 rows a
-# tile, scalar), about a minute at -O2 and several at -O1. Built once per
-# M=1 l2fetch lead the device handoff measures (HVX_GEMV_PF_LEAD_KB: 0 =
-# every column fetches itself, the default, and 192), since the lead
-# changes which columns each lane's boxes must cover.
-for lead in 0 default 192; do
-  lead_def=""
-  [ "$lead" = default ] || lead_def="-DHVX_GEMV_PF_LEAD_KB=${lead}u"
-  "$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
-    -DMOE_TAIL_MAX_ROWS=16u $lead_def \
-    -I "$HERE/stub" -I "$HERE/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
-    -o "$OUT/moe_layer_host_check" \
-    "$HERE/moe_layer_host_check.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" \
-    "$BACKEND/hmx/hexkl_dma_trace.c" -lm
-  "$OUT/moe_layer_host_check"
-done
+# tile, scalar); about half a minute at -O2 and several at -O1, since the
+# HMX reference is computed once per (shape, M) and reused. One build since
+# #113: the l2fetch lead and the GEMV row loop are a per-call field of the
+# moe_set_opts word, so the check itself sweeps the whole
+# {0, 192, 384, 768, 1536} KB x {rows4, rows1} matrix plus the build's own
+# defaults, instead of this loop compiling one configuration at a time.
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
+  -DMOE_TAIL_MAX_ROWS=16u \
+  -I "$HERE/stub" -I "$HERE/.." -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+  -o "$OUT/moe_layer_host_check" \
+  "$HERE/moe_layer_host_check.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" \
+  "$BACKEND/hmx/hexkl_dma_trace.c" -lm
+
+"$OUT/moe_layer_host_check"
 
 # The worker pool's two lanes on pthreads (stub/qurt.h). Concurrency is
 # exercised for real here -- 3 workers, a caller that helps -- but a

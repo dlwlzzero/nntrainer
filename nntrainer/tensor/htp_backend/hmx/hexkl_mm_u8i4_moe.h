@@ -137,11 +137,92 @@ int hexkl_mm_u8i4_moe_layer_run(
  *        before it computes the current one, so each block's weight is on
  *        its way to L2 a block ahead. 0 is the old behaviour: every column
  *        issues its own l2fetch right before its loads. A hint only; no
- *        result depends on it. A build-time knob, like hvx_impl's
- *        HTP_MM_NO_PREFETCH: HEX_EXTRA_CFLAGS=-DHVX_GEMV_PF_LEAD_KB=<n>.
+ *        result depends on it. The compile-time default, overridable per
+ *        call by the moe_set_opts bits below; 0 until the #113 sitting
+ *        names the winning (loop, lead) pair.
+ *
+ * Read it as the *gate* half's lead. The hardware queues three l2fetch
+ * per thread and stalls the thread on a fourth, so stage A can only issue
+ * block b+1's up box after block b's last gate column (moe_m1_pair_worker):
+ * the gate columns of a block get the full lead and its up columns get
+ * about two column-computes of it. Half of stage A's weight traffic
+ * therefore runs at well under the nominal number, which is why the sweep
+ * reads the lead as an ordinal knob and not as a byte count. Giving the up
+ * half its own lead needs a fourth outstanding box and is #114's.
  */
 #ifndef HVX_GEMV_PF_LEAD_KB
-#define HVX_GEMV_PF_LEAD_KB 64u
+#define HVX_GEMV_PF_LEAD_KB 0u
 #endif
+
+/**
+ * @brief The M=1 GEMV path's row loop: 1 = a lone last row takes
+ *        gemm_row1's single accumulator (PR #107), 0 = every row group
+ *        takes gemm_rows4. The compile-time default, overridable per call
+ *        by the bits below. 0 until #113's matrix says otherwise: at
+ *        m = 1 the loop is a latency-hiding choice, not a compute one
+ *        (LEDGER rule 26), so the four-row loop's eight vrmpy per
+ *        quarter-tile may well stay ahead.
+ */
+#ifndef HVX_GEMV_M1_ROWS1
+#define HVX_GEMV_M1_ROWS1 0u
+#endif
+
+/**
+ * @brief moe_set_opts' two tune bits: each says that its own field below is
+ *        authoritative and replaces the matching compile-time default above
+ *        for every call of the session. Unset, that default stands -- so a
+ *        run that sets nothing behaves exactly as before these bits
+ *        existed, and a run that names one knob does not silently reset the
+ *        other to zero.
+ *
+ * The point of carrying the pair in the word rather than in the build is
+ * that one skel and one app then serve the whole (loop x lead) matrix,
+ * and moe_set_opts' echo (nntr_hvx_moe_set_opts' *applied, which the ARM
+ * side compares and throws on) proves per log which cell ran. A skel that
+ * predates these bits masks them off, so the echo differs and the run
+ * fails loudly instead of silently measuring the wrong cell (#97's failure
+ * mode, LEDGER rule 21).
+ */
+#define HEXKL_MOE_FLAG_GEMV_LEAD_SET 0x80u
+#define HEXKL_MOE_FLAG_GEMV_ROWS1_SET 0x40u
+
+/** @brief Bits [15:8] of the flags word: the l2fetch lead in units of
+ *         HEXKL_MOE_GEMV_LEAD_KB_UNIT KB. 8 bits x 64 KB caps the lead at
+ *         16320 KB, and the caller clamps to 127 units anyway (the
+ *         l2fetch width field is 16 bits, so a box is at most 127 tiles of
+ *         512 B). */
+#define HEXKL_MOE_GEMV_LEAD_SHIFT 8u
+#define HEXKL_MOE_GEMV_LEAD_BITS 0xFFu
+#define HEXKL_MOE_GEMV_LEAD_KB_UNIT 64u
+
+/** @brief Bit 16 of the flags word: the rows1 loop selector. */
+#define HEXKL_MOE_FLAG_GEMV_ROWS1 0x10000u
+
+/** @brief Every bit this build understands; moe_set_opts keeps these and
+ *         drops the rest, which is what makes the echo a version check. */
+#define HEXKL_MOE_FLAGS_KNOWN                                                  \
+  (HEXKL_MOE_FLAG_M1_GEMV | HEXKL_MOE_FLAG_GEMV_LEAD_SET |                     \
+   HEXKL_MOE_FLAG_GEMV_ROWS1_SET |                                             \
+   ((uint32_t)HEXKL_MOE_GEMV_LEAD_BITS << HEXKL_MOE_GEMV_LEAD_SHIFT) |         \
+   HEXKL_MOE_FLAG_GEMV_ROWS1)
+
+/** @brief The call's l2fetch lead in KB: the flags word when the lead bit
+ *         is set, else the build's default. */
+static inline uint32_t hexkl_moe_flags_lead_kb(uint32_t flags) {
+  if ((flags & HEXKL_MOE_FLAG_GEMV_LEAD_SET) == 0u) {
+    return HVX_GEMV_PF_LEAD_KB;
+  }
+  return ((flags >> HEXKL_MOE_GEMV_LEAD_SHIFT) & HEXKL_MOE_GEMV_LEAD_BITS) *
+         HEXKL_MOE_GEMV_LEAD_KB_UNIT;
+}
+
+/** @brief The call's row loop: the flags word when the rows1 bit is set,
+ *         else the build's default. */
+static inline uint32_t hexkl_moe_flags_rows1(uint32_t flags) {
+  if ((flags & HEXKL_MOE_FLAG_GEMV_ROWS1_SET) == 0u) {
+    return HVX_GEMV_M1_ROWS1;
+  }
+  return (flags & HEXKL_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u;
+}
 
 #endif /* __NNTRAINER_HEXKL_MM_U8I4_MOE_H__ */

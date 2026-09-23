@@ -47,17 +47,19 @@ static uint8_t rnd8(void) {
 #define GUARD 0x5A5A5A5A
 
 typedef void (*col_fn)(const uint8_t *, uint32_t, uint32_t, const uint8_t *,
-                       uint32_t, uint32_t, int32_t *);
+                       uint32_t, uint32_t, uint32_t, int32_t *);
 
-/* One (m, k_tiles, n_col, nt) case through one entry point: the number of
-   int32 that differ from the scalar spec plus the guard words written. */
+/* One (m, k_tiles, n_col, nt, rows1) case through one entry point: the
+   number of int32 that differ from the scalar spec plus the guard words
+   written. rows1 picks gemm_row1 for a lone last row, so it is the axis
+   #113 sweeps beside the lead and both loops must land on the same spec. */
 static uint32_t run_case(col_fn fn, const uint8_t *act, const uint8_t *wh,
                          uint32_t m, uint32_t k_tiles, uint32_t n_col,
-                         uint32_t nt) {
+                         uint32_t nt, uint32_t rows1) {
   int32_t out[(HVX_GEMM_U8I4_MAX_ROWS + 1u) * 32u];
   for (uint32_t i = 0; i < sizeof out / sizeof out[0]; ++i)
     out[i] = GUARD;
-  fn(act, m, k_tiles, wh, n_col, nt, out);
+  fn(act, m, k_tiles, wh, n_col, nt, rows1, out);
   uint32_t bad = 0;
   for (uint32_t r = 0; r < m; ++r)
     for (uint32_t c = 0; c < 32u; ++c) {
@@ -96,24 +98,25 @@ int main(void) {
         const uint32_t nts[] = {0u, 1u, ncs[b] - 1u};
         for (size_t t = 0; t < 3; ++t)
           for (uint32_t m = 1; m <= HVX_GEMM_U8I4_MAX_ROWS; ++m)
-            for (int f = 0; f < 2; ++f) {
-              const uint32_t b1 =
-                run_case(f ? hvx_gemm_u8i4_wh_col_nopf : hvx_gemm_u8i4_wh_col,
-                         act, wh, m, kts[a], ncs[b], nts[t]);
-              bad += b1;
-              ++cases;
-              if (b1)
-                printf("HVX GEMV NATIVE %s m=%u k_tiles=%u n_col=%u nt=%u "
-                       "data=%d bad=%u\n",
-                       f ? "col_nopf" : "col", m, kts[a], ncs[b], nts[t], data,
-                       b1);
-            }
+            for (int f = 0; f < 2; ++f)
+              for (uint32_t rows1 = 0; rows1 < 2u; ++rows1) {
+                const uint32_t b1 =
+                  run_case(f ? hvx_gemm_u8i4_wh_col_nopf : hvx_gemm_u8i4_wh_col,
+                           act, wh, m, kts[a], ncs[b], nts[t], rows1);
+                bad += b1;
+                ++cases;
+                if (b1)
+                  printf("HVX GEMV NATIVE %s m=%u k_tiles=%u n_col=%u nt=%u "
+                         "rows1=%u data=%d bad=%u\n",
+                         f ? "col_nopf" : "col", m, kts[a], ncs[b], nts[t],
+                         rows1, data, b1);
+              }
       }
   }
   printf("HVX GEMV NATIVE cases=%u bad=%u\n", cases, bad);
   printf(
     bad ? "HVX GEMV NATIVE DIFFERS FROM THE SCALAR SPEC\n"
-        : "HVX GEMV NATIVE BIT-IDENTICAL (libnative; m=1..16 rows1+rows4)\n");
+        : "HVX GEMV NATIVE BIT-IDENTICAL (libnative; m=1..16 x rows1=0,1)\n");
   free(act);
   free(wh);
   return bad ? 1 : 0;

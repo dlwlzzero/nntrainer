@@ -32,8 +32,11 @@
 void hvx_gemm_u8i4_wh_prefetch(const uint8_t *wh, uint32_t n_col, uint32_t nt,
                                uint32_t n_tiles, uint32_t k_tiles) {
 #if defined(__hexagon__)
-  /* Rtt: [47:32] stride, [31:16] width, [15:0] height -- 16 bits each; the
-     callers' strides (112*512, 64*512) and widths (at most 6*512) fit. */
+  /* Rtt: [47:32] stride, [31:16] width, [15:0] height -- 16 bits each. The
+     callers' strides are 112*512 and 64*512; the width is n_tiles*512, so
+     n_tiles must stay below 128 (128*512 = 65536 wraps the field to 0).
+     The MoE caller clamps its lead to 127 units for exactly that
+     (moe_m1_lead_units); this function validates nothing. */
   const uint64_t cfg = ((uint64_t)(n_col * WH_TILE_BYTES) << 32) |
                        ((uint64_t)(n_tiles * WH_TILE_BYTES) << 16) |
                        (uint64_t)k_tiles;
@@ -146,14 +149,15 @@ static inline void gemm_rows4(const uint8_t *act_ah, uint32_t r0, uint32_t rows,
 
 void hvx_gemm_u8i4_wh_col_nopf(const uint8_t *act_ah, uint32_t m,
                                uint32_t k_tiles, const uint8_t *wh,
-                               uint32_t n_col, uint32_t nt, int32_t *out) {
+                               uint32_t n_col, uint32_t nt, uint32_t rows1,
+                               int32_t *out) {
   const uint32_t stride = n_col * WH_TILE_BYTES;
   const uint8_t *col = wh + (size_t)nt * WH_TILE_BYTES;
   if (m > HVX_GEMM_U8I4_MAX_ROWS) {
     m = HVX_GEMM_U8I4_MAX_ROWS;
   }
   for (uint32_t r0 = 0; r0 < m; r0 += 4u) {
-    if (m - r0 == 1u) {
+    if (rows1 != 0u && m - r0 == 1u) {
       gemm_row1(act_ah, r0, k_tiles, col, stride, out);
     } else {
       gemm_rows4(act_ah, r0, m - r0, k_tiles, col, stride, out);
@@ -163,7 +167,7 @@ void hvx_gemm_u8i4_wh_col_nopf(const uint8_t *act_ah, uint32_t m,
 
 void hvx_gemm_u8i4_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                           const uint8_t *wh, uint32_t n_col, uint32_t nt,
-                          int32_t *out) {
+                          uint32_t rows1, int32_t *out) {
   hvx_gemm_u8i4_wh_prefetch(wh, n_col, nt, 1u, k_tiles);
-  hvx_gemm_u8i4_wh_col_nopf(act_ah, m, k_tiles, wh, n_col, nt, out);
+  hvx_gemm_u8i4_wh_col_nopf(act_ah, m, k_tiles, wh, n_col, nt, rows1, out);
 }

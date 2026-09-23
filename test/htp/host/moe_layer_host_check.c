@@ -79,6 +79,10 @@ static void gemv_log_reset(void) { g_gemv_n = 0; }
 static void gemv_stand_in(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                           const uint8_t *wh, uint32_t n_col, uint32_t nt,
                           int32_t *out) {
+  /* rows1 picks between two HVX loops that compute the same int32 sums
+     (hvx_gemm_u8i4_wh.c); the stand-in is that sum, so it is the same
+     function either way and the caller only records which loop was
+     asked for. */
   for (uint32_t r = 0; r < m; ++r)
     for (uint32_t c = 0; c < 32; ++c) {
       int32_t s = 0;
@@ -121,16 +125,28 @@ static pf_box g_pf[PF_LANES][PF_RING];
 static uint32_t g_pf_head[PF_LANES];
 static uint32_t g_lane;
 static uint64_t g_pf_cols, g_pf_used, g_pf_bad, g_nopf_n, g_col_n;
+/* Bit 0: a column ran with rows1 = 0, bit 1: with rows1 = 1. The two knobs
+   are independent only if what the call asked for is what every column
+   got, whatever the lead (#113). */
+static uint32_t g_rows1_seen;
 static void pf_reset(void) {
   memset(g_pf, 0, sizeof g_pf);
   memset(g_pf_head, 0, sizeof g_pf_head);
   g_pf_cols = g_pf_used = g_pf_bad = g_nopf_n = g_col_n = 0;
+  g_rows1_seen = 0;
 }
 void hvx_gemm_u8i4_wh_prefetch(const uint8_t *wh, uint32_t n_col, uint32_t nt,
                                uint32_t n_tiles, uint32_t k_tiles) {
+  /* n_tiles > 64 is this stand-in's limit, not the kernel's (it clamps at
+     127, the l2fetch width field's bound): the per-column bitmap below is
+     one uint64_t. No shape reaches 64 units today -- the deepest swept
+     block is 54 -- so widening it would be speculation; the message says
+     which bound fired. */
   if (n_tiles == 0u || n_tiles > 64u || nt + n_tiles > n_col ||
       n_col * 512u > 0xFFFFu || n_tiles * 512u > 0xFFFFu || k_tiles > 0xFFFFu) {
-    printf("PF box out of range: lane=%u nt=%u n=%u n_col=%u k_tiles=%u\n",
+    printf("PF box out of range%s: lane=%u nt=%u n=%u n_col=%u k_tiles=%u\n",
+           n_tiles > 64u ? " (stand-in's 64-column bitmap, not the kernel)"
+                         : "",
            g_lane, nt, n_tiles, n_col, k_tiles);
     ++g_pf_bad;
     return;
@@ -163,8 +179,10 @@ void hvx_gemm_u8i4_wh_prefetch(const uint8_t *wh, uint32_t n_col, uint32_t nt,
 }
 void hvx_gemm_u8i4_wh_col_nopf(const uint8_t *act_ah, uint32_t m,
                                uint32_t k_tiles, const uint8_t *wh,
-                               uint32_t n_col, uint32_t nt, int32_t *out) {
+                               uint32_t n_col, uint32_t nt, uint32_t rows1,
+                               int32_t *out) {
   int found = 0;
+  g_rows1_seen |= 1u << (rows1 != 0u);
   for (uint32_t k = 0; k < PF_RING && !found; ++k) {
     pf_box *b = &g_pf[g_lane][k];
     if (b->wh == wh && b->n_col == n_col && b->k_tiles == k_tiles &&
@@ -185,8 +203,9 @@ void hvx_gemm_u8i4_wh_col_nopf(const uint8_t *act_ah, uint32_t m,
 }
 void hvx_gemm_u8i4_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                           const uint8_t *wh, uint32_t n_col, uint32_t nt,
-                          int32_t *out) {
+                          uint32_t rows1, int32_t *out) {
   ++g_col_n;
+  g_rows1_seen |= 1u << (rows1 != 0u);
   gemv_stand_in(act_ah, m, k_tiles, wh, n_col, nt, out);
 }
 int hexkl_micro_hmx_acc_read_int32(uint8_t *base, uint32_t cfg, uint32_t off) {
@@ -636,7 +655,13 @@ static int g_pf_lead_ok = 1;
 static int run_m1_case(const char *shape, uint32_t M, uint32_t K,
                        uint32_t inter, uint32_t N_out, uint32_t NE,
                        const uint32_t *rc_, uint32_t slot0, uint8_t *vtcm,
-                       size_t vtcm_bytes, hexkl_moe_scratch *scratch) {
+                       size_t vtcm_bytes, hexkl_moe_scratch *scratch,
+                       uint32_t gemv_flags, float *ref, int have_ref) {
+  const uint32_t lead_kb = hexkl_moe_flags_lead_kb(gemv_flags);
+  const uint32_t rows1 = hexkl_moe_flags_rows1(gemv_flags);
+  /* Same weights and activation for every configuration of a case, so the
+     HMX reference above can be computed once and reused. */
+  rnd_state = 12345u + 7919u * M + 104729u * (uint32_t)(shape[0] == 'r');
   W *wg = (W *)calloc(NE, sizeof(W));
   W *wd = (W *)calloc(NE, sizeof(W));
   uint32_t *hg = (uint32_t *)calloc(NE, sizeof(uint32_t));
@@ -669,26 +694,37 @@ static int run_m1_case(const char *shape, uint32_t M, uint32_t K,
   float *out_m1 = (float *)malloc(sizeof(float) * M * N_out);
   int fail = 0;
 
-  memset(hexkl_probe_us, 0, sizeof hexkl_probe_us);
-  int r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, vtcm_bytes, vtcm_bytes, M,
-                                      K, inter, N_out, NE, hg, hd, ridx, rc_,
-                                      rw, act, out_hmx, NULL, scratch, 0u);
-  const uint64_t blocks_hmx = hexkl_probe_us[HEXKL_PROBE_BLOCKS];
-  const uint64_t path_hmx = hexkl_probe_us[HEXKL_PROBE_PATH];
-  if (r != 0 || blocks_hmx != active || path_hmx != 0u) {
-    printf("M1 GEMV shape=%s M=%u: HMX stand-in rc=%d blocks=%llu (want %u) "
-           "path=%llu\n",
-           shape, M, r, (unsigned long long)blocks_hmx, active,
-           (unsigned long long)path_hmx);
-    fail = 1;
+  /* The HMX reference depends only on (shape, M), not on the GEMV's
+     (loop, lead) pair, and it is the expensive half of this check -- the
+     scalar stand-in runs 64-row blocks. run_m1_cases hands the same
+     buffer back for every configuration of a case, so it runs once. */
+  int r = 0;
+  uint64_t blocks_hmx = active;
+  if (have_ref) {
+    memcpy(out_hmx, ref, sizeof(float) * M * N_out);
+  } else {
+    memset(hexkl_probe_us, 0, sizeof hexkl_probe_us);
+    r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, vtcm_bytes, vtcm_bytes, M, K,
+                                    inter, N_out, NE, hg, hd, ridx, rc_, rw,
+                                    act, out_hmx, NULL, scratch, 0u);
+    blocks_hmx = hexkl_probe_us[HEXKL_PROBE_BLOCKS];
+    const uint64_t path_hmx = hexkl_probe_us[HEXKL_PROBE_PATH];
+    if (r != 0 || blocks_hmx != active || path_hmx != 0u) {
+      printf("M1 GEMV shape=%s M=%u: HMX stand-in rc=%d blocks=%llu (want %u) "
+             "path=%llu\n",
+             shape, M, r, (unsigned long long)blocks_hmx, active,
+             (unsigned long long)path_hmx);
+      fail = 1;
+    }
+    memcpy(ref, out_hmx, sizeof(float) * M * N_out);
   }
 
   memset(hexkl_probe_us, 0, sizeof hexkl_probe_us);
   gemv_log_reset();
   pf_reset();
-  r = hexkl_mm_u8i4_moe_layer_run(
-    &g_tbl, vtcm, vtcm_bytes, vtcm_bytes, M, K, inter, N_out, NE, hg, hd, ridx,
-    rc_, rw, act, out_m1, NULL, scratch, HEXKL_MOE_FLAG_M1_GEMV);
+  r = hexkl_mm_u8i4_moe_layer_run(&g_tbl, vtcm, vtcm_bytes, vtcm_bytes, M, K,
+                                  inter, N_out, NE, hg, hd, ridx, rc_, rw, act,
+                                  out_m1, NULL, scratch, gemv_flags);
   const uint64_t blocks = hexkl_probe_us[HEXKL_PROBE_BLOCKS];
   const uint64_t dma_kb = hexkl_probe_us[HEXKL_PROBE_DMA_KB];
   const uint64_t path = hexkl_probe_us[HEXKL_PROBE_PATH];
@@ -700,18 +736,19 @@ static int run_m1_case(const char *shape, uint32_t M, uint32_t K,
      over-fetch); without it, every column fetched itself as before. */
   const uint64_t cols = (uint64_t)active * ((2u * inter + N_out) / 32u);
   const int pf_ok =
-    g_pf_bad == 0u &&
-    (HVX_GEMV_PF_LEAD_KB != 0u
-       ? (g_col_n == 0u && g_nopf_n == cols && g_pf_cols == cols &&
-          g_pf_used == cols)
-       : (g_nopf_n == 0u && g_pf_cols == 0u && g_col_n == cols));
+    g_pf_bad == 0u && g_rows1_seen == (1u << (rows1 != 0u)) &&
+    (lead_kb != 0u ? (g_col_n == 0u && g_nopf_n == cols && g_pf_cols == cols &&
+                      g_pf_used == cols)
+                   : (g_nopf_n == 0u && g_pf_cols == 0u && g_col_n == cols));
   if (!pf_ok) {
-    printf("M1 GEMV shape=%s M=%u PF lead=%u: boxes=%llu cols covered=%llu "
-           "nopf=%llu self-prefetched=%llu bad=%llu (want %llu columns)\n",
-           shape, M, (unsigned)HVX_GEMV_PF_LEAD_KB,
+    printf("M1 GEMV shape=%s M=%u PF lead=%u rows1=%u: boxes=%llu "
+           "cols covered=%llu nopf=%llu self-prefetched=%llu bad=%llu "
+           "rows1_seen=%u (want %llu columns)\n",
+           shape, M, (unsigned)lead_kb, (unsigned)rows1,
            (unsigned long long)g_pf_cols, (unsigned long long)g_pf_used,
            (unsigned long long)g_nopf_n, (unsigned long long)g_col_n,
-           (unsigned long long)g_pf_bad, (unsigned long long)cols);
+           (unsigned long long)g_pf_bad, (unsigned)g_rows1_seen,
+           (unsigned long long)cols);
     fail = 1;
   }
   g_pf_lead_ok &= pf_ok;
@@ -812,6 +849,13 @@ static int run_m1_cases(uint8_t *vtcm, size_t vtcm_bytes,
   static const uint32_t counts[3][10] = {
     {1, 1, 1, 1}, {2, 2, 1, 1, 1, 1}, {4, 3, 2, 1, 1, 1, 1, 1, 1, 1}};
   static const uint32_t Ms[3] = {1, 2, 4};
+  /* #113's matrix, run inside one build: the five leads the device sweep
+     measures x the two row loops, plus the build's own defaults (the tune
+     bit clear), which is what a run that sets no env var gets. The lead
+     changes which columns each lane's boxes must cover and the loop
+     changes which kernel entry every column takes; neither changes a
+     result bit, so every cell is also held against the HMX path. */
+  static const uint32_t leads_kb[] = {0u, 192u, 384u, 768u, 1536u};
   int fail = 0;
   for (int shape = 0; shape < 2; ++shape) {
     const uint32_t K = shape ? 2048 : 64, inter = shape ? 1792 : 32,
@@ -821,18 +865,41 @@ static int run_m1_cases(uint8_t *vtcm, size_t vtcm_bytes,
       memset(rc_, 0, sizeof(uint32_t) * NE);
       for (uint32_t i = 0; i < 10 && counts[c][i] != 0u; ++i)
         rc_[(i * 5u) % NE] = counts[c][i];
-      fail |= run_m1_case(shape ? "real" : "tiny", Ms[c], K, inter, N_out, NE,
-                          rc_, 64u, vtcm, vtcm_bytes, scratch);
+      float *ref = (float *)malloc(sizeof(float) * Ms[c] * N_out);
+      for (size_t cfg = 0; cfg <= 2u * (sizeof leads_kb / sizeof *leads_kb);
+           ++cfg) {
+        uint32_t flags = HEXKL_MOE_FLAG_M1_GEMV;
+        if (cfg != 0u) {
+          const size_t i = cfg - 1u;
+          flags |= HEXKL_MOE_FLAG_GEMV_LEAD_SET |
+                   HEXKL_MOE_FLAG_GEMV_ROWS1_SET |
+                   ((leads_kb[i / 2u] / HEXKL_MOE_GEMV_LEAD_KB_UNIT)
+                    << HEXKL_MOE_GEMV_LEAD_SHIFT);
+          if (i % 2u)
+            flags |= HEXKL_MOE_FLAG_GEMV_ROWS1;
+        }
+        fail |=
+          run_m1_case(shape ? "real" : "tiny", Ms[c], K, inter, N_out, NE, rc_,
+                      64u, vtcm, vtcm_bytes, scratch, flags, ref, cfg != 0u);
+      }
+      free(ref);
     }
     free(rc_);
   }
-  printf(fail
-           ? "M1 GEMV PATH DIFFERS FROM HMX PATH\n"
-           : "M1 GEMV PATH BIT-IDENTICAL TO HMX PATH (M=1,2,4; tiny+real)\n");
-  printf(g_pf_lead_ok ? "M1 GEMV PREFETCH LEAD COVERS EVERY COLUMN (lanes=%u; "
-                        "lead %u KB)\n"
-                      : "M1 GEMV PREFETCH LEAD WRONG (lanes=%u; lead %u KB)\n",
-         PF_LANES, (unsigned)HVX_GEMV_PF_LEAD_KB);
+  if (fail)
+    printf("M1 GEMV PATH DIFFERS FROM HMX PATH\n");
+  else
+    printf("M1 GEMV PATH BIT-IDENTICAL TO HMX PATH (M=1,2,4; tiny+real; "
+           "%u lead x loop configurations)\n",
+           (unsigned)(1u + 2u * (sizeof leads_kb / sizeof *leads_kb)));
+  printf(g_pf_lead_ok
+           ? "M1 GEMV PREFETCH LEAD COVERS EVERY COLUMN (lanes=%u; leads "
+             "0/192/384/768/1536 KB x rows4,rows1; build default %u KB "
+             "rows1=%u)\n"
+           : "M1 GEMV PREFETCH LEAD WRONG (lanes=%u; leads "
+             "0/192/384/768/1536 KB x rows4,rows1; build default %u KB "
+             "rows1=%u)\n",
+         PF_LANES, (unsigned)HVX_GEMV_PF_LEAD_KB, (unsigned)HVX_GEMV_M1_ROWS1);
   return fail;
 }
 
