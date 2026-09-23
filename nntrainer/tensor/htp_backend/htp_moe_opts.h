@@ -39,6 +39,15 @@
 #define HTP_MOE_GEMV_LEAD_MAX_UNITS 127u
 #define HTP_MOE_FLAG_GEMV_ROWS1 0x10000u
 
+/** @brief hexkl_mm_u8i4_moe.h's third tune bit and its field (#117): bit 5
+ *  says the DSP takes the weight feed from bit 17 (1 = each expert's
+ *  weights staged into VTCM by DMA, 0 = read from the arena) instead of
+ *  from its build default. Always sent, like the pair above: an unset
+ *  run prints applied=0x303e1 (feed=vtcm), NNTR_MOE_HTP_GEMV_FEED=0
+ *  0x103e1 (feed=arena, the D192 arena read = #117's A). */
+#define HTP_MOE_FLAG_GEMV_FEED_SET 0x20u
+#define HTP_MOE_FLAG_GEMV_FEED 0x20000u
+
 /**
  * @brief The lead field for a requested lead in KB: rounded to the nearest
  *        multiple of HTP_MOE_GEMV_LEAD_KB_UNIT and clamped to
@@ -65,36 +74,40 @@ static inline uint32_t htp_moe_gemv_lead_units(const char *env) {
   return (uint32_t)u;
 }
 
-/**
-/** @brief The (loop, lead) pair an unset run asks for: #113's D192, the
- *  same values as hexkl_mm_u8i4_moe.h's HVX_GEMV_M1_ROWS1 and
- *  HVX_GEMV_PF_LEAD_KB. Restated here because the DSP header does not
- *  compile on the ARM side; keep the two in step. Sent explicitly rather
- *  than left to the skel's default so that every log's echo names its
- *  cell (LEDGER rule 21): an unset run prints applied=0x103c1, and
- *  NNTR_MOE_HTP_GEMV_LEAD_KB=0 NNTR_MOE_HTP_GEMV_ROWS1=0 (the old
- *  four-row, no-lead cell) prints applied=0xc1. */
+/** @brief The (loop, lead, feed) cell an unset run asks for: #113's D192
+ *  under #117's VTCM feed, the same values as hexkl_mm_u8i4_moe.h's
+ *  HVX_GEMV_M1_ROWS1, HVX_GEMV_PF_LEAD_KB and HVX_GEMV_M1_FEED. Restated
+ *  here because the DSP header does not compile on the ARM side; keep the
+ *  two in step. Sent explicitly rather than left to the skel's default so
+ *  that every log's echo names its cell (LEDGER rule 21): an unset run
+ *  prints applied=0x303e1, NNTR_MOE_HTP_GEMV_FEED=0 prints 0x103e1 (the
+ *  D192 arena read), and LEAD_KB=0 ROWS1=0 FEED=0 (the pre-#115 four-row,
+ *  no-lead cell) prints 0xe1. */
 #define HTP_MOE_GEMV_LEAD_KB_DEFAULT 192u
 #define HTP_MOE_GEMV_ROWS1_DEFAULT 1u
+#define HTP_MOE_GEMV_FEED_DEFAULT 1u
 
 /**
  * @brief moe_set_opts flags for NNTR_MOE_HTP_M1_GEMV and, since #113, the
- *        two GEMV tuning variables.
+ *        GEMV tuning variables.
  * @param env       getenv("NNTR_MOE_HTP_M1_GEMV"), NULL when unset
  * @param lead_env  getenv("NNTR_MOE_HTP_GEMV_LEAD_KB"), NULL when unset
  * @param rows1_env getenv("NNTR_MOE_HTP_GEMV_ROWS1"), NULL when unset
+ * @param feed_env  getenv("NNTR_MOE_HTP_GEMV_FEED"), NULL when unset (#117)
  * @return HTP_MOE_FLAG_M1_GEMV when @a env is unset (the default since
  *         #101) or set to a non-zero number, 0 for "0" (the opt-out); plus
- *         both tune bits, each field from its own variable when set and
- *         from the *_DEFAULT above when not
+ *         all three tune bits, each field from its own variable when set
+ *         and from the *_DEFAULT above when not
  *
  * Each knob is overridden only by its own variable: setting the lead
  * leaves the row loop at the default and vice versa, so naming one knob
  * cannot silently reset the other to zero.
  */
 static inline uint32_t htp_moe_opts_flags(const char *env, const char *lead_env,
-                                          const char *rows1_env) {
-  uint32_t flags = HTP_MOE_FLAG_GEMV_LEAD_SET | HTP_MOE_FLAG_GEMV_ROWS1_SET;
+                                          const char *rows1_env,
+                                          const char *feed_env) {
+  uint32_t flags = HTP_MOE_FLAG_GEMV_LEAD_SET | HTP_MOE_FLAG_GEMV_ROWS1_SET |
+                   HTP_MOE_FLAG_GEMV_FEED_SET;
   if (env == NULL || atoi(env) != 0)
     flags |= HTP_MOE_FLAG_M1_GEMV;
   flags |= (lead_env != NULL
@@ -104,7 +117,15 @@ static inline uint32_t htp_moe_opts_flags(const char *env, const char *lead_env,
   if (rows1_env != NULL ? atoi(rows1_env) != 0
                         : HTP_MOE_GEMV_ROWS1_DEFAULT != 0u)
     flags |= HTP_MOE_FLAG_GEMV_ROWS1;
+  if (feed_env != NULL ? atoi(feed_env) != 0 : HTP_MOE_GEMV_FEED_DEFAULT != 0u)
+    flags |= HTP_MOE_FLAG_GEMV_FEED;
   return flags;
+}
+
+/** @brief The banner's name for the feed cell a flags word asks for:
+ *  "vtcm" or "arena". */
+static inline const char *htp_moe_opts_feed_name(uint32_t flags) {
+  return (flags & HTP_MOE_FLAG_GEMV_FEED) != 0u ? "vtcm" : "arena";
 }
 
 /**

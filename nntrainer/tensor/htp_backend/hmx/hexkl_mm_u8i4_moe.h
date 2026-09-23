@@ -170,12 +170,29 @@ int hexkl_mm_u8i4_moe_layer_run(
 #endif
 
 /**
- * @brief moe_set_opts' two tune bits: each says that its own field below is
+ * @brief The M=1 GEMV path's weight feed: 1 = each expert's gate_up and
+ *        down are staged into VTCM by the DMA engine one expert ahead
+ *        (#117: the #100 `f2` shape, whole-matrix descriptors, two 3.5 MiB
+ *        slabs double-buffered by expert) and the GEMV reads the VTCM
+ *        copy; 0 = the GEMV reads the arena behind its own l2fetch. The
+ *        compile-time default, overridable per call by the bits below.
+ *        1 since #117's sitting passed its gate twice (M==1 mm 676 us vs
+ *        D192's 932, decode +29..33 % at every G, text identical, M>1
+ *        dsp within 0.04 %). Under the feed the l2fetch lead is off by
+ *        construction (nothing to fetch), so the (loop, lead) pair reads
+ *        as (rows1, ignored).
+ */
+#ifndef HVX_GEMV_M1_FEED
+#define HVX_GEMV_M1_FEED 1u
+#endif
+
+/**
+ * @brief moe_set_opts' tune bits: each says that its own field below is
  *        authoritative and replaces the matching compile-time default above
  *        for every call of the session. Unset, that default stands. The
- *        ARM side (htp_moe_opts.h) always sets both, sending its own copy
- *        of the defaults when the env names nothing, so every log's echo
- *        names the (loop, lead) cell that ran (LEDGER rule 21).
+ *        ARM side (htp_moe_opts.h) always sets all three, sending its own
+ *        copy of the defaults when the env names nothing, so every log's
+ *        echo names the (loop, lead, feed) cell that ran (LEDGER rule 21).
  *
  * The point of carrying the pair in the word rather than in the build is
  * that one skel and one app then serve the whole (loop x lead) matrix,
@@ -187,6 +204,8 @@ int hexkl_mm_u8i4_moe_layer_run(
  */
 #define HEXKL_MOE_FLAG_GEMV_LEAD_SET 0x80u
 #define HEXKL_MOE_FLAG_GEMV_ROWS1_SET 0x40u
+/** @brief Bit 5: bit 17 (the VTCM feed) is authoritative (#117). */
+#define HEXKL_MOE_FLAG_GEMV_FEED_SET 0x20u
 
 /** @brief Bits [15:8] of the flags word: the l2fetch lead in units of
  *         HEXKL_MOE_GEMV_LEAD_KB_UNIT KB. 8 bits x 64 KB caps the lead at
@@ -200,13 +219,16 @@ int hexkl_mm_u8i4_moe_layer_run(
 /** @brief Bit 16 of the flags word: the rows1 loop selector. */
 #define HEXKL_MOE_FLAG_GEMV_ROWS1 0x10000u
 
+/** @brief Bit 17 of the flags word: the VTCM feed selector (#117). */
+#define HEXKL_MOE_FLAG_GEMV_FEED 0x20000u
+
 /** @brief Every bit this build understands; moe_set_opts keeps these and
  *         drops the rest, which is what makes the echo a version check. */
 #define HEXKL_MOE_FLAGS_KNOWN                                                  \
   (HEXKL_MOE_FLAG_M1_GEMV | HEXKL_MOE_FLAG_GEMV_LEAD_SET |                     \
-   HEXKL_MOE_FLAG_GEMV_ROWS1_SET |                                             \
+   HEXKL_MOE_FLAG_GEMV_ROWS1_SET | HEXKL_MOE_FLAG_GEMV_FEED_SET |              \
    ((uint32_t)HEXKL_MOE_GEMV_LEAD_BITS << HEXKL_MOE_GEMV_LEAD_SHIFT) |         \
-   HEXKL_MOE_FLAG_GEMV_ROWS1)
+   HEXKL_MOE_FLAG_GEMV_ROWS1 | HEXKL_MOE_FLAG_GEMV_FEED)
 
 /** @brief The call's l2fetch lead in KB: the flags word when the lead bit
  *         is set, else the build's default. */
@@ -225,6 +247,15 @@ static inline uint32_t hexkl_moe_flags_rows1(uint32_t flags) {
     return HVX_GEMV_M1_ROWS1;
   }
   return (flags & HEXKL_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u;
+}
+
+/** @brief The call's weight feed: the flags word when the feed bit is
+ *         set, else the build's default. 1 = VTCM by DMA, 0 = arena. */
+static inline uint32_t hexkl_moe_flags_feed(uint32_t flags) {
+  if ((flags & HEXKL_MOE_FLAG_GEMV_FEED_SET) == 0u) {
+    return HVX_GEMV_M1_FEED;
+  }
+  return (flags & HEXKL_MOE_FLAG_GEMV_FEED) != 0u ? 1u : 0u;
 }
 
 #endif /* __NNTRAINER_HEXKL_MM_U8I4_MOE_H__ */
