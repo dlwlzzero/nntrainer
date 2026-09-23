@@ -573,6 +573,10 @@ every variant, most at G = 1024 (B 31.47 → 35.01).
   +4.16 / +3.91 %, text identical — reproduced → BENCHMARK's "now" moves
   to A; from the cooler sitting A 28.22 / 27.89 / 27.23, B 37.38 / 36.49 /
   35.01.
+* **The landed default**: the feed — see "Landed defaults (after the
+  sitting)" at the end of this document. Every number above was taken
+  with the feed as an **opt-in** (`NNTR_MOE_HTP_GEMV_FEED=1`, B's word
+  `0x303e1`) against a build whose default was the arena read.
 
 ## Notes from the run
 
@@ -602,3 +606,65 @@ every variant, most at G = 1024 (B 31.47 → 35.01).
 * Sitting 2's logs are under `$W/logs2/`, sitting 1's under `$W/logs/`.
 * No FARF/AEE errors seen; every E2E log has one banner with the
   variant's word, the skel md5 line `5cea0a5a…`, and no `HTP-PROFILE`.
+
+## Landed defaults (after the sitting): the VTCM feed, by the gate
+
+Both sittings passed the gate (supervisor verdict, cycle 15), so PR #118
+flips the default: `HVX_GEMV_M1_FEED 1u` in `hexkl_mm_u8i4_moe.h`, and the
+ARM side (`htp_moe_opts.h`) now sends the feed bit explicitly whenever the
+env names nothing (`HTP_MOE_GEMV_FEED_DEFAULT 1u`, the same shape as
+#113's pair), so an **unset** run prints exactly one
+
+```
+[HTP] moe m1 gemv: on (applied=0x303e1) lead=192KB rows1=1 feed=vtcm source=default
+```
+
+The `applied=` word of the landed default is **`0x303e1`** (= this
+sitting's B word; bit 5 = feed authoritative, bit 17 = feed on, over
+D192's `0x103c1`). The banner's `feed=default` name is gone with the case
+that printed it: the feed is now `vtcm` or `arena`, never left to the
+skel's build value. A skel that predates bits 5 / 17 masks them and the
+`applied != flags` throw fires (LEDGER rule 21).
+
+**Every measurement above was taken with the feed as an opt-in**
+(`NNTR_MOE_HTP_GEMV_FEED=1` on a build whose default was the arena read);
+the flipped default itself has not run on silicon. **No new handoff.**
+Its device confirmation rides along in the next sitting (#120's sync A/B
+or the ⑨ wiring, whichever comes first) as that sitting's A vs A0:
+
+| next sitting's cell | env | `applied=` | banner | = this sitting's |
+|---|---|---|---|---|
+| **A** | unset | `0x303e1` | `lead=192KB rows1=1 feed=vtcm` | B |
+| **A0** | `NNTR_MOE_HTP_GEMV_FEED=0` | `0x103e1` | `lead=192KB rows1=1 feed=arena` | A (D192 arena; its word was `0x103c1` because the feed bit was not sent then) |
+| pre-#115 cell | `NNTR_MOE_HTP_GEMV_LEAD_KB=0 NNTR_MOE_HTP_GEMV_ROWS1=0 NNTR_MOE_HTP_GEMV_FEED=0` | `0xe1` | `lead=0KB rows1=0 feed=arena` | A0 (`0xc1`) |
+
+BENCHMARK's "now" stays at this sitting's A (28.22 / 27.89 / 27.23) until
+that sitting reads A vs A0; it also reads A's `DMA ring:` engine line
+against its own anchor (LEDGER ㉓). The M>1 prefill path executes none of
+the feed code (`use_m1` gates it): `feed=0/23` on every M>1 row, M>1
+`dsp` ±0.04 % measured above, so the flip changes nothing at M>1 and gets
+no E2E cell of its own. The step-6 sanity grep above
+(`A 0x103c1 … feed=default`) is obsolete for the flipped build: A now
+reads `0x303e1 … feed=vtcm`.
+
+**Restaged set** under `/local/mnt/workspace/htp_moe/117/` — the flipped
+build from `99fdbbf4` (skel `./test/htp/build.sh`, `UNDEFINED SYMBOLS OK
+(46 runtime imports)`; app `ninja -C builddir install` then
+`build_android.sh --htp --cache`, since `--cache` alone left the 15:30
+`libnntrainer.so` in place; gtests `ndk-build … unittest_hvx_mm_u8i4
+unittest_hvx_dma_probe`). The md5s listed in the Artifacts table stay as
+the record of what the two sittings ran; `$W/md5.txt` now reads:
+
+| file | md5 | vs the sittings' |
+|---|---|---|
+| `libnntr_hvx_skel.so` | `b42d2e3bc321ac77b3a1a644db4c3801` | new (`HVX_GEMV_M1_FEED = 1u`) |
+| `libnntrainer.so` | `6b3e92b5f45d5d13368b37796f3d94c9` | new (sends the feed bit; `readelf -d` NEEDED `libsdkl.so`, `libcdsprpc.so`; `feed=%s source=%s` banner once) |
+| `unittest_hvx_mm_u8i4` | `e6adeeb367779382a3244a6d762db5d3` | new (line numbers moved with the reformatted feed loop; no test logic changed) |
+| `nntrainer_causallm` | `21221e9006636d054844361a83a3836a` | unchanged |
+| `libcausallm_core.so` | `ffbe434507a695132eb5dae7877fc647` | unchanged |
+| `libccapi-nntrainer.so` | `d1bf42a37f3a5e530567fd180df414af` | unchanged |
+| `unittest_hvx_dma_probe` | `639c2eb4993fee118f8a86ddeb7adbe4` | unchanged (the rule-30 anchor) |
+| `libc++_shared.so`, `libsdkl.so`, `prompt512.txt` | `b1586b9b…`, `0ad4e22a…`, `fc65c158…` | unchanged |
+
+Workstation sanity on the restaged set: `md5sum -c` 0 mismatches,
+`per-layer-type totals` 0, `feed=%s source=%s` 1, no `libcdsprpc*`.
