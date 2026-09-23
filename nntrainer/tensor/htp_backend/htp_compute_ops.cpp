@@ -181,7 +181,7 @@ enum {
   HTP_MOE_T_DMA_DEPTH_MAX,
   HTP_MOE_T_DMA_FIRST_READY_US,
   HTP_MOE_T_DMA_LAST_ISSUE_US,
-  HTP_MOE_T_PATH, /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
+  HTP_MOE_T_PATH,    /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
   HTP_MOE_T_M1_FEED, /**< NOT us: 1 = the GEMV read VTCM fed by DMA (#117) */
   HTP_MOE_N_STAGES
 };
@@ -612,20 +612,20 @@ private:
           swiglu_per, b.m1_calls != 0);
         std::fprintf(
           stderr,
-                     "  dsp=%7.1f us/call (%4.1f%%) transport=%7.1f us/call"
-                     "  [quant %.1f gather %.1f requant %.1f swiglu %.1f "
-                     "dequant %.1f acc %.1f drain %.1f+%.1f push %.1f "
-                     "scatter %.1f alloc %.1f "
-                     "stage %.1f mm %.1f | rest<=%.1f (%.1f%% of host) "
+          "  dsp=%7.1f us/call (%4.1f%%) transport=%7.1f us/call"
+          "  [quant %.1f gather %.1f requant %.1f swiglu %.1f "
+          "dequant %.1f acc %.1f drain %.1f+%.1f push %.1f "
+          "scatter %.1f alloc %.1f "
+          "stage %.1f mm %.1f | rest<=%.1f (%.1f%% of host) "
           "blocks=%llu m1_gemv=%llu/%llu feed=%llu/%llu]",
-                     dsp_per, host_per > 0.0 ? 100.0 * dsp_per / host_per : 0.0,
+          dsp_per, host_per > 0.0 ? 100.0 * dsp_per / host_per : 0.0,
           host_per - dsp_per, quant_per, gather_per, requant_per, swiglu_per,
           dequant_per, acc_per, drain_per, drain_dn_per, push_per, scatter_per,
           alloc_per, stage_per, mm_meas_per, mm_per,
           host_per > 0.0 ? 100.0 * mm_per / host_per : 0.0,
           (unsigned long long)b.blocks, (unsigned long long)b.m1_calls,
           (unsigned long long)b.calls, (unsigned long long)b.m1_feed_calls,
-                     (unsigned long long)b.calls);
+          (unsigned long long)b.calls);
       }
       if (level_ >= 2 && b.calls != 0 && b.dma_first_us != 0) {
         // The first weight wait happens with an empty ring, so it times a
@@ -1153,14 +1153,13 @@ public:
           " (libnntr_hvx_skel.so on the device predates moe_set_opts; "
           "rebuild it: test/htp/build.sh, then push libnntr_hvx_skel.so)");
       }
-      // The measured cell of #113's (loop x lead) matrix, in the same
-      // line. Both knobs are always sent (htp_moe_opts_flags: the env's
-      // value or the D192 default), and the echo above confirmed them,
-      // so an unset run reads lead=192KB rows1=1 and applied=0x103c1.
-      // feed= (#117) is the weight feed cell: default (the skel's build
-      // value) unless NNTR_MOE_HTP_GEMV_FEED names vtcm (1) or arena (0);
-      // the level-2 M==1 row's feed=n/calls is the per-call proof.
-      // source= still refers to the M1 GEMV switch alone (LEDGER 16).
+      // The measured (loop, lead, feed) cell, in the same line. All three
+      // knobs are always sent (htp_moe_opts_flags: the env's value or the
+      // default), and the echo above confirmed them, so an unset run reads
+      // lead=192KB rows1=1 feed=vtcm and applied=0x303e1 (#113's D192
+      // under #117's VTCM feed); NNTR_MOE_HTP_GEMV_FEED=0 reads feed=arena
+      // and 0x103e1. The level-2 M==1 row's feed=n/calls is the per-call
+      // proof. source= still refers to the M1 GEMV switch alone (LEDGER 16).
       std::fprintf(
         stderr,
         "[HTP] moe m1 gemv: %s (applied=0x%x) lead=%uKB rows1=%u "
