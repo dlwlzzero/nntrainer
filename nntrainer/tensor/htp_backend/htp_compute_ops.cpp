@@ -182,6 +182,7 @@ enum {
   HTP_MOE_T_DMA_FIRST_READY_US,
   HTP_MOE_T_DMA_LAST_ISSUE_US,
   HTP_MOE_T_PATH, /**< NOT us: 0 = HMX block loop, 1 = M=1 HVX GEMV */
+  HTP_MOE_T_M1_FEED, /**< NOT us: 1 = the GEMV read VTCM fed by DMA (#117) */
   HTP_MOE_N_STAGES
 };
 
@@ -344,6 +345,7 @@ public:
       b.dma_first_ready_us += stage_us[HTP_MOE_T_DMA_FIRST_READY_US];
       b.dma_last_issue_us += stage_us[HTP_MOE_T_DMA_LAST_ISSUE_US];
       b.m1_calls += (stage_us[HTP_MOE_T_PATH] != 0u) ? 1u : 0u;
+      b.m1_feed_calls += (stage_us[HTP_MOE_T_M1_FEED] != 0u) ? 1u : 0u;
     }
   }
 
@@ -435,6 +437,10 @@ private:
         from: m1_gemv=calls/calls with blocks=0 is the GEMV, 0/calls with
         blocks=4*calls the HMX loop. */
     uint64_t m1_calls = 0;
+    /** Of those, the calls whose GEMV read VTCM slabs the DMA engine fed
+        (#117): feed=calls/calls with a DMA ring: line is the feed, 0/calls
+        the arena read. */
+    uint64_t m1_feed_calls = 0;
     uint64_t host_us = 0;
     uint64_t dsp_us = 0;
     uint64_t quant_us = 0;
@@ -604,20 +610,21 @@ private:
             stage_per + gather_per + requant_per + mm_meas_per + drain_dn_per +
             push_per + alloc_per,
           swiglu_per, b.m1_calls != 0);
-        std::fprintf(stderr,
+        std::fprintf(
+          stderr,
                      "  dsp=%7.1f us/call (%4.1f%%) transport=%7.1f us/call"
                      "  [quant %.1f gather %.1f requant %.1f swiglu %.1f "
                      "dequant %.1f acc %.1f drain %.1f+%.1f push %.1f "
                      "scatter %.1f alloc %.1f "
                      "stage %.1f mm %.1f | rest<=%.1f (%.1f%% of host) "
-                     "blocks=%llu m1_gemv=%llu/%llu]",
+          "blocks=%llu m1_gemv=%llu/%llu feed=%llu/%llu]",
                      dsp_per, host_per > 0.0 ? 100.0 * dsp_per / host_per : 0.0,
-                     host_per - dsp_per, quant_per, gather_per, requant_per,
-                     swiglu_per, dequant_per, acc_per, drain_per, drain_dn_per,
-                     push_per, scatter_per, alloc_per, stage_per, mm_meas_per,
-                     mm_per, host_per > 0.0 ? 100.0 * mm_per / host_per : 0.0,
-                     (unsigned long long)b.blocks,
-                     (unsigned long long)b.m1_calls,
+          host_per - dsp_per, quant_per, gather_per, requant_per, swiglu_per,
+          dequant_per, acc_per, drain_per, drain_dn_per, push_per, scatter_per,
+          alloc_per, stage_per, mm_meas_per, mm_per,
+          host_per > 0.0 ? 100.0 * mm_per / host_per : 0.0,
+          (unsigned long long)b.blocks, (unsigned long long)b.m1_calls,
+          (unsigned long long)b.calls, (unsigned long long)b.m1_feed_calls,
                      (unsigned long long)b.calls);
       }
       if (level_ >= 2 && b.calls != 0 && b.dma_first_us != 0) {
@@ -1115,7 +1122,9 @@ public:
       const char *env = std::getenv("NNTR_MOE_HTP_M1_GEMV");
       const char *lead_env = std::getenv("NNTR_MOE_HTP_GEMV_LEAD_KB");
       const char *rows1_env = std::getenv("NNTR_MOE_HTP_GEMV_ROWS1");
-      const uint32_t flags = htp_moe_opts_flags(env, lead_env, rows1_env);
+      const char *feed_env = std::getenv("NNTR_MOE_HTP_GEMV_FEED");
+      const uint32_t flags =
+        htp_moe_opts_flags(env, lead_env, rows1_env, feed_env);
       const char *source = env != nullptr ? "env" : "default";
       uint32_t applied = 0;
       const int err = nntr_hvx_moe_set_opts(session, flags, &applied);
@@ -1148,14 +1157,19 @@ public:
       // line. Both knobs are always sent (htp_moe_opts_flags: the env's
       // value or the D192 default), and the echo above confirmed them,
       // so an unset run reads lead=192KB rows1=1 and applied=0x103c1.
+      // feed= (#117) is the weight feed cell: default (the skel's build
+      // value) unless NNTR_MOE_HTP_GEMV_FEED names vtcm (1) or arena (0);
+      // the level-2 M==1 row's feed=n/calls is the per-call proof.
       // source= still refers to the M1 GEMV switch alone (LEDGER 16).
       std::fprintf(
         stderr,
-        "[HTP] moe m1 gemv: %s (applied=0x%x) lead=%uKB rows1=%u source=%s\n",
+        "[HTP] moe m1 gemv: %s (applied=0x%x) lead=%uKB rows1=%u "
+        "feed=%s source=%s\n",
         (flags & HTP_MOE_FLAG_M1_GEMV) != 0u ? "on" : "off", applied,
         ((flags >> HTP_MOE_GEMV_LEAD_SHIFT) & HTP_MOE_GEMV_LEAD_BITS) *
           HTP_MOE_GEMV_LEAD_KB_UNIT,
-        (flags & HTP_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u, source);
+        (flags & HTP_MOE_FLAG_GEMV_ROWS1) != 0u ? 1u : 0u,
+        htp_moe_opts_feed_name(flags), source);
     });
   }
 
