@@ -66,6 +66,18 @@ static inline uint32_t htp_moe_gemv_lead_units(const char *env) {
 }
 
 /**
+/** @brief The (loop, lead) pair an unset run asks for: #113's D192, the
+ *  same values as hexkl_mm_u8i4_moe.h's HVX_GEMV_M1_ROWS1 and
+ *  HVX_GEMV_PF_LEAD_KB. Restated here because the DSP header does not
+ *  compile on the ARM side; keep the two in step. Sent explicitly rather
+ *  than left to the skel's default so that every log's echo names its
+ *  cell (LEDGER rule 21): an unset run prints applied=0x103c1, and
+ *  NNTR_MOE_HTP_GEMV_LEAD_KB=0 NNTR_MOE_HTP_GEMV_ROWS1=0 (the old
+ *  four-row, no-lead cell) prints applied=0xc1. */
+#define HTP_MOE_GEMV_LEAD_KB_DEFAULT 192u
+#define HTP_MOE_GEMV_ROWS1_DEFAULT 1u
+
+/**
  * @brief moe_set_opts flags for NNTR_MOE_HTP_M1_GEMV and, since #113, the
  *        two GEMV tuning variables.
  * @param env       getenv("NNTR_MOE_HTP_M1_GEMV"), NULL when unset
@@ -73,27 +85,25 @@ static inline uint32_t htp_moe_gemv_lead_units(const char *env) {
  * @param rows1_env getenv("NNTR_MOE_HTP_GEMV_ROWS1"), NULL when unset
  * @return HTP_MOE_FLAG_M1_GEMV when @a env is unset (the default since
  *         #101) or set to a non-zero number, 0 for "0" (the opt-out); plus
- *         a tune bit and its field for each tuning variable that is set
+ *         both tune bits, each field from its own variable when set and
+ *         from the *_DEFAULT above when not
  *
  * Each knob is overridden only by its own variable: setting the lead
- * leaves the row loop at the DSP's build default and vice versa, so a
- * sitting that rebuilds the skel with a winning pair cannot have one half
- * of it silently reset to zero by an unrelated export. With neither set
- * the word is exactly what it was before #113.
+ * leaves the row loop at the default and vice versa, so naming one knob
+ * cannot silently reset the other to zero.
  */
 static inline uint32_t htp_moe_opts_flags(const char *env, const char *lead_env,
                                           const char *rows1_env) {
-  uint32_t flags = 0u;
+  uint32_t flags = HTP_MOE_FLAG_GEMV_LEAD_SET | HTP_MOE_FLAG_GEMV_ROWS1_SET;
   if (env == NULL || atoi(env) != 0)
-    flags = HTP_MOE_FLAG_M1_GEMV;
-  if (lead_env != NULL)
-    flags |= HTP_MOE_FLAG_GEMV_LEAD_SET |
-             (htp_moe_gemv_lead_units(lead_env) << HTP_MOE_GEMV_LEAD_SHIFT);
-  if (rows1_env != NULL) {
-    flags |= HTP_MOE_FLAG_GEMV_ROWS1_SET;
-    if (atoi(rows1_env) != 0)
-      flags |= HTP_MOE_FLAG_GEMV_ROWS1;
-  }
+    flags |= HTP_MOE_FLAG_M1_GEMV;
+  flags |= (lead_env != NULL
+              ? htp_moe_gemv_lead_units(lead_env)
+              : HTP_MOE_GEMV_LEAD_KB_DEFAULT / HTP_MOE_GEMV_LEAD_KB_UNIT)
+           << HTP_MOE_GEMV_LEAD_SHIFT;
+  if (rows1_env != NULL ? atoi(rows1_env) != 0
+                        : HTP_MOE_GEMV_ROWS1_DEFAULT != 0u)
+    flags |= HTP_MOE_FLAG_GEMV_ROWS1;
   return flags;
 }
 

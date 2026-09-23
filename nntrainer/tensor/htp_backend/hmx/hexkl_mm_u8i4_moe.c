@@ -339,10 +339,12 @@ static void moe_tail_pair_unit(uint32_t n_units, uint32_t j, void *v) {
   HEXKL_PROBE_T0(t0);
   const moe_tail_ctx *t = (const moe_tail_ctx *)v;
   int32_t *tiles = t->sh->acc_gu + (size_t)j * 2u * MOE_TAIL_TILE_I32;
+  /* rows1 = 0: the tail is a prefill shape, so a lone last row stays on
+     gemm_rows4; HVX_GEMV_M1_ROWS1 is the M=1 path's knob (moe_m1_*). */
   hvx_gemm_u8i4_wh_col(t->act_ah, t->m, t->k_tiles, t->g->wh_bytes,
-                       t->gu_ntiles, j, HVX_GEMV_M1_ROWS1, tiles);
+                       t->gu_ntiles, j, 0u, tiles);
   hvx_gemm_u8i4_wh_col(t->act_ah, t->m, t->k_tiles, t->g->wh_bytes,
-                       t->gu_ntiles, t->inter_ntiles + j, HVX_GEMV_M1_ROWS1,
+                       t->gu_ntiles, t->inter_ntiles + j, 0u,
                        tiles + MOE_TAIL_TILE_I32);
   hvx_dequant_swiglu_acc_tiles_to_f32(
     (const uint8_t *)tiles, MOE_TAIL_TILE_BYTES, 1u, j,
@@ -383,7 +385,7 @@ static void moe_tail_down_unit(uint32_t n_units, uint32_t nt, void *v) {
   int32_t *tile = t->sh->acc_dn + (size_t)nt * MOE_TAIL_TILE_I32;
   const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
   hvx_gemm_u8i4_wh_col(t->sh->mid_ah, t->m, t->inter_ktiles, t->d->wh_bytes,
-                       t->dn_ntiles, nt, HVX_GEMV_M1_ROWS1, tile);
+                       t->dn_ntiles, nt, 0u, tile);
   hvx_dequant_acc_tile_to_f32(tile, HEXKL_HMX_INT8_BLOCK_N_COL, t->m,
                               t->sh->rq_scale, t->sh->rq_zp,
                               t->d->colsum_w + c0, t->d->w_scale + c0,

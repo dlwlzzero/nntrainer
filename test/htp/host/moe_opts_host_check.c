@@ -4,7 +4,8 @@
  *
  * @file   moe_opts_host_check.c
  * @date   22 Sep 2026
- * @brief  The M=1 GEMV default and the MoE profile row's rest (#101, #102)
+ * @brief  The M=1 GEMV default word (D192 since #113) and the MoE
+ *         profile row's rest (#101, #102)
  * @see    https://github.com/nntrainer/nntrainer
  * @author dlwlzzero <dlwlzzero@gmail.com>
  * @bug    No known bugs except for NYI items
@@ -31,40 +32,42 @@ static void expect(int ok, const char *what) {
 }
 
 int main(void) {
-  expect(htp_moe_opts_flags(NULL, NULL, NULL) == HTP_MOE_FLAG_M1_GEMV,
-         "unset is on");
-  expect(htp_moe_opts_flags("0", NULL, NULL) == 0u, "0 is off");
-  expect(htp_moe_opts_flags("1", NULL, NULL) == HTP_MOE_FLAG_M1_GEMV,
-         "1 is on");
+  /* The D192 word, #113's landed default: bit 0 on, both tune bits, lead
+     3 x 64 KB in [15:8], rows1 in bit 16 = 0x103c1. */
+  const uint32_t d192 = HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
+                        (3u << HTP_MOE_GEMV_LEAD_SHIFT) |
+                        HTP_MOE_FLAG_GEMV_ROWS1_SET | HTP_MOE_FLAG_GEMV_ROWS1;
+  expect(d192 == 0x103c1u, "D192 is 0x103c1");
+  expect(htp_moe_opts_flags(NULL, NULL, NULL) == d192, "unset is on, D192");
+  expect(htp_moe_opts_flags("0", NULL, NULL) == (d192 & ~HTP_MOE_FLAG_M1_GEMV),
+         "0 is off");
+  expect(htp_moe_opts_flags("1", NULL, NULL) == d192, "1 is on");
   if (!g_fail)
-    printf("MOE M1 GEMV OPTS: unset=on 0=off 1=on\n");
+    printf("MOE M1 GEMV OPTS: unset=on(0x103c1) 0=off 1=on\n");
 
   /* #113's (loop, lead) fields. Each knob is overridden only by its own
-     variable, so naming one leaves the other at the DSP's build default
-     instead of resetting it to zero. */
-  expect((htp_moe_opts_flags(NULL, NULL, NULL) &
-          (HTP_MOE_FLAG_GEMV_LEAD_SET | HTP_MOE_FLAG_GEMV_ROWS1_SET)) == 0u,
-         "no tune bit when neither variable is set");
-  expect(htp_moe_opts_flags(NULL, "192", NULL) ==
+     variable, so naming one leaves the other at the default instead of
+     resetting it to zero; both tune bits are always sent so the echo
+     names the cell. */
+  expect(htp_moe_opts_flags(NULL, "0", "0") ==
            (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
-            (3u << HTP_MOE_GEMV_LEAD_SHIFT)),
+            HTP_MOE_FLAG_GEMV_ROWS1_SET),
+         "LEAD_KB=0 ROWS1=0 is the old four-row, no-lead cell 0xc1");
+  expect(htp_moe_opts_flags(NULL, "0", "0") == 0xc1u, "A0 word is 0xc1");
+  expect(htp_moe_opts_flags(NULL, "192", NULL) == d192,
          "192 KB is 3 units of 64 KB, and the loop stays at the default");
   expect(htp_moe_opts_flags(NULL, "1536", "1") ==
            (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
             (24u << HTP_MOE_GEMV_LEAD_SHIFT) | HTP_MOE_FLAG_GEMV_ROWS1_SET |
             HTP_MOE_FLAG_GEMV_ROWS1),
          "1536 KB + rows1");
-  expect(htp_moe_opts_flags(NULL, NULL, "1") ==
-           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_ROWS1_SET |
-            HTP_MOE_FLAG_GEMV_ROWS1),
+  expect(htp_moe_opts_flags(NULL, NULL, "1") == d192,
          "rows1 alone does not force the lead to 0");
-  expect(htp_moe_opts_flags(NULL, "192", "0") ==
-           (HTP_MOE_FLAG_M1_GEMV | HTP_MOE_FLAG_GEMV_LEAD_SET |
-            (3u << HTP_MOE_GEMV_LEAD_SHIFT) | HTP_MOE_FLAG_GEMV_ROWS1_SET),
-         "rows1=0 is an explicit four-row loop, not 'unset'");
-  expect(htp_moe_opts_flags("0", NULL, "1") ==
-           (HTP_MOE_FLAG_GEMV_ROWS1_SET | HTP_MOE_FLAG_GEMV_ROWS1),
-         "the opt-out keeps bit 0 clear and still carries the loop");
+  expect(htp_moe_opts_flags(NULL, NULL, "0") ==
+           (d192 & ~HTP_MOE_FLAG_GEMV_ROWS1),
+         "rows1=0 is an explicit four-row loop at the default lead");
+  expect(htp_moe_opts_flags("0", NULL, "1") == (d192 & ~HTP_MOE_FLAG_M1_GEMV),
+         "the opt-out keeps bit 0 clear and still carries the pair");
   /* Rounding to the nearest unit, the >= 0 floor and the 127-unit clamp
      the l2fetch width field imposes. */
   expect(htp_moe_gemv_lead_units(NULL) == 0u, "unset lead is 0");

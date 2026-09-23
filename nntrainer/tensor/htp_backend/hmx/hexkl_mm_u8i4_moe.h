@@ -138,8 +138,9 @@ int hexkl_mm_u8i4_moe_layer_run(
  *        its way to L2 a block ahead. 0 is the old behaviour: every column
  *        issues its own l2fetch right before its loads. A hint only; no
  *        result depends on it. The compile-time default, overridable per
- *        call by the moe_set_opts bits below; 0 until the #113 sitting
- *        names the winning (loop, lead) pair.
+ *        call by the moe_set_opts bits below; 192 since the #113 sitting
+ *        (D192: one-row loop + 192 KB, decode +3.3..4.3 %, the only cell
+ *        of the 2 x 5 matrix that beat the four-row loop without a lead).
  *
  * Read it as the *gate* half's lead. The hardware queues three l2fetch
  * per thread and stalls the thread on a fourth, so stage A can only issue
@@ -151,29 +152,30 @@ int hexkl_mm_u8i4_moe_layer_run(
  * half its own lead needs a fourth outstanding box and is #114's.
  */
 #ifndef HVX_GEMV_PF_LEAD_KB
-#define HVX_GEMV_PF_LEAD_KB 0u
+#define HVX_GEMV_PF_LEAD_KB 192u
 #endif
 
 /**
  * @brief The M=1 GEMV path's row loop: 1 = a lone last row takes
  *        gemm_row1's single accumulator (PR #107), 0 = every row group
  *        takes gemm_rows4. The compile-time default, overridable per call
- *        by the bits below. 0 until #113's matrix says otherwise: at
- *        m = 1 the loop is a latency-hiding choice, not a compute one
- *        (LEDGER rule 26), so the four-row loop's eight vrmpy per
- *        quarter-tile may well stay ahead.
+ *        by the bits below. 1 since #113's matrix: the lead helps only
+ *        the loop that is latency-starved (LEDGER rule 31), and the
+ *        four-row loop, with eight vrmpy of loads in flight per
+ *        quarter-tile, is not -- the lead regresses it 2.1-2.5x at every
+ *        size. The prefill tail keeps gemm_rows4 by passing 0u itself.
  */
 #ifndef HVX_GEMV_M1_ROWS1
-#define HVX_GEMV_M1_ROWS1 0u
+#define HVX_GEMV_M1_ROWS1 1u
 #endif
 
 /**
  * @brief moe_set_opts' two tune bits: each says that its own field below is
  *        authoritative and replaces the matching compile-time default above
- *        for every call of the session. Unset, that default stands -- so a
- *        run that sets nothing behaves exactly as before these bits
- *        existed, and a run that names one knob does not silently reset the
- *        other to zero.
+ *        for every call of the session. Unset, that default stands. The
+ *        ARM side (htp_moe_opts.h) always sets both, sending its own copy
+ *        of the defaults when the env names nothing, so every log's echo
+ *        names the (loop, lead) cell that ran (LEDGER rule 21).
  *
  * The point of carrying the pair in the word rather than in the build is
  * that one skel and one app then serve the whole (loop x lead) matrix,
