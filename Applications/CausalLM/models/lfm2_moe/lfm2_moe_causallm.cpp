@@ -17,6 +17,11 @@
 #include <llm_util.hpp>
 #include <model.h>
 
+#ifdef ENABLE_HEXKL
+#include <compute_ops.h>
+#include <htp_graph_desc.h>
+#endif
+
 namespace causallm {
 
 void Lfm2MoeCausalLM::setupParameters(json &cfg, json &generation_cfg,
@@ -51,6 +56,45 @@ void Lfm2MoeCausalLM::setupParameters(json &cfg, json &generation_cfg,
   MOE_ENGINE = nntr_cfg.value("moe_engine", std::string("cpu"));
   MOE_HTP_LAYERS =
     parseLayerIdList(nntr_cfg.value("moe_htp_layers", std::string("")));
+
+#ifdef ENABLE_HEXKL
+  // [#85] NNTR_HTP_FORWARD=1: describe this model's decode step to the HTP
+  // backend once, so its MoE calls at M == 1 can go through the per-token
+  // entry. The words are the header's LFM2 builder over this config; the
+  // backend validates them with the same validator the skel runs. Off by
+  // default, and only meaningful with the MoE FFN on the HTP.
+  const char *fwd = std::getenv("NNTR_HTP_FORWARD");
+  if (fwd != nullptr && std::atoi(fwd) != 0 && MOE_ENGINE == "htp") {
+    htp_graph_lfm2_shape shape;
+    shape.n_layers = static_cast<uint32_t>(NUM_LAYERS);
+    shape.n_dense_layers = NUM_DENSE_LAYERS;
+    shape.hidden = static_cast<uint32_t>(DIM);
+    shape.inter_dense = static_cast<uint32_t>(INTERMEDIATE_SIZE);
+    shape.inter_moe = MOE_INTERMEDIATE_SIZE;
+    shape.n_experts = NUM_EXPERTS;
+    shape.top_k = NUM_EXPERTS_PER_TOK;
+    shape.n_heads = static_cast<uint32_t>(NUM_HEADS);
+    shape.n_kv_heads = static_cast<uint32_t>(NUM_KEY_VALUE_HEADS);
+    shape.head_dim = static_cast<uint32_t>(HEAD_DIM);
+    shape.vocab = NUM_VOCAB;
+    shape.max_seq = MAX_SEQ_LEN;
+    std::vector<uint8_t> attn(layer_types_.size());
+    for (size_t l = 0; l < layer_types_.size(); ++l)
+      attn[l] = layer_types_[l] != "conv";
+    std::vector<uint32_t> words(
+      htp_graph_words_for(shape.n_layers, HTP_GRAPH_MAX_OPS));
+    const uint32_t n =
+      htp_graph_lfm2_build(words.data(), static_cast<uint32_t>(words.size()),
+                           &shape, attn.data(), HTP_GRAPH_KIND_BIT(HTP_OP_MOE));
+    if (n == 0u)
+      throw std::runtime_error("Lfm2Moe: NNTR_HTP_FORWARD: the decode op list "
+                               "does not fit HTP_GRAPH_MAX_OPS");
+    words.resize(n);
+    if (!nntrainer::get_htp_ops()->set_decode_graph_desc(words))
+      throw std::runtime_error(
+        "Lfm2Moe: NNTR_HTP_FORWARD: the HTP backend has no per-token entry");
+  }
+#endif
 }
 
 Tensor Lfm2MoeCausalLM::createMoeLayer(const int layer_id, Tensor input) {

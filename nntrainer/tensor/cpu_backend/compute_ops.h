@@ -303,6 +303,16 @@ public:
     unsigned int M, unsigned int K, unsigned int inter, unsigned int N_out,
     bool weights_wh);
 
+  // [#85] Hands the accelerator the decode step's op list (the words of
+  // htp_backend/htp_graph_desc.h, built by the model) so it can validate
+  // the list once and run resident ops from one entry per token. Words,
+  // not a struct: core gains no accelerator type. A backend without a
+  // per-token entry returns false and the model runs as before.
+  virtual bool set_decode_graph_desc(const std::vector<uint32_t> &words) {
+    (void)words;
+    return false;
+  }
+
   // Registers one K x N expert weight with the accelerator ahead of its
   // first use, so a model's load pays that cost rather than its first
   // prefill: for the 1408 weights of LFM2-8B-A1B it is 747 ms, 31% of the

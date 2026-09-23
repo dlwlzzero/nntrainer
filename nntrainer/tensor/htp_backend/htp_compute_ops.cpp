@@ -46,6 +46,7 @@
 #include <cpu_ops_table.h>
 #include <htp_act_quant.h>
 #include <htp_backend.h>
+#include <htp_graph_desc.h>
 #include <htp_moe_opts.h>
 #include <htp_q4_0_convert.h>
 #include <htp_rpcmem.h>
@@ -215,6 +216,19 @@ public:
       std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch())
         .count());
+  }
+
+  /** [#85] The per-token entry's own line under the layer rows: how many
+   *  forward calls, ops per call, the DSP time of the whole call and the
+   *  sum of the per-op pcycle brackets (level >= 2, forward_debug). The
+   *  MoE op's stages go to the M==1 bucket through addInvokeMoeLayer, so
+   *  that row stays comparable to the per-layer path's. */
+  void addInvokeForward(unsigned n_ops, uint64_t dsp_us, uint64_t op_pcyc) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++graph_calls_;
+    graph_ops_ += n_ops;
+    graph_dsp_us_ += dsp_us;
+    graph_op_pcyc_ += op_pcyc;
   }
 
   void addRegister(uint64_t total_us, uint64_t convert_us, uint64_t rpc_us,
@@ -718,6 +732,16 @@ private:
       std::fprintf(stderr, "\n");
     }
 
+    if (graph_calls_ != 0) {
+      const double n = static_cast<double>(graph_calls_);
+      std::fprintf(stderr,
+                   "[HTP-PROFILE]   graph: calls=%llu ops/call=%.2f "
+                   "resident=MOE dsp=%.1f us/call op_pcyc=%.0f/call\n",
+                   (unsigned long long)graph_calls_,
+                   static_cast<double>(graph_ops_) / n,
+                   static_cast<double>(graph_dsp_us_) / n,
+                   static_cast<double>(graph_op_pcyc_) / n);
+    }
     std::fprintf(
       stderr,
       "[HTP-PROFILE] layer calls total : %10.1f ms\n"
@@ -743,6 +767,10 @@ private:
   uint64_t staging_bytes_ = 0;
   uint64_t convert_us_ = 0;
   uint64_t rpc_us_ = 0;
+  uint64_t graph_calls_ = 0; /**< [#85] addInvokeForward */
+  uint64_t graph_ops_ = 0;
+  uint64_t graph_dsp_us_ = 0;
+  uint64_t graph_op_pcyc_ = 0;
   std::map<std::tuple<unsigned, unsigned, bool>, Bucket> buckets_;
 };
 
@@ -1102,8 +1130,140 @@ public:
                                         inter, N_out);
       }
     }
+    // [#85] With NNTR_HTP_FORWARD=1 and a description from the model, every
+    // MoE call binds its handles to the next MoE op in list order (the
+    // first pass runs the layers in order), and once all are bound the
+    // M == 1 calls go through the per-token entry instead. Errors throw
+    // (contract section 2): a fallback to mm_u8i4_moe_layer would report
+    // per-layer numbers as the graph's.
+    if (forwardSwitch() && !graph_words_.empty()) {
+      const uint32_t op = bindMoeOp(h_gu, h_dn, K, inter, N_out);
+      if (M == 1 && moe_bound_ == moe_ops_.size()) {
+        ensureGraphInit(session);
+        invokeForward(session, op, row_index, row_count, row_weight, act, out,
+                      K, N_out);
+        return;
+      }
+      if (M == 1 && !graph_short_warned_) {
+        // moe_htp_layers naming a subset: the list's MoE ops can never all
+        // be bound, so say so once instead of silently taking the
+        // per-layer path under a measurement switch.
+        graph_short_warned_ = true;
+        std::fprintf(stderr,
+                     "[HTP] graph: %zu of %zu MoE ops bound at the first "
+                     "M==1 call; the per-token entry is NOT used\n",
+                     moe_bound_, moe_ops_.size());
+      }
+    }
     invokeMoeLayer(session, h_gu, h_dn, row_index, row_count, row_weight, act,
                    out, M, K, inter, N_out);
+  }
+
+  /** [#85] NNTR_HTP_FORWARD=1 routes decode's MoE calls through the
+   *  per-token entry. Off by default: with only MOE resident it is 22
+   *  calls per token either way (plan 85 section 0), so the default path
+   *  stays byte-for-byte today's. */
+  static bool forwardSwitch() {
+    static const bool on = [] {
+      const char *env = std::getenv("NNTR_HTP_FORWARD");
+      return env != nullptr && std::atoi(env) != 0;
+    }();
+    return on;
+  }
+
+  /** The graph entries' error, named: 0x8000040E from them means the
+   *  skel predates the per-token entry (rule 3), not a list the validator
+   *  above accepted. */
+  static std::string graphErr(int err) {
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), "%08x", static_cast<unsigned>(err));
+    return std::string(htp_graph_err_name(static_cast<uint32_t>(err))) +
+           " (0x" + hex + ")" +
+           (static_cast<unsigned>(err) == 0x8000040Eu
+              ? " -- AEE_EBADPARM: rebuild the DSP skel (test/htp/build.sh)"
+              : "");
+  }
+
+  bool set_decode_graph_desc(const std::vector<uint32_t> &words) override {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    uint32_t n_ops = 0;
+    // The same validator the skel runs, so a bad list fails here with the
+    // same code and name before any FastRPC call is made.
+    const uint32_t rc =
+      htp_graph_validate(words.data(), static_cast<uint32_t>(words.size()),
+                         HTP_GRAPH_KIND_BIT(HTP_OP_MOE), &n_ops);
+    if (rc != 0u) {
+      throw std::invalid_argument(std::string("set_decode_graph_desc: ") +
+                                  htp_graph_err_name(rc));
+    }
+    if (graph_inited_) {
+      // A second description in one process (a reload): the skel still
+      // holds the first graph and would refuse the next init.
+      nntr_hvx_graph_release(
+        static_cast<remote_handle64>(HtpBackend::global().handle()));
+    }
+    graph_words_ = words;
+    moe_ops_.clear();
+    for (uint32_t i = 0; i < n_ops; ++i) {
+      if (htp_graph_op_cat(words.data(), i)->kind == HTP_OP_MOE)
+        moe_ops_.push_back(i);
+    }
+    moe_bound_ = 0;
+    moe_op_by_handle_.clear();
+    graph_inited_ = false;
+    std::fprintf(stderr, "[HTP] graph: description n_ops=%u moe_ops=%zu\n",
+                 n_ops, moe_ops_.size());
+    return true;
+  }
+
+  /** Binds a layer's handles to the next unbound MoE op (call order =
+   *  list order on the first pass) and returns the op that owns them. */
+  uint32_t bindMoeOp(const std::vector<uint32_t> &h_gu,
+                     const std::vector<uint32_t> &h_dn, unsigned K,
+                     unsigned inter, unsigned N_out) {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    auto it = moe_op_by_handle_.find(h_gu[0]);
+    if (it != moe_op_by_handle_.end())
+      return it->second;
+    if (moe_bound_ >= moe_ops_.size() || graph_inited_) {
+      throw std::runtime_error(
+        "set_decode_graph_desc: more MoE layers than the list's " +
+        std::to_string(moe_ops_.size()) + " MoE ops");
+    }
+    const uint32_t idx = moe_ops_[moe_bound_];
+    htp_graph_op *op = htp_graph_op_at(graph_words_.data(), idx);
+    if (op->n_experts != h_gu.size() || op->K != K || op->N != inter ||
+        op->N_out != N_out) {
+      throw std::runtime_error(
+        "set_decode_graph_desc: MoE op " + std::to_string(idx) +
+        " expects experts=" + std::to_string(op->n_experts) +
+        " K=" + std::to_string(op->K) + " inter=" + std::to_string(op->N) +
+        " N_out=" + std::to_string(op->N_out) + ", the layer has " +
+        std::to_string(h_gu.size()) + "/" + std::to_string(K) + "/" +
+        std::to_string(inter) + "/" + std::to_string(N_out));
+    }
+    std::copy(h_gu.begin(), h_gu.end(), op->h_gu);
+    std::copy(h_dn.begin(), h_dn.end(), op->h_dn);
+    moe_op_by_handle_.emplace(h_gu[0], idx);
+    ++moe_bound_;
+    return idx;
+  }
+
+  void ensureGraphInit(remote_handle64 session) {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    if (graph_inited_)
+      return;
+    uint32_t n_ops = 0;
+    const int err =
+      nntr_hvx_graph_init(session, graph_words_.data(),
+                          static_cast<int>(graph_words_.size()), &n_ops);
+    if (err != AEE_SUCCESS) {
+      throw std::runtime_error("nntr_hvx_graph_init failed: " + graphErr(err));
+    }
+    graph_inited_ = true;
+    std::fprintf(stderr,
+                 "[HTP] graph: init n_ops=%u resident=MOE moe_ops=%zu\n", n_ops,
+                 moe_ops_.size());
   }
 
   /** [#80] The M=1 GEMV switch, read once from NNTR_MOE_HTP_M1_GEMV and
@@ -1748,6 +1908,92 @@ private:
     stagedMemcpy(matCdata, out_f32,
                  static_cast<size_t>(out_len) * sizeof(float));
     profile.addInvokeFused(M, K, N, elapsed, timed ? stage_us : nullptr);
+  }
+
+  /** @brief [#85] The per-token entry from one MoE op: the same staging
+   *  pools and profile bucket as invokeMoeLayer, so the M==1 row reads
+   *  the same across the two paths. In this issue a call never crosses a
+   *  layer boundary, so resume_at must be op + 1; anything else throws.
+   *  ponytail: pos is 0 -- no resident kind reads it yet, and ComputeOps
+   *  does not know the token position. The wiring issue for ATTN_M1 /
+   *  ROPE hands it through a sibling of set_decode_graph_desc. */
+  void invokeForward(remote_handle64 session, uint32_t op,
+                     const std::vector<unsigned int> &row_index,
+                     const std::vector<unsigned int> &row_count,
+                     const std::vector<float> &row_weight, const float *act,
+                     float *out, unsigned int K, unsigned int N_out) {
+    const int act_len = static_cast<int>(K);
+    const int out_len = static_cast<int>(N_out);
+    const uint32_t pos = 0;
+
+    std::lock_guard<std::mutex> lock(invoke_mutex_);
+    HtpRpcBuffer &act_stage =
+      stage(act_pool_, static_cast<size_t>(act_len) * sizeof(float));
+    HtpRpcBuffer &out_stage =
+      stage(out_pool_, static_cast<size_t>(out_len) * sizeof(float));
+    float *act_f32 = reinterpret_cast<float *>(act_stage.data());
+    float *out_f32 = reinterpret_cast<float *>(out_stage.data());
+    stagedMemcpy(act_f32, act, static_cast<size_t>(act_len) * sizeof(float));
+
+    HtpProfile &profile = HtpProfile::global();
+    uint32_t stage_us[HTP_MOE_N_STAGES] = {0};
+    uint32_t op_pcyc = 0;
+    const bool timed = profile.level() >= 2;
+    const int reps = (profile.level() >= 3) ? 5 : 1;
+    uint64_t best_elapsed = UINT64_MAX;
+    uint32_t resume_at = 0;
+    int err = AEE_SUCCESS;
+    for (int rep = 0; rep < reps && err == AEE_SUCCESS; ++rep) {
+      uint32_t rep_stage[HTP_MOE_N_STAGES] = {0};
+      uint32_t rep_pcyc = 0;
+      uint32_t rep_resume = 0;
+      const uint64_t t0 = profile.level() ? HtpProfile::nowUs() : 0;
+      err = timed ? nntr_hvx_forward_debug(
+                      session, op, 1u, pos, row_index.data(),
+                      static_cast<int>(row_index.size()), row_count.data(),
+                      static_cast<int>(row_count.size()), row_weight.data(),
+                      static_cast<int>(row_weight.size()), act_f32, act_len,
+                      out_f32, out_len, &rep_resume, &rep_pcyc, 1, rep_stage,
+                      HTP_MOE_N_STAGES)
+                  : nntr_hvx_forward(
+                      session, op, pos, row_index.data(),
+                      static_cast<int>(row_index.size()), row_count.data(),
+                      static_cast<int>(row_count.size()), row_weight.data(),
+                      static_cast<int>(row_weight.size()), act_f32, act_len,
+                      out_f32, out_len, &rep_resume);
+      const uint64_t elapsed = profile.level() ? HtpProfile::nowUs() - t0 : 0;
+      if (err == AEE_SUCCESS && elapsed < best_elapsed) {
+        best_elapsed = elapsed;
+        std::memcpy(stage_us, rep_stage, sizeof(stage_us));
+        op_pcyc = rep_pcyc;
+        resume_at = rep_resume;
+      }
+    }
+    const uint64_t elapsed = (best_elapsed == UINT64_MAX) ? 0 : best_elapsed;
+    if (err != AEE_SUCCESS) {
+      throw std::runtime_error(
+        std::string(timed ? "nntr_hvx_forward_debug" : "nntr_hvx_forward") +
+        " failed at op " + std::to_string(op) + ": " + graphErr(err));
+    }
+    if (resume_at != op + 1u) {
+      throw std::runtime_error("nntr_hvx_forward: resume_at " +
+                               std::to_string(resume_at) + " from op " +
+                               std::to_string(op) +
+                               " (only MOE is resident, so op + 1 expected)");
+    }
+    stagedMemcpy(out, out_f32, static_cast<size_t>(out_len) * sizeof(float));
+    if (profile.level()) {
+      // The prim block (start_op, pos, six lengths) and the three routing
+      // sequences; the 64 handles no longer travel (plan 83 section 2).
+      const size_t in_arg_bytes =
+        40 + sizeof(uint32_t) *
+               (row_index.size() + row_count.size() + row_weight.size());
+      profile.addInvokeMoeLayer(1, K, N_out, elapsed,
+                                timed ? stage_us : nullptr, act_stage,
+                                out_stage, in_arg_bytes);
+      profile.addInvokeForward(
+        resume_at - op, timed ? stage_us[HTP_MOE_T_DSP_TOTAL] : 0, op_pcyc);
+    }
   }
 
   /** @brief [doc 46] One call for the whole layer.
@@ -2663,6 +2909,17 @@ private:
   // same mutex that serializes every call into the one HTP session.
   std::mutex invoke_mutex_;
   std::once_flag moe_opts_once_; /**< sendMoeOptsOnce */
+  // [#85] The decode op list from set_decode_graph_desc, its MoE ops in
+  // list order, how many have their handles bound (first-pass call order),
+  // the op each layer's first gate_up handle belongs to, and whether
+  // graph_init has run on the session.
+  std::mutex graph_mutex_;
+  std::vector<uint32_t> graph_words_;
+  std::vector<uint32_t> moe_ops_;
+  size_t moe_bound_ = 0;
+  std::unordered_map<uint32_t, uint32_t> moe_op_by_handle_;
+  bool graph_inited_ = false;
+  bool graph_short_warned_ = false;
   StagingPool act_pool_;
   StagingPool out_pool_;
 
