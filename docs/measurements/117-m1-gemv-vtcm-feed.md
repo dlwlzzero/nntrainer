@@ -371,96 +371,159 @@ cat $W/logs/skel.log $W/logs/therm.log
 Then fill the tables below, commit this file on the same branch, push, set
 #117 to `state:measured`.
 
-## Results (fill in)
+## Results
 
-Unit (serial from `adb devices`): ______. Battery / charger / screen:
-______. `thermal_zone0` at the checkpoints 0 … 5: ______.
+Unit (serial from `adb devices`): **`R3CY10WM83Y`** (SM-S938N, `ro.soc.model`
+SM8750, device `pa3q`) — **not** #113's `R3CY205ZMND`; a second phone
+(`R3CN80CW3FY`, SM-N986N) was also attached, so every command ran with
+`ANDROID_SERIAL=R3CY10WM83Y`. Battery 85 % → 80 %, USB charging, screen
+off (dozing). `thermal_zone0` (m°C): ckpt0 30800, before probe 30500,
+before/after matrix 30500 / 33900, ckpt1 30800, ckpt2 **59000**, after
+G = 64 / 512 / 1024: 55200 / 59800 / **61700**; battery 28.3 → 39.5 °C.
 
 ### Anchor (step 2)
 
 | cell | µs/call | GB/s | reads as |
 |---|---|---|---|
-| `DMA_REPLAY workers=1 load=0 pace=0` | | | (#113: 724.0 / 31.2; #100: 719.6 / 31.4) |
-| `DMA_REPLAY … f2` / `f2_load` (if printed) | | | (#100: 695.5 / 31.7 and 697.6 / 31.6) |
+| `DMA_REPLAY workers=1 load=0 pace=0` | **607.9** | **37.1** | (#113: 724.0 / 31.2; #100: 719.6 / 31.4) — this unit's engine is **+19 %** |
+| `DMA_REPLAY_X f2` / `f2_load` | 589.2 / 588.5 | 37.4 / 37.4 | (#100: 695.5 / 31.7 and 697.6 / 31.6); both `checksum_ok=y` |
 
-### The `vtcm` cell beside `arena` and `hot` (step 3) — `mm_min_us`, `ns_per_tile`
+Verbatim: `DMA_REPLAY workers=1 load=0 pace=0 fresh=0 gap_us=0 calls=20
+us_per_call=607.9 bytes_per_call=22560768 gbs=37.1 wait_us=597.8
+blocked=520/600 depth_max=11 busy_us=478.4..604.4 regions=32
+workers_used=1 load_units=0 checksum_ok=n`. The 11 `checksum_ok=n` lines
+and the `FAILED` are #99's known condition. The step-0
+`DMA_REPLAY_TRACE` printed (`dsp_us=1218 desc=46 … plan_shape_ok=y`), no
+`DMA_REPLAY_NOTE … err=`.
+
+### The `vtcm` cell beside `arena` and `hot` (step 3) — `mm_min_us` (`ns_per_tile`)
 
 | cell | lead 0, rows1=1 | 192, rows1=1 | 0, rows1=0 | #113 reference (ns/tile) |
 |---|---|---|---|---|
-| vtcm (feed=1) | | | | — |
-| arena (feed=0) | | | | 154.34 / **129.05** / 133.51 |
-| hot (feed=0) | | | | 42.74 / **31.25** / 72.15 |
+| vtcm (feed=1) | 579 (27.34) | **579 (27.60)** | 607 (61.36) | — |
+| arena (feed=0) | 996 (138.25) | **846 (116.47)** | 875 (119.98) | 154.34 / **129.05** / 133.51 |
+| hot (feed=0) | 19 (41.36) | 14 (31.25) | 30 (71.69) | 42.74 / **31.25** / 72.15 |
 
-`vtcm` (192, rows1=1) `mm_min_us` − 22 020 KB / anchor GB/s = ______ µs
-(the compute tail + 6 fork/joins; ≫ 40 files plan §3.2's upgrade).
+`vtcm` (192, rows1=1) `mm_min_us` − 22 020 KB / 37.1 GB/s = 579 − 593.5 =
+**−14.5 µs** (against `f2`'s 589.2: −10): the microbench's feed runs at
+the engine rate (`gbps=37.71`), no measurable tail — the §3.2 upgrade is
+not triggered. The lead 0 and 192 `vtcm` lines agree (579 / 579), as the
+forced-off lead requires.
 
-Accuracy: `bad_elems_M1` ______ of 40960 · `bad_elems_M4` ______ of
-163840 · `bit_identical` ______ · `bad_cell_M*` lines: ______ · 25
-`m1_bench` lines, `INVALID`: ______ · `[  PASSED  ] 2 tests`: ______.
+Accuracy: `bad_elems_M1` **0** of 40960 · `bad_elems_M4` **0** of
+163840 · `bit_identical` **yes** · `bad_cell_M*` lines: **none** · 25
+`m1_bench` lines, `INVALID`: **none** · `[  PASSED  ] 2 tests`: **yes**.
 
 ### Profiles (step 4), `[HTP-PROFILE]` level 2, G = 64, µs/call
 
 | variant | applied | qos_mode | M==1 `mm` | M==1 `dsp` | host / transport | blocks / m1_gemv / feed | `DMA ring:` desc, waits, busy, engine lo..hi GB/s, depth max | `weight DMA:` line | M>1 `dsp` | M>1 m1_gemv / feed |
 |---|---|---|---|---|---|---|---|---|---|---|
-| A (D192, arena) | `0x103c1` | | | | | 0 / 1408⁄1408 / 0⁄1408 | desc=2 … | n/a (direct arena read …) | | 0/23 / 0/23 |
-| B (D192 + VTCM feed) | `0x303e1` | | | | | 0 / 1408⁄1408 / 1408⁄1408 | desc=10 … | 21504 KB/call, first 3584 KB took … | | 0/23 / 0/23 |
-| A0 (four-row, lead 0) — optional | `0xc1` | | | | | 0 / 1408⁄1408 / 0⁄1408 | desc=2 … | n/a | | 0/23 / 0/23 |
+| A (D192, arena) | `0x103c1` | 2 | **922.7** | 985.4 | 1170.0 / 184.6 | 0 / 1408⁄1408 / 0⁄1408 | desc=2 waits=2 busy=0..4 | n/a (direct arena read inside mm, no ring; 5.85 lanes) | 16430.3 | 0/23 / 0/23 |
+| B (D192 + VTCM feed) | `0x303e1` | 2 | **676.6** | 711.2 | 793.2 / 82.0 | 0 / 1408⁄1408 / 1408⁄1408 | desc=10 waits=10 (blocked 9.9) wait=442.2 busy=640..681 → **engine 32.3..34.4**, depth max=4, first expert ready 121, last issue 500 of 711 | 21504 KB/call, first 3584 KB took 110 us = 33.2 GB/s; averaged over the call 31.0 GB/s | 16436.2 | 0/23 / 0/23 |
+| A0 (four-row, lead 0) | `0xc1` | 2 | 989.7 | 1050.4 | 1231.5 / 181.1 | 0 / 1408⁄1408 / 0⁄1408 | desc=2 waits=2 busy=0..4 | n/a (5.76 lanes) | 16473.0 | 0/23 / 0/23 |
 
-Reference: #113's sitting (same unit `R3CY205ZMND`): A0-equivalent
+Reference: #113's sitting (unit `R3CY205ZMND`): A0-equivalent
 **1000.2** / dsp 1059.4, D192 **937.0** / dsp 995.5; M>1 `dsp`
-16233–16247. Gate: B `mm` ≤ **760.0**; B `mm` scaled by (31.2 / anchor
-GB/s) = ______.
+16233–16247. Gate: B `mm` ≤ **760.0** → **676.6**. The anchor moved
+(+19 %), so the scaled reading is ambiguous and both are given: the
+template's literal B `mm` × (31.2 / 37.1) = **569.0**; normalising the
+other way (B on a 31.2 GB/s engine, `mm` × 37.1 / 31.2) = **804.5**, above
+760. B `dsp` drop (274.2) exceeds the `mm` drop (246.1) by 28.1 µs, outside
+the ±20 band — on the favourable side (transport 184.6 → 82.0, `quant`
+16.3 → 7.7, `swiglu` lane-time 5399.9 → 1299.7).
 
 ### E2E (NPU model, prompt 512, 8 threads)
 
 | variant | gen | run | prefill tok/s | decode tok/s | peak RSS (KB) | text = A (same G, run)? | applied (from the log) |
 |---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | | reference | `0x103c1` |
-| A0 | 64 | 1 | | | | | `0xc1` |
-| B | 64 | 1 | | | | | `0x303e1` |
-| B | 64 | 2 | | | | | `0x303e1` |
-| A0 | 64 | 2 | | | | | `0xc1` |
-| A | 64 | 2 | | | | reference | `0x103c1` |
-| A | 512 | 1 | | | | reference | `0x103c1` |
-| A0 | 512 | 1 | | | | | `0xc1` |
-| B | 512 | 1 | | | | | `0x303e1` |
-| B | 512 | 2 | | | | | `0x303e1` |
-| A0 | 512 | 2 | | | | | `0xc1` |
-| A | 512 | 2 | | | | reference | `0x103c1` |
-| A | 1024 | 1 | | | | reference | `0x103c1` |
-| A0 | 1024 | 1 | | | | | `0xc1` |
-| B | 1024 | 1 | | | | | `0x303e1` |
-| B | 1024 | 2 | | | | | `0x303e1` |
-| A0 | 1024 | 2 | | | | | `0xc1` |
-| A | 1024 | 2 | | | | reference | `0x103c1` |
+| A | 64 | 1 | 508.441 | 28.5078 | 5319732 | reference | `0x103c1` |
+| A0 | 64 | 1 | 507.433 | 27.5269 | 5323292 | yes | `0xc1` |
+| B | 64 | 1 | 489.016 | 35.9955 | 5318412 | yes | `0x303e1` |
+| B | 64 | 2 | 481.203 | 35.3201 | 5324016 | yes | `0x303e1` |
+| A0 | 64 | 2 | 469.725 | 27.4796 | 5319348 | yes | `0xc1` |
+| A | 64 | 2 | 467.58 | 28.4571 | 5315384 | reference | `0x103c1` |
+| A | 512 | 1 | 471.021 | 27.7251 | 5312820 | reference | `0x103c1` |
+| A0 | 512 | 1 | 397.207 | 26.5216 | 5325780 | yes | `0xc1` |
+| B | 512 | 1 | 401.884 | 35.9273 | 5314632 | yes | `0x303e1` |
+| B | 512 | 2 | 399.376 | 35.9323 | 5305252 | yes | `0x303e1` |
+| A0 | 512 | 2 | 361.327 | 25.1696 | 5329500 | yes | `0xc1` |
+| A | 512 | 2 | 357.792 | 25.213 | 5318020 | reference | `0x103c1` |
+| A | 1024 | 1 | 400 | 26.0341 | 5323316 | reference | `0x103c1` |
+| A0 | 1024 | 1 | 369.408 | 25.1801 | 5315304 | yes | `0xc1` |
+| B | 1024 | 1 | 366.5 | 31.2576 | 5320888 | yes | `0x303e1` |
+| B | 1024 | 2 | 368.876 | 31.6753 | 5336520 | yes | `0x303e1` |
+| A0 | 1024 | 2 | 349.488 | 23.9813 | 5317848 | yes | `0xc1` |
+| A | 1024 | 2 | 366.5 | 25.0587 | 5311812 | reference | `0x103c1` |
+
+Text: the generated line (log line 7: 275 / 2255 / 4475 chars at G = 64 /
+512 / 1024) hashes identically across all six logs of each G, so every
+cell equals A and A's two runs equal each other.
 
 Decode means (of the two mirrored runs) and deltas:
 
 | G | A | A0 | A vs A0 (%) | B | B vs A (%) |
 |---|---|---|---|---|---|
-| 64 | | | (#113: +4.11) | | |
-| 512 | | | (#113: +3.29) | | |
-| 1024 | | | (#113: +4.26) | | |
+| 64 | 28.483 | 27.503 | **+3.56** (#113: +4.11) | **35.658** | **+25.19** |
+| 512 | 26.469 | 25.846 | **+2.41** (#113: +3.29) | **35.930** | **+35.74** |
+| 1024 | 25.546 | 24.581 | **+3.93** (#113: +4.26) | **31.466** | **+23.17** |
 
 Prefill means (G = 64 / 512 / 1024), rule 27's mirrored-order caveat:
-A ______, A0 ______, B ______ → B vs A ______ % (budget −5 %); M>1 `dsp`
-B vs A ______ % (budget 2.5 %).
+A 488.01 / 414.41 / 383.25, A0 488.58 / 379.27 / 359.45, B 485.11 /
+400.63 / 367.69 → B vs A −0.59 / −3.33 / −4.06 % (all three G together
+−2.51 %; budget −5 %); M>1 `dsp` B vs A **+0.04 %** (budget 2.5 %).
+Absolute prefill fell with the phone's temperature through the sitting
+(508 → 350), for every variant alike.
 
 Reference: #113's sitting, decode A (= this A0) **27.444 / 26.829 /
 25.930**, D192 (= this A) **28.572 / 27.711 / 27.035**; prefill A
 536.63 / 516.98 / 420.24, D192 532.50 / 517.25 / 435.93. Goal ≥ 50
 decode, prefill ≥ 497.
 
-## Verdict (fill in)
+## Verdict
 
 * **Gate** (B M==1 `mm` ≤ 760.0 **and** decode ≥ A at all three G **and**
-  text = A): ______.
-* **Accuracy gate (a)**: ______.
-* **Prefill (standing)**: ______.
-* **Anchor** (rules 30 / 32) and **in-situ engine ≥ 28 GB/s**: ______.
-* **A vs A0** (#113's confirmation): ______ → BENCHMARK's "now" moves to A.
+  text = A): **pass as measured** — `mm` 676.6, decode +25.2 / +35.7 /
+  +23.2 %, text identical everywhere. Caveat for the reader: this unit's
+  DMA engine is 19 % faster than #113's; normalised to a 31.2 GB/s engine
+  the `mm` reads ≈ 804.5 (> 760). The decode half of the gate does not
+  depend on that reading.
+* **Accuracy gate (a)**: **pass** (0 / 0, `bit_identical=yes`, three
+  `cell=vtcm` lines, no `INVALID`).
+* **Prefill (standing)**: **pass** (−0.6 / −3.3 / −4.1 %, M>1 `dsp`
+  +0.04 %, `m1_gemv=0/23 feed=0/23` on every M>1 row); absolute prefill is
+  below 497 at G ≥ 512 because the phone ran at 55–62 °C.
+* **Anchor** (rules 30 / 32) and **in-situ engine ≥ 28 GB/s**: anchor
+  **607.9 µs / 37.1 GB/s** (moved +19 % vs #113, different unit); in-situ
+  engine **32.3..34.4 GB/s** → **pass**.
+* **A vs A0** (#113's confirmation): **+3.56 / +2.41 / +3.93 %**, text
+  identical — reproduced (slightly below #113's +4.11 / +3.29 / +4.26) →
+  BENCHMARK's "now" moves to A (28.48 / 26.47 / 25.55); B is 35.66 /
+  35.93 / 31.47.
 
 ## Notes from the run
 
-<thermal, first-run page faults, FARF/AEE errors, anything stale, the
-rebuilt md5s if `$W` was absent (rule 22), deviations from the steps>
+* Run by the agent on the user's request, 2026-09-23 15:5x–16:06, from
+  `/home/j2z0-lee/nntrainer-117` with the staged `$W` (md5.txt: 0
+  mismatches; the four sanity lines gave 0 / 0 / 1 / 0). Device `md5sum`
+  of every pushed file equals the table (`logs/provenance.log`,
+  `logs/skel.log`).
+* **Model directory deviation.** This phone had no `models/q40-qs4cx-wh`;
+  the NPU model lives in `models/lfm2.5-8b-a1b-q40-qs4cx-wh` as
+  `nntr_lfm2.5_8b_a1b_q40_arm.bin` (md5 `7b7867fab51845664c0050c0a837073e`,
+  = the table) with a different config (`init_seq_len 1024`,
+  `conv_block/dense_ffn/attn_proj_engine: htp`). That directory was left
+  untouched; `models/q40-qs4cx-wh` was created with the workstation's four
+  config files (then the step-1 edits), and the bin and `tokenizer.json`
+  are **symlinks** into it (hard links were refused). No 4.3 GB push.
+* `$D/libcdsprpc.so` pre-existed on this phone; its md5
+  (`c1b83a4e…`) equals `/vendor/lib64/libcdsprpc.so`, so it is not the
+  builddir copy rule 5 forbids. Left in place.
+* **Thermal.** Cool start (30.8 °C), but the three level-2 profiles took
+  zone0 to 59 °C and the E2E block ran at 53–62 °C (the cool-down wait
+  before step 5 returned immediately; the zone reads the idle value
+  within seconds). Prefill drifts down across the sitting; decode is
+  steady within each variant except A / A0 at G = 512 run 2 (−9 % / −5 %
+  vs run 1). Mirrored order keeps the A/B read fair; absolute numbers are
+  a warm phone's.
+* No FARF/AEE errors seen; every E2E log has one banner with the
+  variant's word, the skel md5 line `5cea0a5a…`, and no `HTP-PROFILE`.
