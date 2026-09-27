@@ -40,10 +40,11 @@ figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
 .pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
 footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
 @media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Overview</a><a href="architecture.html" class="here">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html" class="here">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>Architecture</h1>
 <p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>. All numbers are from the
@@ -442,7 +443,7 @@ and synchronizes with barriers:</p>
 </svg>
 <figcaption>One MoE call on the decode path. Stages A–C each spread their work over the worker pool (one lane per HVX context, 6 on v79) with a barrier between stages; the final scatter adds each expert’s output, times its routing weight, in expert order.</figcaption>
 </figure>
-<p>Per call (gen 64, level-2 profile, unit <code>R3CY10WM83Y</code>):</p>
+<p>Per call (gen 64, level-2 profile, #117 sitting 2):</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -666,7 +667,7 @@ and every layer op runs on the DSP.</p>
 between two MoE layers is resident.
 Plans and budget: <a href="roadmap.html">roadmap.html</a>.</p>
 
-<div class="pager"><span>← <a href="index.html">Overview</a></span><span><a href="foundation.html">Foundation</a> →</span></div>
+<div class="pager"><span>← <a href="communication.html">Communication</a></span><span><a href="foundation.html">Foundation</a> →</span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 </body></html>

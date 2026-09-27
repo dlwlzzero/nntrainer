@@ -40,10 +40,11 @@ figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
 .pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
 footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
 @media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html" class="here">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html" class="here">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>Measurement</h1>
 <p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
@@ -212,24 +213,22 @@ the variable, and the log proves which path ran (§1.6).</li>
 are never read for tok/s.</p>
 <h3 id="13-units">1.3 Units <a class="hd" aria-label="link to this section" href="#13-units">#</a></h3>
 <p>Two Galaxy S25 Ultra phones (SM-S938N, Snapdragon 8 Elite, Hexagon v79)
-have been used. The PR author measured on a third one. Any unit is allowed,
-but every row records which one ran it.</p>
+have been used. The PR author measured on a third one. Any unit is allowed;
+the sitting's handoff records the setup. The DMA anchor below has read
+31–37 GB/s across these units and sittings.</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
-<th>unit</th>
 <th>DMA anchor (<code>DMA_REPLAY workers=1 load=0 pace=0</code>)</th>
 <th>sittings</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>R3CY205ZMND</code></td>
 <td>724.0 µs/call = <strong>31.2 GB/s</strong> (#113, 2026-09-23); 719.6 / 31.4 in #100</td>
 <td>#77, #94, #88, #105, #100, #113</td>
 </tr>
 <tr>
-<td><code>R3CY10WM83Y</code></td>
 <td>607.9 / 605.3 µs/call = <strong>37.1 / 37.3 GB/s</strong> (#117, both sittings, 2026-09-23)</td>
 <td>#117</td>
 </tr>
@@ -241,14 +240,14 @@ cold:</p>
 <pre><code>adb shell &quot;cd /data/local/tmp/htp_u8i4_layer_test &amp;&amp; LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
   ./unittest_hvx_dma_probe --gtest_filter='*MoeChunkReplay*'&quot; | grep 'DMA_REPLAY '
 </code></pre>
-<p>The two units' DMA engines differ by about 19 %, but their HVX reads of the
-same memory do not (the D192 <code>mm</code> column read 931.9 µs on the fast unit and
+<p>The DMA anchor spans 31–37 GB/s across S25 Ultra units (about 19 % apart), but
+the units' HVX reads of the same memory do not differ (the D192 <code>mm</code> column read 931.9 µs on the fast unit and
 937.0 on the slow one). Therefore:</p>
 <ul>
 <li>A per-call DSP time on a <strong>DMA-fed</strong> path (for example the VTCM feed,
 PR #118) is compared across units only after scaling it by the ratio of
 the two anchors. #117's feed <code>mm</code> of 676.4 µs would read about 805–809 µs
-on <code>R3CY205ZMND</code>.</li>
+at a 31 GB/s anchor.</li>
 <li>A direct-read path's <code>mm</code> transfers across units as it is.</li>
 <li>tok/s never transfers across units. Two units were already 6–8.6 % apart
 on one binary before this project.</li>
@@ -410,8 +409,8 @@ load with <code>0x80000406</code>. Never push the link-time stub <code>libcdsprp
 <li>Build lines always set <code>HEXKL_SDK_VER=6.4.0.1</code>. Without it,
 <code>test/htp/build.sh</code> picks the newest HexKL on the machine.</li>
 </ul>
-<p><strong>Current reference set</strong>: what #117 ran (both sittings, unit
-<code>R3CY10WM83Y</code>, built at <code>3c4912fa</code> = PR #118's branch with the feed still
+<p><strong>Current reference set</strong>: what #117 ran (both sittings,
+built at <code>3c4912fa</code> = PR #118's branch with the feed still
 opt-in; one skel and one app set for every variant):</p>
 <div class="tablewrap"><table>
 <thead>
@@ -683,7 +682,7 @@ ION.</p>
 <p>The report ends with <code>layer calls total</code>, <code>arm staging memcpy</code> (outside
 every <code>host=</code>) and <code>HTP host time</code>.</p>
 <h3 id="24-the-current-paths-per-call">2.4 The current paths, per call <a class="hd" aria-label="link to this section" href="#24-the-current-paths-per-call">#</a></h3>
-<p>Level 2, M==1, G=64, #117 sitting 2, unit <code>R3CY10WM83Y</code>, 2026-09-23
+<p>Level 2, M==1, G=64, #117 sitting 2, 2026-09-23
 (µs/call, <code>blocks=0 m1_gemv=1408/1408</code> in all three; <code>feed=0/1408</code> for A0
 and A, <code>1408/1408</code> for B). This sitting's labels are used. Since PR #118,
 B is the default path and A is the next sitting's A0.</p>
@@ -917,14 +916,12 @@ over all runs of that variant. <strong>Now</strong> marks the current reference 
 Rows from different sittings are <strong>not</strong> comparable with each other (§1.2).
 Means are rounded half up from the per-run values, so a few older ones
 differ in the last digit from earlier write-ups.</p>
-<p>Units: <code>…5ZMND</code> = <code>R3CY205ZMND</code>, <code>…WM83Y</code> = <code>R3CY10WM83Y</code>.</p>
 <h3 id="current-reference-now">Current reference (&quot;now&quot;) <a class="hd" aria-label="link to this section" href="#current-reference-now">#</a></h3>
 <div class="tablewrap"><table>
 <thead>
 <tr>
 <th>date</th>
 <th>issue</th>
-<th>unit</th>
 <th>variant</th>
 <th>prefill tok/s</th>
 <th>decode 64 / 512 / 1024</th>
@@ -936,7 +933,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s2</td>
-<td>…WM83Y</td>
 <td>NPU A: the default at the time (one-row GEMV + 192 KB lead, direct DDR read)</td>
 <td>401.9–528.9 (means 512.3 / 433.2 / 465.4)</td>
 <td><strong>28.22 / 27.89 / 27.23</strong></td>
@@ -946,7 +942,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#94 s2</td>
-<td>…5ZMND</td>
 <td>CPU control, <code>q40</code></td>
 <td>267.8–339.7</td>
 <td><strong>52.43 / 49.22 / 48.31</strong></td>
@@ -956,7 +951,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s2</td>
-<td>…WM83Y</td>
 <td>NPU B: A + VTCM DMA feed (PR #118)</td>
 <td>399.7–502.0</td>
 <td>37.38 / 36.49 / 35.01</td>
@@ -971,7 +965,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <th>date</th>
 <th>issue</th>
-<th>unit</th>
 <th>variant</th>
 <th>prefill tok/s</th>
 <th>decode 64 / 512 / 1024</th>
@@ -983,7 +976,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-16/17</td>
 <td>PR</td>
-<td>PR author's device</td>
 <td>NPU, PR head as-is (MoE on HMX)</td>
 <td>523</td>
 <td>— / 20.8 / —</td>
@@ -993,7 +985,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-16/17</td>
 <td>PR</td>
-<td>PR author's device</td>
 <td>CPU, all Q4_0</td>
 <td>334</td>
 <td>— / 48 / —</td>
@@ -1003,7 +994,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-21</td>
 <td>PR</td>
-<td>PR author's device</td>
 <td>NPU + conv in_proj on HTP</td>
 <td>532</td>
 <td>— / 16.5 / —</td>
@@ -1013,7 +1003,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-21</td>
 <td>#77</td>
-<td>…5ZMND</td>
 <td>CPU control</td>
 <td>231.5–336.4</td>
 <td>53.52 / 52.32 / 47.49</td>
@@ -1023,7 +1012,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-21</td>
 <td>#77</td>
-<td>…5ZMND</td>
 <td>NPU, PR head as-is (HMX block loop)</td>
 <td>403.5–541.2</td>
 <td>20.48 / 18.31 / 18.00</td>
@@ -1033,7 +1021,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#94 s1</td>
-<td>…5ZMND</td>
 <td>CPU control</td>
 <td>202.7–287.2</td>
 <td>53.25 / 51.12 / 49.04</td>
@@ -1043,7 +1030,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#94 s2</td>
-<td>…5ZMND</td>
 <td>NPU A: <code>htp_moe</code> @ <code>2a75f7d9</code>, GEMV switch off (HMX)</td>
 <td>389.1–527.3</td>
 <td>17.73 / 17.03 / 17.31</td>
@@ -1053,7 +1039,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#94 s2</td>
-<td>…5ZMND</td>
 <td>NPU C: same binary, <code>NNTR_MOE_HTP_M1_GEMV=1</code> (HVX GEMV over DDR)</td>
 <td>426.0–529.5</td>
 <td>18.83 / 18.34 / 17.59</td>
@@ -1063,7 +1048,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#88</td>
-<td>…5ZMND</td>
 <td>NPU A: <code>htp_moe</code> @ <code>08afbb10</code> (before the transport fix)</td>
 <td>425.6–534.4</td>
 <td>18.73 / 16.84 / 16.46</td>
@@ -1073,7 +1057,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#88</td>
-<td>…5ZMND</td>
 <td>NPU B: PR #103 (size-class ION staging + 5 ms poll)</td>
 <td>429.9–505.9</td>
 <td>24.50 / 23.80 / 23.52</td>
@@ -1083,7 +1066,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#88</td>
-<td>…5ZMND</td>
 <td>NPU C: B with <code>NNTR_HTP_POLL_US=100</code></td>
 <td>439.5</td>
 <td>21.82 / — / —</td>
@@ -1093,7 +1075,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#105</td>
-<td>…5ZMND</td>
 <td>NPU A: GEMV on + transport fix (four-row loop)</td>
 <td>359.8–539.5</td>
 <td>27.74 / 26.88 / 24.83</td>
@@ -1103,7 +1084,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#105</td>
-<td>…5ZMND</td>
 <td>NPU B1: one-row loop, per-column <code>l2fetch</code> (lead 0)</td>
 <td>364.2–506.4</td>
 <td>26.62 / 25.80 / 22.75</td>
@@ -1113,7 +1093,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#105</td>
-<td>…5ZMND</td>
 <td>NPU B2: one-row, 64 KB lead</td>
 <td>331.0–487.6</td>
 <td>27.22 / 25.72 / 23.38</td>
@@ -1123,7 +1102,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-22</td>
 <td>#105</td>
-<td>…5ZMND</td>
 <td>NPU B3: one-row, 192 KB lead</td>
 <td>356.3–493.3</td>
 <td>28.47 / 27.48 / 24.42</td>
@@ -1133,7 +1111,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#100</td>
-<td>…5ZMND</td>
 <td>NPU A: GEMV default (PR #108)</td>
 <td>421.1–540.1</td>
 <td>27.85 / 27.09 / 26.45</td>
@@ -1143,7 +1120,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#100</td>
-<td>…5ZMND</td>
 <td>NPU A0: A with <code>NNTR_MOE_HTP_M1_GEMV=0</code> (HMX)</td>
 <td>506.4</td>
 <td>24.58 / — / —</td>
@@ -1153,7 +1129,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#113</td>
-<td>…5ZMND</td>
 <td>NPU A: four-row, lead 0 (then default)</td>
 <td>415.6–547.6</td>
 <td>27.44 / 26.83 / 25.93</td>
@@ -1163,7 +1138,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#113</td>
-<td>…5ZMND</td>
 <td>NPU D192: one-row + 192 KB lead</td>
 <td>435.4–532.8</td>
 <td>28.57 / 27.71 / 27.04</td>
@@ -1173,7 +1147,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s1</td>
-<td>…WM83Y</td>
 <td>NPU A: D192 default</td>
 <td>357.8–508.4</td>
 <td>28.48 / 26.47 / 25.55</td>
@@ -1183,7 +1156,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s1</td>
-<td>…WM83Y</td>
 <td>NPU A0: pre-D192 cell (<code>LEAD_KB=0 ROWS1=0</code>)</td>
 <td>349.5–507.4</td>
 <td>27.50 / 25.85 / 24.58</td>
@@ -1193,7 +1165,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s1</td>
-<td>…WM83Y</td>
 <td>NPU B: VTCM DMA feed (PR #118)</td>
 <td>366.5–489.0</td>
 <td>35.66 / 35.93 / 31.47</td>
@@ -1203,7 +1174,6 @@ differ in the last digit from earlier write-ups.</p>
 <tr>
 <td>2026-09-23</td>
 <td>#117 s2</td>
-<td>…WM83Y</td>
 <td>NPU A0: pre-D192 cell</td>
 <td>401.9–506.4</td>
 <td>27.56 / 26.77 / 26.20</td>
@@ -1229,14 +1199,14 @@ and were not run end to end.</p>
 <tbody>
 <tr>
 <td>NPU decode tok/s, G 64 / 512 / 1024</td>
-<td>28.22 / 27.89 / 27.23 (#117 s2 A, …WM83Y)</td>
+<td>28.22 / 27.89 / 27.23 (#117 s2 A)</td>
 <td><strong>≥ 50</strong> at every G</td>
 <td>≈ 42–47 by bytes with the current CPU/DSP split (<a href="roadmap.html">roadmap.html</a> §1)</td>
 <td><strong>1.79×</strong> at G=512 (1.77× / 1.84× at 64 / 1024). With the feed (#117 s2 B, 36.49): <strong>1.37×</strong> (1.34× / 1.43×)</td>
 </tr>
 <tr>
 <td>CPU decode tok/s (the bar to beat)</td>
-<td>52.43 / 49.22 / 48.31 (#94 s2, …5ZMND)</td>
+<td>52.43 / 49.22 / 48.31 (#94 s2)</td>
 <td>—</td>
 <td>—</td>
 <td>the CPU reads ≈ 953 MB per token at ≈ 50 GB/s: it clears 50 at G=64 in every sitting, at G=512 in some, and never reliably at G=1024</td>
@@ -1289,12 +1259,12 @@ empty.</li>
 <ol start="6">
 <li>Add one row per variant to <strong>History</strong> (§4): the mean of each mirrored
 pair per G (two decimals, rounded half up from the run values), the
-prefill range over all of that variant's runs, the unit serial, the
+prefill range over all of that variant's runs, the
 text result and a one-line note with the % vs this sitting's A. Leave
 out a lone thermal outlier, but mention it in the note.</li>
-<li>If the sitting ran the DMA anchor, update the unit's row in §1.3. If a
-new phone was used, add its row there. Keep units separate: never
-average or compare tok/s across units, and scale a DMA-fed <code>mm</code> by the
+<li>If the sitting ran the DMA anchor, add its reading to §1.3; the
+sitting's handoff records the setup. Never average or compare tok/s
+across phones, and scale a DMA-fed <code>mm</code> by the
 anchor ratio before comparing it.</li>
 </ol>
 <p><strong>Decide whether &quot;now&quot; changes.</strong></p>

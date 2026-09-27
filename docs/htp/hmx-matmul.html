@@ -40,10 +40,11 @@ figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
 .pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
 footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
 @media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html" class="here">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html" class="here">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>The HMX integer matmul layer</h1>
 <p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
@@ -809,12 +810,12 @@ and the subnormal row of the first gate fails for that reason.</p>
 <td>#100</td>
 </tr>
 <tr>
-<td>Anchor cell <code>DMA_REPLAY workers=1</code>, unit <code>R3CY205ZMND</code></td>
+<td>Anchor cell <code>DMA_REPLAY workers=1</code>, one S25 Ultra</td>
 <td style="text-align:right">31.2–31.4 GB/s (40.2 once, #94)</td>
 <td>#100, #113</td>
 </tr>
 <tr>
-<td>Same anchor cell, unit <code>R3CY10WM83Y</code></td>
+<td>Same anchor cell, a second S25 Ultra</td>
 <td style="text-align:right">37.1–37.3 GB/s</td>
 <td>#117, two sittings</td>
 </tr>
@@ -1028,7 +1029,7 @@ cuts the FastRPC payload 4×.</p>
 <p>The host checks run with <code>test/htp/host/run_host_checks.sh</code> and need no DSP.
 The gtests need the device and the skel from <code>test/htp/build.sh</code>.</p>
 
-<div class="pager"><span>← <a href="foundation.html">Foundation</a></span><span><a href="weight-format.html">Weight format</a> →</span></div>
+<div class="pager"><span>← <a href="weight-format.html">Weight format</a></span><span><a href="moe-ffn.html">MoE FFN</a> →</span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 </body></html>

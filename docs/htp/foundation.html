@@ -40,10 +40,11 @@ figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
 .pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
 footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
 @media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html" class="here">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html" class="here">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>Foundation: FastRPC, session, memory, build</h1>
 <p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
@@ -659,7 +660,7 @@ and the same day read 648.6 and 401.3 about two hours apart, while the
 </thead>
 <tbody>
 <tr>
-<td>#88, 2026-09-22, unit <code>R3CY205ZMND</code></td>
+<td>#88, 2026-09-22</td>
 <td>A: before the fix (one grow-only 4 MiB pair, 100 µs poll), HMX path</td>
 <td style="text-align:right">401.3</td>
 </tr>
@@ -674,7 +675,7 @@ and the same day read 648.6 and 401.3 about two hours apart, while the
 <td style="text-align:right"><strong>87.9</strong></td>
 </tr>
 <tr>
-<td>#100, 2026-09-23, unit <code>R3CY205ZMND</code></td>
+<td>#100, 2026-09-23</td>
 <td>HMX path (<code>NNTR_MOE_HTP_M1_GEMV=0</code>)</td>
 <td style="text-align:right">84.6</td>
 </tr>
@@ -684,7 +685,7 @@ and the same day read 648.6 and 401.3 about two hours apart, while the
 <td style="text-align:right">185.8</td>
 </tr>
 <tr>
-<td>#117, 2026-09-23, unit <code>R3CY10WM83Y</code>, two sittings</td>
+<td>#117, 2026-09-23, two sittings</td>
 <td>A: GEMV, arena read</td>
 <td style="text-align:right">184.6 / 190.3</td>
 </tr>
@@ -960,7 +961,7 @@ full-model runs) is covered in the measurement chapter.</p>
 </tbody>
 </table></div>
 
-<div class="pager"><span>← <a href="architecture.html">Architecture</a></span><span><a href="hmx-matmul.html">HMX matmul</a> →</span></div>
+<div class="pager"><span>← <a href="architecture.html">Architecture</a></span><span><a href="weight-format.html">Weight format</a> →</span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 </body></html>
