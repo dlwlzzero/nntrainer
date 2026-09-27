@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Lessons learned on silicon</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html" class="here">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>Lessons learned on silicon</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-rules-learned-on-silicon">1. Rules learned on silicon <a class="header-anchor hd" href="#1-rules-learned-on-silicon">#</a></a></li><ul><li><a href="#11-reading-a-number">1.1 Reading a number <a class="header-anchor hd" href="#11-reading-a-number">#</a></a></li><li><a href="#12-dma-and-memory">1.2 DMA and memory <a class="header-anchor hd" href="#12-dma-and-memory">#</a></a></li><li><a href="#13-hvx-and-hmx-kernels">1.3 HVX and HMX kernels <a class="header-anchor hd" href="#13-hvx-and-hmx-kernels">#</a></a></li><li><a href="#14-transport-arm--dsp-calls">1.4 Transport (ARM ↔ DSP calls) <a class="header-anchor hd" href="#14-transport-arm--dsp-calls">#</a></a></li><li><a href="#15-measurement-method-and-drift">1.5 Measurement method and drift <a class="header-anchor hd" href="#15-measurement-method-and-drift">#</a></a></li><li><a href="#16-build-and-deploy">1.6 Build and deploy <a class="header-anchor hd" href="#16-build-and-deploy">#</a></a></li><li><a href="#17-process">1.7 Process <a class="header-anchor hd" href="#17-process">#</a></a></li></ul><li><a href="#2-verdicts">2. Verdicts <a class="header-anchor hd" href="#2-verdicts">#</a></a></li><li><a href="#3-tried-and-dropped">3. Tried and dropped <a class="header-anchor hd" href="#3-tried-and-dropped">#</a></a></li><li><a href="#4-open-questions">4. Open questions <a class="header-anchor hd" href="#4-open-questions">#</a></a></li></ul></details>
+<p>This chapter collects what the phone taught us that reasoning got wrong.
+It covers the rules that now bind every change, the questions that are
+closed and how they were closed, the negative results worth keeping, and
+the questions that are still open. It merges two sources: the device work
+of the upstream PR #4327 (Jul–Sep 2026) and the <code>htp_moe</code> decode work
+(#77 onward, 2026-09-21 to 2026-09-23, up to the merge of PR #118).
+Plans and ordering belong to the roadmap chapter. The system itself is described in
+<a href="architecture.html">architecture.html</a>.</p>
+<p><strong>How to read it.</strong></p>
+<ul>
+<li>Each rule has an ID (<code>D3</code>, <code>K2</code>, …) grouped by topic. The column
+<em>was</em> gives the old ledger rule number, so a reference such as &quot;rule 28&quot;
+in an issue or commit can be mapped here. <code>—</code> means the rule is new to
+this list (mostly lessons from the upstream PR's documents).</li>
+<li>Tags: <code>upstream PR #4327</code> for lessons from the upstream PR's device work,
+<code>htp_moe</code> for this project's, <code>hvx_impl</code> for rules carried over from the
+earlier HVX-only branch, whose silicon rules apply here too.</li>
+<li>Rules that were later amended or withdrawn appear only in their final
+form. The withdrawal is kept when it is the lesson itself (D2).</li>
+<li>&quot;Unit&quot; is one of the Galaxy S25 Ultra phones used (all the same model,
+Snapdragon 8 Elite, Hexagon v79).</li>
+<li>&quot;Sitting&quot; is one session on one phone. Variant A is the unchanged
+reference binary and runs first.</li>
+</ul>
+<h2 id="1-rules-learned-on-silicon">1. Rules learned on silicon <a class="hd" aria-label="link to this section" href="#1-rules-learned-on-silicon">#</a></h2>
+<h3 id="11-reading-a-number">1.1 Reading a number <a class="hd" aria-label="link to this section" href="#11-reading-a-number">#</a></h3>
+<p>Most rules below are about which number can be compared with which. They
+reduce to one picture:</p>
+<figure>
+<svg viewBox="0 0 870 398" role="img" aria-label="Decision chart for which device-run numbers can be compared with which" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="lessons1-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="16" y="40" width="140" height="44" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="86" y="57.905" font-size="13" fill="#0b0b0b" text-anchor="middle">a number from</text>
+<text x="86" y="75.455" font-size="13" fill="#0b0b0b" text-anchor="middle">a device run</text>
+<polygon points="86,172.0 148.0,200 86,228.0 24.0,200" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="86" y="204.5" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">what kind?</text>
+<line x1="86" y1="84" x2="86" y2="170" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<line x1="148" y1="200" x2="176" y2="200" stroke="#52514e" stroke-width="1.3"/>
+<line x1="176" y1="58" x2="176" y2="356" stroke="#52514e" stroke-width="1.3"/>
+<line x1="176" y1="58" x2="439" y2="58" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="188" y="52" font-size="12" fill="#52514e" text-anchor="start">tok/s (prefill or decode)</text>
+<line x1="176" y1="86" x2="439" y2="86" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="188" y="80" font-size="12" fill="#52514e" text-anchor="start">[HTP-PROFILE] transport / host</text>
+<line x1="176" y1="178" x2="439" y2="178" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="188" y="172" font-size="12" fill="#52514e" text-anchor="start">[HTP-PROFILE] dsp / mm / stage µs</text>
+<line x1="176" y1="294" x2="439" y2="294" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="188" y="288" font-size="12" fill="#52514e" text-anchor="start">GB/s from a DMA probe</text>
+<line x1="176" y1="356" x2="439" y2="356" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="188" y="350" font-size="12" fill="#52514e" text-anchor="start">E2E prefill tok/s</text>
+<rect x="440" y="42" width="290" height="60" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="585" y="67.905" font-size="13" fill="#0b0b0b" text-anchor="middle">compare only inside one sitting,</text>
+<text x="585" y="85.455" font-size="13" fill="#0b0b0b" text-anchor="middle">against that sitting's variant A (M1)</text>
+<rect x="440" y="266" width="236" height="58" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="558" y="282.625" font-size="12.5" fill="#0b0b0b" text-anchor="middle">not a ceiling (D2).</text>
+<text x="558" y="299.5" font-size="12.5" fill="#0b0b0b" text-anchor="middle">Use c_star and the anchor cell</text>
+<text x="558" y="316.375" font-size="12.5" fill="#0b0b0b" text-anchor="middle">of the same run</text>
+<rect x="440" y="336" width="272" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="576" y="352.062" font-size="12.5" fill="#0b0b0b" text-anchor="middle">drifts with position in the run (M3);</text>
+<text x="576" y="368.938" font-size="12.5" fill="#0b0b0b" text-anchor="middle">tie-break with M&gt;1 dsp</text>
+<polygon points="492,156.0 544.0,178 492,200.0 440.0,178" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="492" y="182.5" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">same unit?</text>
+<rect x="660" y="120" width="200" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="760" y="136.062" font-size="12.5" fill="#0b0b0b" text-anchor="middle">comparable across sittings</text>
+<text x="760" y="152.938" font-size="12.5" fill="#0b0b0b" text-anchor="middle">(moves ≤ 4 %, M2)</text>
+<rect x="660" y="196" width="200" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="760" y="212.062" font-size="12.5" fill="#0b0b0b" text-anchor="middle">scale by each sitting's</text>
+<text x="760" y="228.938" font-size="12.5" fill="#0b0b0b" text-anchor="middle">DMA anchor cell (D3)</text>
+<path d="M492,156 V140 H659" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="506" y="134" font-size="12" fill="#52514e" text-anchor="start">yes</text>
+<path d="M544,178 H760 V161" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="556" y="172" font-size="12" fill="#52514e" text-anchor="start">no, direct HVX read</text>
+<path d="M492,200 V216 H659" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#lessons1-arrow)"/>
+<text x="500" y="232" font-size="12" fill="#52514e" text-anchor="start">no, and the path</text>
+<text x="500" y="246" font-size="12" fill="#52514e" text-anchor="start">is DMA-fed</text>
+</svg>
+<figcaption>Which device-run numbers can be compared with which: tok/s and the transport/host columns only against the same sitting's variant A, the DSP's own columns across sittings on one unit (or on DMA-fed paths after scaling by each sitting's anchor cell), and DMA probe rates never as a ceiling.</figcaption>
+</figure>
+<h3 id="12-dma-and-memory">1.2 DMA and memory <a class="hd" aria-label="link to this section" href="#12-dma-and-memory">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td><strong>Decode is bytes divided by each reader's bandwidth.</strong> One token reads ≈ 893 MB of weights on the NPU model (MoE 484 on the DSP, 408 on the CPU) and ≈ 953 MB on the CPU model. Count the bytes from the model's shapes, not from an estimate: the long-quoted 730 MB (and the 48–52 tok/s &quot;ceiling&quot; built on it with 34–38 GB/s) undercounted the non-MoE weights by ≈ 160 MB.</td>
+<td>The CPU model at 52.4 tok/s reads ≈ 50 GB/s (#94); the CPU alone read 67.9 GB/s in #77's two-reader probe. The MoE share is 22 × 22.02 MB = 484 MB per token. Byte counts reproduce both model file sizes (<a href="weight-format.html">weight-format.html</a>).</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>—</td>
+</tr>
+<tr>
+<td>D2</td>
+<td><strong>An isolated DMA probe is not a ceiling. The tag-validated per-call cell <code>c_star</code> is.</strong> Probe rates cannot be reached by any real per-call descriptor list. Wall 2 is decided only by instrumentation inside the layer call.</td>
+<td>Probes read 72–80 GB/s (contiguous) and 108–117 GB/s (strided 2D) while the MoE call's own DMA ran at 16.2–18.0 GB/s (#77). The &quot;4–7× gap&quot; was then blamed on the chunk list (≈ 2.7×, #94 sitting 2). #100 (2026-09-23) re-measured with content-checked cells: <code>c_star</code> = <strong>26.3 GB/s</strong> = 0.36 × the same log's probe (73.2). Against <code>c_star</code> the traced 46-descriptor list runs at <strong>1.19×</strong>, so it is faster than the ceiling. Every validated cell sits at 30–31.7 GB/s whatever the descriptor count (8 to 46), chaining mode or destination layout. The &quot;list is slow&quot; rule was withdrawn.</td>
+<td>htp_moe</td>
+<td>11 (amended), 19 (withdrawn), 28</td>
+</tr>
+<tr>
+<td>D3</td>
+<td><strong>The single-queue DMA rate belongs to the unit and can shift for good between sittings. Every absolute GB/s or <code>mm</code> gate on a DMA-fed path is read next to the same sitting's anchor cell.</strong> The anchor is <code>DMA_REPLAY workers=1 load=0 pace=0</code> in <code>unittest_hvx_dma_probe</code> (<code>MoeChunkReplay</code>), unchanged since #94.</td>
+<td>Across S25 Ultra units and sittings the anchor read 31–37 GB/s: 40.2 once (#94 sitting 2), then 31.4 (#100), 31.2 (#113), 37.1 and 37.3 (#117, two sittings); one S25 Ultra read up to 19 % faster than another. A cooled repeat (31.8 °C vs 46.5 °C) matched every ratio within 1 %, so the shift is not thermal. One-worker rows were 15–30 % low while four-worker rows stayed within 6 %, so it is the issue rate of one queue, not aggregate DDR bandwidth. The direct HVX read is the same on both units (<code>mm</code> 922.7 / 931.9 vs 937.0, &lt; 1 %). Consequences: a DMA-fed win depends on the unit (the VTCM feed is 1.38× at a 37 GB/s anchor, ≈ 1.16× projected at 31 GB/s). The MoE floor per token is 13.0–15.5 ms (13.0 at 37.3 GB/s, 15.5 at 31.2).</td>
+<td>htp_moe</td>
+<td>10, 30, 32, 34</td>
+</tr>
+<tr>
+<td>D4</td>
+<td><strong>HVX reading weights straight from DDR tops out at 21–27 GB/s, whether the buffer is the ION arena or the cached heap.</strong> Only a DMA feed into VTCM gets past it.</td>
+<td>#105 (2026-09-22): arena vs heap within 11 %, no consistent sign. The same band (21–25 GB/s direct vs 37 through the DMA ring) was measured on a sibling SoC in <code>hvx_impl</code> #59.</td>
+<td>htp_moe</td>
+<td>27</td>
+</tr>
+<tr>
+<td>D5</td>
+<td><strong>HVX streaming out of VTCM is nearly free next to a DMA writing into it.</strong> A VTCM feed costs the DMA rate and nothing else.</td>
+<td>#100: HVX load on vs off costs 0.1–0.3 % on all three certified feed shapes (699.8 → 700.5, 695.5 → 697.6, 700.5 → 701.8 µs/call). Confirmed inside the layer call by #117: the DMA is busy 640–682 µs of a 712 µs call and the ≈ 240 µs of arithmetic is hidden.</td>
+<td>htp_moe</td>
+<td>29</td>
+</tr>
+<tr>
+<td>D6</td>
+<td><strong>The DSP's 4 GiB address space, not host RAM, bounds how many weights can be mapped.</strong> Mappings and the DSP heap share it. Large chunks waste space to alignment.</td>
+<td>3840 MiB of arena plus ≈ 182 MiB of heap fill one 4 GiB space. With 1 GiB chunks the app stopped at 3072 MiB, which looked like a 3 GiB limit. The real cause was 768 MiB lost to alignment. 256 MiB chunks fit 3840 (2026-09-15, PR author's device). Code: <code>kArenaChunkMax</code> = 256 MiB in <code>htp_compute_ops.cpp</code>, <code>NNTR_HVX_MAX_ARENAS</code> = 32 in <code>test/htp/nntr_hvx_session.h</code>.</td>
+<td>upstream PR #4327</td>
+<td>8</td>
+</tr>
+<tr>
+<td>D7</td>
+<td><strong>The kind of memory and the access pattern decide the time, not the instruction count.</strong> Scattered writes to uncached DDR break write combining.</td>
+<td>Re-splitting the quantizer by row groups scattered its writes to the uncached FastRPC output buffer: <code>quant</code> went from 98.5 to 295.5 µs per call (+200 %). The same quantize function takes 28.1 µs from VTCM and 69.1 µs from uncached DDR (2.5×). 2026-09-10, PR author's device.</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="13-hvx-and-hmx-kernels">1.3 HVX and HMX kernels <a class="hd" aria-label="link to this section" href="#13-hvx-and-hmx-kernels">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>K1</td>
+<td><strong>The HMX always computes 64-row tiles. Its cost scales with the number of blocks, not with M.</strong> At M = 1, 63 of 64 rows are padding, and one decode call cannot go below ≈ 1 ms on the HMX. This is why decode moved to an HVX GEMV.</td>
+<td>Per block, <code>mm</code> ≈ 188 µs and <code>acc</code> ≈ 65 µs, the same at prefill and decode. 4 blocks predict 752 / 259 µs, and decode measured 752.0 / 260.5 (2026-09-15, PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>K2</td>
+<td><strong>At M = 1 the HVX GEMV over the arena is bound by DDR read latency, not by <code>vrmpy</code> issue. Cutting compute there makes it slower.</strong> Read a compute-side change on the <code>hot</code> (L2-resident) cell, or after the weights come from VTCM.</td>
+<td>#105: dropping <code>gemm_rows4</code>'s three dead accumulators (the one-row loop <code>gemm_row1</code> in <code>hvx/hvx_gemm_u8i4_wh.c</code>) raised M==1 <code>mm</code> from 973.0 to 1044.6 µs (+7.4 %) and cut decode by 4–8 %, while the <code>hot</code> cell got 2.26× faster (70.77 → 31.25 ns/tile). With 2 <code>vrmpy</code> per quarter-tile instead of 8, fewer loads are in flight to cover the latency.</td>
+<td>htp_moe</td>
+<td>26</td>
+</tr>
+<tr>
+<td>K3</td>
+<td><strong>An <code>l2fetch</code> lead helps only a loop that is starved for latency, and only up to one L2 budget.</strong> Never add a prefetch knob without its own <code>hot</code>-vs-<code>arena</code> cell. Read the lead as an ordinal, not as bytes. Under the VTCM feed (the default since PR #118) the lead is off by construction: there is nothing left to prefetch.</td>
+<td>#113 (2026-09-23), full 2 × 5 matrix (below). The four-row loop with any lead is 2.1–2.5× slower (interference, not eviction: the <code>hot</code> cell stays flat at 71.7–73.5). The one-row loop improves to 192 KB (154.3 → 129.1 ns/tile) and degrades past it (384 KB × 6 lanes ≈ 2.25 MB, the L2 budget). In the layer call, one-row + 192 KB gives <code>mm</code> 937.0 vs 1000.2 (−6.3 %). The hardware queues three <code>l2fetch</code> per thread and stalls on a fourth, so the up half of stage A gets only about two column-computes of lead (comment on <code>HVX_GEMV_PF_LEAD_KB</code> in <code>hmx/hexkl_mm_u8i4_moe.h</code>).</td>
+<td>htp_moe</td>
+<td>31</td>
+</tr>
+<tr>
+<td>K4</td>
+<td><strong>Integer <code>vrmpy</code> sums are exact in any order. Divergence can enter only in the float epilogue.</strong> This is what lets a new path be proven bit-identical to the old one.</td>
+<td><code>MoeLayerM1GemvMatchesHmx</code>: GEMV vs HMX, 0 bad elements at every sitting since #94.</td>
+<td>hvx_impl</td>
+<td>—</td>
+</tr>
+<tr>
+<td>K5</td>
+<td><strong>ARM and DSP give the same bits only if they run the same IEEE operations in the same order: no FMA, no qf32, no division.</strong> &quot;Both accurate&quot; is not enough when the result feeds a u8 quantizer.</td>
+<td>Two SwiGLU implementations, each accurate to ≈ 1e-6, flipped one u8 level in 5 of 32 calls (<code>total_flips=1/1792</code>, SNR 67.6–79.8 dB). The down matmul spread that one element across the row. A shared deterministic SwiGLU (<code>nntrainer/tensor/swiglu_det.h</code>, <code>hvx/hvx_swiglu_det.h</code>) gave 32/32 <code>max_abs_err=0</code> (2026-09-10, PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>K6</td>
+<td><strong>The compiler is part of the source.</strong> FMA contraction silently changes bits. <code>#pragma clang fp contract(off)</code> does not protect NEON intrinsics. Check the emitted code of any kernel that must be bit-identical.</td>
+<td>A reference built with FMA failed the device layer test by exactly 1 ULP on 20 097 of 409 600 elements (2026-09-14, PR author's device). The <code>swiglu_det.h</code> header records 12 <code>fmla</code> emitted with the pragma and without it. Only an empty <code>asm</code> tie on each result stops the contraction.</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>K7</td>
+<td><strong>v79 HVX IEEE <code>sf</code> arithmetic keeps subnormals. It does not flush them to zero.</strong> A scalar spec for HVX <code>sf</code> code is plain IEEE round-to-nearest-even with no flush. The host side must not run under a flush either (<code>-ffast-math</code> can set aarch64 FPCR.FZ).</td>
+<td>#95 (2026-09-22, side tree): an FWHT fed ±1e-39 returned <code>0x1.7f4b4p-127</code>, the unflushed result, where the flushing spec said <code>+0</code>. The fix is part of #110 and not yet in this tree. The overflow row of the same test (±3e38) is unexplained (§4).</td>
+<td>htp_moe</td>
+<td>24 (second)</td>
+</tr>
+<tr>
+<td>K8</td>
+<td><strong>Quantizers decode integers, never <code>sf</code> bits, because qf32 → sf conversion differs between v75 and v79.</strong> Compute in fp32 inside an op and narrow once.</td>
+<td><code>hvx_impl</code>: narrowing after a qf16 multiply cost 2.7 % perplexity.</td>
+<td>hvx_impl</td>
+<td>—</td>
+</tr>
+<tr>
+<td>K9</td>
+<td><strong>Estimates of the form &quot;N events × T each&quot; failed 3 of 3 inside the kernel.</strong> The time is set by which memory is touched in which pattern (D7), and by what waits on what. The one change that survived hid a wait. It did not remove work.</td>
+<td>Phase A (2026-09-10, PR author's device): quantizer re-split +200 %, dequant splat change no effect, worker spin-wait 0.8 µs where 50 µs was predicted. Only hiding the weight DMA behind the activation quant survived: drain 111.9 → 67.9 µs (−39 %).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>The lead matrix behind K3 (#113, <code>ns_per_tile</code> on the arena, lower is
+better). The upper line is the four-row loop, the lower the one-row loop:</p>
+<figure>
+<svg viewBox="0 0 820 330" role="img" aria-label="M=1 GEMV nanoseconds per tile against l2fetch lead from issue 113: the four-row loop rises from 133.5 to 328.4, the one-row loop dips from 154.3 to 129.1 at 192 KB and climbs back to 155.2" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<text x="16" y="22" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">M=1 GEMV ns/tile vs l2fetch lead (#113)</text>
+<line x1="560" y1="18" x2="580" y2="18" stroke="#2a78d6" stroke-width="2.5"/>
+<circle cx="570" cy="18" r="3.5" fill="#2a78d6"/>
+<text x="586" y="22" font-size="12" fill="#0b0b0b" text-anchor="start">four-row loop</text>
+<line x1="690" y1="18" x2="710" y2="18" stroke="#eb6834" stroke-width="2.5"/>
+<circle cx="700" cy="18" r="3.5" fill="#eb6834"/>
+<text x="716" y="22" font-size="12" fill="#0b0b0b" text-anchor="start">one-row loop</text>
+<line x1="70" y1="270.0" x2="800" y2="270.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="274" font-size="11" fill="#898781" text-anchor="end">100</text>
+<line x1="70" y1="233.3" x2="800" y2="233.3" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="237.333" font-size="11" fill="#898781" text-anchor="end">140</text>
+<line x1="70" y1="196.7" x2="800" y2="196.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="200.667" font-size="11" fill="#898781" text-anchor="end">180</text>
+<line x1="70" y1="160.0" x2="800" y2="160.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="164" font-size="11" fill="#898781" text-anchor="end">220</text>
+<line x1="70" y1="123.3" x2="800" y2="123.3" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="127.333" font-size="11" fill="#898781" text-anchor="end">260</text>
+<line x1="70" y1="86.7" x2="800" y2="86.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="90.6667" font-size="11" fill="#898781" text-anchor="end">300</text>
+<line x1="70" y1="50.0" x2="800" y2="50.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="62" y="54" font-size="11" fill="#898781" text-anchor="end">340</text>
+<text x="20" y="160" font-size="11" fill="#898781" text-anchor="middle" transform="rotate(-90 20 160)">ns per tile (lower is better)</text>
+<line x1="70" y1="270" x2="800" y2="270" stroke="#52514e" stroke-width="1"/>
+<text x="143" y="288" font-size="12" fill="#0b0b0b" text-anchor="middle">0</text>
+<text x="289" y="288" font-size="12" fill="#0b0b0b" text-anchor="middle">192</text>
+<text x="435" y="288" font-size="12" fill="#0b0b0b" text-anchor="middle">384</text>
+<text x="581" y="288" font-size="12" fill="#0b0b0b" text-anchor="middle">768</text>
+<text x="727" y="288" font-size="12" fill="#0b0b0b" text-anchor="middle">1536</text>
+<text x="435" y="310" font-size="12" fill="#52514e" text-anchor="middle">l2fetch lead (KB)</text>
+<polyline points="143.0,239.3 289.0,102.9 435.0,71.6 581.0,65.5 727.0,60.6" fill="none" stroke="#2a78d6" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="143.0" cy="239.3" r="4" fill="#2a78d6"/>
+<circle cx="289.0" cy="102.9" r="4" fill="#2a78d6"/>
+<circle cx="435.0" cy="71.6" r="4" fill="#2a78d6"/>
+<circle cx="581.0" cy="65.5" r="4" fill="#2a78d6"/>
+<circle cx="727.0" cy="60.6" r="4" fill="#2a78d6"/>
+<polyline points="143.0,220.2 289.0,243.3 435.0,233.9 581.0,226.6 727.0,219.4" fill="none" stroke="#eb6834" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="143.0" cy="220.2" r="4" fill="#eb6834"/>
+<circle cx="289.0" cy="243.3" r="4" fill="#eb6834"/>
+<circle cx="435.0" cy="233.9" r="4" fill="#eb6834"/>
+<circle cx="581.0" cy="226.6" r="4" fill="#eb6834"/>
+<circle cx="727.0" cy="219.4" r="4" fill="#eb6834"/>
+<text x="143" y="259.292" font-size="12" fill="#2a78d6" text-anchor="middle" font-weight="600">133.5</text>
+<text x="143" y="210.225" font-size="12" fill="#b04a1f" text-anchor="middle" font-weight="600">154.3</text>
+<text x="289" y="92.8917" font-size="12" fill="#2a78d6" text-anchor="middle" font-weight="600">282.3</text>
+<text x="289" y="263.325" font-size="12" fill="#b04a1f" text-anchor="middle" font-weight="600">129.1</text>
+<text x="435" y="61.6333" font-size="12" fill="#2a78d6" text-anchor="middle" font-weight="600">316.4</text>
+<text x="435" y="253.883" font-size="12" fill="#b04a1f" text-anchor="middle" font-weight="600">139.4</text>
+<text x="581" y="55.4917" font-size="12" fill="#2a78d6" text-anchor="middle" font-weight="600">323.1</text>
+<text x="581" y="246.642" font-size="12" fill="#b04a1f" text-anchor="middle" font-weight="600">147.3</text>
+<text x="727" y="50.6333" font-size="12" fill="#2a78d6" text-anchor="middle" font-weight="600">328.4</text>
+<text x="727" y="239.4" font-size="12" fill="#b04a1f" text-anchor="middle" font-weight="600">155.2</text>
+</svg>
+<figcaption>The lead matrix behind K3 (#113, ns/tile on the arena, lower is better): any l2fetch lead makes the four-row loop 2.1–2.5× slower, while the one-row loop improves up to a 192 KB lead and degrades past it (384 KB × 6 lanes ≈ 2.25 MB, the L2 budget).</figcaption>
+</figure>
+<h3 id="14-transport-arm--dsp-calls">1.4 Transport (ARM ↔ DSP calls) <a class="hd" aria-label="link to this section" href="#14-transport-arm--dsp-calls">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1</td>
+<td><strong>Moving a matmul to the DSP pays only when the round trip is smaller than the work.</strong> The stages of one layer must run in one call.</td>
+<td>conv in_proj on the DSP saved 13 ms of prefill where 65–100 ms was expected. One call per expert would be 176 calls × 326 µs ≈ 57 ms per token of pure transport. Upstream fit at prefill payloads: transport ≈ 150 µs + payload / 3.0 GB/s (PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>7</td>
+</tr>
+<tr>
+<td>T2</td>
+<td><strong>The ARM polls for the DSP's reply for up to <code>NNTR_HTP_POLL_US</code> µs (default 5000), then falls back to an interrupt wait.</strong> A call longer than the window pays the wake-up. The window has a driver ceiling: 10 000 is refused, and the session drops to PM QoS (<code>qos_mode=1</code> in the profile's first line).</td>
+<td>Code comment in <code>htp_backend.cpp</code>. At 100 µs the decode call's transport read 158 µs, at 5000 it read 83 µs (PR author's device). In #88, the poll was 67.6 µs of the 313.4 µs cut.</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>T3</td>
+<td><strong>A transport change also moves time outside the call's own timer.</strong> Budget from tok/s, not from the profile alone.</td>
+<td>#88 (2026-09-22): of the 12.6 ms/token gain, only ≈ 6.9 ms shows in the transport column. The time outside the MoE call read 13.5 ms (A), 11.4 (poll 100 µs), 8.4 (fix) at gen 64. Cause not separated (candidates: the polling core keeps its cluster clock up, cache maintenance around the call).</td>
+<td>htp_moe</td>
+<td>23 (corollary)</td>
+</tr>
+<tr>
+<td>T4</td>
+<td><strong>A DSP-side read pattern moves the ARM-side transport column.</strong> Read <code>transport</code> next to <code>mm</code> for every DSP-path variant.</td>
+<td>#100 read the GEMV path's transport at 185.8 µs vs 84.6 on the HMX path and called it a GEMV path cost. #117 then read 82.0 / 92.3 µs with the VTCM feed vs 184.6 / 190.3 on the direct arena read, same binary and sitting. The extra ≈ 100 µs belonged to the direct HVX arena read, not to the GEMV. 22 × ≈ 0.1 ms = 2.2 ms/token came back with the feed. Cause not separated.</td>
+<td>htp_moe</td>
+<td>35</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="15-measurement-method-and-drift">1.5 Measurement method and drift <a class="hd" aria-label="link to this section" href="#15-measurement-method-and-drift">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M1</td>
+<td><strong>Only an A/B inside one sitting is a verdict. Any unit may be used.</strong> Every sitting starts with the control binary. The filled handoff records which unit ran, and every benchmark row is tagged with it.</td>
+<td>Decode drifted 20.8 → 16.5 tok/s between upstream sittings with no code change. Three identical consecutive runs read 25.1 → 16.2 → 14.5 tok/s (PR author's device). Two units were 6–8.6 % apart on one binary (<code>hvx_impl</code>). The CPU path drifts ≤ 7 % per cell day to day (#94 first attempt vs #77).</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>9, 10, 13</td>
+</tr>
+<tr>
+<td>M2</td>
+<td><strong>Across sittings, only the DSP's own columns (<code>dsp</code>, <code>mm</code>, stage µs) carry the kernel.</strong> tok/s, <code>host</code> and <code>transport</code> carry host and thermal state.</td>
+<td>Same unit, same path: NPU tok/s −7..−16 % while <code>dsp</code>/<code>mm</code> moved ≤ 4 % (#94 sitting 2 vs #77). Identical sources ≈ 2 h apart: transport 648.6 → 401.3 µs (−38 %), <code>dsp</code> −0.2 %. Two profile passes from 30 °C and from 50–58 °C agreed ≤ 0.4 % on every <code>mm</code> (#105). Upstream: <code>dsp</code> 612 → 560 → 558 µs while transport read 272 → 2686 → 527.</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>20, 23, 27 (part)</td>
+</tr>
+<tr>
+<td>M3</td>
+<td><strong>End-to-end prefill tok/s drifts with the cell's position in the run.</strong> Use the M&gt;1 <code>dsp</code> column as the tie-breaker for the prefill gate.</td>
+<td>Variant A's own repeated pairs differed by −10..−24 % (#105). In #117 sitting 2, A's gen-1024 prefill read 528.9 right after a cool-down vs 401.9 later.</td>
+<td>htp_moe</td>
+<td>27 (part)</td>
+</tr>
+<tr>
+<td>M4</td>
+<td><strong>A <code>--profile</code> build is never the tok/s binary.</strong></td>
+<td>It makes prefill 83 % slower (4360 vs 2377 ms, PR author's device). It adds ≈ 20 ms/token to decode on both paths (#77: 76.2 vs 54.4 ms and 39.3 vs 19.0 ms).</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>1</td>
+</tr>
+<tr>
+<td>M5</td>
+<td><strong><code>NNTR_HTP_PROFILE=3</code> inflates <code>[M0-PROF] ffn=</code> about 5×.</strong> Only the <code>[HTP-PROFILE]</code> <code>transport</code>, <code>host</code> and <code>dsp</code> columns compare across levels 2 and 3.</td>
+<td>16–20 ms → 88–90 ms per MoE layer (#77).</td>
+<td>htp_moe</td>
+<td>15</td>
+</tr>
+<tr>
+<td>M6</td>
+<td><strong>Read <code>min</code>, not <code>avg</code>, of a profile column</strong> when the first call pays a one-time setup.</td>
+<td>Upstream: averages included the registration call.</td>
+<td>upstream PR #4327</td>
+<td>2</td>
+</tr>
+<tr>
+<td>M7</td>
+<td><strong>The profile's <code>host</code> column wraps only the FastRPC call.</strong> ARM work around it is invisible. No <code>[HTP-PROFILE]</code> block at all means nothing was dispatched: check the config on the device, not on the host.</td>
+<td>An ARM-side activation quantize looked free and cost 300–420 µs per call (PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>M8</td>
+<td><strong>In a GEMV profile row (<code>m1_gemv=calls/calls</code>), <code>swiglu</code> is lane-time summed over the 6-lane pool, not a stage.</strong> <code>swiglu / mm</code> is lane utilization.</td>
+<td>#94 C: 5601.2 / 974.7 = 5.75 lanes. Since PR #108 the row's <code>rest</code> leaves it out, and <code>htp_compute_ops.cpp</code> prints <code>weight DMA: n/a (direct arena read inside mm, … lanes busy …)</code>.</td>
+<td>htp_moe</td>
+<td>24 (first)</td>
+</tr>
+<tr>
+<td>M9</td>
+<td><strong>A DSP bandwidth loop must defeat VTCM and L2 residency, or it measures the cache.</strong> Bound the result inside the test (≤ 150 GB/s or <code>INVALID</code>).</td>
+<td>The two-reader probe's <code>dsp_alone</code> read 3265 GB/s (#77). The bound is not yet in <code>unittest_hvx_dma_probe.cpp</code>. It is #90's fix.</td>
+<td>htp_moe</td>
+<td>12</td>
+</tr>
+<tr>
+<td>M10</td>
+<td><strong>Inside one sitting, a probe rate follows the phone's temperature.</strong> Quote a probe with its <code>thermal_zone0</code>. Use the cool reading as the achievable rate.</td>
+<td>Probe shape iii, 1 worker: 106.9 GB/s at 29 °C, 88.8 at ≈ 51 °C (3–19 %) while the tok/s cells of the same sitting held (#94 sitting 2).</td>
+<td>htp_moe</td>
+<td>18</td>
+</tr>
+<tr>
+<td>M11</td>
+<td><strong>Accuracy verdicts come from full-model columns (perplexity, per-call SNR over a whole run, text vs A), never from a synthetic single-shape test.</strong> A gtest gates bit-identity to its reference. It prints SNR as a field. SNR in front of a quantizer means nothing: compare bits.</td>
+<td>#95: <code>MoeLayerHadamardMatchesTwoCallReference</code> matched its reference bit for bit but read −5.8 dB SNR on uniform synthetic input. The full model in the same sitting gained +8.0 dB median SNR over ≈ 6.2 k real calls and 12.7 % lower perplexity.</td>
+<td>htp_moe, upstream PR #4327</td>
+<td>25</td>
+</tr>
+<tr>
+<td>M12</td>
+<td><strong>Host checks model neither HMX nor HVX nor real DMA. Normal-looking text does not catch a 1-ULP error.</strong> Run the device layer test on every kernel change.</td>
+<td>The upstream kernel changed six times on &quot;host check bit-identical&quot; alone. The next device layer test failed (the cause was the reference's FMA, K6). 1 ULP still picked the same tokens over 473 generated.</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>M13</td>
+<td><strong>Square test shapes hide transposes and swapped arguments.</strong></td>
+<td>Cost two device rounds upstream (PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>M14</td>
+<td><strong>For LFM2-MoE, the tok/s report comes from <code>CausalLM::run</code> in <code>causal_lm.cpp</code>.</strong> The report block in <code>Lfm2CausalLM::run_with_embeddings</code> runs only on the embedding-input path. Any new report line (such as <code>generation(last 64)</code>) goes in the base block.</td>
+<td>#77, deviation 3. The line is planned (#89) and not in the code at <code>9fb1a3bc</code>.</td>
+<td>htp_moe</td>
+<td>16</td>
+</tr>
+</tbody>
+</table></div>
+<p>The anchor cell of D3, per sitting (GB/s, <code>DMA_REPLAY workers=1 load=0 pace=0</code>, identical code in every sitting):</p>
+<figure>
+<svg viewBox="0 0 820 282" role="img" aria-label="Single-queue DMA anchor per sitting in GB/s, across Galaxy S25 Ultra units: 40.2 in #94 sitting 2, 31.4 in #100, 31.2 in #113, 37.1 and 37.3 in the two #117 sittings" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<text x="16" y="22" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">Single-queue DMA anchor per sitting (GB/s)</text>
+<line x1="64" y1="250.0" x2="800" y2="250.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="254" font-size="11" fill="#898781" text-anchor="end">0</text>
+<line x1="64" y1="205.6" x2="800" y2="205.6" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="209.556" font-size="11" fill="#898781" text-anchor="end">10</text>
+<line x1="64" y1="161.1" x2="800" y2="161.1" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="165.111" font-size="11" fill="#898781" text-anchor="end">20</text>
+<line x1="64" y1="116.7" x2="800" y2="116.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="120.667" font-size="11" fill="#898781" text-anchor="end">30</text>
+<line x1="64" y1="72.2" x2="800" y2="72.2" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="76.2222" font-size="11" fill="#898781" text-anchor="end">40</text>
+<text x="18" y="150" font-size="11" fill="#898781" text-anchor="middle" transform="rotate(-90 18 150)">GB/s</text>
+<rect x="95.6" y="71.3" width="84" height="178.7" fill="#2a78d6" rx="2"/>
+<text x="137.6" y="64.3333" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">40.2</text>
+<text x="137.6" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">#94 s2</text>
+<rect x="242.8" y="110.4" width="84" height="139.6" fill="#2a78d6" rx="2"/>
+<text x="284.8" y="103.444" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">31.4</text>
+<text x="284.8" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">#100</text>
+<rect x="390.0" y="111.3" width="84" height="138.7" fill="#2a78d6" rx="2"/>
+<text x="432" y="104.333" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">31.2</text>
+<text x="432" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">#113</text>
+<rect x="537.2" y="85.1" width="84" height="164.9" fill="#2a78d6" rx="2"/>
+<text x="579.2" y="78.1111" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">37.1</text>
+<text x="579.2" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">#117 s1</text>
+<rect x="684.4" y="84.2" width="84" height="165.8" fill="#2a78d6" rx="2"/>
+<text x="726.4" y="77.2222" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">37.3</text>
+<text x="726.4" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">#117 s2</text>
+<line x1="64" y1="250" x2="800" y2="250" stroke="#52514e" stroke-width="1"/>
+</svg>
+<figcaption>The anchor cell of D3 (<code>DMA_REPLAY workers=1 load=0 pace=0</code>, identical code in every sitting) per sitting, in sitting order. The spread, 31–37 GB/s with one early 40.2, is across Galaxy S25 Ultra units (same model) and sittings: the single-queue DMA rate belongs to the unit and can shift between sittings, so a DMA-fed number is read next to its own sitting's anchor.</figcaption>
+</figure>
+<p>The spread is across S25 Ultra units and sittings. The first bar has not
+come back in the two sittings after it.</p>
+<h3 id="16-build-and-deploy">1.6 Build and deploy <a class="hd" aria-label="link to this section" href="#16-build-and-deploy">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1</td>
+<td><strong>Rebuild the DSP skel (<code>test/htp/build.sh</code>) whenever the IDL or any DSP source changes.</strong> <code>Applications/CausalLM/build_android.sh</code> never builds it. The three loader errors: <code>0x8000040E</code> (<code>AEE_EBADPARM</code>) = skel older than the IDL. <code>0x80000406</code> = the skel itself does not load. <code>htp Context is not registered</code> = app side.</td>
+<td>Hit three times upstream. #94's first attempt hit the second one (#97).</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>3, 17 (part)</td>
+</tr>
+<tr>
+<td>B2</td>
+<td><strong>A Hexagon shared object links with unresolved symbols, and the device loader then fails with a message that reads like a segment-layout bug.</strong> <code>test/htp/build.sh</code> now fails if <code>hexagon-readelf --dyn-syms</code> lists an undefined symbol outside the runtime allow-list (<code>HAP_*</code>, <code>compute_resource_*</code>, <code>qurt_*</code>, compiler-rt, libc). Every new <code>.c</code> under <code>htp_backend/</code> is checked against the script's <code>SRCS</code> at review.</td>
+<td>#97: <code>hexkl_dma_trace.c</code> never entered <code>SRCS</code>. The host check compiled it on its own, so the host gate passed, and the skel had seven undefined <code>hexkl_dma_trace_*</code>. The ledger named <code>hexagon-nm -u -D</code>. The script uses <code>readelf</code>.</td>
+<td>htp_moe</td>
+<td>17</td>
+</tr>
+<tr>
+<td>B3</td>
+<td><strong><code>build_android.sh</code> without <code>--htp</code> builds a CPU-only <code>libnntrainer.so</code> without complaint.</strong> Without <code>--cache</code> it deletes <code>builddir</code> first. Check <code>readelf -d libnntrainer.so</code> for <code>libsdkl.so</code> in <code>NEEDED</code>.</td>
+<td>The upstream rule named a <code>--clean</code> flag. That flag no longer exists in this tree. The same trap now sits behind any build without <code>--htp</code>.</td>
+<td>upstream PR #4327</td>
+<td>4</td>
+</tr>
+<tr>
+<td>B4</td>
+<td><strong>Never push the link-time stub <code>libcdsprpc.so</code> to the phone.</strong> The device's own library must be the one loaded.</td>
+<td>Upstream mobile run guide.</td>
+<td>upstream PR #4327</td>
+<td>5</td>
+</tr>
+<tr>
+<td>B5</td>
+<td><strong><code>QS4CX_WH</code> has no CPU fallback.</strong> A wrong layout gives plausible wrong text, not an error. <code>moe_htp_layers</code> must stay empty (empty means every MoE layer takes <code>moe_engine</code>). A listed subset would send the others to a CPU path that cannot read the format.</td>
+<td><code>tryMoeLayerOnAccelerator</code> and <code>Lfm2MoeCausalLM::createMoeLayer</code> (<code>lfm2_moe_layer.cpp</code>, <code>lfm2_moe_causallm.cpp</code>).</td>
+<td>upstream PR #4327</td>
+<td>6</td>
+</tr>
+<tr>
+<td>B6</td>
+<td><strong>Always set <code>HEXKL_SDK_VER</code> (6.4.0.1) and <code>HEXKL_ROOT</code> explicitly.</strong> Unset, <code>test/htp/build.sh</code> takes the newest directory under <code>$HEXKL_ROOT/lib</code>, so a workstation with another HexKL installed links it silently.</td>
+<td>#94 sitting 2. The fallback is <code>ls -1 &quot;$HEXKL_ROOT/lib&quot; | sort -V | tail -1</code> in the script.</td>
+<td>htp_moe</td>
+<td>21 (part)</td>
+</tr>
+<tr>
+<td>B7</td>
+<td><strong>Compiled artifacts are not byte-identical across build paths. A handoff is reproducible from its commit, not from a staging directory.</strong> A sitting whose variants are different binaries is accepted only if (a) every result row carries the device md5 of the binary that differs, (b) the source diff between the variant commits is exactly the change under test, and (c) shared DSP artifacts are one file for all variants. Variants switched only by environment or config on one binary set need (a) alone.</td>
+<td>#77: skel, app and gtest md5s all changed after rebuilding identical sources elsewhere, while every non-compiled file matched. #94 sitting 2 and #88 ran on sets rebuilt from the named commits.</td>
+<td>htp_moe</td>
+<td>14, 21, 22</td>
+</tr>
+<tr>
+<td>B8</td>
+<td><strong>A fresh worktree is not ready to build.</strong> <code>subprojects/</code> is empty (<code>git submodule update --init --depth 1</code>). <code>Applications/CausalLM/lib/libtokenizers_android_c.a</code> is per checkout. <code>libc++_shared.so</code> may have to come from the NDK r30 sysroot.</td>
+<td>#105 run notes: the Android build died on <code>iniparser.h</code> after ≈ 15 min.</td>
+<td>htp_moe</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="17-process">1.7 Process <a class="hd" aria-label="link to this section" href="#17-process">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>rule</th>
+<th>evidence</th>
+<th>tag</th>
+<th>was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td><strong>Measure the breakdown before acting on a hypothesis.</strong></td>
+<td>The first FastRPC hypothesis (marshalling dominates) measured 16–32 %. The real cost, a scalar accumulator copy-out at 92 % of DSP time, was found by per-stage timing (PR author's device).</td>
+<td>upstream PR #4327</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P2</td>
+<td><strong>A hypothesis that fits the numbers is not yet the cause.</strong></td>
+<td>In one upstream session, 4 of 5 first diagnoses were wrong, and each was fixed by a measurement. Example: &quot;lm_head is FP32, 537 MB&quot; matched 25.7 ms by coincidence. The real cause was an unrepacked Q4_0 tied embedding read at 2.9 GB/s vs 24.5 for a repacked FC in the same run. In <code>htp_moe</code> the &quot;4–7× DMA gap&quot; turned out to be the probe (D2).</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P3</td>
+<td><strong>One variable per run.</strong> Confirm switch states before the run and check them in the output afterwards. On the M=1 path, the <code>[HTP] moe m1 gemv: on (applied=0x…) lead=…KB rows1=… feed=… source=…</code> banner proves which path ran. An unset run prints <code>applied=0x303e1 … feed=vtcm</code>, and <code>NNTR_MOE_HTP_GEMV_FEED=0</code> prints <code>feed=arena</code>. An A log with the wrong word voids the sitting.</td>
+<td>Upstream: a run that moved two switches together answered nothing. The banner is printed by <code>sendMoeOptsOnce</code> in <code>htp_compute_ops.cpp</code>.</td>
+<td>upstream PR #4327, htp_moe</td>
+<td>—</td>
+</tr>
+<tr>
+<td>P4</td>
+<td><strong>A decode win below the issue's gate may still land as the default</strong> if it holds at all three generation lengths in one sitting, the text is byte-identical and the prefill gate holds. Whether the issue is done is still the gate's call. A win at one length only, a win inside A's own spread, or a win bought with a text change does not qualify.</td>
+<td>User decision, 2026-09-23. #113's one-row + 192 KB loop missed <code>mm</code> ≤ 840 (937.0) and landed (PR #115) on decode +4.11 / +3.29 / +4.26 % at gen 64 / 512 / 1024.</td>
+<td>htp_moe</td>
+<td>33</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="2-verdicts">2. Verdicts <a class="hd" aria-label="link to this section" href="#2-verdicts">#</a></h2>
+<p>Closed questions, oldest first. Numbers from the PR author's device are
+marked.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>question</th>
+<th>answer</th>
+<th>evidence</th>
+<th>date</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Group several FC projections into one call?</td>
+<td>Yes. Transport 326 → 68 µs per matmul.</td>
+<td>Upstream FC measurements (PR author's device)</td>
+<td>2026-08-08</td>
+</tr>
+<tr>
+<td>One FastRPC call per expert?</td>
+<td>No: 176 calls/token ≈ 57 ms of transport. One call per MoE layer instead.</td>
+<td>Upstream MoE task analysis</td>
+<td>2026-09-04</td>
+</tr>
+<tr>
+<td>Where does an upstream MoE call spend its time (prefill)?</td>
+<td>Moving and converting bytes. The HMX multiply is 17 % of a gate_up call. Transport is 54 %.</td>
+<td>Upstream per-stage profile (PR author's device)</td>
+<td>2026-09-09</td>
+</tr>
+<tr>
+<td>Fuse gate_up → SwiGLU → down into one call?</td>
+<td>Yes, once SwiGLU is bit-identical on both sides (K5): 32/32 <code>max_abs_err=0</code>.</td>
+<td>Upstream (PR author's device)</td>
+<td>2026-09-10</td>
+</tr>
+<tr>
+<td>Upstream kernel micro-optimizations (quantizer split, dequant splat, worker spin, DMA overlap)?</td>
+<td>One of four survived: overlap weight DMA with activation quant (K9).</td>
+<td>Upstream (PR author's device)</td>
+<td>2026-09-10</td>
+</tr>
+<tr>
+<td>Can all 1408 expert weights be mapped on the DSP?</td>
+<td>Yes: 256 MiB chunks, 3840 MiB arena, ≈ 182 MiB heap in one 4 GiB space (D6).</td>
+<td>Upstream (PR author's device)</td>
+<td>2026-09-15</td>
+</tr>
+<tr>
+<td>Why was the first <code>QS4CX_WH</code> decode 3.5× slower than the CPU?</td>
+<td>Three walls, and fixing one leaves the next as the floor. HMX 64-row tile 1.03 ms, weight DMA at 18 GB/s (1.19 ms floor), transport 0.57 ms × 22 calls = 12.5 ms/token. Plus lm_head at 25.7 ms (tied embedding not repacked, fixed by a blocked twin in <code>tie_word_embedding.cpp</code>).</td>
+<td>Upstream decode analysis (PR author's device)</td>
+<td>2026-09-16</td>
+</tr>
+<tr>
+<td>conv in_proj on the DSP?</td>
+<td>Runs, text identical, −13 ms prefill. Not a decode lever.</td>
+<td>Upstream (PR author's device)</td>
+<td>2026-09-18..21</td>
+</tr>
+<tr>
+<td>Where does an NPU decode token go (profile build)?</td>
+<td><code>lfm2_moe</code> 42.1 vs CPU 22.3 ms/token. <code>fully_connected</code> 28.2 vs 10.3, with no FC on the DSP. Most of that gap is the profile build's own ≈ 20 ms/token (M4), so it is worth ≈ 2–3 ms in real tok/s. lm_head 2.85 vs 3.40: the NPU run already wins there.</td>
+<td>#77 A</td>
+<td>2026-09-21</td>
+</tr>
+<tr>
+<td>What is the MoE call's transport made of (wall 3)?</td>
+<td>Buffer handling, not argument marshalling. Staging 245.8 µs (decode's 8 KiB rode a 4 MiB cached ION pair) + poll 67.6 µs of 401.3. Fixed by size-class ION staging (<code>StagingPool</code>) and the 5 ms poll: <strong>87.9 µs/call</strong>, decode +30.9 / +41.4 / +42.9 % at gen 64 / 512 / 1024, text identical. Prebound handles not needed.</td>
+<td>#77 B, #88 (PR #103)</td>
+<td>2026-09-22</td>
+</tr>
+<tr>
+<td>HVX GEMV instead of HMX at M = 1 (wall 1)?</td>
+<td>Yes. Upstream had rejected it for decode: decode was then &quot;memory-bound, 25.81 vs 25.73 tok/s&quot; and belonged on the CPU. Here it cut the call's <code>dsp</code> 1414 → 1044 µs (−26 %) with text identical. It is the default since PR #108: +13.5 % decode at gen 64 vs GEMV off, same sitting.</td>
+<td>#94 sitting 2 C, #100 A/A0</td>
+<td>2026-09-22 / 23</td>
+</tr>
+<tr>
+<td>Is the DMA descriptor list slow (wall 2)?</td>
+<td>No. Against <code>c_star</code> it runs 1.19× faster than the ceiling (D2). The in-situ 16–18 GB/s was interleaving with compute plus an engine that tops out near 31 GB/s on that unit. At M = 1 the GEMV path bypasses the list (<code>desc=2/call</code>).</td>
+<td>#94 sitting 2 attribution, #100</td>
+<td>2026-09-23</td>
+</tr>
+<tr>
+<td>Can the GEMV's compute side get <code>mm</code> down further?</td>
+<td>No. The best (loop, lead) pair is one-row + 192 KB at <code>mm</code> 937.0 µs. It lands as the default under P4: decode +4.11 / +3.29 / +4.26 %. Under a direct feed <code>mm</code> cannot go below ≈ 815 µs (22 MB at 27 GB/s).</td>
+<td>#105, #113 (PR #115)</td>
+<td>2026-09-23</td>
+</tr>
+<tr>
+<td>Feed the GEMV from VTCM by DMA?</td>
+<td>Yes. <code>mm</code> 931.9 → 676.4 µs (−27.4 %), transport 190.3 → 92.3 µs, decode <strong>+32.5 / +30.9 / +28.6 %</strong>, text identical 36/36, prefill <code>dsp</code> ±0.04 %. The default since PR #118 (<code>HVX_GEMV_M1_FEED</code> = 1 in <code>hmx/hexkl_mm_u8i4_moe.h</code>, opt-out <code>NNTR_MOE_HTP_GEMV_FEED=0</code>). The gain depends on the unit (D3).</td>
+<td>#117, two sittings</td>
+<td>2026-09-23</td>
+</tr>
+<tr>
+<td>Hadamard rotation of the MoE down_proj input (<code>QS4CX_WH_HAD</code>)?</td>
+<td>Carry it over: perplexity 115.095 → 100.497 (−12.7 %, now below the CPU's 109.759), median requant SNR +8.0 dB. Cost +0.3 % of the M==1 <code>dsp</code>, decode within drift. Port pending (#110).</td>
+<td>#95, side tree <code>htp_hadamard</code></td>
+<td>2026-09-22</td>
+</tr>
+<tr>
+<td>How far are the NPU's weights from the CPU's in accuracy?</td>
+<td>NPU perplexity is +4.9 % over the CPU <code>Q4_0</code> model, and the text leaves the CPU's at generated word 43. That is why NPU rows are checked against their own control, not against the CPU text.</td>
+<td>#95</td>
+<td>2026-09-22</td>
+</tr>
+<tr>
+<td>Where does a token go with the feed on (gen 512)?</td>
+<td>27.4 ms = MoE on the DSP 15.7 + round trips 2.0 + CPU work 9.7. Floors: MoE 13.0 ms at 37.3 GB/s (15.5 at 31.2), the CPU's 408 MB ≈ 8.2 ms at ≈ 50 GB/s. The serial floor is ≈ 21–24 ms (≈ 42–47 tok/s), so 50 tok/s needs concurrent CPU/DSP reads, fewer bytes, or a faster DSP read (<a href="roadmap.html">roadmap.html</a> §1).</td>
+<td>#117 sitting 2 profiles and tok/s</td>
+<td>2026-09-23</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="3-tried-and-dropped">3. Tried and dropped <a class="hd" aria-label="link to this section" href="#3-tried-and-dropped">#</a></h2>
+<p>Cross-cutting negative results that someone could plausibly try again,
+or that explain why the design is what it is. Results owned by one
+component are in that component's chapter.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Use an isolated DMA probe rate as the target</td>
+<td>72–117 GB/s is not reachable by any real per-call list (D2)</td>
+<td>Gates on DMA-fed paths use <code>c_star</code> and the anchor cell</td>
+</tr>
+<tr>
+<td>More DMA workers issuing in parallel</td>
+<td>1 / 2 / 4 workers: 40.2 / 39.1 / 36.5 GB/s</td>
+<td>The engine does not scale with issuers; one queue is the design</td>
+</tr>
+<tr>
+<td>Bus bandwidth vote</td>
+<td>≤ 4 %, inside noise (#77)</td>
+<td>Not a knob worth carrying</td>
+</tr>
+<tr>
+<td>Vary descriptor count, chaining mode or destination layout</td>
+<td>Every validated cell 30–31.7 GB/s (#100)</td>
+<td>The feed uses the simplest shape (<code>f2</code>: two linear descriptors per expert)</td>
+</tr>
+<tr>
+<td>Cross-matmul weight prefetch at MoE widths</td>
+<td>Drain at 35 GB/s with 4 handles and with 1 (PR author's device)</td>
+<td>Prefetch helps only where something else is waiting. The VTCM feed is the working form</td>
+</tr>
+<tr>
+<td>Push the next expert's gate_up chunks early (upstream)</td>
+<td>The activation queued behind them. GATHER 84 → 747 µs/call. The DMA moves ≈ 12 GB/s next to the HMX (PR author's device)</td>
+<td>Ordering inside one in-order ring decides who waits</td>
+</tr>
+<tr>
+<td>Quantize the activation on the ARM</td>
+<td>300–420 µs per call, against 100–150 µs of transport saved (PR author's device)</td>
+<td>HVX writes quantized tiles straight into VTCM. There is no DDR detour to save</td>
+</tr>
+<tr>
+<td>Drop the GEMV's dead accumulators without a prefetch lead</td>
+<td><code>mm</code> +7.4 %, decode −4..−8 % (#105)</td>
+<td>Less compute means fewer loads in flight at M = 1 (K2)</td>
+</tr>
+<tr>
+<td>Add an <code>l2fetch</code> lead to the four-row loop</td>
+<td>2.1–2.5× slower at every lead (#113)</td>
+<td>Prefetch interferes with a loop that is not latency-starved (K3)</td>
+</tr>
+<tr>
+<td>Prebound FastRPC handles (planned for wall 3)</td>
+<td>Not built: staging + poll already reached 87.9 µs/call (#88)</td>
+<td>The per-call arguments are 464 bytes and never were the cost</td>
+</tr>
+<tr>
+<td>Pass the MoE call's arguments from one rpcmem buffer (upstream)</td>
+<td>Transport 627 → 605 µs, noise (PR author's device)</td>
+<td>Same lesson as above</td>
+</tr>
+<tr>
+<td>Poll window of 10 000 µs</td>
+<td>Refused by the driver. The session falls back to PM QoS</td>
+<td>5000 µs is the default. The ceiling between the two is unknown</td>
+</tr>
+<tr>
+<td>Run the dense FFN through the MoE kernel (upstream <code>d2f0bf47</code>)</td>
+<td>+4 % perplexity (PR author's device)</td>
+<td>Must stay off by default if the upstream sync brings it (#120)</td>
+</tr>
+<tr>
+<td><code>NNTR_NUM_THREADS=8</code> on the CPU side (upstream)</td>
+<td>Net loss: lm_head −5.6 s, FC +6.7 s over a run (PR author's device)</td>
+<td>The thread count is left at the app default</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="4-open-questions">4. Open questions <a class="hd" aria-label="link to this section" href="#4-open-questions">#</a></h2>
+<p>The questions still open at <code>9fb1a3bc</code>, with the current evidence. What
+to do about them is the roadmap chapter's.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>question</th>
+<th>current evidence</th>
+<th>issue</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Can the CPU and the DSP read DDR at the same time for more total bandwidth? This decides whether a CPU + NPU expert split can ever pay.</td>
+<td>The CPU side reads 67.9 → 39.7 GB/s under DSP contention (−41 %). The DSP side of the probe measured its cache (M9).</td>
+<td>#90</td>
+</tr>
+<tr>
+<td>Why does the feed's in-call DMA run below the anchor?</td>
+<td>The engine reads 32.3–34.4 GB/s in the layer call vs the anchor's 37.3 and the VTCM microbench's 37.7. That is ≈ 86 µs/call ≈ 1.9 ms/token at a 37 GB/s anchor, nothing at 31 GB/s. <code>first expert ready at 122 µs</code> is the first 3.5 MB not hidden. To be confirmed by the first sitting that runs the feed as variant A.</td>
+<td>not filed</td>
+</tr>
+<tr>
+<td>Does one DSP call per token pay?</td>
+<td>Round trips 2.0 + CPU work 9.7 = 11.7 ms/token against a ≈ 8.2 ms CPU byte floor. Moving the CPU's 408 MB to the DSP at its single-stream 31–37 GB/s would cost 11–13 ms, so it pays only if the DSP reads those weights faster than one DMA stream (unmeasured). No single op saves time until every op between two MoE layers is on the DSP.</td>
+<td>#85, #82, #81 (#84 harness)</td>
+</tr>
+<tr>
+<td>Which accuracy column gates the per-token entry?</td>
+<td>Once attention and the norms run on the DSP, the text cannot stay bit-identical to the CPU run. The CPU runs attention in fp16 with its own <code>exp</code>. Candidates: text vs A, perplexity (<code>NNTR_PPL</code>, upstream <code>32b46e32</code>), or a matching deterministic CPU path.</td>
+<td>user decision; #110</td>
+</tr>
+<tr>
+<td>Why is <code>fully_connected</code> slower on the NPU run with no FC on the DSP?</td>
+<td>28.2 vs 10.3 ms/token in the profile build. In real tok/s the whole outside-the-call time is 9.7 ms against a ≈ 8.2 ms byte floor, so ≈ 1.5 ms at stake. Candidates: CPU threads contending with the FastRPC poll thread, CPU clock while the DSP runs.</td>
+<td>ride-along, no issue</td>
+</tr>
+<tr>
+<td>What moved ≈ 5 ms/token outside the MoE call in #88 (T3), and ≈ 100 µs of transport in #117 (T4)?</td>
+<td>Both measured in-sitting, neither separated. Candidates: the polling core's clock, cache maintenance at the call boundary, a call that ends inside the poll window.</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Why does one S25 Ultra's DMA engine read up to 19 % faster than another's, and why did the anchor read 40.2 GB/s once?</td>
+<td>Three anchor values (40.2 once, 31.2–31.4 twice, 37.1–37.3 twice). The HVX direct read is the same on both units, so the difference is in the DMA engine or its clock (D3).</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Why does the replay test fail its content check?</td>
+<td><code>MoeChunkReplay</code> reads <code>checksum_ok=n</code> on all 11 old cells, including the D3 anchor that every handoff quotes. The timing is sound: the replay writes packed where the kernel writes strided, and the DDR read stream is the same.</td>
+<td>#99</td>
+</tr>
+<tr>
+<td>What does the HVX FWHT do with overflow inputs?</td>
+<td>The ±3e38 row differs in 127 of 256 outputs. It is ungated and unexplained (inf/NaN encoding is the candidate).</td>
+<td>#110</td>
+</tr>
+<tr>
+<td>lm_head blocked twin: confirmed on this tree?</td>
+<td>#77's profile reads lm_head at 2.85 ms/token (CPU 3.40), consistent with the twin working. It has no dedicated in-sitting A/B.</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>generation(last 64)</code> in the report</td>
+<td>Not printed for LFM2-MoE yet (M14).</td>
+<td>#89</td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="pager"><span>← <a href="measurement.html">Measurement</a></span><span><a href="roadmap.html">Roadmap</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

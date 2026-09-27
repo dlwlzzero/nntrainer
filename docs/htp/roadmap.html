@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Roadmap</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html" class="here">Roadmap</a></nav>
+<main>
+<h1>Roadmap</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-where-the-time-goes-and-what-is-left">1. Where the time goes and what is left <a class="header-anchor hd" href="#1-where-the-time-goes-and-what-is-left">#</a></a></li><li><a href="#2-near-term-the-vtcm-feed-then-the-engine-gap">2. Near term: the VTCM feed, then the engine gap <a class="header-anchor hd" href="#2-near-term-the-vtcm-feed-then-the-engine-gap">#</a></a></li><ul><li><a href="#21-the-vtcm-feed-117-pr-118">2.1 The VTCM feed (#117, PR #118) <a class="header-anchor hd" href="#21-the-vtcm-feed-117-pr-118">#</a></a></li><li><a href="#22-open-item-㉓-the-in-situ-engine-runs-below-the-anchor">2.2 Open item ㉓: the in-situ engine runs below the anchor <a class="header-anchor hd" href="#22-open-item-㉓-the-in-situ-engine-runs-below-the-anchor">#</a></a></li></ul><li><a href="#3-one-call-per-token">3. One call per token <a class="header-anchor hd" href="#3-one-call-per-token">#</a></a></li><ul><li><a href="#31-why">3.1 Why <a class="header-anchor hd" href="#31-why">#</a></a></li><li><a href="#32-what-sits-between-two-moe-calls">3.2 What sits between two MoE calls <a class="header-anchor hd" href="#32-what-sits-between-two-moe-calls">#</a></a></li><li><a href="#33-order-and-dependencies">3.3 Order and dependencies <a class="header-anchor hd" href="#33-order-and-dependencies">#</a></a></li><li><a href="#34-tried-and-dropped-design-alternatives">3.4 Tried and dropped (design alternatives) <a class="header-anchor hd" href="#34-tried-and-dropped-design-alternatives">#</a></a></li></ul><li><a href="#4-upstream-sync-120">4. Upstream sync (#120) <a class="header-anchor hd" href="#4-upstream-sync-120">#</a></a></li><li><a href="#5-accuracy-track">5. Accuracy track <a class="header-anchor hd" href="#5-accuracy-track">#</a></a></li><li><a href="#6-prior-work-hvx_impl">6. Prior work: <code>hvx_impl</code> <a class="header-anchor hd" href="#6-prior-work-hvx_impl">#</a></a></li><li><a href="#7-longer-term">7. Longer term <a class="header-anchor hd" href="#7-longer-term">#</a></a></li></ul></details>
+<p>This chapter covers what is left between today's NPU decode and the 50
+tok/s target, and in what order it gets done. It starts with the per-token
+time budget and the physical floor under it. Then it goes through the
+near-term work (the VTCM feed and one engine gap), the one-call-per-token
+track, the upstream sync, the accuracy track, the earlier <code>hvx_impl</code> work
+this track can reuse, and the longer-term levers.</p>
+<h2 id="1-where-the-time-goes-and-what-is-left">1. Where the time goes and what is left <a class="hd" aria-label="link to this section" href="#1-where-the-time-goes-and-what-is-left">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (budget from #117, 2026-09-23).</em></p>
+<p>The budget below is for one decode token at gen 512 (512 generated tokens
+after a 512-token prompt). It is derived, not measured directly: the token
+time comes from the measured tok/s, and the MoE split comes from the level-2
+per-call profile of the same sitting (22 calls per token × the per-call
+<code>dsp</code> and transport times). &quot;Outside&quot; is whatever is left: everything the
+CPU does between MoE calls (norms, conv or attention, the FC projections,
+the router, lm_head).</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">A: arena read (the default before PR #118)</th>
+<th style="text-align:right">B: VTCM feed (the default since PR #118)</th>
+<th style="text-align:right">floor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE work on the DSP, 22 × <code>dsp</code></td>
+<td style="text-align:right">22 × 0.995 = <strong>21.9 ms</strong> (61 %)</td>
+<td style="text-align:right">22 × 0.712 = <strong>15.7 ms</strong> (57 %)</td>
+<td style="text-align:right">13.0 ms at 37.3 GB/s · 15.5 ms at 31.2 GB/s</td>
+</tr>
+<tr>
+<td>ARM ↔ DSP round trips, 22 × transport</td>
+<td style="text-align:right">22 × 0.190 = <strong>4.2 ms</strong> (12 %)</td>
+<td style="text-align:right">22 × 0.092 = <strong>2.0 ms</strong> (7 %)</td>
+<td style="text-align:right">≈ 0 with one call per token</td>
+</tr>
+<tr>
+<td>Outside the MoE call (CPU)</td>
+<td style="text-align:right"><strong>≈ 9.8 ms</strong> (27 %)</td>
+<td style="text-align:right"><strong>≈ 9.7 ms</strong> (35 %)</td>
+<td style="text-align:right">≈ 8.2 ms (408 MB at ≈ 50 GB/s)</td>
+</tr>
+<tr>
+<td><strong>token</strong></td>
+<td style="text-align:right"><strong>35.86 ms</strong> (27.89 tok/s)</td>
+<td style="text-align:right"><strong>27.40 ms</strong> (36.49 tok/s)</td>
+<td style="text-align:right"><strong>≈ 21.2–23.7 ms</strong> (≈ 42–47 tok/s)</td>
+</tr>
+</tbody>
+</table></div>
+<p>A and B come from the same sitting, so the A → B step is a valid
+comparison: the feed cuts 8.5 ms per token. Inside the call, B moves 22.02
+MB of expert weights through VTCM at 32.6 GB/s. The DMA engine is busy for
+640–682 µs of the 712 µs call, so the ≈ 240 µs of HVX arithmetic is fully
+hidden. The feed also halves the transport, because the direct arena read
+used to cost the call ≈ 100 µs of extra round-trip time.</p>
+<p><strong>The byte floors.</strong> A token cannot be faster than the time its reader
+needs to read the weights once. The byte counts come from the model's
+shapes (<a href="weight-format.html">weight-format.html</a>): the NPU model reads
+<strong>≈ 893 MB per token</strong>, of which the DSP reads 484 MB and the CPU 408 MB.</p>
+<ul>
+<li><strong>MoE (DSP)</strong>: 22 calls × 22.02 MB, divided by the unit's DMA rate. The
+&quot;anchor&quot; is an isolated single-stream DMA copy measured in the same
+sitting. It has read 31–37 GB/s across S25 Ultra units and sittings (31.2
+at the low end, 37.3 at the high end, up to 19 % apart), so the MoE floor is
+13.0–15.5 ms per token.</li>
+<li><strong>Everything else (CPU)</strong>: lm_head 147 MB, the conv projections 170 MB,
+attention 35 MB, dense FFN 50 MB, routers 6 MB = 408 MB. The CPU's own
+run shows how fast it reads. The CPU model reads ≈ 953 MB per token (its
+experts are Q4_0), and at 52.4 tok/s (#94) that is <strong>≈ 50 GB/s</strong>. At that
+rate 408 MB takes <strong>≈ 8.2 ms</strong>. The measured 9.7 ms is close to that
+floor.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 760 350" role="img" aria-label="Decode token time at gen 512 in ms, #117 sitting 2: A arena read 35.86, B VTCM feed 27.40, byte floor at a 31 GB/s DMA rate 23.7, at 37 GB/s 21.2; the 50 tok/s target is 20 ms" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <text x="16" y="24" font-size="14" font-weight="700" fill="#0b0b0b">Decode token time at gen 512 (ms), #117 sitting 2</text>
+  <!-- legend -->
+  <rect x="16" y="36" width="12" height="12" rx="2" fill="#2a78d6"/>
+  <text x="34" y="46" font-size="12" fill="#52514e">measured</text>
+  <rect x="108" y="36" width="12" height="12" rx="2" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="126" y="46" font-size="12" fill="#52514e">byte floor (arithmetic, not measured)</text>
+  <!-- grid + y axis -->
+  <g stroke="#e1e0d9" stroke-width="1">
+    <line x1="72" y1="60" x2="640" y2="60"/>
+    <line x1="72" y1="120" x2="640" y2="120"/>
+    <line x1="72" y1="180" x2="640" y2="180"/>
+    <line x1="72" y1="240" x2="640" y2="240"/>
+  </g>
+  <line x1="72" y1="300" x2="640" y2="300" stroke="#898781" stroke-width="1"/>
+  <g font-size="12" fill="#52514e" text-anchor="end">
+    <text x="64" y="64">40</text>
+    <text x="64" y="124">30</text>
+    <text x="64" y="184">20</text>
+    <text x="64" y="244">10</text>
+    <text x="64" y="304">0</text>
+  </g>
+  <text transform="translate(26,180) rotate(-90)" text-anchor="middle" font-size="12" fill="#52514e">ms per token</text>
+  <!-- bars: 6 px per ms, baseline y=300 -->
+  <rect x="101" y="84.84" width="84" height="215.16" fill="#2a78d6"/>
+  <rect x="243" y="135.6" width="84" height="164.4" fill="#2a78d6"/>
+  <rect x="385" y="157.8" width="84" height="142.2" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <rect x="527" y="172.8" width="84" height="127.2" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <g font-size="12" font-weight="600" fill="#0b0b0b" text-anchor="middle">
+    <text x="143" y="78">35.86</text>
+    <text x="285" y="129">27.40</text>
+    <text x="427" y="151">23.7</text>
+    <text x="569" y="166">21.2</text>
+  </g>
+  <!-- target line -->
+  <line x1="72" y1="180" x2="640" y2="180" stroke="#52514e" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <g font-size="12" fill="#52514e">
+    <text x="648" y="177" font-weight="600">20 ms</text>
+    <text x="648" y="193">= 50 tok/s</text>
+  </g>
+  <!-- x labels -->
+  <g font-size="12" fill="#0b0b0b" text-anchor="middle">
+    <text x="143" y="320">A: arena read</text>
+    <text x="285" y="320">B: VTCM feed</text>
+    <text x="427" y="320">floor,</text>
+    <text x="427" y="336">DMA 31 GB/s</text>
+    <text x="569" y="320">floor,</text>
+    <text x="569" y="336">DMA 37 GB/s</text>
+  </g>
+</svg>
+<figcaption>The VTCM feed (B) cuts 8.5 ms per token from the arena read (A), measured in the same sitting, but both byte floors (the DSP and the CPU reading their weights one after the other) sit above the dashed 20 ms line that 50 tok/s needs.</figcaption>
+</figure>
+<p>The line is 20 ms, which is 50 tok/s. <strong>Both floors are above it.</strong></p>
+<p><strong>What this means for the target</strong> (byte arithmetic, not a measurement):</p>
+<ol>
+<li><strong>Inside the MoE call: at most 2.7 ms is left</strong>, and only at the
+37 GB/s end of the DMA range (15.7 − 13.0). About 1.9 ms of that is the engine gap in
+§2. At 31 GB/s the call already sits at its floor (15.7 vs
+15.5).</li>
+<li><strong>Outside the call: ≈ 3.5 ms is left.</strong> That is 2.0 ms of round trips
+plus ≈ 1.5 ms of CPU work above its byte floor.</li>
+<li><strong>With the DSP reading the MoE and the CPU reading the rest one after
+the other, the floor is ≈ 21–24 ms, which is ≈ 42–47 tok/s.</strong> 50 tok/s
+needs one of these three:
+<ul>
+<li>the two processors reading <strong>at the same time</strong>,</li>
+<li>fewer bytes per token (§7),</li>
+<li>or the DSP reading faster than one DMA stream does today.</li>
+</ul>
+</li>
+<li><strong>One call per token (§3) moves the 408 MB from the CPU to the DSP.</strong>
+At the DSP's measured 31–37 GB/s single-stream DMA rate, that is
+11–13 ms, slower than the CPU's ≈ 8 ms. It removes the round trips and
+the handoffs, but by bytes alone it only wins if the DSP can read those
+weights faster than one DMA stream does today. That needs a
+measurement before the track is built.</li>
+</ol>
+<p>An earlier estimate, used by the project's contract and older notes, set
+the token at ≈ 730 MB and the phone's memory at 34–38 GB/s. From that it
+put a &quot;physical ceiling&quot; at 48–52 tok/s. Both inputs were low. The rest of
+the model is 408 MB, not ≈ 246, and the CPU demonstrably reads ≈ 50 GB/s
+(68 GB/s alone in #77's two-reader probe). So that ceiling is withdrawn.</p>
+<h2 id="2-near-term-the-vtcm-feed-then-the-engine-gap">2. Near term: the VTCM feed, then the engine gap <a class="hd" aria-label="link to this section" href="#2-near-term-the-vtcm-feed-then-the-engine-gap">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code>.</em></p>
+<h3 id="21-the-vtcm-feed-117-pr-118">2.1 The VTCM feed (#117, PR #118) <a class="hd" aria-label="link to this section" href="#21-the-vtcm-feed-117-pr-118">#</a></h3>
+<p>In the decode (M = 1) path, the HVX matrix-vector kernel used to read each
+expert's weights straight from DDR, behind a 192 KB <code>l2fetch</code> prefetch
+lead. The feed changes that: the DMA engine copies each expert's weights
+into VTCM (two linear descriptors per expert, issued one expert ahead), and
+HVX computes from VTCM while the next copy runs.</p>
+<p>It passed its gate in two sittings on 2026-09-23 (<code>mm</code> 676.6 / 676.4 µs per
+call against a gate of ≤ 760, decode +32.5 / +30.9 / +28.6 % at gen 64 /
+512 / 1024 in sitting 2, text identical to A in 36 of 36 runs, output
+bit-identical to the HMX path, prefill unchanged on the M &gt; 1 <code>dsp</code> time).</p>
+<p><strong>State.</strong> Merged as <code>d79c0efe</code> (PR #118). The feed is the decode default
+(<code>HTP_MOE_GEMV_FEED_DEFAULT 1u</code> in
+<code>nntrainer/tensor/htp_backend/htp_moe_opts.h</code>), and
+<code>NNTR_MOE_HTP_GEMV_FEED=0</code> goes back to the arena read. The next sitting
+measures it as its control (variant A). Until then the reference row stays
+#117 A, and the feed's 36.49 tok/s is a measured variant.</p>
+<h3 id="22-open-item-㉓-the-in-situ-engine-runs-below-the-anchor">2.2 Open item ㉓: the in-situ engine runs below the anchor <a class="hd" aria-label="link to this section" href="#22-open-item-㉓-the-in-situ-engine-runs-below-the-anchor">#</a></h3>
+<p>Inside the MoE call the DMA engine moves <strong>32.3–34.4 GB/s</strong>. The same
+sitting's isolated anchor reads 37.3 GB/s, and the VTCM copy microbenchmark
+37.7. At the anchor rate <code>mm</code> would be ≈ 590 µs instead of 676, so the gap
+is ≈ 86 µs per call, <strong>≈ 1.9 ms per token (≈ 7 %)</strong>. That is the last
+MoE-side lever at a 37 GB/s DMA anchor. At a 31 GB/s anchor the in-situ rate
+already beats the anchor, so there is nothing to win there.</p>
+<p>What the DMA ring's profile line shows in B:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>signature</th>
+<th>reading</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>first expert ready at 122 µs</code></td>
+<td>the first 3.5 MB gate_up slab (106 µs at 33 GB/s) is never hidden: nothing overlaps it</td>
+</tr>
+<tr>
+<td><code>depth max=4</code> with 10 descriptors</td>
+<td>the queue never gets deep</td>
+</tr>
+<tr>
+<td><code>last issue at 500 of 712 µs</code></td>
+<td>the last copy is issued late in the call</td>
+</tr>
+</tbody>
+</table></div>
+<p>Candidates, in order:</p>
+<ol>
+<li>Kick expert 0's gate_up copy before the activation quantization (the
+first ≈ 20 µs of the call).</li>
+<li>Issue expert e+1's gate_up before expert e's down, not after.</li>
+<li>A deeper issue queue.</li>
+</ol>
+<p>A cross-call prefetch (start the next layer's expert 0 during this call)
+needs the next layer's router result. It exists only once §3 lands.</p>
+<p><strong>State: an open item, not yet an issue.</strong> It is filed after the sitting
+that measures the feed as the default confirms the gap on the phone that
+runs it. The gate when filed: <code>mm</code> ≤ 630 µs in-sitting with the anchor ≥
+36 GB/s, text identical to A, prefill within −5 %.</p>
+<h2 id="3-one-call-per-token">3. One call per token <a class="hd" aria-label="link to this section" href="#3-one-call-per-token">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (issues #85, #82, #81, #84); the kernels it reuses
+come from <code>hvx_impl</code> (§6) and upstream PR #4327 (§4).</em></p>
+<h3 id="31-why">3.1 Why <a class="hd" aria-label="link to this section" href="#31-why">#</a></h3>
+<p>Today the DSP runs only the MoE FFN, so a token makes <strong>22 ARM → DSP
+calls</strong>, and the CPU does everything in between. After the feed, what is
+left outside the call is 2.0 ms of round trips and 9.7 ms of CPU work,
+against a ≈ 8.2 ms byte floor for the CPU's 408 MB. Neither goes away one call at a time. The
+planned end state: the ARM sends a token in, the DSP runs all 24 layers
+and lm_head, and the ARM gets logits back.</p>
+<figure>
+<svg viewBox="0 0 880 348" role="img" aria-label="Today a token alternates between CPU work and a DSP MoE call 22 times, then lm_head on the CPU; planned: the CPU sends token id and position, the DSP runs forward over 24 layers and lm_head, the CPU takes logits to argmax" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="road2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <!-- region: today -->
+  <rect x="8" y="8" width="864" height="158" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="22" y="30" font-size="14" font-weight="700" fill="#0b0b0b">today: 22 calls per token</text>
+  <line x1="22" y1="99" x2="858" y2="99" stroke="#e1e0d9" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="24" y="68" font-size="12" font-weight="700" fill="#eb6834">CPU</text>
+  <text x="24" y="138" font-size="12" font-weight="700" fill="#2a78d6">DSP</text>
+  <g stroke-width="1.2">
+    <rect x="72" y="42" width="176" height="44" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+    <rect x="268" y="112" width="96" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6"/>
+    <rect x="384" y="42" width="176" height="44" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+    <rect x="580" y="112" width="96" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6"/>
+    <rect x="696" y="42" width="164" height="44" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="160" y="60">norm, mixer, FCs,</text>
+    <text x="160" y="77">router</text>
+    <text x="316" y="139">MoE</text>
+    <text x="472" y="60">add, norm, mixer,</text>
+    <text x="472" y="77">FCs, router</text>
+    <text x="628" y="139">MoE</text>
+    <text x="778" y="60">… × 22,</text>
+    <text x="778" y="77">then lm_head</text>
+  </g>
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road2-arrow)">
+    <path d="M248,64 H316 V111"/>
+    <path d="M364,134 H472 V87"/>
+    <path d="M560,64 H628 V111"/>
+    <path d="M676,134 H778 V87"/>
+  </g>
+  <!-- region: planned -->
+  <rect x="8" y="182" width="864" height="158" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="22" y="204" font-size="14" font-weight="700" fill="#0b0b0b">planned: one call per token</text>
+  <line x1="22" y1="273" x2="858" y2="273" stroke="#e1e0d9" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="24" y="242" font-size="12" font-weight="700" fill="#eb6834">CPU</text>
+  <text x="24" y="312" font-size="12" font-weight="700" fill="#2a78d6">DSP</text>
+  <g stroke-width="1.2">
+    <rect x="72" y="216" width="176" height="44" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+    <rect x="268" y="286" width="340" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6"/>
+    <rect x="628" y="216" width="176" height="44" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="160" y="243">token id, pos</text>
+    <text x="438" y="304"><tspan font-weight="600">forward()</tspan>: 24 layers + lm_head</text>
+    <text x="438" y="321" font-size="12" fill="#52514e">from a validated op table</text>
+    <text x="716" y="243">logits → argmax</text>
+  </g>
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road2-arrow)">
+    <path d="M248,238 H330 V285"/>
+    <path d="M608,308 H716 V261"/>
+  </g>
+</svg>
+<figcaption>Today every token crosses from the ARM CPU to the DSP 22 times, once per MoE layer, and the CPU runs everything in between plus lm_head. The planned end state makes one call per token: the DSP runs all 24 layers and lm_head from a validated op table and hands logits back.</figcaption>
+</figure>
+<h3 id="32-what-sits-between-two-moe-calls">3.2 What sits between two MoE calls <a class="hd" aria-label="link to this section" href="#32-what-sits-between-two-moe-calls">#</a></h3>
+<p>The call count drops only when <strong>every</strong> op between two MoE calls runs on
+the DSP. The table below lists those ops per layer type and which issue
+covers each.</p>
+<figure>
+<svg viewBox="0 0 880 452" role="img" aria-label="Ops between two MoE calls per layer type, coloured by the issue that covers them" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="road3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <rect x="16" y="8" width="256" height="436" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="30" y="30" font-size="14" font-weight="700" fill="#0b0b0b">conv layer (18 of 24)</text>
+  <rect x="288" y="8" width="256" height="436" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="302" y="30" font-size="14" font-weight="700" fill="#0b0b0b">attention layer (6 of 24)</text>
+  <rect x="36" y="44" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="144" y="63" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+  <rect x="36" y="84" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="144" y="103" text-anchor="middle" fill="#0b0b0b">in_proj FC</text>
+  <rect x="36" y="124" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="144" y="143" text-anchor="middle" fill="#0b0b0b">conv1d + gates</text>
+  <rect x="36" y="164" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="144" y="183" text-anchor="middle" fill="#0b0b0b">out_proj FC</text>
+  <rect x="36" y="284" width="216" height="28" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="144" y="303" text-anchor="middle" fill="#0b0b0b">residual add</text>
+  <rect x="36" y="324" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="144" y="343" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+  <rect x="36" y="364" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="144" y="383" text-anchor="middle" fill="#0b0b0b">router FC + top-4</text>
+  <rect x="36" y="404" width="216" height="28" rx="6" fill="#f4d9b0" stroke="#b5651d" stroke-width="1.2"/>
+  <text x="144" y="423" text-anchor="middle" fill="#0b0b0b">MoE FFN</text>
+  <path d="M144,72 V83" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,112 V123" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,152 V163" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,192 V283" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,312 V323" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,352 V363" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M144,392 V403" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <rect x="308" y="44" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="416" y="63" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+  <rect x="308" y="84" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="416" y="103" text-anchor="middle" fill="#0b0b0b">q/k/v FC</text>
+  <rect x="308" y="124" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="416" y="143" text-anchor="middle" fill="#0b0b0b">q/k norm</text>
+  <rect x="308" y="164" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="416" y="183" text-anchor="middle" fill="#0b0b0b">RoPE</text>
+  <rect x="308" y="204" width="216" height="28" rx="6" fill="#e3d7f0" stroke="#6a4c93" stroke-width="1.2"/>
+  <text x="416" y="223" text-anchor="middle" fill="#0b0b0b">attention + KV cache</text>
+  <rect x="308" y="244" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="416" y="263" text-anchor="middle" fill="#0b0b0b">o FC</text>
+  <rect x="308" y="284" width="216" height="28" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="416" y="303" text-anchor="middle" fill="#0b0b0b">residual add</text>
+  <rect x="308" y="324" width="216" height="28" rx="6" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="416" y="343" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+  <rect x="308" y="364" width="216" height="28" rx="6" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="416" y="383" text-anchor="middle" fill="#0b0b0b">router FC + top-4</text>
+  <rect x="308" y="404" width="216" height="28" rx="6" fill="#f4d9b0" stroke="#b5651d" stroke-width="1.2"/>
+  <text x="416" y="423" text-anchor="middle" fill="#0b0b0b">MoE FFN</text>
+  <path d="M416,72 V83" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,112 V123" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,152 V163" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,192 V203" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,232 V243" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,272 V283" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,312 V323" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,352 V363" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <path d="M416,392 V403" stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road3-arrow)"/>
+  <text x="572" y="30" font-size="14" font-weight="700" fill="#0b0b0b">Covered by</text>
+  <rect x="572" y="46" width="16" height="16" rx="3" fill="#f4d9b0" stroke="#b5651d" stroke-width="1.2"/>
+  <text x="598" y="58" font-size="12" fill="#0b0b0b">MoE kernel exists: resident</text>
+  <text x="598" y="74" font-size="12" fill="#0b0b0b">with #85's skeleton</text>
+  <rect x="572" y="92" width="16" height="16" rx="3" fill="#d8ecd0" stroke="#4a7c3a" stroke-width="1.2"/>
+  <text x="598" y="104" font-size="12" fill="#0b0b0b">#82 small ops</text>
+  <rect x="572" y="122" width="16" height="16" rx="3" fill="#e3d7f0" stroke="#6a4c93" stroke-width="1.2"/>
+  <text x="598" y="134" font-size="12" fill="#0b0b0b">#81 M=1 attention + KV cache</text>
+  <rect x="572" y="152" width="16" height="16" rx="3" fill="#f8dcdc" stroke="#d03b3b" stroke-width="1.2"/>
+  <text x="598" y="164" font-size="12" fill="#0b0b0b">no issue yet</text>
+  <rect x="572" y="182" width="16" height="16" rx="3" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="598" y="194" font-size="12" fill="#0b0b0b">trivial, not scheduled</text>
+  <text x="598" y="210" font-size="12" fill="#0b0b0b">separately</text>
+</svg>
+<figcaption>Every op a token passes between two MoE calls, per layer type, coloured by the issue that brings it to the DSP: orange is resident with #85's skeleton, green is #82, purple is #81, red has no issue yet. The call count drops only once a whole column runs on the DSP; the conv layer, 18 of the 24, needs only its two FCs and the router beyond #82. Layers 0–1 use a dense FFN instead of MoE and lm_head runs once at the end; both are also uncovered.</figcaption>
+</figure>
+<p>Orange: resident with #85's skeleton (the MoE kernel exists). Green: #82.
+Purple: #81. Red: <strong>no issue yet</strong>. Residual adds are trivial and not
+scheduled separately. Layers 0–1 use a dense FFN instead of MoE, and
+lm_head runs once at the end. Both are also uncovered.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>issue</th>
+<th>what it builds</th>
+<th>state (2026-09-23)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>#85</strong></td>
+<td>The per-token entry: a C header describing the op list (<code>htp_graph_desc.h</code>), a DSP-side validator and <code>forward</code> loop (<code>hmx/hexkl_graph.c</code>), and four IDL methods (<code>graph_init</code>, <code>graph_release</code>, <code>forward</code>, <code>forward_debug</code>). Real op kinds with a per-op <code>resident</code> bit. Handles are bound once at init. Activations live in DSP-side slots. Per-op pcycles, one FARF line per call. Only <code>MOE</code> has a kernel slot. The ARM path goes through it behind <code>NNTR_HTP_FORWARD=1</code></td>
+<td>PR #119 open, in review. Not in this snapshot</td>
+</tr>
+<tr>
+<td><strong>#82</strong></td>
+<td>M = 1 kernels with a scalar <code>_det</code> spec (<code>m1_ops_det.h</code>), an HVX version and a host bit check each: RMSNorm, per-head q/k norm, RoPE for head_dim 64 (cos/sin rows made by the CPU's own function and uploaded once, 512 KiB at <code>max_seq_len</code> 2048), causal conv1d (L = 3) + gating. Test-only IDL entries. The prefill-shape conv kernel <code>hvx_conv_gate_f32</code> is taken unchanged from upstream</td>
+<td>planned</td>
+</tr>
+<tr>
+<td><strong>#81</strong></td>
+<td>Decode attention at M = 1 with a <strong>DSP-resident f32 KV cache</strong> (K stored transposed, <code>[head_dim][max_seq]</code>, so one vector covers 32 positions; 48 MiB for 6 layers at <code>max_seq</code> 2048, 26 % of the ≈ 182 MiB DSP heap). <code>_det</code> spec, HVX kernel, host bit check across 0 / 3 / 7 pool workers, IDL entries <code>attn_m1_register</code> / <code>_kv_append</code> / <code>_forward</code> / <code>_release</code>. A separate object from the existing prefill attention (<code>hmx/hexkl_attn_u8.c</code>, u8 KV, which no app path calls)</td>
+<td>planned</td>
+</tr>
+<tr>
+<td><strong>#84</strong></td>
+<td>A host end-to-end harness: the DSP skel compiled into the host <code>libnntrainer.so</code> and driven by the real ARM path (<code>HtpComputeOps</code>, the op table once #85 lands) on the tiny LFM2-MoE fixture. Gate: every MoE call's input and output bit-identical to a committed golden, with the GEMV and HMX paths agreeing. It proves wiring and marshalling, not speed</td>
+<td>planned, runs in parallel</td>
+</tr>
+<tr>
+<td>not filed</td>
+<td>M = 1 FC projections (conv in_proj / out_proj, q/k/v/o, dense FFN), the router FC + top-k, lm_head</td>
+<td>—</td>
+</tr>
+<tr>
+<td>not filed</td>
+<td>The wiring issue: fill the table slots, let one call span several ops, and run the device A/B</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Why none of these saves time alone.</strong> With only MoE resident, <code>forward</code>
+runs one op and returns, which is still 22 calls per token. #85 moves the
+per-call handle lists into the table bound at init, which is worth ≤ 0.1–0.2
+ms per token, below one sitting's drift. The ops #82 builds cost the CPU
+only ≈ 0.46 ms per token today. #81's attention costs ≈ 2.3 ms in the CPU
+profile build, and on the DSP it pays about the same in bytes (0.5–1.5 ms
+per token at positions 512–1536, reading the f32 cache). Their value is
+residency: the transport (2.0 ms) and the excess CPU time go away only once
+a whole stretch between two MoE calls runs on the DSP. That also means the
+FC projections, which no issue covers yet, are the gate for any gain.</p>
+<p><strong>The first stretch to close</strong> is the conv layer: 18 of the 24 layers, and
+its only non-#82 ops are two FCs and the router.</p>
+<h3 id="33-order-and-dependencies">3.3 Order and dependencies <a class="hd" aria-label="link to this section" href="#33-order-and-dependencies">#</a></h3>
+<figure>
+<svg viewBox="0 0 880 320" role="img" aria-label="Dependencies of the one-call-per-token track: #85 then #82 then #81 feed the unfiled wiring issue, together with the unfiled FC work, #84 host harness, and the accuracy-column decision; the #120 upstream sync feeds #82 and the accuracy decision" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="road4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <!-- nodes -->
+  <g stroke-width="1.2" fill="#fcfcfb" stroke="#c3c2b7">
+    <rect x="456" y="16" width="180" height="60" rx="6" stroke="#52514e" stroke-dasharray="5 3"/>
+    <rect x="676" y="16" width="188" height="60" rx="6"/>
+    <rect x="16" y="116" width="180" height="64" rx="6"/>
+    <rect x="236" y="116" width="180" height="64" rx="6"/>
+    <rect x="456" y="116" width="180" height="64" rx="6"/>
+    <rect x="676" y="116" width="188" height="64" rx="6" stroke="#52514e" stroke-dasharray="5 3"/>
+    <rect x="16" y="246" width="180" height="50" rx="6"/>
+    <polygon points="456,271 478,236 614,236 636,271 614,306 478,306" stroke="#b35c00" stroke-linejoin="round"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="546" y="35" font-weight="600">not filed:</text>
+    <text x="546" y="52" font-size="12">M=1 FCs, router,</text>
+    <text x="546" y="67" font-size="12">lm_head</text>
+    <text x="770" y="51" font-weight="600">#84 host E2E harness</text>
+    <text x="106" y="143" font-weight="600">#85 per-token entry</text>
+    <text x="106" y="161" font-size="12" fill="#52514e">(PR #119, in review)</text>
+    <text x="326" y="136" font-weight="600">#82 small ops</text>
+    <text x="326" y="153" font-size="12">RMSNorm, q/k norm,</text>
+    <text x="326" y="169" font-size="12">RoPE, conv1d + gate</text>
+    <text x="546" y="143" font-weight="600">#81 M=1 attention</text>
+    <text x="546" y="161" font-size="12">+ DSP-resident KV cache</text>
+    <text x="770" y="136" font-weight="600">not filed: wiring issue</text>
+    <text x="770" y="153" font-size="12">one call spans many ops,</text>
+    <text x="770" y="169" font-size="12">device A/B</text>
+    <text x="106" y="267" font-weight="600">#120 upstream sync</text>
+    <text x="106" y="285" font-size="12" fill="#52514e">(PR #121)</text>
+    <text x="546" y="259">accuracy column</text>
+    <text x="546" y="275">for the wiring A/B</text>
+    <text x="546" y="292" font-size="12" fill="#b35c00">(user decision)</text>
+  </g>
+  <!-- solid edges -->
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#road4-arrow)">
+    <path d="M196,148 H235"/>
+    <path d="M416,148 H455"/>
+    <path d="M636,156 H675"/>
+    <path d="M636,46 H656 V128 H675"/>
+    <path d="M636,271 H770 V181"/>
+  </g>
+  <!-- dashed edges -->
+  <g stroke="#52514e" stroke-width="1.3" fill="none" stroke-dasharray="5 4" marker-end="url(#road4-arrow)">
+    <path d="M770,76 V115"/>
+    <path d="M196,262 H326 V181"/>
+    <path d="M196,284 H461"/>
+  </g>
+  <g font-size="11" fill="#52514e">
+    <text x="334" y="204">hvx_conv_gate_f32,</text>
+    <text x="334" y="218">qkv_layer, NNTR_PPL</text>
+    <text x="390" y="279" text-anchor="middle">NNTR_PPL</text>
+  </g>
+</svg>
+<figcaption>Order of the one-call-per-token track: #85 → #82 → #81 lead to the wiring issue, which also needs the unfiled M=1 FC work and a decision on the accuracy column. Dashed boxes are not filed yet; dashed arrows are the #84 harness, which blocks nothing but is the only way to test the wiring on the workstation, and what the #120 upstream sync brings: <code>hvx_conv_gate_f32</code>, <code>qkv_layer</code> and <code>NNTR_PPL</code>.</figcaption>
+</figure>
+<p>#82's q/k norm and RoPE are the inputs of #81's attention, and both fill
+kinds in #85's table. #84 does not block anything, but it is the only way
+to test the wiring on the workstation. Each of #85, #82 and #81 ends in a
+PR gated on the host only. The first device number of this track comes
+from the wiring issue.</p>
+<p><strong>An open decision for the wiring A/B.</strong> The CPU decodes attention in fp16
+with its own exp and runs no <code>_det</code> specs for RMSNorm and RoPE. Once the
+DSP runs these ops, the NPU text cannot match the CPU run bit for bit, and
+it may drift from variant A as well. The options:</p>
+<ul>
+<li>(a) keep &quot;text B ≡ A&quot; and expect it to fail on attention layers;</li>
+<li>(b) use perplexity as the accuracy column (<code>NNTR_PPL</code>, which arrives with
+the upstream sync);</li>
+<li>(c) give the CPU path the same <code>_det</code> specs, which moves the CPU control
+and touches prefill.</li>
+</ul>
+<p>The recommendation on record is (b), with the CPU <code>q40</code> perplexity as the
+reference. The user decides.</p>
+<h3 id="34-tried-and-dropped-design-alternatives">3.4 Tried and dropped (design alternatives) <a class="hd" aria-label="link to this section" href="#34-tried-and-dropped-design-alternatives">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A model-level decode loop now: the ARM walks the op list and calls <code>forward</code> repeatedly, replacing nntrainer's executor for decode</td>
+<td>rejected in #85's plan</td>
+<td>With only MoE resident it saves nothing and puts <code>neuralnet.cpp</code> / <code>network_graph.cpp</code> in the diff with nothing to test against. It becomes right with the first two adjacent resident ops</td>
+</tr>
+<tr>
+<td>One HTP call per FC projection (upstream, &quot;doc 50&quot;)</td>
+<td>measured on upstream: a round trip costs more than the matmul it carries at M = 1</td>
+<td>The reason the plan is one call per token and not more per-op calls. Upstream's fused calls (conv block, dense FFN) run only at prefill for the same reason</td>
+</tr>
+<tr>
+<td>Prebound handle IDL pair (#88)</td>
+<td>not built: the size-class staging and the 5 ms poll already met the ≤ 0.1 ms per-call transport gate</td>
+<td>The handle binding reappears inside #85's <code>graph_init</code></td>
+</tr>
+<tr>
+<td>Mapping an rpcmem activation buffer (<code>fastrpc_mmap</code>)</td>
+<td>deferred in #85's plan</td>
+<td>It pays only once the ARM stops touching activations. Before that, a cached mapping moves cache maintenance into our code</td>
+</tr>
+<tr>
+<td>A standalone <code>htp_e2e_test</code> binary fed from an activation file (the <code>hvx_impl</code> shape)</td>
+<td>rejected in #84's plan</td>
+<td>It would test a copy of the ARM path, not the path. It becomes right once <code>forward(tokens → logits)</code> has every kind resident</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="4-upstream-sync-120">4. Upstream sync (#120) <a class="hd" aria-label="link to this section" href="#4-upstream-sync-120">#</a></h2>
+<p><em>Provenance: upstream PR #4327.</em></p>
+<p><code>htp_moe</code> is frozen on upstream PR #4327 at <code>2ce38d65</code> (2026-09-21). Since
+then the PR has gained <strong>40 commits</strong> up to <code>4ae1ebd7</code> (44 files,
++5667 / −998). On 2026-09-23 the user ordered the full sync (#120), and PR
+#121 carries it as one merge commit plus four small fixes. #120 is waiting
+for its device A/B: A is <code>htp_moe</code>, B the merged tree, in one sitting.
+Gates: decode ≥ −2 % of A, prefill ≥ −5 %, text identical.</p>
+<p>Three of the 40 commits are already on <code>htp_moe</code> as cherry-picks from PR
+#103: size-class ION staging (<code>fb0f02b9</code>), the <code>NNTR_HTP_POLL_US</code> knob
+(<code>04a2fcc4</code>) and the 5 ms poll default (<code>b0a384d6</code>). The rest, grouped by
+what they bring:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>feature</th>
+<th>commits</th>
+<th>what it does</th>
+<th>effect on decode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Conv block as one call</td>
+<td><code>7f81560b</code>, <code>e699e1bd</code>, <code>6f8f7791</code> + DIFF / SHADOW diagnostics</td>
+<td>in_proj, gates, causal conv1d and out_proj of an LFM2 conv layer as one DSP call (<code>hmx/hexkl_conv_block.c</code>, <code>hvx/hvx_conv_gate_f32.c</code>, IDL <code>mm_u8i4_conv_block[_timed]</code>, <code>conv_block_layer.cpp</code>), behind <code>conv_block_engine</code></td>
+<td>none: it runs only when rows &gt; 1. At M = 1 the layer stays on the CPU. <code>hvx_conv_gate_f32</code> is the kernel #82 builds on</td>
+</tr>
+<tr>
+<td>q/k/v fusion</td>
+<td><code>1f538c20</code></td>
+<td>q, k, v and their two norms as one <code>qkv_layer</code>, one HTP call at prefill with <code>attn_proj_engine</code>. The layer is always used, and at M = 1 it runs on the CPU as before</td>
+<td>none. It is the host-side seat for a future attention block call</td>
+</tr>
+<tr>
+<td>Dense FFN through the MoE kernel</td>
+<td><code>d2f0bf47</code>, <code>35b6124b</code></td>
+<td>Layers 0–1's dense FFN cut into four 1792-wide chunks, each run as an &quot;expert&quot; of the MoE kernel, in one call, behind <code>dense_ffn_engine</code></td>
+<td>none at decode. Costs ≈ 4 % perplexity on the PR author's measure, so it stays <strong>off</strong> by default</td>
+</tr>
+<tr>
+<td>Down matmul one block behind</td>
+<td><code>5731b6e5</code></td>
+<td>In the HMX (prefill) loop of <code>hexkl_mm_u8i4_moe.c</code>, the down matmul runs one block behind gate_up, to overlap them</td>
+<td>the M = 1 GEMV path does not enter this loop. Unmeasured at M = 1</td>
+</tr>
+<tr>
+<td><code>NNTR_PPL</code></td>
+<td><code>32b46e32</code></td>
+<td>The prompt's teacher-forced perplexity, computed at prefill</td>
+<td>the accuracy column §3.3 and §5 need</td>
+</tr>
+<tr>
+<td>Profiling and FC</td>
+<td><code>3006d255</code>, <code>c64be9dd</code>, <code>aa371dd2</code></td>
+<td>FC profile row, epilogue worker time shown under the SWIGLU column, pooled FC epilogue (prefill FC calls only)</td>
+<td>print only. <code>c64be9dd</code> overlaps <code>htp_moe</code>'s own GEMV-row print, and the merge keeps both</td>
+</tr>
+</tbody>
+</table></div>
+<p>The remaining commits are upstream design notes (&quot;docs 50–53&quot;, Korean).</p>
+<p><strong>Upstream's own numbers</strong> (&quot;doc 51&quot;, 2026-09-22, PR author's device,
+prompt 444, everything on: conv block, dense FFN, attention projections,
+5 ms poll): <strong>prefill 585 ms (758 tok/s), decode 24.2 tok/s</strong>, perplexity
+62.09 on that config. These come from another phone, prompt and
+configuration, so they are not comparable with this document's numbers.
+They are recorded only to show what upstream reached with the HMX decode
+path.</p>
+<p><strong>What this means for the doc set.</strong> The sync changes the attention, FC
+and model-integration code (the conv block and qkv layers, the dense FFN
+route, new IDL entries). Those chapters are written <strong>after the sync
+lands</strong>, against the merged tree, not against this snapshot.</p>
+<h2 id="5-accuracy-track">5. Accuracy track <a class="hd" aria-label="link to this section" href="#5-accuracy-track">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (#110 ports work first measured on a side tree based
+on upstream PR #4327).</em></p>
+<p><strong>Hadamard rotation (#110; parked).</strong> A 256-point Hadamard rotation of the
+MoE down_proj input, folded into the weights offline (dtype
+<code>QS4CX_WH_HAD</code>) and applied with a fast Walsh–Hadamard transform on the DSP
+right before the u8 requantization. Measured in #95 on a side tree
+(2026-09-22): perplexity <strong>115.1 → 100.5 (−12.7 %)</strong>,
+below the CPU <code>q40</code> run's 109.8. Requant SNR median 34.7 → 42.7 dB. Cost
++0.3 % of the M = 1 <code>dsp</code> time and +2.7 % at prefill. #110 ports it to
+<code>htp_moe</code>, including the M = 1 GEMV requant site, fixes a subnormal flush
+in the scalar spec, and brings in <code>NNTR_PPL</code>. It does not move tok/s. The
+user parked it on 2026-09-22 until the HVX decode work is done. It becomes
+more urgent if perplexity is adopted as the accuracy column (§3.3). None of
+it is in this snapshot.</p>
+<p><strong>Replay content check (#99; p2).</strong> <code>MoeChunkReplay</code>, a DMA replay test that
+rides every device handoff as the DMA &quot;anchor&quot; cell, fails its content
+check (<code>checksum_ok=n</code>) while its timing stands. The cause is known: the
+replay writes packed where the kernel writes strided. The timing question it
+was filed for is answered, so what is left is a <code>test/</code>-only fix, so that
+nobody later reads the <code>FAILED</code> line as a regression.</p>
+<h2 id="6-prior-work-hvx_impl">6. Prior work: <code>hvx_impl</code> <a class="hd" aria-label="link to this section" href="#6-prior-work-hvx_impl">#</a></h2>
+<p><em>Provenance: the <code>hvx_impl</code> branch of this fork (frozen, last commit
+2026-09-21). No code from it is in <code>htp_moe</code>.</em></p>
+<p><code>hvx_impl</code> ran <strong>Qwen3-0.6B</strong> (a small dense model) with <strong>W8A8</strong>
+quantization (int8 per-channel weights, per-token int8 activations) on the
+DSP's <strong>HVX units only</strong>, without the HMX. Its structure is the one §3
+aims for. The ARM hands the DSP an op list and every large buffer once,
+and each <code>forward()</code> runs the whole list: <strong>one FastRPC call per decode
+token or prefill chunk</strong> (≈ 0.26 ms per round trip).</p>
+<p>Measured on S25 Ultra units with the v79-native skel, context 512
+(2026-09-17 / 18). The first two rows are the same build on two units of the
+same model:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>build</th>
+<th style="text-align:right">prefill tok/s</th>
+<th style="text-align:right">decode tok/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no prefetch</td>
+<td style="text-align:right">207.4</td>
+<td style="text-align:right">31.4</td>
+</tr>
+<tr>
+<td>no prefetch</td>
+<td style="text-align:right">198.7</td>
+<td style="text-align:right">30.9</td>
+</tr>
+<tr>
+<td>with cross-op weight prefetch</td>
+<td style="text-align:right">191.1</td>
+<td style="text-align:right">33.7</td>
+</tr>
+</tbody>
+</table></div>
+<p>Model-level accuracy: perplexity 19.98 against the x86 reference
+executor's 20.27. A decode step's host wall time was within 0.5–3 ms of the
+DSP's own op loop, which is the evidence that one call per token takes the
+ARM out of the step. These numbers are for a different model and are not
+comparable with LFM2's.</p>
+<p><strong>What is reusable here</strong>, in value order. Each row names the issue that
+would take it. All of these are ports, not copies: shapes, dtypes and the
+worker pool differ.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>from <code>hvx_impl</code></th>
+<th>serves</th>
+<th>what changes in the port</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M = 1 attention with a DSP-resident KV cache (<code>htp/ops/hvx-attn.c</code>: K transposed, workers split by kv head)</td>
+<td>#81</td>
+<td>one token instead of a token loop; our worker pool; f32 KV instead of fp16</td>
+</tr>
+<tr>
+<td>&quot;The DSP owns the graph&quot;: validate the op list once, then <code>forward</code> runs <code>table[kind]()</code> per op with per-op pcycles (<code>htp/htp_graph.{h,c}</code>, <code>nntr_htp.idl</code>)</td>
+<td>#85</td>
+<td>LFM2.5's op sequence and kinds (MoE, conv1d); a <code>forward</code> entry beside the per-op IDL</td>
+</tr>
+<tr>
+<td>Cross-op weight prefetch: the last chunk of op N starts op N+1's first chunk (<code>hvx-matmul.c</code> <code>mm_pf_kick</code>)</td>
+<td>㉓, and §3 once calls span several ops</td>
+<td>our global DMA ring instead of a per-worker FIFO. The feed's depth-2 issue order in <code>test/htp/nntr_moe_dma_plan.h</code> already follows the same discipline</td>
+</tr>
+<tr>
+<td>Host E2E harness (<code>test/hexagon/hexagon_e2e_test.cpp</code> and tools)</td>
+<td>#84</td>
+<td>only the <code>E2E</code> line format and the dump comparator carry over; the driver is our own ARM path</td>
+</tr>
+<tr>
+<td>RMSNorm, per-head q/k norm, RoPE, and the quantizer's integer-only rounding</td>
+<td>#82</td>
+<td>head_dim 64 (theirs is 128), f32 residual (theirs fp16)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Not reused: its W8A8 matmul (wrong layout for int4 weights), its DMA queue
+and worker pool (<code>htp_moe</code> has its own), the Qwen3 lowering and app glue.
+Causal conv1d + gating has no counterpart there.</p>
+<p>Silicon rules learned there that also bind here:</p>
+<ul>
+<li>Compute in f32 inside an op and narrow once.</li>
+<li>Clamp the SiLU exp argument.</li>
+<li>int32 <code>vrmpy</code> sums are exact in any order, so divergence enters only in
+the epilogue.</li>
+<li>qf32 → sf conversion differs between v75 and v79, so quantizers decode
+integers, never sf bits.</li>
+<li>Never compare wall-clock tok/s across phones.</li>
+</ul>
+<h2 id="7-longer-term">7. Longer term <a class="hd" aria-label="link to this section" href="#7-longer-term">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (open items, not issues).</em></p>
+<ul>
+<li><strong>Prefill residency.</strong> Prefill already beats the CPU (≈ 400–530 vs
+270–340 tok/s) and is only guarded today. Keeping more of it on the DSP
+is expected to go past 700 tok/s. Taken up after the decode goal.</li>
+<li><strong>CPU + NPU expert split.</strong> The CPU would take one of the four active
+experts per layer, synchronized once per layer. It raises the ceiling only
+if two readers together get more DDR bandwidth than one. The CPU side
+already loses 41 % under contention (#77), and the DSP side of that probe
+was invalid (it read from cache) and is re-filed as #90. When NPU-only
+stops and the split starts is an <strong>open user decision</strong>. The proposed
+rule: decode below 50 tok/s after §3, and the two-reader probe above
+45 GB/s.</li>
+<li><strong>Fewer bytes per token.</strong> The only lever that raises the ceiling at the
+31 GB/s end of the DMA range. Candidates: expert weights below 4 bits, and reusing
+experts across consecutive tokens so their weights are not re-read. Not
+studied or filed yet. Both change accuracy and need the perplexity column
+of §3.3.</li>
+</ul>
+
+<div class="pager"><span>← <a href="lessons.html">Lessons</a></span><span></span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

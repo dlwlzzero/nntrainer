@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Weight format</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html" class="here">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>Weight format</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-the-pipeline">1. The pipeline <a class="header-anchor hd" href="#1-the-pipeline">#</a></a></li><li><a href="#2-step-1-checkpoint-to-fp32-bin">2. Step 1: checkpoint to FP32 <code>.bin</code> <a class="header-anchor hd" href="#2-step-1-checkpoint-to-fp32-bin">#</a></a></li><li><a href="#3-step-2-the-streaming-quantizer">3. Step 2: the streaming quantizer <a class="header-anchor hd" href="#3-step-2-the-streaming-quantizer">#</a></a></li><li><a href="#4-the-formats">4. The formats <a class="header-anchor hd" href="#4-the-formats">#</a></a></li><ul><li><a href="#41-q4_0-cpu">4.1 <code>Q4_0</code> (CPU) <a class="header-anchor hd" href="#41-q4_0-cpu">#</a></a></li><li><a href="#42-qs4cx-per-output-channel-int4">4.2 <code>QS4CX</code> (per-output-channel int4) <a class="header-anchor hd" href="#42-qs4cx-per-output-channel-int4">#</a></a></li><li><a href="#43-qs4cx_wh-the-npu-models-expert-weights">4.3 <code>QS4CX_WH</code> (the NPU model's expert weights) <a class="header-anchor hd" href="#43-qs4cx_wh-the-npu-models-expert-weights">#</a></a></li><li><a href="#44-activations-u8-per-row">4.4 Activations: u8 per row <a class="header-anchor hd" href="#44-activations-u8-per-row">#</a></a></li><li><a href="#45-q4_0--qs4cx-on-the-fly-htp_q4_0_convert">4.5 <code>Q4_0</code> → qs4cx on the fly (<code>htp_q4_0_convert</code>) <a class="header-anchor hd" href="#45-q4_0--qs4cx-on-the-fly-htp_q4_0_convert">#</a></a></li></ul><li><a href="#5-loading-and-registration">5. Loading and registration <a class="header-anchor hd" href="#5-loading-and-registration">#</a></a></li><ul><li><a href="#51-why-256-mib-chunks">5.1 Why 256 MiB chunks <a class="header-anchor hd" href="#51-why-256-mib-chunks">#</a></a></li><li><a href="#52-why-the-packing-is-offline-the-retired-runtime-bake">5.2 Why the packing is offline: the retired runtime bake <a class="header-anchor hd" href="#52-why-the-packing-is-offline-the-retired-runtime-bake">#</a></a></li><li><a href="#tried-and-dropped">Tried and dropped <a class="header-anchor hd" href="#tried-and-dropped">#</a></a></li></ul><li><a href="#6-byte-math">6. Byte math <a class="header-anchor hd" href="#6-byte-math">#</a></a></li><ul><li><a href="#61-one-expert">6.1 One expert <a class="header-anchor hd" href="#61-one-expert">#</a></a></li><li><a href="#62-per-token-decode">6.2 Per token (decode) <a class="header-anchor hd" href="#62-per-token-decode">#</a></a></li><li><a href="#63-whole-model">6.3 Whole model <a class="header-anchor hd" href="#63-whole-model">#</a></a></li></ul><li><a href="#7-accuracy">7. Accuracy <a class="header-anchor hd" href="#7-accuracy">#</a></a></li><ul><li><a href="#71-what-the-format-costs">7.1 What the format costs <a class="header-anchor hd" href="#71-what-the-format-costs">#</a></a></li><li><a href="#72-the-requant-boundary">7.2 The requant boundary <a class="header-anchor hd" href="#72-the-requant-boundary">#</a></a></li><li><a href="#73-hadamard-rotation-qs4cx_wh_had-measured-off-tree">7.3 Hadamard rotation (<code>QS4CX_WH_HAD</code>), measured off-tree <a class="header-anchor hd" href="#73-hadamard-rotation-qs4cx_wh_had-measured-off-tree">#</a></a></li></ul><li><a href="#8-the-two-model-directories">8. The two model directories <a class="header-anchor hd" href="#8-the-two-model-directories">#</a></a></li><li><a href="#9-code-map">9. Code map <a class="header-anchor hd" href="#9-code-map">#</a></a></li></ul></details>
+<p>This chapter follows the weights from the Hugging Face checkpoint to the
+bytes the DSP reads. It covers the two conversion tools, the formats
+involved (<code>Q4_0</code>, <code>QS4CX</code>, <code>QS4CX_WH</code>, the u8 activations), how a
+<code>QS4CX_WH</code> model is loaded into the ION arena, the exact byte counts, and
+what the format costs in accuracy. It ends with the two model directories
+and their configs.</p>
+<p>Provenance: the formats, the quantizer support and the arena are
+<code>upstream PR #4327</code>. None of those files changed on <code>htp_moe</code>. The model
+directories and their measured sizes are <code>htp_moe</code> (#78).</p>
+<h2 id="1-the-pipeline">1. The pipeline <a class="hd" aria-label="link to this section" href="#1-the-pipeline">#</a></h2>
+<figure>
+<svg viewBox="0 0 880 542" role="img" aria-label="Weight pipeline: Hugging Face checkpoint to FP32 bin to quantized bin on the workstation, then load, registration into the ION arena and DSP kernels on the phone" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="weight-format-1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <rect x="12" y="12" width="856" height="290" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+  <text x="26" y="32" fill="#52514e" font-weight="bold">Workstation, once per model</text>
+  <rect x="12" y="318" width="856" height="212" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+  <text x="26" y="338" fill="#52514e" font-weight="bold">On the phone, every start</text>
+  <rect x="32" y="44" width="240" height="62" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="152" y="62.5" fill="#0b0b0b" text-anchor="middle" font-weight="bold">Hugging Face checkpoint</text>
+  <text x="152" y="79.5" fill="#0b0b0b" text-anchor="middle">LiquidAI/LFM2.5-8B-A1B</text>
+  <text x="152" y="96.5" fill="#0b0b0b" text-anchor="middle">bf16 safetensors, 17.0 GB</text>
+  <rect x="330" y="44" width="210" height="62" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="435" y="71" fill="#0b0b0b" text-anchor="middle" font-weight="bold">weight_converter.py</text>
+  <text x="435" y="88" fill="#0b0b0b" text-anchor="middle">(PyTorch, float32 only)</text>
+  <rect x="598" y="44" width="250" height="62" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="723" y="71" fill="#0b0b0b" text-anchor="middle">fp32/nntr_lfm2_8b_a1b_fp32.bin</text>
+  <text x="723" y="88" fill="#0b0b0b" text-anchor="middle">33 871 427 328 B</text>
+  <path d="M272,75 H329" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <path d="M540,75 H597" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <rect x="508" y="146" width="340" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="678" y="165.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">nntr_quantize_stream</text>
+  <text x="678" y="182.1" fill="#0b0b0b" text-anchor="middle">(quantize_stream.cpp, runs on the workstation)</text>
+  <path d="M723,106 V145" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <rect x="32" y="240" width="340" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="202" y="259.1" fill="#0b0b0b" text-anchor="middle">q40-qs4cx-wh/ .bin, 4 316 133 120 B</text>
+  <text x="202" y="276.1" fill="#0b0b0b" text-anchor="middle">MoE experts QS4CX_WH, rest Q4_0 (NPU model)</text>
+  <rect x="588" y="240" width="260" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="718" y="259.1" fill="#0b0b0b" text-anchor="middle">q40/ .bin, 4 768 855 808 B</text>
+  <text x="718" y="276.1" fill="#0b0b0b" text-anchor="middle">everything Q4_0 (CPU control)</text>
+  <path d="M723,192 V239" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <text x="731" y="220" font-size="12" fill="#52514e">--isa ARM, all Q4_0</text>
+  <path d="M508,169 H152 V239" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <text x="330" y="161" font-size="12" fill="#52514e" text-anchor="middle">same + --moe_dtype QS4CX_WH</text>
+  <rect x="32" y="352" width="240" height="46" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="152" y="371.1" fill="#0b0b0b" text-anchor="middle">load on the phone</text>
+  <text x="152" y="388.1" fill="#0b0b0b" text-anchor="middle">one TensorPool allocation</text>
+  <path d="M236,286 V351" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <path d="M718,286 V375 H273" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#weight-format-1-arrow)"/>
+  <text x="495" y="367" font-size="12" fill="#52514e" text-anchor="middle">CPU run: no registration</text>
+  <rect x="32" y="440" width="240" height="74" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="152" y="473.1" fill="#0b0b0b" text-anchor="middle">Transformer::repack_weight</text>
+  <text x="152" y="490.1" fill="#0b0b0b" text-anchor="middle">→ get_or_register_wh</text>
+  <path d="M152,398 V439" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <path d="M420,447 A90.0,7 0 0 1 600,447 V507 A90.0,7 0 0 1 420,507 Z" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <path d="M420,447 A90.0,7 0 0 0 600,447" fill="none" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="510" y="469.6" fill="#0b0b0b" text-anchor="middle" font-weight="bold">ION arena</text>
+  <text x="510" y="486.6" fill="#0b0b0b" text-anchor="middle">15 × 256 MiB chunks</text>
+  <text x="510" y="503.6" fill="#0b0b0b" text-anchor="middle">mapped into the DSP</text>
+  <path d="M272,477 H419" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+  <text x="346" y="453.4" font-size="11" fill="#52514e" text-anchor="middle">memcpy, then</text>
+  <text x="346" y="466.4" font-size="11" fill="#52514e" text-anchor="middle">madvise the ARM copy</text>
+  <rect x="640" y="440" width="208" height="74" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="744" y="473.1" fill="#0b0b0b" text-anchor="middle">DSP kernels read the nibbles</text>
+  <text x="744" y="490.1" fill="#0b0b0b" text-anchor="middle">(HMX, HVX GEMV, VTCM feed)</text>
+  <path d="M600,477 H639" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-1-arrow)"/>
+</svg>
+<figcaption>How a checkpoint becomes the bytes the DSP reads. All packing happens once on the workstation; on the phone the MoE expert bytes are only copied into the ION arena, never converted. The Q4_0 control model (dashed) loads the same way but registers nothing, because it runs on the CPU.</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>step</th>
+<th>tool</th>
+<th>runs where</th>
+<th>output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>Applications/CausalLM/res/lfm2_moe/lfm2-8b-a1b/weight_converter.py</code></td>
+<td>workstation, once</td>
+<td>one FP32 <code>.bin</code> in graph order</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Applications/CausalLM/quantize_stream.cpp</code> (binary <code>nntr_quantize_stream</code>)</td>
+<td>workstation, once per model</td>
+<td>a quantized <code>.bin</code> plus <code>nntr_config.json</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>model load (<code>Transformer::repack_weight</code> in <code>Applications/CausalLM/models/transformer.cpp</code>)</td>
+<td>phone, every start</td>
+<td>expert weights registered in the ION arena</td>
+</tr>
+</tbody>
+</table></div>
+<p>All packing happens in steps 1 and 2. At load, the MoE expert bytes are
+copied into the arena as they are. Nothing is converted on the phone.</p>
+<h2 id="2-step-1-checkpoint-to-fp32-bin">2. Step 1: checkpoint to FP32 <code>.bin</code> <a class="hd" aria-label="link to this section" href="#2-step-1-checkpoint-to-fp32-bin">#</a></h2>
+<p><code>weight_converter.py</code> (<code>save_lfm2_moe_for_nntrainer</code>) loads the checkpoint
+with <code>transformers</code> and writes each tensor as raw float32, in the order the
+nntrainer graph asks for its weights. The file has no header and no index.
+Order is the only structure, so the quantizer must walk the same order
+(<code>writeLfm2Moe</code> in <code>quantize_stream.cpp</code> mirrors it).</p>
+<p>What it does to the tensors:</p>
+<ul>
+<li><strong>Linear weights are transposed</strong> to <code>[in, out]</code>, which is the layout
+nntrainer's FC layers read in FP32.</li>
+<li><strong>Experts are written one by one</strong>: for each of the 32 experts, a fused
+<code>gate_up</code> <code>[2048, 2 × 1792]</code> (gate half first, then up), then its <code>down</code>
+<code>[1792, 2048]</code>. The current HF layout (<code>experts.gate_up_proj</code>, one
+tensor for all experts) and the older per-expert <code>w1</code>/<code>w3</code>/<code>w2</code> layout
+both work.</li>
+<li><strong>The conv kernel is flipped</strong> so row 0 is the current token, as
+nntrainer's <code>causal_conv1d</code> expects.</li>
+<li><strong>Expert bias</strong> is written as zeros if the checkpoint has none, because
+the layer always asks for it.</li>
+<li><strong>No lm_head</strong> is written: the model ties it to the input embedding
+(<code>tie_word_embeddings: true</code>).</li>
+</ul>
+<p>Only float32 output is accepted. Norms, router weights, expert bias and
+the conv kernel stay FP32 in the graph whatever the other weights become.</p>
+<h2 id="3-step-2-the-streaming-quantizer">3. Step 2: the streaming quantizer <a class="hd" aria-label="link to this section" href="#3-step-2-the-streaming-quantizer">#</a></h2>
+<p><code>nntr_quantize_stream &lt;dir&gt; [options]</code> reads <code>&lt;dir&gt;/config.json</code> (the HF
+config, for shapes) and <code>&lt;dir&gt;/nntr_config.json</code> (for the input file name).
+It then streams the FP32 file tensor by tensor. It never holds the model
+in memory: one tensor buffer is capped at 64 MiB (<code>MAX_TENSOR_BUFFER_BYTES</code>),
+and larger FC weights take a seek-based blocked transpose.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>flag</th>
+<th>meaning</th>
+<th>for this model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--fc_dtype</code></td>
+<td>attention, conv and dense-FFN projections</td>
+<td><code>Q4_0</code></td>
+</tr>
+<tr>
+<td><code>--embd_dtype</code></td>
+<td>embedding</td>
+<td><code>Q4_0</code></td>
+</tr>
+<tr>
+<td><code>--lmhead_dtype</code></td>
+<td>lm_head (must equal <code>--embd_dtype</code> for a tied model, which the tool enforces)</td>
+<td><code>Q4_0</code></td>
+</tr>
+<tr>
+<td><code>--moe_dtype</code></td>
+<td>MoE expert <code>gate_up</code> and <code>down</code>; defaults to <code>--fc_dtype</code></td>
+<td><code>Q4_0</code> (CPU) or <code>QS4CX_WH</code> (NPU)</td>
+</tr>
+<tr>
+<td><code>--isa</code></td>
+<td>the <code>Q4_0</code> repack layout: <code>ARM</code> = 4-row interleave (<code>Q4_0x4</code>), <code>X86</code> = 8-row (<code>Q4_0x8</code>), <code>DEFAULT</code> = the layout of the machine the tool runs on</td>
+<td><strong>always <code>ARM</code></strong></td>
+</tr>
+<tr>
+<td><code>-o</code>, <code>--output_bin</code>, <code>--config</code></td>
+<td>output directory, file name, a config to inherit dtypes from (explicit flags win over <code>--config</code>)</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>The two commands:</p>
+<pre><code class="language-bash">nntr_quantize_stream fp32/ -o q40/ \
+  --fc_dtype Q4_0 --embd_dtype Q4_0 --lmhead_dtype Q4_0 --isa ARM
+nntr_quantize_stream fp32/ -o q40-qs4cx-wh/ \
+  --fc_dtype Q4_0 --embd_dtype Q4_0 --lmhead_dtype Q4_0 --isa ARM \
+  --moe_dtype QS4CX_WH
+</code></pre>
+<p>Things a reviewer should know:</p>
+<ul>
+<li><strong><code>--isa</code> matters, and nothing checks it at load.</strong> The quantizer runs
+on an x86 workstation, where <code>DEFAULT</code> means <code>Q4_0x8</code>. The phone's
+kernels read <code>Q4_0x4</code>. A <code>.bin</code> has no header to record the choice, so
+the only trace is the <code>_arm</code> suffix of the default file name
+(<code>defaultOutputBin</code>). A wrong layout gives wrong text, not an error.
+(The safetensors output records <code>nntr_q4_0_isa</code>, but the quantizer only
+writes <code>.bin</code>.) <code>QS4CX_WH</code> does not depend on <code>--isa</code>.</li>
+<li><strong>Both models get the same file name</strong>, <code>nntr_lfm2_8b_a1b_q40_arm.bin</code>,
+because the default name is built from the FC dtype only. The directory
+is what tells them apart.</li>
+<li><strong>The embedding is stored unrepacked</strong> (<code>writeEmbedding</code> passes
+<code>repack = false</code>): it is a row lookup. The tied lm_head then needs a
+repacked copy for fast GEMV, which <code>TieWordEmbedding::prepareLmhead</code>
+builds once at load (147 MB of extra RAM).</li>
+<li><strong><code>QS4CX_WH</code> is refused</strong> for an embedding (a lookup has no use for
+tiles) and for any tensor over 64 MiB (the tile order is k-major, so a
+row-blocked write would come out in the wrong order). The largest expert
+weight is 29 MB of FP32, so the model never hits that limit.</li>
+<li><strong>Output config.</strong> The tool writes <code>model_file_name</code>,
+<code>model_tensor_type</code>, <code>fc_layer_dtype</code>, <code>embedding_dtype</code>,
+<code>lmhead_dtype</code> and <code>moe_layer_dtype</code> into the output <code>nntr_config.json</code>
+(<code>writeOutputConfig</code>). It does <strong>not</strong> write <code>moe_engine</code> or
+<code>moe_htp_layers</code>. Those are added by hand (§8).</li>
+</ul>
+<h2 id="4-the-formats">4. The formats <a class="hd" aria-label="link to this section" href="#4-the-formats">#</a></h2>
+<p>Which format each weight has:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>weights</th>
+<th><code>q40/</code> (CPU)</th>
+<th><code>q40-qs4cx-wh/</code> (NPU)</th>
+<th>read by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE experts, <code>gate_up</code> and <code>down</code> (1408 tensors)</td>
+<td><code>Q4_0x4</code></td>
+<td><strong><code>QS4CX_WH</code></strong></td>
+<td>CPU / DSP</td>
+</tr>
+<tr>
+<td>conv, attention, dense-FFN projections</td>
+<td><code>Q4_0x4</code></td>
+<td><code>Q4_0x4</code></td>
+<td>CPU</td>
+</tr>
+<tr>
+<td>embedding = tied lm_head</td>
+<td><code>Q4_0</code> (unrepacked; <code>Q4_0x4</code> copy built at load)</td>
+<td>same</td>
+<td>CPU</td>
+</tr>
+<tr>
+<td>norms, router, expert bias, conv kernel</td>
+<td>FP32</td>
+<td>FP32</td>
+<td>CPU</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="41-q4_0-cpu">4.1 <code>Q4_0</code> (CPU) <a class="hd" aria-label="link to this section" href="#41-q4_0-cpu">#</a></h3>
+<p>The ggml format. Each block of 32 consecutive weights along K is 18
+bytes: one fp16 scale and 16 bytes of 4-bit values, which is 4.5 bits per
+weight. The ARM repack (<code>Q4_0x4</code>, <code>__ggml_repack_q4_0_to_q4_0_4</code>)
+interleaves the blocks of 4 output rows so a NEON kernel reads them in
+one stream. Scales are per block, so they follow the local range of the
+weights closely.</p>
+<h3 id="42-qs4cx-per-output-channel-int4">4.2 <code>QS4CX</code> (per-output-channel int4) <a class="hd" aria-label="link to this section" href="#42-qs4cx-per-output-channel-int4">#</a></h3>
+<p><code>QS4CX_Tensor</code> in <code>nntrainer/tensor/qs4cx_tensor.h</code>, quantized by
+<code>quant_qs4cx_f32</code>. One f32 scale per output channel, over the whole input
+width (2048 or 1792 values):</p>
+<ul>
+<li>range: <code>rmin = min(0, min w)</code>, <code>rmax = max(0, max w)</code> over the channel;</li>
+<li><code>scale = 15 / (rmax − rmin)</code>, <code>q = clamp(round(w · scale), −8, 7)</code>;</li>
+<li>the file stores <code>1/scale</code> and the nibbles as <code>q + 8</code>, two per byte, one
+channel per row, even k in the low nibble.</li>
+</ul>
+<p>There is no zero point. Layout on disk: <code>[N · ⌈K/2⌉ nibble bytes][N f32 scales]</code>. That is 4 bits per weight plus 4 bytes per channel. It is also
+the input HexKL wants, up to the byte arrangement, so a <code>QS4CX</code> weight
+reaches the DSP without a second quantization.</p>
+<h3 id="43-qs4cx_wh-the-npu-models-expert-weights">4.3 <code>QS4CX_WH</code> (the NPU model's expert weights) <a class="hd" aria-label="link to this section" href="#43-qs4cx_wh-the-npu-models-expert-weights">#</a></h3>
+<p><code>QS4CX_WH_Tensor</code> (same header): <strong>the same values and the same scales as
+<code>QS4CX</code></strong>, with two differences.</p>
+<ol>
+<li>The nibbles are already in the <strong>WH tile layout</strong> the HMX matrix unit
+reads (<code>nntrainer/tensor/htp_wh_layout.h</code>).</li>
+<li>A <strong>column sum per output channel</strong> follows the scales. The kernels use
+<code>Σₖ q[k][n]</code> to correct for the activation's zero point. Recomputing it
+from packed nibbles at load was estimated at about 20 s for the whole
+model, so the quantizer writes it.</li>
+</ol>
+<p>The quantizer produces it by running the <code>QS4CX</code> quantizer unchanged,
+unpacking to one int8 per value in K × N order while summing columns, and
+calling <code>whPack</code> (<code>TensorWriter::writeQuantized</code>, <code>QS4CX_WH</code> branch). The
+values are therefore bit-identical to a <code>QS4CX</code> model. Only their position
+changes.</p>
+<p>One tensor in the file:</p>
+<figure>
+<svg viewBox="0 0 840 152" role="img" aria-label="Layout of one QS4CX_WH tensor in the file: WH nibbles, then N float scales, then N float column sums" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="weight-format-2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <rect x="16" y="16" width="440" height="78" rx="0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="236" y="42.5" fill="#0b0b0b" text-anchor="middle" font-weight="bold">WH nibbles</text>
+  <text x="236" y="59.5" fill="#0b0b0b" text-anchor="middle">(K/32)·(N/32) tiles × 512 B</text>
+  <text x="236" y="76.5" fill="#0b0b0b" text-anchor="middle">= K·N/2 bytes</text>
+  <rect x="456" y="16" width="184" height="78" rx="0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="548" y="42.5" fill="#0b0b0b" text-anchor="middle" font-weight="bold">scale</text>
+  <text x="548" y="59.5" fill="#0b0b0b" text-anchor="middle">N × f32</text>
+  <text x="548" y="76.5" fill="#0b0b0b" text-anchor="middle">(stored as 1/scale)</text>
+  <rect x="640" y="16" width="184" height="78" rx="0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="732" y="42.5" fill="#0b0b0b" text-anchor="middle" font-weight="bold">column sum</text>
+  <text x="732" y="59.5" fill="#0b0b0b" text-anchor="middle">N × f32</text>
+  <text x="732" y="76.5" fill="#0b0b0b" text-anchor="middle">(small integers, exact)</text>
+  <rect x="16" y="16" width="808" height="78" rx="6" fill="none" stroke="#52514e" stroke-width="1.2"/>
+  <path d="M16,114 H823" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-2-arrow)"/>
+  <text x="420" y="136" font-size="12" fill="#52514e" text-anchor="middle">file order, one tensor after another (widths not to scale)</text>
+</svg>
+<figcaption>One <code>QS4CX_WH</code> tensor is three consecutive arrays: the WH-tiled nibbles, then one scale and one column sum per output column. The column sum is the only addition over <code>QS4CX</code>, so <code>size()</code> grows by exactly 4N bytes.</figcaption>
+</figure>
+<p><code>QS4CX_WH_Tensor::size()</code> is <code>QS4CX_Tensor::size()</code> plus <code>4N</code>, and that
+is the only difference in the class. The nibble count equals <code>QS4CX</code>'s
+because a 32 × 32 tile is 512 bytes in either arrangement.</p>
+<p><strong>The WH tile.</strong> Inside a K × N weight, tiles of 32 input rows × 32 output
+columns are stored <strong>k-major</strong>: tile <code>(kt, nt)</code> sits at byte
+<code>(kt · N/32 + nt) · 512</code>. So a strip of 32 input rows across all outputs
+is contiguous, and a slice of output columns is a strided 2-D region.
+Inside a tile:</p>
+<figure><svg viewBox="0 0 860 466" width="860" height="466" role="img" aria-label="WH tile byte layout: 32 by 32 int4 weights in 512 bytes" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="wh-tile-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <rect x="0" y="0" width="860" height="466" fill="#ffffff"/>
+  <text x="20" y="26" font-size="14" fill="#0b0b0b" font-weight="bold">One WH tile: 32 x 32 int4 weights = 1024 nibbles = 512 bytes</text>
+  <text x="20" y="56" fill="#52514e">r = input row (k), c = output column (n)</text>
+  <rect x="20" y="70" width="256" height="64" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="30" y="98" fill="#0b0b0b">rows 0-7</text>
+  <text x="30" y="116" fill="#52514e">→ bytes 0-127</text>
+  <rect x="20" y="134" width="256" height="64" fill="#fcfcfb" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="30" y="162" fill="#0b0b0b">rows 8-15</text>
+  <text x="30" y="180" fill="#52514e">→ bytes 128-255</text>
+  <rect x="20" y="198" width="256" height="64" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="30" y="226" fill="#0b0b0b">rows 16-23</text>
+  <text x="30" y="244" fill="#52514e">→ bytes 256-383</text>
+  <rect x="20" y="262" width="256" height="64" fill="#fcfcfb" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="30" y="290" fill="#0b0b0b">rows 24-31</text>
+  <text x="30" y="308" fill="#52514e">→ bytes 384-511</text>
+  <rect x="236" y="70" width="8" height="64" fill="#8a7f5c" stroke="#8a7f5c"/>
+  <text x="196" y="128" font-size="11" fill="#52514e">col c</text>
+  <line x1="244" y1="102" x2="330" y2="102" stroke="#8a7f5c" stroke-width="1.5"/>
+  <text x="330" y="56" fill="#52514e">column c of one band: 8 weights → 4 bytes</text>
+  <rect x="330" y="70" width="60" height="30" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="90" fill="#0b0b0b" text-anchor="middle">r0</text>
+  <rect x="330" y="100" width="60" height="30" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="120" fill="#0b0b0b" text-anchor="middle">r1</text>
+  <rect x="330" y="130" width="60" height="30" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="150" fill="#0b0b0b" text-anchor="middle">r2</text>
+  <rect x="330" y="160" width="60" height="30" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="180" fill="#0b0b0b" text-anchor="middle">r3</text>
+  <rect x="330" y="190" width="60" height="30" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="210" fill="#0b0b0b" text-anchor="middle">r4</text>
+  <rect x="330" y="220" width="60" height="30" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="240" fill="#0b0b0b" text-anchor="middle">r5</text>
+  <rect x="330" y="250" width="60" height="30" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="270" fill="#0b0b0b" text-anchor="middle">r6</text>
+  <rect x="330" y="280" width="60" height="30" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="360" y="300" fill="#0b0b0b" text-anchor="middle">r7</text>
+  <text x="398" y="140" font-size="11" fill="#52514e">r0-r3: low</text>
+  <text x="398" y="240" font-size="11" fill="#52514e">r4-r7: high</text>
+  <text x="505" y="77" font-size="11" fill="#52514e" text-anchor="middle">high nibble</text>
+  <text x="575" y="77" font-size="11" fill="#52514e" text-anchor="middle">low nibble</text>
+  <rect x="470" y="82" width="70" height="36" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <rect x="540" y="82" width="70" height="36" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="505" y="105" fill="#0b0b0b" text-anchor="middle">r4</text>
+  <text x="575" y="105" fill="#0b0b0b" text-anchor="middle">r0</text>
+  <text x="620" y="105" fill="#0b0b0b">byte 4c + 0</text>
+  <rect x="470" y="132" width="70" height="36" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <rect x="540" y="132" width="70" height="36" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="505" y="155" fill="#0b0b0b" text-anchor="middle">r5</text>
+  <text x="575" y="155" fill="#0b0b0b" text-anchor="middle">r1</text>
+  <text x="620" y="155" fill="#0b0b0b">byte 4c + 1</text>
+  <rect x="470" y="182" width="70" height="36" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <rect x="540" y="182" width="70" height="36" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="505" y="205" fill="#0b0b0b" text-anchor="middle">r6</text>
+  <text x="575" y="205" fill="#0b0b0b" text-anchor="middle">r2</text>
+  <text x="620" y="205" fill="#0b0b0b">byte 4c + 2</text>
+  <rect x="470" y="232" width="70" height="36" fill="#e1e0d9" stroke="#8a7f5c" stroke-width="1"/>
+  <rect x="540" y="232" width="70" height="36" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1"/>
+  <text x="505" y="255" fill="#0b0b0b" text-anchor="middle">r7</text>
+  <text x="575" y="255" fill="#0b0b0b" text-anchor="middle">r3</text>
+  <text x="620" y="255" fill="#0b0b0b">byte 4c + 3</text>
+  <text x="470" y="300" fill="#0b0b0b">so a band is col 0 (bytes 0-3), col 1 (4-7),</text>
+  <text x="470" y="318" fill="#0b0b0b">... col 31 (124-127) = 128 bytes</text>
+  <rect x="20" y="344" width="820" height="108" rx="6" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="32" y="368" fill="#0b0b0b" font-family="Menlo, Consolas, monospace">byte(r, c) = (r / 8) * 128 + c * 4 + (r % 4)</text>
+  <text x="32" y="390" fill="#0b0b0b" font-family="Menlo, Consolas, monospace">nibble = (r / 4) % 2  (0 = low)</text>
+  <text x="32" y="412" font-size="12" fill="#0b0b0b" font-family="Menlo, Consolas, monospace">tile (kt, nt) of a K x N weight starts at byte (kt * (N / 32) + nt) * 512   (k-major)</text>
+  <text x="32" y="436" font-size="12" fill="#52514e">One byte holds two k values of the same output column, four rows apart. Code: whSlot / whPack in nntrainer/tensor/htp_wh_layout.h</text>
+</svg><figcaption>WH tile byte layout</figcaption></figure>
+<p>Each byte holds <strong>two k values of the same output column, four rows
+apart</strong>. That is the pair a u8 × i4 dot product reduces together. The
+formula is <code>whSlot(r, c) = (r/8)·256 + c·8 + (r%4)·2 + (r/4)%2</code> (a nibble
+index; byte = slot/2, low nibble for even slots).</p>
+<p>The layout was read off the DSP's own bake routine, not taken from a
+vendor document. On 2026-09-15 (PR author's device) the host packer
+matched the DSP bake (<code>weight_bake_export</code>) byte for byte at 2048 × 3584,
+the model's largest weight, and at a non-square 64 × 128 that also checks
+the tile order. The device gtest <code>WhPackReferenceMatchesDspBake</code>
+(<code>unittest_hvx_mm_u8i4</code>) is that check. It must keep passing: the header
+is a copy of a hardware layout, and only the device can say it is still
+right. (A vendor ARM function, <code>sdkl_cpu_i4_rm_to_i4_wh</code>, uses the
+<strong>transposed</strong> tile and did not match. A square test shape hides both the
+transpose and the argument order.)</p>
+<p>The HVX GEMV decode kernel and the VTCM feed read these same bytes in the
+same order, so one blob per expert serves every DSP path.</p>
+<p><strong>No CPU fallback.</strong> No CPU kernel reads WH tiles. <code>FloatTensor::dot</code>
+throws on a <code>QS4CX_WH</code> weight with a message naming the two fixes (route
+the layer to the HTP, or re-quantize as <code>QS4CX</code>). A model quantized this
+way runs its MoE layers on the DSP or not at all.</p>
+<h3 id="44-activations-u8-per-row">4.4 Activations: u8 per row <a class="hd" aria-label="link to this section" href="#44-activations-u8-per-row">#</a></h3>
+<p>Activations are quantized on the DSP, per call, to <strong>unsigned 8-bit with a
+per-row scale and zero point</strong>. That is why the kernels are named <code>u8i4</code>.
+The rule: <code>rmin/rmax</code> over the row with 0 folded in,
+<code>scale = (rmax − rmin)/255</code>, round to nearest even, zero point clamped to
+[0, 255]. The HMX's activation port is 8-bit only, so there is no wider
+choice.</p>
+<p>Inside the MoE kernel the activation is quantized twice per expert: once
+on the way in (the 2048-wide input row), and again after SwiGLU (the
+1792-wide intermediate, before <code>down</code>). The second one is the <strong>requant
+boundary</strong> of §7.2.</p>
+<p><code>nntrainer/tensor/htp_act_quant.{h,cpp}</code> (<code>htp_quant_pack_u8_ah</code>) is an
+ARM-side, bit-identical copy of the DSP's quantize-and-pack into the
+HMX's 64 × 32 activation tiles. It is <strong>dormant</strong>. Its only caller,
+<code>HtpComputeOps::invokeLayerU8In</code>, has no caller. On device, DSP time
+dropped 19–26 % but wall time barely moved, because the ARM-side quantize
+(≈ 200–420 µs) ate the saving. It stays in the tree for a caller that
+already has quantized bytes.</p>
+<h3 id="45-q4_0--qs4cx-on-the-fly-htp_q4_0_convert">4.5 <code>Q4_0</code> → qs4cx on the fly (<code>htp_q4_0_convert</code>) <a class="hd" aria-label="link to this section" href="#45-q4_0--qs4cx-on-the-fly-htp_q4_0_convert">#</a></h3>
+<p><code>nntrainer/tensor/htp_q4_0_convert.{h,cpp}</code> has two converters into
+HexKL's registry input (int4 in int8 containers, K × N, plus scale and
+column sum):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>function</th>
+<th>from</th>
+<th>kind</th>
+<th>used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>htp_qs4cx_from_q4_0x4</code></td>
+<td><code>Q4_0x4</code></td>
+<td><strong>a real requantization</strong>: dequantize to f32, take a per-channel min/max, quantize again</td>
+<td>FC projections sent to the HTP (<code>gemm_q4_0_accel_fp32</code>, <code>get_or_register_fc</code>). Off in the measured config (<code>*_engine</code> keys = <code>cpu</code>)</td>
+</tr>
+<tr>
+<td><code>htp_qs4cx_from_packed</code></td>
+<td><code>QS4CX</code></td>
+<td>a bit rearrangement plus a column sum; values unchanged</td>
+<td>plain <code>QS4CX</code> MoE models (<code>get_or_register_qs4cx</code>), which then bake on the DSP heap</td>
+</tr>
+</tbody>
+</table></div>
+<p>Going through <code>Q4_0</code> costs a second quantization. From PR #4327's host
+measurements: about 0.7 dB of SNR (22.8 vs 23.5 dB), and a mean absolute
+error of 0.0451 against 0.0333 when quantizing straight to <code>QS4CX</code>. It also
+costs a full dequantize pass at load (95.9 vs 59.9 ms for a 2048 × 3584
+weight on an x86 host). That is why the expert weights are quantized once,
+straight from FP32.</p>
+<h2 id="5-loading-and-registration">5. Loading and registration <a class="hd" aria-label="link to this section" href="#5-loading-and-registration">#</a></h2>
+<p>Provenance: <code>upstream PR #4327</code>. Measurements in this section are from
+2026-09-14/15 (PR author's device).</p>
+<figure>
+<svg viewBox="0 0 880 577" role="img" aria-label="Sequence of registering each expert weight: loader, HtpComputeOps on the ARM, ION and FastRPC driver, DSP skel" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="weight-format-3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <line x1="100" y1="50" x2="100" y2="569" stroke="#c3c2b7" stroke-width="1.2"/>
+  <line x1="345" y1="50" x2="345" y2="569" stroke="#c3c2b7" stroke-width="1.2"/>
+  <line x1="600" y1="50" x2="600" y2="569" stroke="#c3c2b7" stroke-width="1.2"/>
+  <line x1="805" y1="50" x2="805" y2="569" stroke="#c3c2b7" stroke-width="1.2"/>
+  <rect x="12.0" y="12" width="176" height="38" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="100" y="27.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">Loader</text>
+  <text x="100" y="44" fill="#0b0b0b" text-anchor="middle">(repack_weight)</text>
+  <rect x="265.0" y="12" width="160" height="38" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="345" y="27.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">HtpComputeOps</text>
+  <text x="345" y="44" fill="#0b0b0b" text-anchor="middle">(ARM)</text>
+  <rect x="520.0" y="12" width="160" height="38" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="600" y="27.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">ION / FastRPC</text>
+  <text x="600" y="44" fill="#0b0b0b" text-anchor="middle">driver</text>
+  <rect x="750.0" y="12" width="110" height="38" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="805" y="35.5" fill="#0b0b0b" text-anchor="middle" font-weight="bold">DSP skel</text>
+  <path d="M100,68 H130 V86 H109" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="100" cy="68" r="9" fill="#52514e"/>
+  <text x="100" y="72" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">1</text>
+  <text x="140" y="73.5" font-size="12" fill="#0b0b0b">read the .bin into one</text>
+  <text x="140" y="88.5" font-size="12" fill="#0b0b0b">TensorPool allocation</text>
+  <text x="222.5" y="149.5" font-size="12" fill="#0b0b0b" text-anchor="middle">register_qs4cx_weight(data, scale,</text>
+  <text x="222.5" y="164.5" font-size="12" fill="#0b0b0b" text-anchor="middle">K, N, weights_wh = true)</text>
+  <path d="M100,170.5 H335" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="100" cy="170.5" r="9" fill="#52514e"/>
+  <text x="100" y="174.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">2</text>
+  <path d="M345,190.5 H375 V208.5 H354" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="190.5" r="9" fill="#52514e"/>
+  <text x="345" y="194.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">3</text>
+  <text x="385" y="196" font-size="12" fill="#0b0b0b">place(): first 4 KiB-aligned gap</text>
+  <text x="385" y="211" font-size="12" fill="#0b0b0b">in a mapped chunk</text>
+  <text x="472.5" y="272" font-size="12" fill="#0b0b0b" text-anchor="middle">rpcmem_alloc(256 MiB, uncached)</text>
+  <text x="472.5" y="287" font-size="12" fill="#0b0b0b" text-anchor="middle">+ rpcmem_to_fd</text>
+  <path d="M345,293.0 H590" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="293.0" r="9" fill="#52514e"/>
+  <text x="345" y="297" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">4</text>
+  <text x="472.5" y="322" font-size="12" fill="#0b0b0b" text-anchor="middle">fastrpc_mmap(fd,</text>
+  <text x="472.5" y="337" font-size="12" fill="#0b0b0b" text-anchor="middle">FASTRPC_MAP_FD)</text>
+  <path d="M345,343.0 H590" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="343.0" r="9" fill="#52514e"/>
+  <text x="345" y="347" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">5</text>
+  <rect x="450.4" y="360.0" width="249.2" height="15" rx="2" fill="#f9f9f7"/>
+  <text x="575" y="372" font-size="12" fill="#0b0b0b" text-anchor="middle">arena_attach(fd, 256 MiB) → arena id</text>
+  <path d="M345,378.0 H795" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="378.0" r="9" fill="#52514e"/>
+  <text x="345" y="382" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">6</text>
+  <rect x="322" y="227.0" width="530" height="159.0" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+  <path d="M322,227.0 H358.5 V239.0 L352.5,245.0 H322 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+  <text x="328" y="240" font-size="11" fill="#52514e" font-weight="bold">opt</text>
+  <text x="366.5" y="240" font-size="12" fill="#52514e">no chunk has room</text>
+  <path d="M345,406.0 H375 V424.0 H354" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="406.0" r="9" fill="#52514e"/>
+  <text x="345" y="410" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">7</text>
+  <text x="385" y="419" font-size="12" fill="#0b0b0b">memcpy nibbles into the chunk</text>
+  <rect x="413.5" y="441.0" width="322.9" height="15" rx="2" fill="#f9f9f7"/>
+  <text x="575" y="453" font-size="12" fill="#0b0b0b" text-anchor="middle">weight_register_u8i4_arena(K, N, arena, offset,</text>
+  <rect x="473.9" y="456.0" width="202.3" height="15" rx="2" fill="#f9f9f7"/>
+  <text x="575" y="468" font-size="12" fill="#0b0b0b" text-anchor="middle">scale[N], colsum[N], bias[N])</text>
+  <path d="M345,474.0 H795" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="474.0" r="9" fill="#52514e"/>
+  <text x="345" y="478" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">8</text>
+  <rect x="426.9" y="491.0" width="296.1" height="15" rx="2" fill="#f9f9f7"/>
+  <text x="575" y="503" font-size="12" fill="#0b0b0b" text-anchor="middle">handle (the DSP borrows the bytes in place)</text>
+  <path d="M805,509.0 H355" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="805" cy="509.0" r="9" fill="#52514e"/>
+  <text x="805" y="513" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">9</text>
+  <path d="M345,529.0 H375 V547.0 H354" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#weight-format-3-arrow)"/>
+  <circle cx="345" cy="529.0" r="9" fill="#52514e"/>
+  <text x="345" y="533" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">10</text>
+  <text x="385" y="534.5" font-size="12" fill="#0b0b0b">madvise(MADV_DONTNEED) the ARM</text>
+  <text x="385" y="549.5" font-size="12" fill="#0b0b0b">copy's whole pages</text>
+  <rect x="24" y="104.5" width="840" height="455.0" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+  <path d="M24,104.5 H68.0 V116.5 L62.0,122.5 H24 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+  <text x="30" y="117.5" font-size="11" fill="#52514e" font-weight="bold">loop</text>
+  <text x="76" y="117.5" font-size="12" fill="#52514e">each of the 1408 expert weights</text>
+</svg>
+<figcaption>Registration at load, once per expert weight. Steps 4–6 run only when no mapped 256 MiB chunk has a 4 KiB-aligned gap; step 9's handle points at the arena bytes in place, so step 10 can give the ARM copy's pages back.</figcaption>
+</figure>
+<p>Step by step:</p>
+<ol>
+<li><strong>Load.</strong> The tensor pool reads the file into <strong>one</strong> page-aligned
+allocation, and each weight is a slice of it. So no single weight can
+be freed. <code>Tensor::deallocate()</code> drops a pointer and returns nothing.</li>
+<li><strong>Register at load, not on the first token.</strong> <code>Transformer::repack_weight</code>
+walks the layers once after loading. For an <code>lfm2_moe</code> layer routed to
+the HTP, it calls <code>register_qs4cx_weight</code> on every expert tensor, which
+goes to <code>HtpComputeOps::get_or_register_wh</code>. The handle is cached by
+the weight's data pointer, so the forward-time call is a cache hit.</li>
+<li><strong>Place.</strong> <code>place()</code> scans every mapped chunk for a 4 KiB-aligned gap
+before it maps a new one. A 1.75 MiB <code>down</code> can fill a tail that a
+3.5 MiB <code>gate_up</code> cannot. Every weight size here is a multiple of 4 KiB,
+so alignment wastes nothing.</li>
+<li><strong>A chunk</strong> is an uncached ION buffer (<code>HTP_RPC_FLAGS_UNCACHED</code>). The
+DSP maps it once and the ARM keeps writing into it afterwards. Uncached,
+those writes reach DDR without a cache flush to remember. The ARM never
+reads it back. <code>fastrpc_mmap</code> must use <code>FASTRPC_MAP_FD</code>: flag <code>0</code>
+(<code>FASTRPC_MAP_STATIC</code>) is not tagged with the fd, and the DSP's
+<code>HAP_mmap_get</code> then refuses it.</li>
+<li><strong>Register.</strong> <code>weight_register_u8i4_arena</code> (IDL <code>test/htp/nntr_hvx.idl</code>)
+carries only the shape, the arena id, the offset and three N-long
+arrays: scales, column sums as int32, and a zero bias. No weight bytes
+cross FastRPC. The DSP keeps the three small arrays in its weight table
+and points the handle into the arena.</li>
+<li><strong>Give back the ARM copy.</strong> <code>releaseArmSource</code> calls
+<code>madvise(MADV_DONTNEED)</code> on the whole pages inside the weight's range
+(<code>whSourcePageRange</code> rounds inward, because the edge pages are shared
+with neighbouring weights). The mapping stays, so the pointer remains a
+valid cache key and no later allocation can reuse the address. Without
+this step the peak would be two copies of 3.9 GB. <code>NNTR_HTP_KEEP_ARM_WEIGHTS=1</code>
+keeps the copies, for bisecting a wrong answer.</li>
+<li><strong>Fail loudly.</strong> No arena (no <code>rpcmem_to_fd</code> or <code>fastrpc_mmap</code> on the
+device) means <code>get_or_register_wh</code> throws: WH bytes have no other home.
+A refused chunk throws with the call that refused, the mapped total and
+the process RSS.</li>
+</ol>
+<p>FC weights on the HTP (off in the measured config) are registered <strong>after</strong>
+all MoE chunks are mapped. A DSP heap allocation between two chunk
+mappings strands the address space up to the next 256 MiB boundary.
+Registered in graph order, the arena stopped at 3584 MiB instead of 3840.</p>
+<p><strong>Measured at the first full run (2026-09-15, PR author's device):</strong>
+1408 of 1408 weights registered, <strong>0.09 ms per weight</strong>, 0 ms of
+conversion, 15 × 256 MiB = 3840 MiB mapped, process RSS 4323 → 759 MB
+after the ARM copies were given back.</p>
+<h3 id="51-why-256-mib-chunks">5.1 Why 256 MiB chunks <a class="hd" aria-label="link to this section" href="#51-why-256-mib-chunks">#</a></h3>
+<p>The DSP process (the &quot;user PD&quot;) has a <strong>32-bit, 4 GB address space</strong>.
+Mappings and the DSP heap share it. <code>fastrpc_mmap</code> places each mapping
+aligned to its own size, bumping a cursor:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>chunk size</th>
+<th style="text-align:right">mapped before refusal</th>
+<th>why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 GiB</td>
+<td style="text-align:right">3072 MiB</td>
+<td>the PD's own use sits at the bottom, so the first 1 GiB mapping lands at 1 G. The 768 MiB below it are never reachable again, and even 64 MiB was then refused</td>
+</tr>
+<tr>
+<td>256 MiB</td>
+<td style="text-align:right">3840 MiB</td>
+<td>15 chunks fill the space up to 4 G with no gap</td>
+</tr>
+</tbody>
+</table></div>
+<p>The model needs 3696 MiB (1408 weights, §6), so it fits with 144 MiB to
+spare. That one constant, <code>kArenaChunkMax</code> in <code>htp_compute_ops.cpp</code>, was
+the whole fix for the &quot;memory wall&quot;. With 3840 MiB mapped, the DSP heap
+gave only 182 MiB more before <code>AEE_ENOMEMORY</code>. So the address space, not
+host RAM, is the limit for anything else put on the DSP.</p>
+<h3 id="52-why-the-packing-is-offline-the-retired-runtime-bake">5.2 Why the packing is offline: the retired runtime bake <a class="hd" aria-label="link to this section" href="#52-why-the-packing-is-offline-the-retired-runtime-bake">#</a></h3>
+<p>Upstream first sent row-major int4 weights over FastRPC and let the DSP
+rearrange them into WH tiles (<code>weight_register_u8i4</code>, which runs
+<code>hexkl_micro_hmx_rm_to_wh_i4</code>). The baked copy then lived on the DSP heap.
+That path still exists for plain <code>QS4CX</code> models (<code>get_or_register_qs4cx</code>).
+It was retired for the 8B model for two reasons:</p>
+<ul>
+<li><strong>Load time.</strong> Registration cost ≈ 25 ms per weight, most of it the bake
+(2026-09-14, PR author's device). That is about 35 s for 1408 weights,
+and it was 48.2 % of prefill in the runs of the time.</li>
+<li><strong>Memory.</strong> The DSP heap tops out at <strong>1.89 GB</strong>, against 3.9 GB of
+expert weights.</li>
+</ul>
+<p>Offline packing removes both: the <code>.bin</code> holds the final bytes, and
+registration is a memcpy plus one small FastRPC call (0.09 ms).</p>
+<h3 id="tried-and-dropped">Tried and dropped <a class="hd" aria-label="link to this section" href="#tried-and-dropped">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cache the DSP-baked bytes in side files (<code>NNTR_HTP_WEIGHT_CACHE</code>)</td>
+<td>Worked for one layer. For 22 layers it would write +3.9 GB of duplicate files beside a 4.3 GB model, and still copy file → ION → DSP heap. Deleted with its host check</td>
+<td>A weight is a constant, so the answer is a converted model, not a cache</td>
+</tr>
+<tr>
+<td>Convert on the phone with the vendor ARM routine <code>sdkl_cpu_i4_rm_to_i4_wh</code></td>
+<td>157 MB/s, ≈ 25 s per load for 3.9 GB. Its output was also the transposed tile, not the DSP's</td>
+<td>Conversion cannot be on the load path. The portable host packer runs at 424 MB/s, once, at quantize time</td>
+</tr>
+<tr>
+<td>1 GiB arena chunks</td>
+<td>Stopped at 3072 MiB (§5.1)</td>
+<td>Anyone who &quot;simplifies&quot; to fewer, larger chunks will hit it again</td>
+</tr>
+<tr>
+<td>Recompute column sums at load</td>
+<td>≈ 20 s estimated</td>
+<td>Why the file carries 4N extra bytes per tensor</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="6-byte-math">6. Byte math <a class="hd" aria-label="link to this section" href="#6-byte-math">#</a></h2>
+<p>All figures below are computed from the tensor shapes. The same formulas
+reproduce both model files' sizes to the byte (last table), which confirms
+the shapes.</p>
+<h3 id="61-one-expert">6.1 One expert <a class="hd" aria-label="link to this section" href="#61-one-expert">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>tensor</th>
+<th>shape (K × N)</th>
+<th style="text-align:right"><code>QS4CX_WH</code> nibbles</th>
+<th style="text-align:right">+ scales + column sums</th>
+<th style="text-align:right">file bytes</th>
+<th style="text-align:right"><code>Q4_0</code> (CPU model)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gate_up</code></td>
+<td>2048 × 3584</td>
+<td style="text-align:right"><strong>3 670 016</strong> (7168 tiles)</td>
+<td style="text-align:right">14 336 + 14 336</td>
+<td style="text-align:right">3 698 688</td>
+<td style="text-align:right">4 128 768</td>
+</tr>
+<tr>
+<td><code>down</code></td>
+<td>1792 × 2048</td>
+<td style="text-align:right"><strong>1 835 008</strong> (3584 tiles)</td>
+<td style="text-align:right">8 192 + 8 192</td>
+<td style="text-align:right">1 851 392</td>
+<td style="text-align:right">2 064 384</td>
+</tr>
+<tr>
+<td>expert</td>
+<td></td>
+<td style="text-align:right">5 505 024</td>
+<td style="text-align:right"></td>
+<td style="text-align:right">5 550 080</td>
+<td style="text-align:right">6 193 152</td>
+</tr>
+</tbody>
+</table></div>
+<p>The DSP streams only the nibbles per call. Scales and column sums were
+copied into its weight table at registration.</p>
+<h3 id="62-per-token-decode">6.2 Per token (decode) <a class="hd" aria-label="link to this section" href="#62-per-token-decode">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>part</th>
+<th style="text-align:right">bytes</th>
+<th style="text-align:right">MB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE experts: 22 layers × 4 active experts × 5 505 024 B (one DSP call per layer reads 22 020 096 B)</td>
+<td style="text-align:right">484 442 112</td>
+<td style="text-align:right"><strong>484.4</strong></td>
+</tr>
+<tr>
+<td>lm_head (tied embedding, <code>Q4_0</code>, 128 000 × 2048)</td>
+<td style="text-align:right">147 456 000</td>
+<td style="text-align:right"><strong>147.5</strong></td>
+</tr>
+<tr>
+<td>conv <code>in_proj</code> + <code>out_proj</code>, 18 layers (<code>Q4_0</code>)</td>
+<td style="text-align:right">169 869 312</td>
+<td style="text-align:right">169.9</td>
+</tr>
+<tr>
+<td>attention q/k/v/o, 6 layers (<code>Q4_0</code>)</td>
+<td style="text-align:right">35 389 440</td>
+<td style="text-align:right">35.4</td>
+</tr>
+<tr>
+<td>dense FFN, 2 layers (<code>Q4_0</code>)</td>
+<td style="text-align:right">49 545 216</td>
+<td style="text-align:right">49.5</td>
+</tr>
+<tr>
+<td>routers (FP32, 22 × 2048 × 32)</td>
+<td style="text-align:right">5 767 168</td>
+<td style="text-align:right">5.8</td>
+</tr>
+<tr>
+<td>norms, conv kernels, expert bias, one embedding row</td>
+<td style="text-align:right">≈ 0.85 M</td>
+<td style="text-align:right">0.9</td>
+</tr>
+<tr>
+<td><strong>total, NPU model</strong></td>
+<td style="text-align:right">≈ 893 320 000</td>
+<td style="text-align:right"><strong>≈ 893</strong></td>
+</tr>
+<tr>
+<td>(same on the CPU model: experts in <code>Q4_0</code> are 545.0 MB)</td>
+<td style="text-align:right"></td>
+<td style="text-align:right">≈ 954</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Disagreement with the project's budget figure.</strong> Elsewhere the per-token
+figure is 730 MB (484 + 147 + &quot;≈ 99 MB rest&quot;). The shapes in the model
+file put the non-MoE, non-lm_head part at <strong>≈ 261 MB</strong>, not 99. The 99 is
+730 − 484 − 147, carried over from an earlier estimate that took the
+lm_head as 75 MB (a 65 536-row vocabulary). The code and the file win: a
+decode token reads ≈ 893 MB on the NPU model. (A comment in
+<code>tie_word_embedding.cpp</code> still says the lm_head twin is &quot;75 MB for this
+model&quot;. It is 147 MB.)</p>
+<h3 id="63-whole-model">6.3 Whole model <a class="hd" aria-label="link to this section" href="#63-whole-model">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>all expert nibbles in the arena: 704 × 3 670 016 + 704 × 1 835 008</td>
+<td style="text-align:right">3 875 536 896 = <strong>3696 MiB</strong></td>
+</tr>
+<tr>
+<td>arena mapped</td>
+<td style="text-align:right">15 × 256 MiB = 3840 MiB</td>
+</tr>
+<tr>
+<td>FP32 <code>.bin</code></td>
+<td style="text-align:right">33 871 427 328</td>
+</tr>
+<tr>
+<td><code>q40/nntr_lfm2_8b_a1b_q40_arm.bin</code> (CPU control)</td>
+<td style="text-align:right"><strong>4 768 855 808</strong></td>
+</tr>
+<tr>
+<td><code>q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin</code> (NPU model)</td>
+<td style="text-align:right"><strong>4 316 133 120</strong></td>
+</tr>
+<tr>
+<td>difference = 704 × ((4 128 768 − 3 698 688) + (2 064 384 − 1 851 392))</td>
+<td style="text-align:right">452 722 688</td>
+</tr>
+</tbody>
+</table></div>
+<p>The NPU model is smaller because an expert costs 4 bits per weight plus
+8 bytes per channel, against <code>Q4_0</code>'s 4.5 bits per weight.</p>
+<h2 id="7-accuracy">7. Accuracy <a class="hd" aria-label="link to this section" href="#7-accuracy">#</a></h2>
+<h3 id="71-what-the-format-costs">7.1 What the format costs <a class="hd" aria-label="link to this section" href="#71-what-the-format-costs">#</a></h3>
+<p><code>QS4CX_WH</code> and <code>QS4CX</code> carry the same values, so the WH layout itself
+costs nothing. What changes against the CPU model is the quantizer: one
+scale per 2048-wide (or 1792-wide) output channel instead of one per 32
+weights. The NPU therefore runs <strong>different weights</strong> from the CPU control,
+and its generated text is not expected to match the CPU's. Three checks
+stand in for &quot;text identical to the CPU&quot;:</p>
+<ul>
+<li>kernels are bit-identical to their reference path, by host and device
+tests;</li>
+<li>in each sitting, a variant's text must be byte-identical to that
+sitting's own NPU control;</li>
+<li>perplexity, measured once, against the CPU:</li>
+</ul>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>model</th>
+<th style="text-align:right">PPL (511 prompt tokens, <code>NNTR_PPL</code>)</th>
+<th style="text-align:right">vs CPU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU, <code>q40</code></td>
+<td style="text-align:right">109.759</td>
+<td style="text-align:right">—</td>
+</tr>
+<tr>
+<td>NPU, <code>QS4CX_WH</code></td>
+<td style="text-align:right">115.095</td>
+<td style="text-align:right">+4.9 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>(#95, 2026-09-22, on a side tree; see §7.3.) In the same sitting the NPU
+text left the CPU text at generated word 43 at every generation length.
+That divergence comes from the weights, not from a kernel. The scale
+granularity is the likely cause of the PPL gap, but no measurement
+isolated it.</p>
+<h3 id="72-the-requant-boundary">7.2 The requant boundary <a class="hd" aria-label="link to this section" href="#72-the-requant-boundary">#</a></h3>
+<p>After SwiGLU, each expert's 1792-wide intermediate is requantized to u8
+(one scale and zero point per row) before the <code>down</code> projection. The DSP
+computes SwiGLU with polynomial <code>exp</code> and reciprocal approximations that
+are within ≈ 1e-6 relative error of the host's <code>expf</code>, but not identical
+to it. Now and then that tiny difference lands one element on the other
+side of a u8 rounding boundary. The <code>down</code> product sums over all 1792
+inputs, so one flipped element moves the whole output row by an amount set
+by that element's weight column. Under greedy decoding, such flips compound
+into a different token stream.</p>
+<p>Measured on real weights and a real activation (2026-09-09, PR author's
+device): 5 of about 32 MoE calls in one forward had exactly <strong>one</strong>
+flipped element out of 1792. The fused-SwiGLU kernel was left disabled
+because of it. It is not a code defect. Any two float pipelines feeding
+the same u8 quantizer disagree like this, and the HMX's 8-bit activation
+port rules out a wider intermediate. The remaining lever is to make the
+rounding boundary matter less.</p>
+<h3 id="73-hadamard-rotation-qs4cx_wh_had-measured-off-tree">7.3 Hadamard rotation (<code>QS4CX_WH_HAD</code>), measured off-tree <a class="hd" aria-label="link to this section" href="#73-hadamard-rotation-qs4cx_wh_had-measured-off-tree">#</a></h3>
+<p>Provenance: #95 on the side tree <code>htp_hadamard</code> (PR #4327's HMX path only,
+no M=1 GEMV). <strong>Not in this tree.</strong> The port is #110.</p>
+<p>The idea: fold a Hadamard rotation into the <code>down</code> weights offline
+(<code>Hᵀ · W_down</code>, block 256, 1792 = 7 × 256), and apply the matching
+fast Walsh–Hadamard transform (FWHT-256, IEEE <code>sf</code> add/sub) to the
+intermediate on the DSP right before the u8 requant. The rotation spreads
+outlier energy across the row, so the row's range shrinks and each u8 step
+is finer. The model file differs from <code>q40-qs4cx-wh</code> only in the 704
+<code>down</code> tensors, under a new dtype <code>QS4CX_WH_HAD</code>.</p>
+<p>Result (#95, 2026-09-22, one sitting, one binary set switched by the
+model's dtype):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">control (<code>QS4CX_WH</code>)</th>
+<th style="text-align:right"><code>QS4CX_WH_HAD</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPL, 511 tokens (CPU <code>q40</code>: 109.759)</td>
+<td style="text-align:right">115.095</td>
+<td style="text-align:right"><strong>100.497 (−12.7 %; −8.4 % vs CPU)</strong></td>
+</tr>
+<tr>
+<td>requant SNR min / p10 / median, ≈ 6.2 k calls</td>
+<td style="text-align:right">25.01 / 31.27 / 34.68 dB</td>
+<td style="text-align:right"><strong>39.68 / 41.67 / 42.67 dB</strong></td>
+</tr>
+<tr>
+<td><code>dsp</code> per call, M == 1 / M &gt; 1</td>
+<td style="text-align:right">—</td>
+<td style="text-align:right">+0.3 % / +2.7 %</td>
+</tr>
+<tr>
+<td>decode tok/s</td>
+<td style="text-align:right">—</td>
+<td style="text-align:right">change inside the sitting's thermal drift</td>
+</tr>
+</tbody>
+</table></div>
+<p>It is the first NPU variant with a lower PPL than the CPU. Two lessons
+came with it:</p>
+<ul>
+<li><strong>v79 HVX IEEE float keeps subnormals.</strong> A scalar reference that flushes
+them to zero is not bit-identical to the DSP. The reference must be plain
+IEEE round-to-nearest-even, and the host must not run with flush-to-zero
+on.</li>
+<li><strong>A synthetic single-shape gtest cannot judge accuracy.</strong> The kernel's
+gtest was bit-exact against its reference and still showed −5.8 dB on
+uniform synthetic input, the opposite sign to the full model's +8.0 dB.
+Accuracy verdicts come from full-model runs (PPL, per-call requant SNR,
+text against the control). Gtests assert bit-identity only.</li>
+</ul>
+<p>The port (#110) must add the M=1 GEMV requant site, which the side tree
+lacked.</p>
+<h2 id="8-the-two-model-directories">8. The two model directories <a class="hd" aria-label="link to this section" href="#8-the-two-model-directories">#</a></h2>
+<p>Provenance: <code>htp_moe</code> (#78, built 2026-09-21 from <code>htp_moe</code> @ <code>2ce38d65</code>).
+Root: <code>$W/models/lfm2.5-8b-a1b/</code> on the workstation (<code>$W</code> = the workspace directory).</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>dir</th>
+<th>content</th>
+<th>role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hf/</code></td>
+<td>the checkpoint, bf16 safetensors</td>
+<td>source</td>
+</tr>
+<tr>
+<td><code>fp32/</code></td>
+<td><code>nntr_lfm2_8b_a1b_fp32.bin</code>, <code>config.json</code>, tokenizer, a hand-written <code>nntr_config.json</code> (<code>FP32-FP32</code>)</td>
+<td>quantizer input</td>
+</tr>
+<tr>
+<td><code>q40/</code></td>
+<td><code>nntr_lfm2_8b_a1b_q40_arm.bin</code>, md5 <code>d28f55c5…</code></td>
+<td><strong>CPU control</strong></td>
+</tr>
+<tr>
+<td><code>q40-qs4cx-wh/</code></td>
+<td><code>nntr_lfm2_8b_a1b_q40_arm.bin</code>, md5 <code>7b7867fa…</code></td>
+<td><strong>NPU model</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>The two <code>nntr_config.json</code> files differ in these keys only (plus the
+tokenizer path):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>key</th>
+<th><code>q40/</code></th>
+<th><code>q40-qs4cx-wh/</code></th>
+<th>read by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>moe_layer_dtype</code></td>
+<td><code>Q4_0</code></td>
+<td><code>QS4CX_WH</code></td>
+<td><code>Lfm2MoeCausalLM::setupParameters</code>; falls back to <code>fc_layer_dtype</code> when absent</td>
+</tr>
+<tr>
+<td><code>moe_engine</code></td>
+<td>absent (= <code>cpu</code>)</td>
+<td><code>htp</code></td>
+<td>same; the MoE layers' compute engine</td>
+</tr>
+<tr>
+<td><code>moe_htp_layers</code></td>
+<td>absent</td>
+<td><code>&quot;&quot;</code></td>
+<td>same; a comma-separated list of layer ids that take <code>moe_engine</code>. <strong>Empty means every MoE layer</strong> (<code>Lfm2MoeCausalLM::createMoeLayer</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Rules that follow from the format:</p>
+<ul>
+<li><strong>A <code>QS4CX_WH</code> model needs every MoE layer on the HTP</strong>: <code>moe_engine: htp</code>
+and <code>moe_htp_layers</code> empty (or listing all 22). A MoE layer left on the
+CPU throws at its first forward, in <code>FloatTensor::dot</code>. The throw is
+loud, not silent. The silent failure is a wrong <strong>layout</strong> (wrong
+<code>--isa</code> for <code>Q4_0</code>, or a WH packer out of step with the DSP), which
+gives plausible but wrong text.</li>
+<li><strong>A <code>QS4CX_WH</code> model always takes the DSP at decode.</strong> The
+<code>tryMoeLayerOnAccelerator</code> gate that keeps a one-token call on the ARM
+applies only to plain <code>QS4CX</code> (<code>total_tokens &lt;= 1 &amp;&amp; !weights_wh</code>).
+<code>NNTR_MOE_HTP_DECODE=1</code> lifts it for <code>QS4CX</code>, as a measurement switch.</li>
+<li><strong>All experts of a layer must share one dtype.</strong> The layer call takes one
+<code>weights_wh</code> flag, so a mix would read half the weights with the wrong
+layout. <code>tryMoeLayerOnAccelerator</code> checks this.</li>
+<li>The other engine keys (<code>attn_proj_engine</code>, <code>conv_in_proj_engine</code>,
+<code>conv_out_proj_engine</code>, <code>dense_ffn_engine</code>) stay absent (<code>cpu</code>) in both
+measured configs. When set, their <code>Q4_0</code> weights go through the on-the-fly
+requantization of §4.5.</li>
+</ul>
+<h2 id="9-code-map">9. Code map <a class="hd" aria-label="link to this section" href="#9-code-map">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>what</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HF → FP32</td>
+<td><code>Applications/CausalLM/res/lfm2_moe/lfm2-8b-a1b/weight_converter.py</code> (<code>save_lfm2_moe_for_nntrainer</code>)</td>
+</tr>
+<tr>
+<td>quantizer</td>
+<td><code>Applications/CausalLM/quantize_stream.cpp</code> (<code>writeLfm2Moe</code>, <code>TensorWriter::writeFc</code>, <code>writeQuantized</code>, <code>flushQs4cxScales</code>, <code>quantizedSize</code>, <code>writeOutputConfig</code>)</td>
+</tr>
+<tr>
+<td>WH layout</td>
+<td><code>nntrainer/tensor/htp_wh_layout.h</code> (<code>whSlot</code>, <code>whPack</code>, <code>whBytes</code>, <code>whSourcePageRange</code>)</td>
+</tr>
+<tr>
+<td>tensor classes</td>
+<td><code>nntrainer/tensor/qs4cx_tensor.{h,cpp}</code> (<code>QS4CX_Tensor</code>, <code>QS4CX_WH_Tensor</code>)</td>
+</tr>
+<tr>
+<td>CPU refusal</td>
+<td><code>nntrainer/tensor/float_tensor.cpp</code> (<code>FloatTensor::dot</code>, <code>QS4CX_WH</code> case)</td>
+</tr>
+<tr>
+<td>on-the-fly converters</td>
+<td><code>nntrainer/tensor/htp_q4_0_convert.{h,cpp}</code> (<code>htp_qs4cx_from_q4_0x4</code>, <code>htp_qs4cx_from_packed</code>)</td>
+</tr>
+<tr>
+<td>ARM activation quantizer (dormant)</td>
+<td><code>nntrainer/tensor/htp_act_quant.{h,cpp}</code> (<code>htp_quant_pack_u8_ah</code>)</td>
+</tr>
+<tr>
+<td>registration at load</td>
+<td><code>Applications/CausalLM/models/transformer.cpp</code> (<code>Transformer::repack_weight</code>)</td>
+</tr>
+<tr>
+<td>arena</td>
+<td><code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code> (<code>get_or_register_wh</code>, <code>place</code>, <code>placeExisting</code>, <code>newChunk</code>, <code>tryChunk</code>, <code>registerFromArena</code>, <code>releaseArmSource</code>, <code>kArenaChunkMax</code>); <code>htp_rpcmem.h</code></td>
+</tr>
+<tr>
+<td>DSP interface</td>
+<td><code>test/htp/nntr_hvx.idl</code> (<code>arena_attach</code>, <code>weight_register_u8i4_arena</code>, <code>weight_register_u8i4</code>, <code>weight_bake_export</code>)</td>
+</tr>
+<tr>
+<td>config keys</td>
+<td><code>Applications/CausalLM/models/lfm2_moe/lfm2_moe_causallm.cpp</code> (<code>setupParameters</code>, <code>createMoeLayer</code>); <code>lfm2_moe_layer.cpp</code> (<code>tryMoeLayerOnAccelerator</code>)</td>
+</tr>
+<tr>
+<td>lm_head twin</td>
+<td><code>Applications/CausalLM/layers/tie_word_embedding.cpp</code> (<code>prepareLmhead</code>, <code>buildLmheadBlocked</code>)</td>
+</tr>
+<tr>
+<td>layout check on device</td>
+<td><code>unittest_hvx_mm_u8i4</code>: <code>WhPackReferenceMatchesDspBake</code></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="pager"><span>← <a href="foundation.html">Foundation</a></span><span><a href="hmx-matmul.html">HMX matmul</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

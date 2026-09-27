@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — How the CPU and the NPU talk</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+.gloss{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.gloss dl{display:grid;grid-template-columns:max-content 1fr;gap:.25em .9em;margin:.4em 0}
+.gloss dt{font-weight:600}.gloss dd{margin:0}
+@media (max-width:480px){.gloss dl{grid-template-columns:1fr}.gloss dd{margin-bottom:.4em}}
+.stepnav{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin:.3em 0 .6em;font-size:.9em}
+.stepnav button{font:inherit;padding:.2em .9em;border:1px solid var(--grid);background:var(--surface);color:var(--ink);border-radius:4px;cursor:pointer}
+.stepnav button:hover{border-color:var(--s1)}
+figure.js-steps g.com-st{opacity:.2;transition:opacity .15s}
+figure.js-steps g.com-st.on{opacity:1}
+ol.steps li{padding:.15em .4em;border-radius:4px}
+ol.steps.js-steps li.on{background:#e9f1fb}
+.src{color:var(--muted);font-size:.85em}
+table.sync td:nth-child(2){min-width:13em}
+table.sync code{overflow-wrap:normal}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html" class="here">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>How the CPU and the NPU talk</h1>
+<p>The NPU runs one thing in this backend: the MoE feed-forward block. Everything else in LFM2.5-8B-A1B stays on the ARM CPU. So every token crosses the CPU–NPU boundary 22 times, once per MoE layer. Each crossing carries the few kilobytes of a token's activation, while the DSP reads about 22 MB of expert weights that never cross. This page draws that boundary: who the actors are, how a session is set up, what happens in one call, and the three ways the weights travel from DDR to the compute units.</p>
+<p class="src">Snapshot <code>htp_moe</code> @ <code>a7c66dec</code>, default path: the VTCM feed. Measured numbers come from the Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79). Each carries its source: a sitting number from <code>docs/htp_moe/BENCHMARK.md</code> or a rule in <code>LEDGER.md</code>. Results: <a href="index.html">the results page</a>.</p>
+<div class="gloss"><strong>Terms used on this page</strong>
+<dl>
+<dt>NPU / DSP / HTP</dt><dd>The same device: the Hexagon processor on the SoC. The code says <code>htp</code>; its compute DSP is the <em>cDSP</em>.</dd>
+<dt>HVX</dt><dd>Hexagon Vector eXtensions: the DSP's 1024-bit SIMD units. The worker pool uses 6 of them. Good at one-row (matrix × vector) work.</dd>
+<dt>HMX</dt><dd>Hexagon Matrix eXtensions: the matrix-multiply unit. It always computes 64-row tiles and reads only VTCM.</dd>
+<dt>VTCM</dt><dd>8 MiB of fast on-chip memory next to HVX/HMX. The session takes all of it when it opens.</dd>
+<dt>DMA</dt><dd>The DSP's user DMA engine. It copies DDR ↔ VTCM on its own while HVX/HMX compute. It is driven by a ring of chained 2D descriptors.</dd>
+<dt>FastRPC</dt><dd>Qualcomm's remote procedure call from an ARM process to the DSP. One call blocks the calling ARM thread until the DSP returns.</dd>
+<dt>stub / skel</dt><dd>Two pieces that the <code>qaic</code> tool generates from <code>test/htp/nntr_hvx.idl</code>. The ARM-side stub packs the arguments; the DSP-side skel (<code>libnntr_hvx_skel.so</code>) unpacks them and runs our code.</dd>
+<dt>PD</dt><dd>Protection domain: the DSP process our skel runs in. Ours is an <em>unsigned</em> PD, so no code signing is needed.</dd>
+<dt>ION / rpcmem</dt><dd>ION is Android's shareable DMA-buffer memory. <code>rpcmem_alloc</code> allocates it, and an fd names it, so both the ARM and the DSP can map the same pages.</dd>
+<dt>l2fetch</dt><dd>A DSP instruction that asks the L2 cache to prefetch a 2D box of memory in the background.</dd>
+</dl></div>
+<nav class="toc"><details open><summary>On this page</summary><ul>
+<li><a href="#1-the-actors">1. The actors, on one picture</a></li>
+<li><a href="#2-life-of-a-session">2. Life of a session</a></li>
+<li><a href="#3-life-of-one-moe-call">3. Life of one MoE call (decode)</a></li>
+<li><a href="#4-three-ways-weights-reach-the-compute-units">4. Three ways weights reach the compute units</a></li>
+<li><a href="#5-synchronization-rules">5. Synchronization rules</a></li>
+<li><a href="#further-reading">Further reading</a></li>
+</ul></details></nav>
+<h2 id="1-the-actors">1. The actors, on one picture <a class="hd" aria-label="link to this section" href="#1-the-actors">#</a></h2>
+<p>Three places run code and three memories hold data. The ARM process and the DSP never share a thread. They share <em>memory</em>: two kinds of ION buffers in DDR that both sides map. The FastRPC driver in the kernel routes each call between them.</p>
+<figure>
+<svg viewBox="0 0 880 548" role="img" aria-label="The actors: the ARM process, the FastRPC driver, the DSP protection domain, and the three memories (staging pools and ION arena in DDR, VTCM on the DSP)" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="10" y="10" width="270" height="322" rx="10" fill="#fef7f2" stroke="#eb6834" stroke-width="1"/>
+<text x="22" y="30" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">ARM process (Android app)</text>
+<rect x="25" y="44" width="240" height="52" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="145" y="66.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">Lfm2MoELayer</text>
+<text x="145" y="81.8" font-size="12" fill="#0b0b0b" text-anchor="middle">router: top-4 of 32 experts</text>
+<rect x="25" y="114" width="240" height="66" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="145" y="136.3" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HtpComputeOps</text>
+<text x="145" y="151.3" font-size="12" fill="#0b0b0b" text-anchor="middle">weight handles, staging pools,</text>
+<text x="145" y="166.3" font-size="12" fill="#0b0b0b" text-anchor="middle">invoke_mutex_ (one call at a time)</text>
+<rect x="25" y="198" width="240" height="52" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="145" y="220.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HtpBackend</text>
+<text x="145" y="235.8" font-size="12" fill="#0b0b0b" text-anchor="middle">the one session, poll-QoS wait</text>
+<rect x="25" y="268" width="240" height="52" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="145" y="290.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">stub  nntr_hvx_*()</text>
+<text x="145" y="305.8" font-size="12" fill="#0b0b0b" text-anchor="middle">generated by qaic from the IDL</text>
+<path d="M145,96 L145,114" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<path d="M145,180 L145,198" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<path d="M145,250 L145,268" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<rect x="296" y="10" width="170" height="322" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="308" y="30" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">FastRPC driver</text>
+<text x="308" y="45" font-size="11" fill="#52514e" text-anchor="start">(Linux kernel)</text>
+<rect x="308" y="54" width="146" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="381" y="76.8" font-size="12" fill="#0b0b0b" text-anchor="middle">routes the call</text>
+<text x="381" y="91.8" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM ↔ DSP</text>
+<rect x="308" y="124" width="146" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="381" y="146.8" font-size="12" fill="#0b0b0b" text-anchor="middle">maps ION buffers</text>
+<text x="381" y="161.8" font-size="12" fill="#0b0b0b" text-anchor="middle">into the DSP's PD</text>
+<rect x="308" y="194" width="146" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="381" y="216.8" font-size="12" fill="#0b0b0b" text-anchor="middle">cache maintenance</text>
+<text x="381" y="231.8" font-size="12" fill="#0b0b0b" text-anchor="middle">on cached buffers</text>
+<rect x="308" y="268" width="146" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="381" y="290.8" font-size="12" fill="#0b0b0b" text-anchor="middle">delivers the reply</text>
+<text x="381" y="305.8" font-size="12" fill="#0b0b0b" text-anchor="middle">(ARM polls for it)</text>
+<path d="M265,294 L308,294" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)" marker-start="url(#com1-arrow)"/>
+<path d="M454,72 L497,72" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)" marker-start="url(#com1-arrow)"/>
+<rect x="482" y="10" width="388" height="322" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="494" y="30" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">cDSP: unsigned protection domain (PD)</text>
+<rect x="497" y="44" width="170" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="582" y="66.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">skel</text>
+<text x="582" y="81.8" font-size="12" fill="#0b0b0b" text-anchor="middle">libnntr_hvx_skel.so</text>
+<rect x="685" y="44" width="170" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="770" y="66.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">session</text>
+<text x="770" y="81.8" font-size="12" fill="#0b0b0b" text-anchor="middle">weights, arenas, flags</text>
+<rect x="497" y="124" width="110" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="552" y="148.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX</text>
+<text x="552" y="163.8" font-size="12" fill="#0b0b0b" text-anchor="middle">6 lanes</text>
+<rect x="621" y="124" width="110" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="676" y="148.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HMX</text>
+<text x="676" y="163.8" font-size="12" fill="#0b0b0b" text-anchor="middle">64-row tiles</text>
+<rect x="745" y="124" width="110" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="800" y="148.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">worker pool</text>
+<text x="800" y="163.8" font-size="12" fill="#0b0b0b" text-anchor="middle">caller + 5</text>
+<rect x="497" y="214" width="110" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="552" y="238.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">L2 cache</text>
+<text x="552" y="253.8" font-size="12" fill="#0b0b0b" text-anchor="middle">l2fetch target</text>
+<rect x="621" y="214" width="110" height="56" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="676" y="238.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">VTCM</text>
+<text x="676" y="253.8" font-size="12" fill="#0b0b0b" text-anchor="middle">8 MiB on-chip</text>
+<rect x="745" y="214" width="110" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="800" y="238.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">DMA engine</text>
+<text x="800" y="253.8" font-size="12" fill="#0b0b0b" text-anchor="middle">256-slot ring</text>
+<path d="M552,214 L552,180" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<path d="M676,214 L676,180" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<path d="M640,214 L598,180" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<path d="M745,242 L731,242" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<text x="572" y="292" font-size="11" fill="#52514e" text-anchor="start">HVX reads VTCM or L2.</text>
+<text x="572" y="306" font-size="11" fill="#52514e" text-anchor="start">HMX reads only VTCM.</text>
+<text x="572" y="320" font-size="11" fill="#52514e" text-anchor="start">Only the DMA writes VTCM.</text>
+<rect x="10" y="372" width="860" height="166" rx="10" fill="#faf7ee" stroke="#8a7f5c" stroke-width="1"/>
+<text x="22" y="392" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">DDR (LPDDR5X)</text>
+<rect x="40" y="404" width="380" height="122" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="230" y="439.3" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">Staging pools: per-call I/O</text>
+<text x="230" y="454.3" font-size="12" fill="#0b0b0b" text-anchor="middle">cached ION, one buffer per power-of-two class</text>
+<text x="230" y="469.3" font-size="12" fill="#0b0b0b" text-anchor="middle">64 KiB (decode) … 4 MiB (prefill)</text>
+<text x="230" y="484.3" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM writes the activation, reads the output;</text>
+<text x="230" y="499.3" font-size="12" fill="#0b0b0b" text-anchor="middle">the DSP reads and writes them during the call</text>
+<rect x="460" y="404" width="380" height="122" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="650" y="439.3" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">ION arena: expert weights</text>
+<text x="650" y="454.3" font-size="12" fill="#0b0b0b" text-anchor="middle">uncached, chunks of at most 256 MiB</text>
+<text x="650" y="469.3" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM: rpcmem_alloc + fastrpc_mmap, writes once</text>
+<text x="650" y="484.3" font-size="12" fill="#0b0b0b" text-anchor="middle">DSP: HAP_mmap_get(fd), reads on every call</text>
+<text x="650" y="499.3" font-size="12" fill="#0b0b0b" text-anchor="middle">shared by fd, never copied</text>
+<path d="M240,332 L240,404" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)" marker-start="url(#com1-arrow)"/>
+<rect x="245" y="354" width="157.8" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="248" y="364" font-size="11" fill="#52514e" text-anchor="start">copy act in, output out</text>
+<path d="M520,332 L400,404" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)" marker-start="url(#com1-arrow)"/>
+<rect x="395.6" y="342" width="65.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="458" y="352" font-size="11" fill="#52514e" text-anchor="end">act / out</text>
+<path d="M552,404 L552,270" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<rect x="557" y="342" width="144.6" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="560" y="352" font-size="11" fill="#52514e" text-anchor="start">HVX loads ≈ 23.5 GB/s</text>
+<path d="M800,404 L800,270" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com1-arrow)"/>
+<rect x="696.6" y="342" width="98.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="792" y="352" font-size="11" fill="#52514e" text-anchor="end">DMA 31–37 GB/s</text>
+</svg>
+<figcaption>The actors on the default path. <strong>Orange</strong>: the ARM process; <code>HtpComputeOps</code> owns the staging pools and the arena, and <code>HtpBackend</code> owns the one FastRPC session. <strong>Grey</strong>: the FastRPC driver, which routes a call, maps ION buffers into the DSP's protection domain and does their cache maintenance. <strong>Blue</strong>: the skel and the compute units in the DSP's unsigned PD. <strong>Tan</strong>: memory. The two DDR arrows carry the measured weight rates of section 4 (≈ 23.5 GB/s for HVX loads, LEDGER rule 32; 31–37 GB/s for the DMA engine, depending on the unit).</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead><tr><th>memory</th><th>allocated / mapped by</th><th>written by</th><th>read by</th><th>lives for</th></tr></thead>
+<tbody>
+<tr><td><strong>ION arena</strong><br>expert weights; DDR, uncached on the CPU</td><td>ARM: <code>rpcmem_alloc</code> (heap 25, <code>UNCACHED</code>) in chunks of at most 256 MiB → <code>rpcmem_to_fd</code> → <code>fastrpc_mmap(…, FASTRPC_MAP_FD)</code>. DSP: <code>arena_attach</code> → <code>HAP_mmap_get(fd)</code></td><td>ARM, once, at load</td><td>DSP, every call: the DMA engine (feed, prefill) or HVX loads (<code>FEED=0</code>)</td><td>the session</td></tr>
+<tr><td><strong>staging pools</strong><br><code>act_pool_</code> and <code>out_pool_</code>; DDR, cached ION</td><td>ARM: one <code>HtpRpcBuffer</code> per power-of-two class from 64 KiB, made the first time a size needs it; the driver maps it on every call</td><td>ARM (activation), DSP (output)</td><td>DSP (activation), ARM (output)</td><td>reused by every call of that size</td></tr>
+<tr><td><strong>VTCM</strong><br>on the DSP</td><td>DSP, at open: <code>hexkl_micro_hw_init</code> takes all ≈ 8 MiB</td><td>the DMA engine</td><td>HMX; HVX</td><td>the session</td></tr>
+<tr><td><strong>DSP heap scratch</strong><br><code>moe_scratch</code>; DDR, DSP heap</td><td>DSP, grown on demand and kept; the warm-up call grows it to the prefill size</td><td>DSP only</td><td>DSP only</td><td>the session</td></tr>
+</tbody></table></div>
+<p>The two ION kinds differ on purpose. The arena is written once and never read by the CPU. Its CPU mapping is uncached, so the writes reach DDR with no flush, and the driver never has to maintain it. The staging buffers are cached and small, and they are reused on every call. The driver's cache maintenance covers the whole buffer, so each buffer is sized to the call: decode's 8 KB activation rides a 64 KiB buffer, never a prefill-sized one (<code>StagingPool</code>, PR #103).</p>
+<h2 id="2-life-of-a-session">2. Life of a session <a class="hd" aria-label="link to this section" href="#2-life-of-a-session">#</a></h2>
+<p>A process opens <strong>one</strong> FastRPC session. It holds the DSP's resources (VTCM, the HMX lock, the worker threads) until the process exits. Everything expensive happens once, before the first token: mapping ≈ 3.6 GiB of expert weights (22 layers × 32 experts × 5.25 MiB), taking VTCM, starting threads, voting clocks. After that, a decode token is 22 plain calls.</p>
+<figure>
+<svg viewBox="0 0 880 780" role="img" aria-label="Swimlane of a session's life: open, load, warm-up, decode, close, across the ARM side, the FastRPC driver and the DSP" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="110" y="10" width="270" height="760" rx="8" fill="#fef7f2" stroke="#eb6834" stroke-width="1"/>
+<text x="245" y="30" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="700">ARM (HtpBackend, HtpComputeOps)</text>
+<rect x="390" y="10" width="140" height="760" rx="8" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="460" y="30" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="700">FastRPC driver</text>
+<rect x="540" y="10" width="330" height="760" rx="8" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="705" y="30" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="700">DSP (skel, session)</text>
+<line x1="10" y1="44" x2="870" y2="44" stroke="#e1e0d9" stroke-width="1"/>
+<text x="18" y="64" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">1 · open</text>
+<text x="18" y="79" font-size="11" fill="#52514e" text-anchor="start">HtpBackend()</text>
+<line x1="10" y1="270" x2="870" y2="270" stroke="#e1e0d9" stroke-width="1"/>
+<text x="18" y="290" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">2 · load</text>
+<text x="18" y="305" font-size="11" fill="#52514e" text-anchor="start">model load</text>
+<line x1="10" y1="586" x2="870" y2="586" stroke="#e1e0d9" stroke-width="1"/>
+<text x="18" y="606" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">3 · warm-up</text>
+<text x="18" y="621" font-size="11" fill="#52514e" text-anchor="start">once</text>
+<line x1="10" y1="650" x2="870" y2="650" stroke="#e1e0d9" stroke-width="1"/>
+<text x="18" y="670" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">4 · decode</text>
+<text x="18" y="685" font-size="11" fill="#52514e" text-anchor="start">every token</text>
+<line x1="10" y1="714" x2="870" y2="714" stroke="#e1e0d9" stroke-width="1"/>
+<text x="18" y="734" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">5 · close</text>
+<text x="18" y="749" font-size="11" fill="#52514e" text-anchor="start">exit</text>
+<rect x="120" y="52" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="68.8" font-size="12" fill="#0b0b0b" text-anchor="middle">remote_session_control</text>
+<text x="245" y="83.8" font-size="12" fill="#0b0b0b" text-anchor="middle">UNSIGNED_MODULE, cDSP domain</text>
+<rect x="398" y="52" width="124" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="460" y="68.8" font-size="12" fill="#0b0b0b" text-anchor="middle">gives an</text>
+<text x="460" y="83.8" font-size="12" fill="#0b0b0b" text-anchor="middle">unsigned PD</text>
+<path d="M370,72 L398,72" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="120" y="104" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="120.8" font-size="12" fill="#0b0b0b" text-anchor="middle">nntr_hvx_open(URI + "&amp;_dom=cdsp")</text>
+<text x="245" y="135.8" font-size="12" fill="#0b0b0b" text-anchor="middle">returns the session handle</text>
+<rect x="398" y="104" width="124" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="460" y="120.8" font-size="12" fill="#0b0b0b" text-anchor="middle">loads the</text>
+<text x="460" y="135.8" font-size="12" fill="#0b0b0b" text-anchor="middle">skel library</text>
+<path d="M370,124 L398,124" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<path d="M522,124 L550,124" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="550" y="104" width="310" height="94" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="125.3" font-size="12" fill="#0b0b0b" text-anchor="middle">nntr_hvx_open (DSP side): calloc the session</text>
+<text x="705" y="140.3" font-size="12" fill="#0b0b0b" text-anchor="middle">take the whole VTCM (hexkl_micro_hw_init)</text>
+<text x="705" y="155.3" font-size="12" fill="#0b0b0b" text-anchor="middle">lock the HMX, set up its accumulator read</text>
+<text x="705" y="170.3" font-size="12" fill="#0b0b0b" text-anchor="middle">worker pool: n_hvx − 1 threads (5 on v79)</text>
+<text x="705" y="185.3" font-size="12" fill="#0b0b0b" text-anchor="middle">HAP_power votes: NOM–TURBO, bus 40 GB/s</text>
+<rect x="120" y="210" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="226.8" font-size="12" fill="#0b0b0b" text-anchor="middle">remote_handle64_control(LATENCY)</text>
+<text x="245" y="241.8" font-size="12" fill="#0b0b0b" text-anchor="middle">poll QoS 5000 µs, else PM QoS 100 µs</text>
+<rect x="398" y="210" width="124" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="460" y="226.8" font-size="12" fill="#0b0b0b" text-anchor="middle">reply wait:</text>
+<text x="460" y="241.8" font-size="12" fill="#0b0b0b" text-anchor="middle">poll window</text>
+<path d="M370,230 L398,230" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="120" y="278" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="294.8" font-size="12" fill="#0b0b0b" text-anchor="middle">rpcmem_alloc: uncached, ≤ 256 MiB</text>
+<text x="245" y="309.8" font-size="12" fill="#0b0b0b" text-anchor="middle">then rpcmem_to_fd</text>
+<rect x="120" y="328" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="344.8" font-size="12" fill="#0b0b0b" text-anchor="middle">fastrpc_mmap(fd, FASTRPC_MAP_FD)</text>
+<text x="245" y="359.8" font-size="12" fill="#0b0b0b" text-anchor="middle">the chunk becomes DSP-visible</text>
+<rect x="398" y="328" width="124" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="460" y="344.8" font-size="12" fill="#0b0b0b" text-anchor="middle">maps the chunk</text>
+<text x="460" y="359.8" font-size="12" fill="#0b0b0b" text-anchor="middle">into the PD</text>
+<path d="M370,348 L398,348" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="120" y="378" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="394.8" font-size="12" fill="#0b0b0b" text-anchor="middle">nntr_hvx_arena_attach(fd, bytes)</text>
+<text x="245" y="409.8" font-size="12" fill="#0b0b0b" text-anchor="middle">returns the arena id</text>
+<path d="M370,398 L550,398" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="443.8" y="383" width="32.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="460" y="393" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="550" y="378" width="310" height="40" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="394.8" font-size="12" fill="#0b0b0b" text-anchor="middle">HAP_mmap_get(fd) → DSP address</text>
+<text x="705" y="409.8" font-size="12" fill="#0b0b0b" text-anchor="middle">arenas[i] = {fd, va, bytes}, 32 slots</text>
+<rect x="120" y="428" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="444.8" font-size="12" fill="#0b0b0b" text-anchor="middle">place the weight in the chunk</text>
+<text x="245" y="459.8" font-size="12" fill="#0b0b0b" text-anchor="middle">WH tiles: 32 × 32 int4 = 512 B</text>
+<rect x="120" y="478" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="494.8" font-size="12" fill="#0b0b0b" text-anchor="middle">weight_register_u8i4_arena</text>
+<text x="245" y="509.8" font-size="12" fill="#0b0b0b" text-anchor="middle">(arena, wh_off, scales) → handle</text>
+<path d="M370,498 L550,498" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="443.8" y="483" width="32.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="460" y="493" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="550" y="478" width="310" height="40" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="494.8" font-size="12" fill="#0b0b0b" text-anchor="middle">a slot in the 2048-entry weight table,</text>
+<text x="705" y="509.8" font-size="12" fill="#0b0b0b" text-anchor="middle">borrowed in place: no copy</text>
+<rect x="120" y="528" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="544.8" font-size="12" fill="#0b0b0b" text-anchor="middle">releaseArmSource: madvise</text>
+<text x="245" y="559.8" font-size="12" fill="#0b0b0b" text-anchor="middle">DONTNEED on the ARM copy</text>
+<line x1="104" y1="278" x2="104" y2="418" stroke="#52514e" stroke-width="1"/>
+<line x1="104" y1="278" x2="108" y2="278" stroke="#52514e" stroke-width="1"/>
+<line x1="104" y1="418" x2="108" y2="418" stroke="#52514e" stroke-width="1"/>
+<text x="98" y="352" font-size="11" fill="#52514e" text-anchor="end">per chunk</text>
+<line x1="104" y1="428" x2="104" y2="568" stroke="#52514e" stroke-width="1"/>
+<line x1="104" y1="428" x2="108" y2="428" stroke="#52514e" stroke-width="1"/>
+<line x1="104" y1="568" x2="108" y2="568" stroke="#52514e" stroke-width="1"/>
+<text x="98" y="502" font-size="11" fill="#52514e" text-anchor="end">per weight</text>
+<rect x="120" y="594" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="610.8" font-size="12" fill="#0b0b0b" text-anchor="middle">one MoE call: M = 512, zero input</text>
+<text x="245" y="625.8" font-size="12" fill="#0b0b0b" text-anchor="middle">first call also sends moe_set_opts</text>
+<path d="M370,614 L550,614" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="443.8" y="599" width="32.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="460" y="609" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="550" y="594" width="310" height="40" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="610.8" font-size="12" fill="#0b0b0b" text-anchor="middle">session scratch grows to prefill size,</text>
+<text x="705" y="625.8" font-size="12" fill="#0b0b0b" text-anchor="middle">every page touched once</text>
+<rect x="120" y="658" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="674.8" font-size="12" fill="#0b0b0b" text-anchor="middle">22 MoE calls per token</text>
+<text x="245" y="689.8" font-size="12" fill="#0b0b0b" text-anchor="middle">(section 3)</text>
+<path d="M370,678 L550,678" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="443.8" y="663" width="32.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="460" y="673" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="550" y="658" width="310" height="40" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="674.8" font-size="12" fill="#0b0b0b" text-anchor="middle">mm_u8i4_moe_layer × 22</text>
+<text x="705" y="689.8" font-size="12" fill="#0b0b0b" text-anchor="middle">weights read from the arena</text>
+<rect x="120" y="722" width="250" height="40" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="245" y="738.8" font-size="12" fill="#0b0b0b" text-anchor="middle">~HtpBackend → nntr_hvx_close</text>
+<text x="245" y="753.8" font-size="12" fill="#0b0b0b" text-anchor="middle">(process exit)</text>
+<path d="M370,742 L550,742" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com2-arrow)"/>
+<rect x="443.8" y="727" width="32.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="460" y="737" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="550" y="722" width="310" height="40" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="705" y="738.8" font-size="12" fill="#0b0b0b" text-anchor="middle">free weights; HAP_mmap_put the arenas;</text>
+<text x="705" y="753.8" font-size="12" fill="#0b0b0b" text-anchor="middle">free scratch and pool; unlock the HMX</text>
+</svg>
+<figcaption>One session, top to bottom, across three lanes: the ARM side, the FastRPC driver and the DSP. <strong>Open</strong> happens in <code>HtpBackend</code>'s constructor when <code>HtpContext</code> initializes. <strong>Load</strong> places every expert matrix in the ION arena and registers it <em>in place</em>: the DSP's weight table stores a pointer into the arena (<code>borrowed</code>), and then the ARM copy is dropped. <strong>Warm-up</strong> is one MoE call at M = 512 (<code>transformer.cpp</code>), so the first real prefill does not pay the first-call costs. <strong>Close</strong> runs in reverse order.</figcaption>
+</figure>
+<h4>What each phase buys</h4>
+<ul>
+<li><strong>Unsigned PD.</strong> <code>remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE)</code> lets the skel load without code signing.</li>
+<li><strong>Latency control.</strong> <code>remote_handle64_control(DSPRPC_CONTROL_LATENCY)</code> asks for <code>RPC_POLL_QOS</code> with a 5000 µs window (<code>NNTR_HTP_POLL_US</code> changes it). If the driver refuses, it falls back to <code>RPC_PM_QOS</code> at 100 µs. Section 5 shows what polling saves.</li>
+<li><strong>DSP open.</strong> <code>nntr_hvx_open</code> allocates the session struct and takes the whole VTCM. It locks the HMX for the session, starts <code>hvx_worker_pool_create(n_hvx − 1)</code> (5 worker threads on v79, and the calling thread is the sixth lane) and places <code>HAP_power</code> votes. The votes are apptype COMPUTE, DCVS v2 performance mode with 100 µs wake latency and NOM–TURBO corners, and a 40 GB/s bus request.</li>
+<li><strong>Load, per chunk.</strong> <code>ensureArena</code> / <code>tryChunk</code> allocate an uncached ION chunk of at most 256 MiB, halved when a request is refused. <code>fastrpc_mmap</code> with <code>FASTRPC_MAP_FD</code> maps it into the PD. With flag 0 (<code>FASTRPC_MAP_STATIC</code>) the DSP-side <code>HAP_mmap_get</code> refuses the mapping. Then <code>nntr_hvx_arena_attach</code> records <code>{fd, va, bytes}</code> in one of 32 arena slots.</li>
+<li><strong>Load, per weight.</strong> The matrix is written into the chunk in the WH tile layout (32 × 32 int4 tiles of 512 B; see <a href="weight-format.html">weight format</a>). <code>nntr_hvx_weight_register_u8i4_arena(K, N, arena, wh_off, w_scale, colsum_w, bias)</code> returns a <code>uint32</code> slot in the 2048-entry weight table. <code>releaseArmSource</code> then gives the ARM copy's pages back with <code>madvise(MADV_DONTNEED)</code>, unless <code>NNTR_HTP_KEEP_ARM_WEIGHTS</code> is set.</li>
+<li><strong>Options once.</strong> The first MoE call (the warm-up) runs <code>sendMoeOptsOnce</code>, which sends the option word with <code>moe_set_opts</code> and checks the echo (section 5). With nothing set, the startup banner reads <code>applied=0x303e1 … feed=vtcm</code>.</li>
+</ul>
+<h2 id="3-life-of-one-moe-call">3. Life of one MoE call (decode) <a class="hd" aria-label="link to this section" href="#3-life-of-one-moe-call">#</a></h2>
+<p>One decode token makes 22 of these calls. Each one starts from the router output in <code>Lfm2MoELayer</code> and returns the MoE block's output for that token. Step through the diagram, or read the numbered list below it. The list is the whole story, and the buttons only highlight one step at a time.</p>
+<figure id="com-callfig">
+<svg viewBox="0 0 880 614" role="img" aria-label="Sequence of one decode MoE call: twelve numbered steps across Lfm2MoELayer, HtpComputeOps, the stub and driver, the skel and the MoE kernel" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="25" y="10" width="150" height="42" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="100" y="27.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">Lfm2MoELayer</text>
+<text x="100" y="42.8" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM</text>
+<line x1="100" y1="52" x2="100" y2="608" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="195" y="10" width="150" height="42" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="270" y="27.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HtpComputeOps</text>
+<text x="270" y="42.8" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM</text>
+<line x1="270" y1="52" x2="270" y2="608" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="365" y="10" width="150" height="42" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="440" y="27.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">stub + driver</text>
+<text x="440" y="42.8" font-size="12" fill="#0b0b0b" text-anchor="middle">ARM user + kernel</text>
+<line x1="440" y1="52" x2="440" y2="608" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="535" y="10" width="150" height="42" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="610" y="27.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">skel</text>
+<text x="610" y="42.8" font-size="12" fill="#0b0b0b" text-anchor="middle">DSP</text>
+<line x1="610" y1="52" x2="610" y2="608" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="4 4"/>
+<rect x="705" y="10" width="150" height="42" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="780" y="27.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">MoE kernel</text>
+<text x="780" y="42.8" font-size="12" fill="#0b0b0b" text-anchor="middle">DSP</text>
+<line x1="780" y1="52" x2="780" y2="608" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="4 4"/>
+<g class="com-st" data-step="1">
+<rect x="30" y="74" width="150" height="24" rx="5" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="105" y="91" font-size="12" fill="#0b0b0b" text-anchor="middle">router, top-4</text>
+<circle cx="16" cy="86" r="9" fill="#0b0b0b"/>
+<text x="16" y="90" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">1</text>
+</g>
+<g class="com-st" data-step="2">
+<path d="M100,132 L270,132" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)"/>
+<rect x="99.5" y="116" width="171" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="185" y="126" font-size="11" fill="#52514e" text-anchor="middle">gemm_qs4cx_moe_layer_fp32</text>
+<circle cx="86" cy="132" r="9" fill="#0b0b0b"/>
+<text x="86" y="136" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">2</text>
+</g>
+<g class="com-st" data-step="3">
+<rect x="180.8" y="157" width="178.4" height="34" rx="5" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="270" y="173" font-size="12" fill="#0b0b0b" text-anchor="middle">handles · lock · copy in</text>
+<text x="270" y="187" font-size="11" fill="#52514e" text-anchor="middle">8 KB into a 64 KiB buffer</text>
+<circle cx="166.8" cy="174" r="9" fill="#0b0b0b"/>
+<text x="166.8" y="178" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">3</text>
+</g>
+<g class="com-st" data-step="4">
+<path d="M270,220 L440,220" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)"/>
+<rect x="266.2" y="204" width="177.6" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="355" y="214" font-size="11" fill="#52514e" text-anchor="middle">nntr_hvx_mm_u8i4_moe_layer</text>
+<circle cx="256" cy="220" r="9" fill="#0b0b0b"/>
+<text x="256" y="224" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">4</text>
+</g>
+<g class="com-st" data-step="5">
+<path d="M440,264 L610,264" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)"/>
+<rect x="462.6" y="248" width="124.8" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="525" y="258" font-size="11" fill="#52514e" text-anchor="middle">map, flush, signal</text>
+<circle cx="426" cy="264" r="9" fill="#0b0b0b"/>
+<text x="426" y="268" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">5</text>
+</g>
+<g class="com-st" data-step="6">
+<path d="M610,308 L780,308" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)"/>
+<rect x="632.6" y="292" width="124.8" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="695" y="302" font-size="11" fill="#52514e" text-anchor="middle">copy in (DMA), run</text>
+<circle cx="596" cy="308" r="9" fill="#0b0b0b"/>
+<text x="596" y="312" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">6</text>
+</g>
+<g class="com-st" data-step="7">
+<rect x="630.2" y="333" width="237.8" height="34" rx="5" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="749.1" y="349" font-size="12" fill="#0b0b0b" text-anchor="middle">quant · A · requant · C · scatter</text>
+<text x="749.1" y="363" font-size="11" fill="#52514e" text-anchor="middle">mm 677.2 of dsp 711.7 µs</text>
+<circle cx="616.2" cy="350" r="9" fill="#0b0b0b"/>
+<text x="616.2" y="354" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">7</text>
+</g>
+<g class="com-st" data-step="8">
+<path d="M780,396 L610,396" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)" stroke-dasharray="5 4"/>
+<rect x="619.4" y="380" width="151.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="695" y="390" font-size="11" fill="#52514e" text-anchor="middle">copy out (DMA), return</text>
+<circle cx="596" cy="396" r="9" fill="#0b0b0b"/>
+<text x="596" y="400" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">8</text>
+</g>
+<g class="com-st" data-step="9">
+<path d="M610,440 L440,440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)" stroke-dasharray="5 4"/>
+<rect x="505.5" y="424" width="39" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="525" y="434" font-size="11" fill="#52514e" text-anchor="middle">reply</text>
+<circle cx="426" cy="440" r="9" fill="#0b0b0b"/>
+<text x="426" y="444" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">9</text>
+</g>
+<g class="com-st" data-step="10">
+<path d="M440,484 L270,484" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)" stroke-dasharray="5 4"/>
+<rect x="312.4" y="468" width="85.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="355" y="478" font-size="11" fill="#52514e" text-anchor="middle">poll sees it</text>
+<circle cx="256" cy="484" r="9" fill="#0b0b0b"/>
+<text x="256" y="488" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">10</text>
+</g>
+<g class="com-st" data-step="11">
+<rect x="195" y="514" width="150" height="24" rx="5" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="270" y="531" font-size="12" fill="#0b0b0b" text-anchor="middle">copy out · unlock</text>
+<circle cx="181" cy="526" r="9" fill="#0b0b0b"/>
+<text x="181" y="530" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">11</text>
+</g>
+<g class="com-st" data-step="12">
+<path d="M270,572 L100,572" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com3-arrow)" stroke-dasharray="5 4"/>
+<rect x="125.9" y="556" width="118.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="185" y="566" font-size="11" fill="#52514e" text-anchor="middle">output [1 × 2048]</text>
+<circle cx="86" cy="572" r="9" fill="#0b0b0b"/>
+<text x="86" y="576" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="700">12</text>
+</g>
+</svg>
+<figcaption>One decode MoE call as a sequence of numbered steps. Solid arrows are calls and dashed arrows are returns. Orange steps run on the ARM, blue ones on the DSP; the grey lifeline is the generated stub plus the kernel driver. Steps 4–10 make up the profile's <code>host</code> time; steps 6–8 are its <code>dsp</code> time.</figcaption>
+</figure>
+<div id="com-stepnav"></div>
+<ol class="steps" id="com-steps">
+<li data-step="1"><strong>Router, on the CPU.</strong> <code>Lfm2MoELayer</code> computes the router logits (the FP32 gate plus <code>expert_bias</code>) with <code>dot()</code>. Then <code>buildExpertAssignments</code> picks 4 of the 32 experts for the token.</li>
+<li data-step="2"><strong>Flatten and hand off.</strong> <code>tryMoeLayerOnAccelerator</code> flattens the routing into three arrays: <code>row_index</code>, <code>row_count</code> (one entry per expert, 32) and <code>row_weight</code>. It then calls <code>ops-&gt;gemm_qs4cx_moe_layer_fp32</code>. <code>ops</code> is <code>HtpComputeOps</code>, which the layer's context got from <code>HtpContext</code>.</li>
+<li data-step="3"><strong>Prepare the call (ARM).</strong> Every expert's gate_up and down matrix gets a DSP weight handle (<code>get_or_register_wh</code>); after load, each one is a hit in <code>handle_cache_</code>. <code>sendMoeOptsOnce</code> does nothing after the first call. The thread then takes <code>invoke_mutex_</code> and picks the staging buffers by size class (<code>stage(act_pool_, …)</code>). The 1 × 2048 FP32 activation (8 KB) lands in the 64 KiB buffer, copied by <code>stagedMemcpy</code>. This copy happens before the timer starts, so it is not part of <code>host</code>.</li>
+<li data-step="4"><strong>Stub call.</strong> <code>nntr_hvx_mm_u8i4_moe_layer</code>, the qaic-generated stub, packs the scalars into a 48-byte primitive block. The five small arrays (32 + 32 handles and the routing) go as plain heap sequences. The activation and output go as pointers into the ION staging buffers. The ARM wall clock around this call is the profile's <code>host</code> time.</li>
+<li data-step="5"><strong>Driver.</strong> The FastRPC driver sees that the staging buffers are ION, so it maps them into the DSP's PD rather than copying them. It does cache maintenance over each whole buffer, then signals the DSP. The whole-buffer maintenance is why the staging pools use size classes: when one buffer was sized for prefill, every 8 KB decode call paid for a multi-MB flush.</li>
+<li data-step="6"><strong>Skel on the DSP.</strong> The skel unpacks the arguments. The kernel copies the activation from the FastRPC buffer into its heap scratch with one DMA descriptor. Then <code>hexkl_mm_u8i4_moe_layer_run</code> starts. It gets the session's weight table, VTCM, worker pool, scratch and option flags. From here until the reply is the profile's <code>dsp</code> time.</li>
+<li data-step="7"><strong>The kernel.</strong> <code>quant</code> (7.7 µs) quantizes and packs the activation. Stage A computes gate/up with the fused SwiGLU, one pool run per expert. It reads the expert's weights from a VTCM slab that the DMA engine filled; section 4b shows how. <code>requant</code> (9.4 µs) requantizes each expert's intermediate. Stage C computes the down matrix, again one pool run per expert, and <code>scatter</code> (7.5 µs) adds the four outputs, each times its router weight. Stages A and C with their slab waits are <code>mm</code>: 677.2 of the 711.7 µs.</li>
+<li data-step="8"><strong>Return.</strong> A second DMA descriptor copies the 1 × 2048 output into the FastRPC output buffer (<code>stage</code>, 5.7 µs for both copies). The skel returns.</li>
+<li data-step="9"><strong>Reply.</strong> The driver finishes the call: it does cache maintenance on the output buffer and posts the reply.</li>
+<li data-step="10"><strong>Poll sees it.</strong> <code>HtpBackend</code> set a poll-QoS window of 5000 µs, so the ARM thread has been spinning since step 4 rather than sleeping. It sees the reply at once and does not pay an interrupt wake-up. <code>host − dsp</code> = 82.2 µs is the whole round-trip overhead (the transport).</li>
+<li data-step="11"><strong>Copy out, unlock.</strong> <code>stagedMemcpy</code> copies the output from the staging buffer into the layer's tensor. The mutex is released when <code>invokeMoeLayer</code> returns.</li>
+<li data-step="12"><strong>Back in the layer.</strong> <code>Lfm2MoELayer</code> has the MoE FFN output for the token and continues on the CPU. The same round trip repeats for each of the 22 MoE layers of every token.</li>
+</ol>
+<h3 id="31-where-the-time-goes">3.1 Where the time goes <a class="hd" aria-label="link to this section" href="#31-where-the-time-goes">#</a></h3>
+<p>The level-2 profile (<code>NNTR_HTP_PROFILE=2</code>) calls the <code>_timed</code> variant of the entry. The DSP returns its own stage timers, and the ARM measures the wall clock around the stub call. <code>host − dsp</code> is everything the boundary costs: stub, driver, cache maintenance and wake-up. The upper chart puts the default (VTCM feed) and the previous default (arena read, <code>FEED=0</code>) on one axis. The lower chart scales one call up to a whole token.</p>
+<figure>
+<svg viewBox="0 0 880 312" role="img" aria-label="Bar chart: time of one decode MoE call split into mm, other DSP stages and FastRPC transport, feed default versus arena read; and one token split into MoE DSP time, transport and CPU work" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com3b-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="20" y="12" width="12" height="12" rx="2" fill="#2a78d6" stroke="none" stroke-width="0"/>
+<text x="38" y="22" font-size="12" fill="#52514e" text-anchor="start">mm (GEMV stages A + C)</text>
+<rect x="204.8" y="12" width="12" height="12" rx="2" fill="#9cc0ec" stroke="none" stroke-width="0"/>
+<text x="222.8" y="22" font-size="12" fill="#52514e" text-anchor="start">other DSP stages</text>
+<rect x="351.2" y="12" width="12" height="12" rx="2" fill="#eb6834" stroke="none" stroke-width="0"/>
+<text x="369.2" y="22" font-size="12" fill="#52514e" text-anchor="start">FastRPC transport</text>
+<rect x="504" y="12" width="12" height="12" rx="2" fill="#c3c2b7" stroke="none" stroke-width="0"/>
+<text x="522" y="22" font-size="12" fill="#52514e" text-anchor="start">CPU work outside the call</text>
+<text x="20" y="58" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">One decode MoE call, µs (level-2 profile, #120, G = 64)</text>
+<line x1="230" y1="70" x2="230" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="230" y="166" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+<line x1="321.667" y1="70" x2="321.667" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="321.667" y="166" font-size="11" fill="#52514e" text-anchor="middle">200</text>
+<line x1="413.333" y1="70" x2="413.333" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="413.333" y="166" font-size="11" fill="#52514e" text-anchor="middle">400</text>
+<line x1="505" y1="70" x2="505" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="505" y="166" font-size="11" fill="#52514e" text-anchor="middle">600</text>
+<line x1="596.667" y1="70" x2="596.667" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="596.667" y="166" font-size="11" fill="#52514e" text-anchor="middle">800</text>
+<line x1="688.333" y1="70" x2="688.333" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="688.333" y="166" font-size="11" fill="#52514e" text-anchor="middle">1000</text>
+<line x1="780" y1="70" x2="780" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="780" y="166" font-size="11" fill="#52514e" text-anchor="middle">1200</text>
+<text x="220" y="96" font-size="12" fill="#0b0b0b" text-anchor="end">feed (default, A)</text>
+<g><title>feed (default, A): mm 677.2 µs</title>
+<rect x="230" y="80" width="308.383" height="22" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+</g>
+<text x="238" y="95" font-size="11" fill="#ffffff" text-anchor="start" font-weight="600">mm 677.2</text>
+<g><title>feed (default, A): other DSP 34.5 µs</title>
+<rect x="540.383" y="80" width="13.8125" height="22" rx="3" fill="#9cc0ec" stroke="none" stroke-width="0"/>
+</g>
+<g><title>feed (default, A): transport 82.2 µs</title>
+<rect x="556.196" y="80" width="37.675" height="22" rx="3" fill="#eb6834" stroke="none" stroke-width="0"/>
+</g>
+<text x="574.033" y="95" font-size="11" fill="#0b0b0b" text-anchor="middle">82.2</text>
+<text x="599.871" y="95" font-size="11" fill="#52514e" text-anchor="start">host 793.9</text>
+<text x="220" y="132" font-size="12" fill="#0b0b0b" text-anchor="end">arena read (FEED=0, A0)</text>
+<g><title>arena read (FEED=0, A0): mm 934.3 µs</title>
+<rect x="230" y="116" width="426.221" height="22" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+</g>
+<text x="238" y="131" font-size="11" fill="#ffffff" text-anchor="start" font-weight="600">mm 934.3</text>
+<g><title>arena read (FEED=0, A0): other DSP 63.1 µs</title>
+<rect x="658.221" y="116" width="26.9208" height="22" rx="3" fill="#9cc0ec" stroke="none" stroke-width="0"/>
+</g>
+<g><title>arena read (FEED=0, A0): transport 186.7 µs</title>
+<rect x="687.142" y="116" width="85.5708" height="22" rx="3" fill="#eb6834" stroke="none" stroke-width="0"/>
+</g>
+<text x="728.927" y="131" font-size="11" fill="#0b0b0b" text-anchor="middle">186.7</text>
+<text x="778.712" y="131" font-size="11" fill="#52514e" text-anchor="start">host 1184.1</text>
+<text x="20" y="204" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">One decode token at G = 512, ms (#120 A, per-token budget)</text>
+<line x1="230" y1="216" x2="230" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="230" y="278" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+<line x1="321.667" y1="216" x2="321.667" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="321.667" y="278" font-size="11" fill="#52514e" text-anchor="middle">5</text>
+<line x1="413.333" y1="216" x2="413.333" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="413.333" y="278" font-size="11" fill="#52514e" text-anchor="middle">10</text>
+<line x1="505" y1="216" x2="505" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="505" y="278" font-size="11" fill="#52514e" text-anchor="middle">15</text>
+<line x1="596.667" y1="216" x2="596.667" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="596.667" y="278" font-size="11" fill="#52514e" text-anchor="middle">20</text>
+<line x1="688.333" y1="216" x2="688.333" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="688.333" y="278" font-size="11" fill="#52514e" text-anchor="middle">25</text>
+<line x1="780" y1="216" x2="780" y2="262" stroke="#e1e0d9" stroke-width="1"/>
+<text x="780" y="278" font-size="11" fill="#52514e" text-anchor="middle">30</text>
+<text x="220" y="244" font-size="12" fill="#0b0b0b" text-anchor="end">27.81 ms per token</text>
+<g><title>MoE dsp, 22 × 0.712: 15.7 ms</title>
+<rect x="230" y="228" width="285.833" height="22" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+</g>
+<text x="238" y="243" font-size="11" fill="#ffffff" text-anchor="start" font-weight="600">MoE dsp, 22 × 0.712 = 15.7</text>
+<g><title>transport: 1.8 ms</title>
+<rect x="517.833" y="228" width="31" height="22" rx="3" fill="#eb6834" stroke="none" stroke-width="0"/>
+</g>
+<text x="533.333" y="243" font-size="11" fill="#0b0b0b" text-anchor="middle">1.8</text>
+<g><title>outside the MoE call: 10.3 ms</title>
+<rect x="550.833" y="228" width="188.833" height="22" rx="3" fill="#c3c2b7" stroke="none" stroke-width="0"/>
+</g>
+<text x="558.833" y="243" font-size="11" fill="#0b0b0b" text-anchor="start">≈ 10.3 outside the call</text>
+<text x="780" y="300" font-size="11" fill="#52514e" text-anchor="end">time (µs above, ms below); axes start at 0</text>
+</svg>
+<figcaption>Top: µs per M == 1 MoE call from the level-2 profile of sitting #120 at G = 64, variant A (default) and A0 (<code>NNTR_MOE_HTP_GEMV_FEED=0</code>). Bottom: the per-token budget at G = 512 for #120 A (BENCHMARK, cycle 16). The token takes 27.81 ms. 22 calls × 0.712 ms of <code>dsp</code> is 15.7 ms, and 22 × 0.082 ms of transport is 1.8 ms. The remaining ≈ 10.3 ms is the CPU's own work between calls. Hover a bar for its value.</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead><tr><th>µs per call (#120, level 2, G = 64)</th><th style="text-align:right">feed (A, default)</th><th style="text-align:right">arena read (A0, <code>FEED=0</code>)</th></tr></thead>
+<tbody>
+<tr><td><code>host</code>: ARM wall clock around the stub call</td><td style="text-align:right">793.9</td><td style="text-align:right">1184.1</td></tr>
+<tr><td><code>dsp</code>: inside the kernel entry</td><td style="text-align:right">711.7</td><td style="text-align:right">997.4</td></tr>
+<tr><td><strong>transport</strong> = host − dsp</td><td style="text-align:right"><strong>82.2</strong></td><td style="text-align:right">186.7</td></tr>
+<tr><td><code>mm</code>: GEMV stages A + C, including the slab waits</td><td style="text-align:right">677.2</td><td style="text-align:right">934.3</td></tr>
+<tr><td><code>quant</code> / <code>requant</code> / <code>scatter</code> / <code>stage</code> / rest</td><td style="text-align:right">7.7 / 9.4 / 7.5 / 5.7 / 4.2</td><td style="text-align:right">16.6 / 12.3 / 12.6 / 10.8 / 10.7</td></tr>
+</tbody></table></div>
+<p class="src">Source: <code>docs/measurements/120-upstream-4327-sync.md</code> (level-2 profile, M==1 row), also summarized in BENCHMARK's #120 side tables.</p>
+<p>The transport was not always this small. Before PR #103, the staging used one buffer sized for the largest call, and the driver flushed all of it on every call. The poll window was also 100 µs. Measured in sitting #88, the size-class pools and the 5 ms poll together cut the M == 1 transport from 401.3 to 87.9 µs per call (LEDGER ⑦). Putting only the poll back to 100 µs (#88 C) cost 11.0 % of decode at G = 64 against B. The feed then halved the transport again, from 186.7 to 82.2 µs in the table above. LEDGER rule 35 records that effect: the direct HVX arena read made the call boundary slower, and the cause is not yet separated.</p>
+<h2 id="4-three-ways-weights-reach-the-compute-units">4. Three ways weights reach the compute units <a class="hd" aria-label="link to this section" href="#4-three-ways-weights-reach-the-compute-units">#</a></h2>
+<p>The activation is kilobytes; the weights are megabytes. Four experts at top-4 read 21 504 KB per decode call, 22.02 MB in all (#117 B's ring line). The layer's speed is therefore decided by one question: how do those bytes get from the ION arena to the unit that multiplies them? The backend has three answers. HMX can read only VTCM, and VTCM holds 8 MiB, so every path is a choice of <em>who</em> moves the bytes and <em>through which</em> memory.</p>
+<figure>
+<svg viewBox="0 0 880 478" role="img" aria-label="Three weight paths side by side: prefill DMA ring into VTCM for the HMX; decode VTCM feed by DMA for HVX; decode arena read through L2 with an l2fetch lead" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="10" y="10" width="280" height="458" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="24" y="32" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="700">a · prefill (M &gt; 4)</text>
+<text x="24" y="49" font-size="12" fill="#52514e" text-anchor="start">HMX path</text>
+<rect x="30" y="64" width="240" height="46" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="150" y="83.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">ION arena (DDR)</text>
+<text x="150" y="98.8" font-size="12" fill="#0b0b0b" text-anchor="middle">expert weights, WH tiles</text>
+<rect x="30" y="148" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="150" y="170.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">DMA engine</text>
+<text x="150" y="185.8" font-size="12" fill="#0b0b0b" text-anchor="middle">2D descriptors, chunk lists ≤ 16</text>
+<rect x="30" y="238" width="240" height="52" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="150" y="260.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">VTCM</text>
+<text x="150" y="275.8" font-size="12" fill="#0b0b0b" text-anchor="middle">buffers A (gate_up), B (down)</text>
+<rect x="30" y="328" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="150" y="350.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HMX</text>
+<text x="150" y="365.8" font-size="12" fill="#0b0b0b" text-anchor="middle">64-row int8 × int4 tiles</text>
+<path d="M150,110 L150,148" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M150,200 L150,238" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M150,290 L150,328" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<rect x="155" y="123" width="164.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="158" y="133" font-size="11" fill="#52514e" text-anchor="start">ring: dmlinked, in order</text>
+<rect x="155" y="303" width="39" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="158" y="313" font-size="11" fill="#52514e" text-anchor="start">tiles</text>
+<text x="30" y="410" font-size="12" fill="#52514e" text-anchor="start">issued by: the DSP caller thread</text>
+<text x="30" y="427" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">measured: dsp 16 986 µs per call</text>
+<text x="30" y="444" font-size="12" fill="#52514e" text-anchor="start">used: every prefill call</text>
+<rect x="300" y="10" width="280" height="458" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="314" y="32" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="700">b · decode, default</text>
+<text x="314" y="49" font-size="12" fill="#52514e" text-anchor="start">VTCM feed (FEED=1)</text>
+<rect x="320" y="64" width="240" height="46" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="440" y="83.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">ION arena (DDR)</text>
+<text x="440" y="98.8" font-size="12" fill="#0b0b0b" text-anchor="middle">expert weights, WH tiles</text>
+<rect x="320" y="148" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="440" y="170.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">DMA engine</text>
+<text x="440" y="185.8" font-size="12" fill="#0b0b0b" text-anchor="middle">one descriptor per whole matrix</text>
+<rect x="320" y="238" width="240" height="52" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="440" y="260.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">VTCM</text>
+<text x="440" y="275.8" font-size="12" fill="#0b0b0b" text-anchor="middle">slabs G0 / G1, 3.5 MiB each</text>
+<rect x="320" y="328" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="440" y="350.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX, 6 lanes</text>
+<text x="440" y="365.8" font-size="12" fill="#0b0b0b" text-anchor="middle">vrmpy over WH tiles</text>
+<path d="M440,110 L440,148" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M440,200 L440,238" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M440,290 L440,328" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<rect x="445" y="123" width="72" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="448" y="133" font-size="11" fill="#52514e" text-anchor="start">8 per call</text>
+<rect x="445" y="303" width="85.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="448" y="313" font-size="11" fill="#52514e" text-anchor="start">vector loads</text>
+<text x="320" y="410" font-size="12" fill="#52514e" text-anchor="start">issued by: the DSP caller thread</text>
+<text x="320" y="427" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">measured: 32.6 GB/s, mm 677 µs</text>
+<text x="320" y="444" font-size="12" fill="#52514e" text-anchor="start">used: decode (M ≤ 4), the default</text>
+<rect x="590" y="10" width="280" height="458" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="604" y="32" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="700">c · decode, FEED=0</text>
+<text x="604" y="49" font-size="12" fill="#52514e" text-anchor="start">arena read + l2fetch lead</text>
+<rect x="610" y="64" width="240" height="46" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="730" y="83.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">ION arena (DDR)</text>
+<text x="730" y="98.8" font-size="12" fill="#0b0b0b" text-anchor="middle">expert weights, WH tiles</text>
+<rect x="610" y="148" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="730" y="170.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">l2fetch box, 192 KB ahead</text>
+<text x="730" y="185.8" font-size="12" fill="#0b0b0b" text-anchor="middle">≤ 3 boxes in flight per lane</text>
+<rect x="610" y="238" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="730" y="260.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">L2 cache</text>
+<text x="730" y="275.8" font-size="12" fill="#0b0b0b" text-anchor="middle">shared by the 6 lanes</text>
+<rect x="610" y="328" width="240" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="730" y="350.8" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX, 6 lanes</text>
+<text x="730" y="365.8" font-size="12" fill="#0b0b0b" text-anchor="middle">vrmpy over WH tiles</text>
+<path d="M730,110 L730,148" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M730,200 L730,238" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<path d="M730,290 L730,328" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com4-arrow)"/>
+<rect x="735" y="303" width="85.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="738" y="313" font-size="11" fill="#52514e" text-anchor="start">vector loads</text>
+<rect x="735" y="213" width="131.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="738" y="223" font-size="11" fill="#52514e" text-anchor="start">pulls lines into L2</text>
+<text x="610" y="410" font-size="12" fill="#52514e" text-anchor="start">issued by: each HVX lane itself</text>
+<text x="610" y="427" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">measured: ≈ 23.5 GB/s, mm 934 µs</text>
+<text x="610" y="444" font-size="12" fill="#52514e" text-anchor="start">used: FEED=0, or slabs do not fit</text>
+</svg>
+<figcaption>The three weight paths at the same scale of detail. <strong>a</strong>: prefill, where the DMA engine streams each expert into VTCM buffers and HMX computes 64-row tiles. <strong>b</strong>: the decode default, where the DMA engine copies whole matrices into two VTCM slabs and HVX reads them. <strong>c</strong>: the previous decode path, where every HVX lane reads the arena itself through L2 and prefetches one block ahead with <code>l2fetch</code>. The measured lines come from sitting #120 (A for a and b, A0 for c) and from BENCHMARK's cycle-15 budget (32.6 GB/s).</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead><tr><th></th><th>a · prefill (HMX)</th><th>b · decode, VTCM feed (default)</th><th>c · decode, arena read (<code>FEED=0</code>)</th></tr></thead>
+<tbody>
+<tr><td>taken when</td><td>M &gt; 4, or more than 16 experts active</td><td>M ≤ 4, ≤ 16 experts, feed on, and the slabs fit (<code>2·gu_bytes ≤ VTCM</code>, <code>2·dn_bytes ≤ gu_bytes</code>)</td><td>M ≤ 4 with the feed off, or a shape whose slabs do not fit</td></tr>
+<tr><td>who moves the bytes</td><td>DMA engine; the caller thread pushes the descriptors</td><td>DMA engine; the caller thread pushes 8 whole-matrix descriptors</td><td>each HVX lane: vector loads, plus an <code>l2fetch</code> box one block ahead</td></tr>
+<tr><td>through</td><td>VTCM buffers A (gate_up) and B (down)</td><td>VTCM slabs G0 and G1</td><td>L2 cache</td></tr>
+<tr><td>computed by</td><td>HMX, 64-row tiles; HVX epilogues on the pool</td><td>HVX GEMV (<code>vrmpy</code>), 6 lanes</td><td>HVX GEMV, 6 lanes</td></tr>
+<tr><td>measured</td><td><code>dsp</code> 16 986 µs, <code>mm</code> 10 222 µs per prefill call (#120 A)</td><td>32.6 GB/s; <code>mm</code> 677.2 µs (#120 A)</td><td>≈ 23.5 GB/s (LEDGER rule 32); <code>mm</code> 934.3 µs (#120 A0)</td></tr>
+</tbody></table></div>
+<p>Two measured facts decide between b and c. The DMA engine alone moves 31–37 GB/s, depending on the unit (the anchor cell, LEDGER rule 34). HVX reading VTCM while a DMA writes into it costs only 0.1–0.3 % (LEDGER rule 29). So letting the engine stage the weights and HVX read the copy is faster than HVX pulling from DDR itself. The layouts below show how each path uses VTCM, on one scale.</p>
+<figure>
+<svg viewBox="0 0 880 262" role="img" aria-label="VTCM occupancy on one 8 MiB scale: prefill layout versus the decode feed's two slabs" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<line x1="160" y1="30" x2="160" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="160" y="222" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+<line x1="247.5" y1="30" x2="247.5" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="247.5" y="222" font-size="11" fill="#52514e" text-anchor="middle">1</text>
+<line x1="335" y1="30" x2="335" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="335" y="222" font-size="11" fill="#52514e" text-anchor="middle">2</text>
+<line x1="422.5" y1="30" x2="422.5" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="422.5" y="222" font-size="11" fill="#52514e" text-anchor="middle">3</text>
+<line x1="510" y1="30" x2="510" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="510" y="222" font-size="11" fill="#52514e" text-anchor="middle">4</text>
+<line x1="597.5" y1="30" x2="597.5" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="597.5" y="222" font-size="11" fill="#52514e" text-anchor="middle">5</text>
+<line x1="685" y1="30" x2="685" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="685" y="222" font-size="11" fill="#52514e" text-anchor="middle">6</text>
+<line x1="772.5" y1="30" x2="772.5" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="772.5" y="222" font-size="11" fill="#52514e" text-anchor="middle">7</text>
+<line x1="860" y1="30" x2="860" y2="206" stroke="#e1e0d9" stroke-width="1"/>
+<text x="860" y="222" font-size="11" fill="#52514e" text-anchor="middle">8</text>
+<text x="510" y="240" font-size="11" fill="#52514e" text-anchor="middle">VTCM offset, MiB (the whole 8 MiB is taken at open)</text>
+<text x="150" y="58" font-size="13" fill="#0b0b0b" text-anchor="end" font-weight="700">prefill</text>
+<text x="150" y="73" font-size="11" fill="#52514e" text-anchor="end">HMX path</text>
+<g><title>act block 128 KiB</title>
+<rect x="160" y="40" width="10.9375" height="40" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<g><title>buffer A: gate_up 3.5 MiB</title>
+<rect x="170.938" y="40" width="306.25" height="40" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<text x="324.062" y="57" font-size="12" fill="#0b0b0b" text-anchor="middle">buffer A: one expert's gate_up</text>
+<text x="324.062" y="71" font-size="11" fill="#0b0b0b" text-anchor="middle">3.5 MiB</text>
+<g><title>buffer B: down 1.75 MiB</title>
+<rect x="477.188" y="40" width="153.125" height="40" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<text x="553.75" y="57" font-size="12" fill="#0b0b0b" text-anchor="middle">buffer B: down</text>
+<text x="553.75" y="71" font-size="11" fill="#0b0b0b" text-anchor="middle">1.75 MiB</text>
+<g><title>epilogue buffers: gate 448 KiB, mid 112, result 512, res_f32 512</title>
+<rect x="630.312" y="40" width="135.352" height="40" rx="3" fill="#fcfcfb" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<line x1="165.469" y1="80" x2="165.469" y2="96" stroke="#52514e" stroke-width="1"/>
+<text x="160" y="108" font-size="11" fill="#52514e" text-anchor="start">64-row activation block, 128 KiB</text>
+<line x1="697.988" y1="80" x2="697.988" y2="96" stroke="#52514e" stroke-width="1"/>
+<text x="697.988" y="108" font-size="11" fill="#52514e" text-anchor="middle">epilogue buffers ≈ 1.5 MiB</text>
+<text x="150" y="148" font-size="13" fill="#0b0b0b" text-anchor="end" font-weight="700">decode</text>
+<text x="150" y="163" font-size="11" fill="#52514e" text-anchor="end">VTCM feed</text>
+<g><title>slab G0, 3.5 MiB</title>
+<rect x="160" y="130" width="306.25" height="40" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<text x="313.125" y="147" font-size="12" fill="#0b0b0b" text-anchor="middle">G0: gate_up e0, then e2</text>
+<text x="313.125" y="161" font-size="11" fill="#0b0b0b" text-anchor="middle">then down e0 | down e1</text>
+<g><title>slab G1, 3.5 MiB</title>
+<rect x="466.25" y="130" width="306.25" height="40" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+</g>
+<text x="619.375" y="147" font-size="12" fill="#0b0b0b" text-anchor="middle">G1: gate_up e1, then e3</text>
+<text x="619.375" y="161" font-size="11" fill="#0b0b0b" text-anchor="middle">then down e2 | down e3</text>
+<line x1="313.125" y1="170" x2="313.125" y2="178" stroke="#8a7f5c" stroke-width="1"/>
+<line x1="619.375" y1="170" x2="619.375" y2="178" stroke="#8a7f5c" stroke-width="1"/>
+<text x="816.25" y="154" font-size="11" fill="#52514e" text-anchor="middle">unused</text>
+<text x="160" y="196" font-size="11" fill="#52514e" text-anchor="start">each slab holds one gate_up (3.5 MiB) or two downs (1.75 MiB each; tick = the halfway split)</text>
+</svg>
+<figcaption>VTCM occupancy for the two DMA-fed paths, on the same 8 MiB axis. Prefill carves a 64-row activation block, one gate_up buffer (A), one down buffer (B) and the epilogue buffers: ≈ 6.9 MiB in all (sizes from <a href="moe-ffn.html#31-vtcm-layout">MoE FFN §3.1</a>; alignment padding omitted). The decode feed needs nothing but two 3.5 MiB slabs. Each slab holds one gate_up and later two downs of 1.75 MiB. Hover a segment for its size.</figcaption>
+</figure>
+<h3 id="4a-prefill-dma-ring-vtcm-hmx">4a. Prefill: the DMA ring into VTCM, HMX tiles <a class="hd" aria-label="link to this section" href="#4a-prefill-dma-ring-vtcm-hmx">#</a></h3>
+<p>HMX multiplies only operands that sit in VTCM, so prefill must stage everything. The caller thread owns the ring (<code>hexkl_dma_ring.c</code>): 256 <code>hexkl_dma_desc2d</code> slots, chained with <code>dmlink</code> onto the in-flight descriptor and started once with <code>dmstart</code>. Each push is a 2D transfer (<code>push2d(dst, src, dst_stride, src_stride, row_size, nrows)</code>).</p>
+<ul>
+<li>The first expert's gate_up goes out <em>before</em> the quantization scan, as paired gate/up chunk lists (at most 16 chunks per list; 4 for gate_up and 2 for down at this model's shape). The scan runs while it is in flight.</li>
+<li>The pool's background lane packs the activation into 64-row blocks (<code>submit_bg</code>). Each block is pushed into VTCM's activation slot behind the weights.</li>
+<li>For each 64-row block and chunk: <code>hexkl_dma_ring_wait</code> on that chunk's index, then <code>hexkl_micro_hmx_mm_u8i4</code>, then <code>hmx_acc_read_int32</code>. Pool workers run the dequant + SwiGLU, requant, down, dequant and scatter epilogues one job behind the HMX.</li>
+<li>Buffer A is reused with a time offset. Once expert e's last gate_up matmul is done, expert e+1's gate_up is pulled into A while e's down runs from B.</li>
+</ul>
+<p>A prefill call at prompt 512 measures <code>dsp</code> 16 986.0 µs, of which <code>mm</code> is 10 222.0 µs, plus 1978.5 µs of transport (#120 A, M&gt;1 row). The HMX path's deeper story is in <a href="hmx-matmul.html">the HMX matmul chapter</a> and <a href="moe-ffn.html#3-the-hmx-path-prefill">MoE FFN §3</a>.</p>
+<h3 id="4b-decode-default-the-vtcm-feed">4b. Decode default: the VTCM feed <a class="hd" aria-label="link to this section" href="#4b-decode-default-the-vtcm-feed">#</a></h3>
+<p>At M = 1 there is nothing to amortize: every weight byte is used once. The feed (PR #118, the default since <code>d79c0efe</code>) turns the call into a stream. The DMA engine copies whole expert matrices into two VTCM slabs, one expert ahead, and HVX computes from the copy.</p>
+<ul>
+<li><strong>Slabs.</strong> G0 sits at offset 0 and G1 at <code>gu_bytes</code> (3.5 MiB). Expert i's gate_up goes into slab <code>i &amp; 1</code> (<code>moe_m1_gu_off</code>). Once a slab has no gate_up left to hold, it takes two downs (<code>moe_m1_dn_off</code>: slab <code>(j &gt;&gt; 1) &amp; 1</code>, half <code>j &amp; 1</code>).</li>
+<li><strong>One descriptor per matrix.</strong> <code>moe_m1_push</code> issues each matrix as one 2D descriptor (row = <code>n_col × 512 B</code>, <code>k_tiles</code> rows). At top-4 that is 8 weight descriptors per call, plus the activation copy-in and output copy-out: the ring reads <code>desc=10/call</code>.</li>
+<li><strong>Order.</strong> gate_up e0 → G0 and e1 → G1 go out before the quantization scan. After stage A of expert i joins, gate_up i+2 goes into the slab that i just freed. After the last two gate_ups, the downs follow.</li>
+<li><strong>No prefetch under the feed.</strong> The <code>l2fetch</code> lead is forced off (<code>m1.lead_kb = 0</code>). An l2fetch of a VTCM address means nothing, and one of the arena would pull the same bytes twice.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 880 312" role="img" aria-label="Timeline of the VTCM feed in one decode call: the DMA engine streams gate_up then down matrices back to back into slabs G0 and G1 while HVX stages start as each slab lands" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com6-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<line x1="150" y1="44" x2="150" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="150" y="250" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+<line x1="248" y1="44" x2="248" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="248" y="250" font-size="11" fill="#52514e" text-anchor="middle">100</text>
+<line x1="346" y1="44" x2="346" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="346" y="250" font-size="11" fill="#52514e" text-anchor="middle">200</text>
+<line x1="444" y1="44" x2="444" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="444" y="250" font-size="11" fill="#52514e" text-anchor="middle">300</text>
+<line x1="542" y1="44" x2="542" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="542" y="250" font-size="11" fill="#52514e" text-anchor="middle">400</text>
+<line x1="640" y1="44" x2="640" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="640" y="250" font-size="11" fill="#52514e" text-anchor="middle">500</text>
+<line x1="738" y1="44" x2="738" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="738" y="250" font-size="11" fill="#52514e" text-anchor="middle">600</text>
+<line x1="836" y1="44" x2="836" y2="232" stroke="#e1e0d9" stroke-width="1"/>
+<text x="836" y="250" font-size="11" fill="#52514e" text-anchor="middle">700</text>
+<text x="855.6" y="268" font-size="11" fill="#52514e" text-anchor="end">time in the call (µs)</text>
+<line x1="150" y1="232" x2="855.6" y2="232" stroke="#52514e" stroke-width="1"/>
+<text x="16" y="84" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">DMA engine</text>
+<text x="16" y="99" font-size="11" fill="#52514e" text-anchor="start">(caller's ring)</text>
+<text x="16" y="142" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">HVX pool</text>
+<text x="16" y="157" font-size="11" fill="#52514e" text-anchor="start">(6 lanes)</text>
+<text x="16" y="206" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">caller only</text>
+<line x1="269.07" y1="36" x2="269.07" y2="232" stroke="#b35c00" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="273.07" y="30" font-size="11" fill="#b35c00" text-anchor="start">first gate_up ready: 121–122 µs</text>
+<line x1="640" y1="36" x2="640" y2="232" stroke="#b35c00" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="640" y="30" font-size="11" fill="#b35c00" text-anchor="middle">last push issued: ≈ 500 µs</text>
+<line x1="847.466" y1="36" x2="847.466" y2="232" stroke="#b35c00" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="847.466" y="30" font-size="11" fill="#b35c00" text-anchor="end">call ends: dsp 711.7 µs</text>
+<rect x="150" y="62" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="203.9" y="84" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e0 → G0</text>
+<rect x="257.8" y="62" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="311.7" y="84" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e1 → G1</text>
+<rect x="365.6" y="62" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="419.5" y="84" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e2 → G0</text>
+<rect x="473.4" y="62" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="527.3" y="84" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e3 → G1</text>
+<rect x="581.2" y="62" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="608.15" y="78" font-size="11" fill="#0b0b0b" text-anchor="middle">down e0</text>
+<text x="608.15" y="91" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G0</text>
+<rect x="635.1" y="62" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="662.05" y="78" font-size="11" fill="#0b0b0b" text-anchor="middle">down e1</text>
+<text x="662.05" y="91" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G0</text>
+<rect x="689" y="62" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="715.95" y="78" font-size="11" fill="#0b0b0b" text-anchor="middle">down e2</text>
+<text x="715.95" y="91" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G1</text>
+<rect x="742.9" y="62" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="769.85" y="78" font-size="11" fill="#0b0b0b" text-anchor="middle">down e3</text>
+<text x="769.85" y="91" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G1</text>
+<path d="M145,112 L155,112 L150,103 z" fill="#52514e"/>
+<path d="M292,112 L302,112 L297,103 z" fill="#52514e"/>
+<path d="M399.8,112 L409.8,112 L404.8,103 z" fill="#52514e"/>
+<path d="M507.6,112 L517.6,112 L512.6,103 z" fill="#52514e"/>
+<path d="M615.4,112 L625.4,112 L620.4,103 z" fill="#52514e"/>
+<rect x="257.8" y="120" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="277.4" y="137" font-size="11" fill="#0b0b0b" text-anchor="middle">A e0</text>
+<rect x="365.6" y="120" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="385.2" y="137" font-size="11" fill="#0b0b0b" text-anchor="middle">A e1</text>
+<rect x="473.4" y="120" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="493" y="137" font-size="11" fill="#0b0b0b" text-anchor="middle">A e2</text>
+<rect x="581.2" y="120" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="600.8" y="137" font-size="11" fill="#0b0b0b" text-anchor="middle">A e3</text>
+<rect x="635.1" y="152" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="658.7" y="169" font-size="11" fill="#0b0b0b" text-anchor="start">C e0</text>
+<rect x="689" y="152" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="712.6" y="169" font-size="11" fill="#0b0b0b" text-anchor="start">C e1</text>
+<rect x="742.9" y="152" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="766.5" y="169" font-size="11" fill="#0b0b0b" text-anchor="start">C e2</text>
+<rect x="796.8" y="152" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="820.4" y="169" font-size="11" fill="#0b0b0b" text-anchor="start">C e3</text>
+<rect x="150" y="190" width="7.84" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="162.84" y="207" font-size="11" fill="#0b0b0b" text-anchor="start">quant + pack</text>
+<rect x="620.4" y="190" width="9.8" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="615.4" y="207" font-size="11" fill="#0b0b0b" text-anchor="end">requant</text>
+<rect x="816.4" y="190" width="15.68" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="811.4" y="207" font-size="11" fill="#0b0b0b" text-anchor="end">scatter + copy out</text>
+<line x1="257.8" y1="98" x2="257.8" y2="120" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="365.6" y1="98" x2="365.6" y2="120" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="473.4" y1="98" x2="473.4" y2="120" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="581.2" y1="98" x2="581.2" y2="120" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="635.1" y1="98" x2="635.1" y2="152" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="689" y1="98" x2="689" y2="152" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="742.9" y1="98" x2="742.9" y2="152" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="796.8" y1="98" x2="796.8" y2="152" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+<path d="M16,288 L26,288 L21,279 z" fill="#52514e"/>
+<text x="32" y="290" font-size="11" fill="#52514e" text-anchor="start">push issued (each after the join that frees its slab)</text>
+<line x1="430" y1="285" x2="446" y2="285" stroke="#b35c00" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="452" y="290" font-size="11" fill="#52514e" text-anchor="start">measured in the same call (#117 B, level-2 trace)</text>
+</svg>
+<figcaption>The feed in one decode call at top-4. The bars are sized from measured rates, not traced: a gate_up of 3584 KB at the first-transfer rate of 33.2 GB/s is ≈ 110 µs, and a down ≈ 55 µs. The ≈ 240 µs of compute is split as in <a href="moe-ffn.html#6-the-vtcm-feed-decode-default">MoE FFN §6</a>. Each ▲ marks a push. The caller issues it right after the join that frees the slab, and it waits in the ring behind the transfer that is still running, so the engine never idles. The orange lines are measured in the same kind of call (#117 B, level-2 DMA trace): first gate_up ready at 121–122 µs, last push at ≈ 500 µs, call over at 711.7 µs (#120 A <code>dsp</code>).</figcaption>
+</figure>
+<p><strong>What was measured.</strong> #117 B's ring line reads <code>engine 32.3..34.4 GB/s</code> and <code>busy=640..681</code> µs of a 711–712 µs <code>dsp</code>, with <code>first 3584 KB took 110 us = 33.2 GB/s</code>. #120 A's ring line again reads <code>engine 32.3..34.4 GB/s</code>. Over the whole call, 22.02 MB go through VTCM at <strong>32.6 GB/s</strong> (BENCHMARK, cycle-15 budget). The ≈ 240 µs of HVX compute hides under the transfer, as LEDGER rule 29 predicted. In other words, the call now runs at the DMA engine's rate, and the MoE floor is bytes ÷ engine rate: 13.0–15.5 ms per token, depending on the unit (LEDGER rule 34). Against the arena read, the feed is +25.7 % decode at G = 64 (#120 A 35.97 vs A0 28.62 tok/s).</p>
+<h3 id="4c-the-arena-read-with-an-l2fetch-lead">4c. The arena read with an l2fetch lead (<code>FEED=0</code>) <a class="hd" aria-label="link to this section" href="#4c-the-arena-read-with-an-l2fetch-lead">#</a></h3>
+<p>This was the decode default from PR #115 until the feed landed. It is still the fallback when the slabs do not fit, and it runs when <code>NNTR_MOE_HTP_GEMV_FEED=0</code> is set. No engine is involved: each of the 6 lanes takes a contiguous, expert-major slice of the 512-byte weight tiles and loads them straight from the arena through L2. So that loads do not wait on DDR, a lane issues an <code>l2fetch</code> box for block b+1 before it computes block b. The lead is 192 KB (<code>HVX_GEMV_PF_LEAD_KB</code>, <code>NNTR_MOE_HTP_GEMV_LEAD_KB</code>), with the one-row loop (<code>ROWS1=1</code>). The hardware queues three l2fetch boxes per thread and stalls the thread on a fourth, so the code keeps at most three outstanding.</p>
+<figure>
+<svg viewBox="0 30 880 220" role="img" aria-label="The l2fetch lead on the arena-read path: an HVX lane computes block b from L2 while the l2fetch box for block b+1 pulls it from DDR into L2" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com7-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<text x="16" y="58" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">ION arena</text>
+<text x="16" y="73" font-size="11" fill="#52514e" text-anchor="start">(DDR)</text>
+<text x="16" y="138" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">L2 cache</text>
+<text x="16" y="208" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">HVX lane i</text>
+<text x="16" y="223" font-size="11" fill="#52514e" text-anchor="start">(1 of 6)</text>
+<rect x="150" y="44" width="160" height="36" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="230" y="67" font-size="12" fill="#898781" text-anchor="middle">block b−1 (done)</text>
+<rect x="320" y="44" width="160" height="36" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="400" y="67" font-size="12" fill="#0b0b0b" text-anchor="middle">block b</text>
+<rect x="490" y="44" width="160" height="36" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="570" y="67" font-size="12" fill="#0b0b0b" text-anchor="middle">block b+1</text>
+<rect x="660" y="44" width="160" height="36" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="740" y="67" font-size="12" fill="#0b0b0b" text-anchor="middle">block b+2</text>
+<rect x="320" y="124" width="160" height="36" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="400" y="147" font-size="12" fill="#0b0b0b" text-anchor="middle">block b (resident)</text>
+<rect x="490" y="124" width="160" height="36" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2" stroke-dasharray="4 3"/>
+<text x="570" y="147" font-size="12" fill="#0b0b0b" text-anchor="middle">block b+1 (arriving)</text>
+<rect x="320" y="190" width="160" height="36" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="400" y="213" font-size="12" fill="#0b0b0b" text-anchor="middle">vrmpy on block b</text>
+<path d="M570,80 L570,124" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com7-arrow)" stroke-dasharray="5 4"/>
+<rect x="575" y="96" width="164.4" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="578" y="106" font-size="11" fill="#52514e" text-anchor="start">l2fetch box: 192 KB lead</text>
+<path d="M400,160 L400,190" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#com7-arrow)"/>
+<rect x="405" y="170" width="85.2" height="15" rx="2" fill="#f9f9f7" stroke="none" stroke-width="0"/>
+<text x="408" y="180" font-size="11" fill="#52514e" text-anchor="start">vector loads</text>
+<text x="660" y="128" font-size="11" fill="#52514e" text-anchor="start">≤ 3 boxes outstanding per</text>
+<text x="660" y="143" font-size="11" fill="#52514e" text-anchor="start">thread; a 4th stalls it</text>
+<text x="490" y="208" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">6 lanes together: ≈ 23.5 GB/s</text>
+<text x="490" y="224" font-size="11" fill="#52514e" text-anchor="start">(latency-bound; no DMA engine involved)</text>
+</svg>
+<figcaption>The arena read on one HVX lane. While <code>vrmpy</code> works on block b out of L2, the l2fetch box for block b+1 (192 KB ahead) is already pulling it from DDR. The six lanes together reach ≈ 23.5 GB/s (LEDGER rule 32). The path is latency-bound: the same loop on L2-hot data runs at 31 ns per tile against 129 from the arena (#113's matrix, LEDGER rule 31).</figcaption>
+</figure>
+<p>Why it lost: HVX vector loads from DDR top out at 21–27 GB/s on this SoC (≈ 23.5 with the one-row loop and 192 KB lead). The engine delivers 31–37 GB/s (LEDGER rules 32 and 34). The difference is the whole +25.7 % above.</p>
+<figure>
+<svg viewBox="0 0 880 196" role="img" aria-label="Bar chart of weight bandwidth: HVX arena read about 23.5 GB/s, VTCM feed 32.6 GB/s over the call, DMA engine alone 31.2 to 37.3 GB/s depending on the unit" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com8-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<line x1="300" y1="14" x2="300" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="300" y="166" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+<line x1="410" y1="14" x2="410" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="410" y="166" font-size="11" fill="#52514e" text-anchor="middle">10</text>
+<line x1="520" y1="14" x2="520" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="520" y="166" font-size="11" fill="#52514e" text-anchor="middle">20</text>
+<line x1="630" y1="14" x2="630" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="630" y="166" font-size="11" fill="#52514e" text-anchor="middle">30</text>
+<line x1="740" y1="14" x2="740" y2="150" stroke="#e1e0d9" stroke-width="1"/>
+<text x="740" y="166" font-size="11" fill="#52514e" text-anchor="middle">40</text>
+<text x="520" y="186" font-size="11" fill="#52514e" text-anchor="middle">GB/s of expert weights delivered (axis starts at 0)</text>
+<text x="290" y="41" font-size="12" fill="#0b0b0b" text-anchor="end">arena read + l2fetch (FEED=0)</text>
+<g><title>arena read + l2fetch (FEED=0): ≈ 23.5 GB/s</title>
+<rect x="300" y="24" width="258.5" height="24" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+</g>
+<text x="564.5" y="41" font-size="12" fill="#0b0b0b" text-anchor="start">≈ 23.5</text>
+<text x="290" y="83" font-size="12" fill="#0b0b0b" text-anchor="end">VTCM feed, whole call (default)</text>
+<g><title>VTCM feed, whole call (default): 32.6 GB/s</title>
+<rect x="300" y="66" width="358.6" height="24" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+</g>
+<text x="664.6" y="83" font-size="12" fill="#0b0b0b" text-anchor="start">32.6</text>
+<text x="290" y="125" font-size="12" fill="#0b0b0b" text-anchor="end">DMA engine alone (anchor cell)</text>
+<g><title>DMA engine alone (anchor cell): 31.2–37.3 (per unit) GB/s</title>
+<rect x="300" y="108" width="343.2" height="24" rx="3" fill="#2a78d6" stroke="none" stroke-width="0"/>
+<rect x="645.2" y="108" width="65.1" height="24" rx="3" fill="#9cc0ec" stroke="none" stroke-width="0"/>
+</g>
+<text x="716.3" y="125" font-size="12" fill="#0b0b0b" text-anchor="start">31.2–37.3 (per unit)</text>
+</svg>
+<figcaption>Weight bandwidth each path delivers, in GB/s from zero. <strong>Arena read</strong>: LEDGER rule 32 (#120 A0's <code>mm</code> 934.3 µs over 22.02 MB is 23.6). <strong>VTCM feed</strong>: 22.02 MB over the 676 µs <code>mm</code> of the feed (BENCHMARK, cycle-15 budget). <strong>DMA engine alone</strong>: the untouched <code>DMA_REPLAY</code> anchor cell, 31.2 GB/s on one unit and 37.3 on the other (LEDGER rule 34). The feed runs at the engine's in-call rate, so on a slower unit it would read lower.</figcaption>
+</figure>
+<h2 id="5-synchronization-rules">5. Synchronization rules <a class="hd" aria-label="link to this section" href="#5-synchronization-rules">#</a></h2>
+<p>Nothing in this backend runs concurrently across the boundary. The ARM thread blocks for the whole call, and inside the DSP one thread (the caller) drives everything else. The picture below shows one call at the moment the feed is running. The table lists every rule and where the code enforces it.</p>
+<figure>
+<svg viewBox="0 30 880 286" role="img" aria-label="Synchronization during one call: the ARM thread holds invoke_mutex_ and polls; the DSP caller thread waits on descriptors in order, forks and joins the pool per expert, and pushes the next slab only after the join" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="com9-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<text x="16" y="58" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">ARM thread</text>
+<text x="16" y="73" font-size="11" fill="#52514e" text-anchor="start">HtpComputeOps</text>
+<text x="16" y="122" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">DSP caller</text>
+<text x="16" y="137" font-size="11" fill="#52514e" text-anchor="start">= worker 0</text>
+<text x="16" y="176" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">workers 1–5</text>
+<text x="16" y="191" font-size="11" fill="#52514e" text-anchor="start">pool threads</text>
+<text x="16" y="242" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">DMA engine</text>
+<text x="16" y="257" font-size="11" fill="#52514e" text-anchor="start">ring, in order</text>
+<rect x="170" y="44" width="690" height="32" rx="4" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="515" y="65" font-size="12" fill="#0b0b0b" text-anchor="middle">one FastRPC call: invoke_mutex_ held; the thread polls for the reply (≤ 5 ms window)</text>
+<rect x="180" y="108" width="70" height="32" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="215" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">wait d0</text>
+<rect x="250" y="108" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="290" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e0</text>
+<rect x="330" y="108" width="42" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="351" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">push</text>
+<rect x="372" y="108" width="58" height="32" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="401" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">wait d1</text>
+<rect x="430" y="108" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="470" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e1</text>
+<rect x="510" y="108" width="42" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="531" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">push</text>
+<rect x="552" y="108" width="58" height="32" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="581" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">wait d2</text>
+<rect x="610" y="108" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="650" y="128" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e2</text>
+<text x="700" y="128" font-size="11" fill="#52514e" text-anchor="start">… stages B, C, scatter</text>
+<rect x="250" y="162" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="290" y="182" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e0</text>
+<line x1="250" y1="140" x2="250" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<line x1="330" y1="140" x2="330" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<rect x="430" y="162" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="470" y="182" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e1</text>
+<line x1="430" y1="140" x2="430" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<line x1="510" y1="140" x2="510" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<rect x="610" y="162" width="80" height="32" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="650" y="182" font-size="11" fill="#0b0b0b" text-anchor="middle">run A e2</text>
+<line x1="610" y1="140" x2="610" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<line x1="690" y1="140" x2="690" y2="162" stroke="#52514e" stroke-width="1.2"/>
+<text x="254" y="208" font-size="11" fill="#52514e" text-anchor="start">fork</text>
+<text x="326" y="208" font-size="11" fill="#52514e" text-anchor="end">join</text>
+<rect x="170" y="228" width="78" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="210" y="248" font-size="11" fill="#0b0b0b" text-anchor="middle">d0 → G0</text>
+<rect x="250" y="228" width="178" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="340" y="248" font-size="11" fill="#0b0b0b" text-anchor="middle">d1: gate_up e1 → G1</text>
+<rect x="430" y="228" width="178" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="520" y="248" font-size="11" fill="#0b0b0b" text-anchor="middle">d2: gate_up e2 → G0</text>
+<rect x="610" y="228" width="178" height="32" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="700" y="248" font-size="11" fill="#0b0b0b" text-anchor="middle">d3: gate_up e3 → G1</text>
+<text x="800" y="248" font-size="13" fill="#52514e" text-anchor="start">…</text>
+<path d="M244,228 L244,142" fill="none" stroke="#898781" stroke-width="1" marker-end="url(#com9-arrow)" stroke-dasharray="3 3"/>
+<path d="M424,228 L424,142" fill="none" stroke="#898781" stroke-width="1" marker-end="url(#com9-arrow)" stroke-dasharray="3 3"/>
+<path d="M604,228 L604,142" fill="none" stroke="#898781" stroke-width="1" marker-end="url(#com9-arrow)" stroke-dasharray="3 3"/>
+<path d="M351,140 L351,214 L440,214 L440,226" fill="none" stroke="#52514e" stroke-width="1.2" marker-end="url(#com9-arrow)"/>
+<path d="M531,140 L531,214 L620,214 L620,226" fill="none" stroke="#52514e" stroke-width="1.2" marker-end="url(#com9-arrow)"/>
+<text x="170" y="284" font-size="11" fill="#52514e" text-anchor="start">Solid: a push goes out only after the join that ends the reads of its slab, and queues behind the running descriptor.</text>
+<text x="170" y="302" font-size="11" fill="#52514e" text-anchor="start">Dashed: a wait (dmpoll) ends when its descriptor retires; descriptors are dmlinked, so they retire in push order.</text>
+</svg>
+<figcaption>Synchronization inside one decode call. The ARM thread holds <code>invoke_mutex_</code> and polls for the reply. On the DSP, the caller thread is worker 0: it waits for a slab's descriptor, forks a pool run over all 6 lanes, joins, and only then pushes the next matrix into the slab that just became free. The DMA engine retires descriptors in push order.</figcaption>
+</figure>
+<div class="tablewrap"><table class="sync">
+<thead><tr><th>rule</th><th>where</th><th>what it guarantees</th></tr></thead>
+<tbody>
+<tr><td><strong>One call at a time.</strong> Every call is synchronous, and every invoke helper takes <code>invoke_mutex_</code>.</td><td><code>HtpComputeOps::invokeMoeLayer</code> and the other <code>invoke*</code> helpers</td><td>The staging pools, the session, the VTCM and the HMX lock have one owner. There are no concurrent DSP calls from one process.</td></tr>
+<tr><td><strong>Poll, don't sleep.</strong> The reply wait uses <code>RPC_POLL_QOS</code> with a 5000 µs window (fallback <code>RPC_PM_QOS</code> 100 µs).</td><td><code>HtpBackend</code> constructor; <code>NNTR_HTP_POLL_US</code></td><td>A call shorter than the window returns without an interrupt wake-up. The price is an ARM core spinning for up to 5 ms per call. The profile's first line prints <code>qos_mode=2</code> when polling is on and <code>1</code> after the PM-QoS fallback. With the poll back at 100 µs, decode was 11.0 % slower (#88 C vs B, G = 64).</td></tr>
+<tr><td><strong>Fork/join per stage.</strong> <code>hvx_worker_pool_run(pool, func, ctx, n)</code> runs unit 0 on the caller and the rest on the 5 workers. It returns only when all have finished.</td><td><code>hvx_worker_pool.c</code>; one run per expert per stage under the feed</td><td>A join is a full barrier: every lane's VTCM reads and output writes are done.</td></tr>
+<tr><td><strong>Descriptors retire in order.</strong> The ring is one <code>dmlink</code>ed chain. <code>hexkl_dma_ring_wait(idx)</code> spins on the descriptor's done bit with <code>dmpoll</code>.</td><td><code>hexkl_dma_ring.c</code>; only the caller thread touches the ring</td><td>Waiting on index i means every earlier push has landed too.</td></tr>
+<tr><td><strong>Slab reuse after the join.</strong> gate_up i+2 is pushed into slab <code>i &amp; 1</code> only after stage A(i) joins. Down j+4 reuses down j's slot only after C(j) joins.</td><td><code>hexkl_mm_u8i4_moe.c</code>, M = 1 feed block</td><td>The DMA never overwrites bytes a lane is still reading. The host scoreboard <code>test/htp/host/moe_layer_host_check.c</code> checks the schedule exactly.</td></tr>
+<tr><td><strong>The arena needs no flush.</strong> The arena's CPU mapping is uncached; the ARM writes it once at load, before the weight is registered, and never again.</td><td><code>tryChunk</code>, <code>HTP_RPC_FLAGS_UNCACHED</code></td><td>The DSP and its DMA engine always read what the ARM wrote. There is no per-call cache work on 3.6 GiB of weights.</td></tr>
+<tr><td><strong>The option echo and the stale-skel guard.</strong> <code>sendMoeOptsOnce</code> (<code>std::call_once</code>) sends <code>moe_set_opts(flags)</code> and requires <code>applied == flags</code>. A mismatch throws and says to rebuild the skel. A layer call that fails with <code>AEE_EBADPARM</code> (<code>0x8000040E</code>) gets the same hint.</td><td><code>HtpComputeOps</code>; skel <code>nntr_hvx_moe_set_opts</code></td><td>The ARM binary and the skel on the device agree on the IDL and the option bits. A skel that is out of date fails loudly on the first call; it never silently runs another path.</td></tr>
+</tbody></table></div>
+<h2 id="further-reading">Further reading <a class="hd" aria-label="link to this section" href="#further-reading">#</a></h2>
+<ul>
+<li><a href="foundation.html">Foundation</a>: FastRPC, the session, memory and the build (the IDL, stub and skel in detail).</li>
+<li><a href="moe-ffn.html">The MoE FFN on the DSP</a>: both kernel paths stage by stage, the option word and the feed's schedule.</li>
+<li><a href="hmx-matmul.html">The HMX integer matmul layer</a>: the tiles, the accumulator read and the FC path's double buffering.</li>
+<li><a href="weight-format.html">Weight format</a>: the WH tile layout the arena holds and how it is registered.</li>
+<li><a href="measurement.html">Measurement</a>: how <code>host</code>, <code>dsp</code>, <code>mm</code> and the DMA trace are taken.</li>
+</ul>
+<div class="pager"><span>← <a href="index.html">Results</a></span><span><a href="architecture.html">Architecture</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Snapshot <code>htp_moe</code> @ <code>a7c66dec</code>.</footer>
+</main>
+<script>
+(function(){
+  var fig=document.getElementById('com-callfig'), list=document.getElementById('com-steps'), nav=document.getElementById('com-stepnav');
+  if(!fig||!list||!nav) return;
+  var groups=fig.querySelectorAll('g.com-st'), items=list.querySelectorAll('li'), n=items.length, cur=0;
+  nav.className='stepnav';
+  nav.innerHTML='<button type="button" data-a="prev">← Prev</button><button type="button" data-a="next">Next →</button><button type="button" data-a="all">Show all</button><span aria-live="polite"></span>';
+  var status=nav.querySelector('span');
+  function show(k){
+    cur=k;
+    var on=k>0;
+    fig.classList.toggle('js-steps',on); list.classList.toggle('js-steps',on);
+    for(var i=0;i<groups.length;i++) groups[i].classList.toggle('on',+groups[i].getAttribute('data-step')===k);
+    for(var j=0;j<items.length;j++) items[j].classList.toggle('on',+items[j].getAttribute('data-step')===k);
+    status.textContent=on?('Step '+k+' of '+n):'All steps shown';
+  }
+  nav.addEventListener('click',function(e){
+    var a=e.target.getAttribute&&e.target.getAttribute('data-a'); if(!a) return;
+    if(a==='next') show(cur>=n?1:cur+1);
+    else if(a==='prev') show(cur<=1?n:cur-1);
+    else show(0);
+  });
+  show(0);
+})();
+</script>
+</body></html>

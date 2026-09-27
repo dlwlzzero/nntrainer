@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — The MoE FFN on the DSP</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html" class="here">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>The MoE FFN on the DSP</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-how-the-design-got-here">1. How the design got here <a class="header-anchor hd" href="#1-how-the-design-got-here">#</a></a></li><li><a href="#2-the-kernel-entry">2. The kernel entry <a class="header-anchor hd" href="#2-the-kernel-entry">#</a></a></li><li><a href="#3-the-hmx-path-prefill">3. The HMX path (prefill) <a class="header-anchor hd" href="#3-the-hmx-path-prefill">#</a></a></li><ul><li><a href="#31-vtcm-layout">3.1 VTCM layout <a class="header-anchor hd" href="#31-vtcm-layout">#</a></a></li><li><a href="#32-per-block-stage-by-stage">3.2 Per block, stage by stage <a class="header-anchor hd" href="#32-per-block-stage-by-stage">#</a></a></li></ul><li><a href="#4-the-gemv-path-decode-m--4">4. The GEMV path (decode, M ≤ 4) <a class="header-anchor hd" href="#4-the-gemv-path-decode-m--4">#</a></a></li><ul><li><a href="#41-stages">4.1 Stages <a class="header-anchor hd" href="#41-stages">#</a></a></li><li><a href="#42-the-gemv-kernel">4.2 The GEMV kernel <a class="header-anchor hd" href="#42-the-gemv-kernel">#</a></a></li><li><a href="#43-the-l2fetch-lead-and-why-it-helps-one-loop-and-hurts-the-other">4.3 The <code>l2fetch</code> lead, and why it helps one loop and hurts the other <a class="header-anchor hd" href="#43-the-l2fetch-lead-and-why-it-helps-one-loop-and-hurts-the-other">#</a></a></li><li><a href="#44-why-the-output-is-bit-identical-to-the-hmx-path">4.4 Why the output is bit-identical to the HMX path <a class="header-anchor hd" href="#44-why-the-output-is-bit-identical-to-the-hmx-path">#</a></a></li></ul><li><a href="#5-the-option-word-moe_set_opts">5. The option word (<code>moe_set_opts</code>) <a class="header-anchor hd" href="#5-the-option-word-moe_set_opts">#</a></a></li><li><a href="#6-the-vtcm-feed-decode-default">6. The VTCM feed (decode default) <a class="header-anchor hd" href="#6-the-vtcm-feed-decode-default">#</a></a></li><li><a href="#7-measured-per-path-per-call">7. Measured, per path, per call <a class="header-anchor hd" href="#7-measured-per-path-per-call">#</a></a></li><li><a href="#8-tried-and-dropped">8. Tried and dropped <a class="header-anchor hd" href="#8-tried-and-dropped">#</a></a></li></ul></details>
+<p>This chapter covers the one component that runs on the DSP in the measured
+configuration: the MoE feed-forward block of the 22 MoE layers. It goes one
+level below <a href="architecture.html">architecture.html</a> §4. It covers the kernel entry
+and its checks, the VTCM layout and DMA schedule of the matrix-unit (HMX)
+path used for prefill, the vector-unit (HVX) matrix-vector path used for
+decode, the VTCM weight feed that decode now uses by default, and the option
+word that picks between them. It closes with the numbers
+per path and the attempts that were dropped.</p>
+<p>Shapes used throughout (LFM2.5-8B-A1B): hidden <code>K = 2048</code>, expert width
+<code>inter = 1792</code>, output <code>N_out = 2048</code>, 32 experts, top-4 routing. In 32-wide
+tiles: <code>k_tiles = 64</code>, gate_up has 112 column tiles (56 gate + 56 up), down
+has 64 column tiles over 56 k-tiles. One expert's weights are gate_up
+3.5 MiB + down 1.75 MiB = 5.25 MiB, so a decode call reads 4 × 5.25 MiB =
+<strong>22.02 MB</strong>.</p>
+<h2 id="1-how-the-design-got-here">1. How the design got here <a class="hd" aria-label="link to this section" href="#1-how-the-design-got-here">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>step</th>
+<th>provenance</th>
+<th>what changed</th>
+<th>effect that shaped today's code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-expert calls</td>
+<td>upstream PR #4327</td>
+<td>Two FastRPC calls per expert (gate_up + SwiGLU, then down)</td>
+<td>176 calls per decode token (22 layers × 4 experts × 2); at ≈ 326 µs per call that is ≈ 57 ms/token of transport before any compute. Abandoned by construction</td>
+</tr>
+<tr>
+<td>One call per layer</td>
+<td>upstream PR #4327</td>
+<td><code>hexkl_mm_u8i4_moe_layer_run</code>: routing, every expert, the weighted sum, in one call</td>
+<td>Prefill transport 14.76 → 2.1 ms per layer (PR author's device). The pipeline work inside this call took prefill from 181 to 353 and then to 523 tok/s (prompt 444, PR author's device, 2026-09-15/16)</td>
+</tr>
+<tr>
+<td>HVX GEMV decode path</td>
+<td><code>htp_moe</code>, PR #86 (opt-in), PR #108 (default, #101)</td>
+<td>Calls with M ≤ 4 skip the HMX and run a matrix-vector product on HVX</td>
+<td>M == 1 <code>dsp</code> 1384.6 → 1041.5 µs/call, decode +13.5 % at gen 64 (#100, 2026-09-23, in-sitting A/A0)</td>
+</tr>
+<tr>
+<td>D192</td>
+<td><code>htp_moe</code>, PR #115 (absorbs PR #107)</td>
+<td>One-row inner loop + 192 KB <code>l2fetch</code> lead, both per-call bits of <code>moe_set_opts</code></td>
+<td><code>mm</code> 1000.2 → 937.0 µs/call, decode +3.3 to +4.3 % (#113, 2026-09-23)</td>
+</tr>
+<tr>
+<td>VTCM feed</td>
+<td><code>htp_moe</code>, PR #118 (merged as <code>d79c0efe</code>; default since <code>99fdbbf4</code>)</td>
+<td>Each expert's weights are DMA'd into VTCM one expert ahead of the GEMV; the D192 arena read stays as the opt-out <code>NNTR_MOE_HTP_GEMV_FEED=0</code></td>
+<td><code>mm</code> 931.9 → 676.4 µs/call, decode +28.6 to +32.5 % (#117, 2026-09-23)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each step removed the cost that the previous one exposed: first the round
+trips, then the 64-row padding of the matrix unit, then the wait for weight
+bytes.</p>
+<h2 id="2-the-kernel-entry">2. The kernel entry <a class="hd" aria-label="link to this section" href="#2-the-kernel-entry">#</a></h2>
+<p><em>Provenance: upstream PR #4327; the <code>use_m1</code> branch and the option bits are
+<code>htp_moe</code>.</em></p>
+<p>Everything below lives in
+<code>nntrainer/tensor/htp_backend/hmx/hexkl_mm_u8i4_moe.c</code>. The skel wrapper
+<code>nntr_hvx_mm_u8i4_moe_layer</code> (and its timed twin) in
+<code>test/htp/nntr_hvx_mm_u8i4.c</code> calls <code>hexkl_mm_u8i4_moe_layer_run</code> with the
+session's weight table, VTCM, worker pool, heap scratch and the option word
+stored by <code>nntr_hvx_moe_set_opts</code>.</p>
+<p><strong>Inputs.</strong> The routing arrives as three arrays in expert order:
+<code>row_count[e]</code> (tokens routed to expert <code>e</code>, zero allowed), <code>row_index</code>
+(those tokens' row numbers, grouped by expert) and <code>row_weight</code> (their
+routing weights). Two handle arrays name each expert's gate_up and down
+weights in the ION arena. The activation (<code>act_f32</code>, M × K) and the output
+(<code>out_f32</code>, M × N_out) are plain pointers to the ARM's shared buffers.</p>
+<p><strong>Validation happens before any work.</strong> A handle found bad halfway through
+would leave <code>out_f32</code> partly written, and the caller cannot tell that from a
+correct result. So, in order:</p>
+<ol>
+<li>Null pointers, <code>M == 0</code>, or no experts → <code>AEE_EBADPARM</code>.</li>
+<li><code>hexkl_mm_u8i4_moe_layout</code> checks that the shapes divide into tiles and
+that the VTCM layout (§3.1) fits <code>min(vtcm_size, config_off)</code> →
+<code>AEE_EBADPARM</code> or <code>AEE_ENOMEMORY</code>.</li>
+<li>Every expert with rows has in-range, registered handles whose shapes
+match <code>K</code>, <code>2 × inter</code>, <code>inter</code>, <code>N_out</code> → <code>AEE_EBADPARM</code>.</li>
+<li>Every <code>row_index</code> is below <code>M</code> → <code>AEE_EBADPARM</code>.</li>
+<li>The accumulator layout probe is usable → <code>AEE_EUNSUPPORTED</code>; the weight
+chunk count fits the fixed arrays (<code>MOE_MAX_CHUNKS</code>, 16) →
+<code>AEE_EUNSUPPORTED</code>.</li>
+</ol>
+<p>One thing is deliberately not checked: that a row appears only once inside
+one expert's slice. The scatter relies on it, and top-k routing guarantees
+it. The code marks this with a <code>ponytail:</code> comment; the fix, if a future
+router breaks it, belongs on the ARM side.</p>
+<p><strong>Scratch.</strong> Per-call staging lives in one heap block kept for the session
+(<code>hexkl_moe_scratch</code>). Allocating and freeing the ≈ 12.8 MB a prefill call
+needs cost 3.0 ms per call; now the block only grows. It is sized for the
+worst case of this many rows (<code>n_slots_cap</code>), not this call's routing, so
+the 22 calls of one prompt cannot regrow it one by one.</p>
+<p><strong>Uncached buffers are touched once.</strong> The ARM's buffers are rpcmem, which
+the DSP sees uncached. The kernel copies the activation in with one DMA
+(<code>moe_dma_copy</code>) into cached heap (<code>act_c</code>), works there, and copies the
+result out with one DMA at the end. Reading uncached memory element by
+element had measured 17.3 ms of gather and 104.8 ms of scatter per call.</p>
+<p><strong>Quantization.</strong> Each source row is scanned once for its u8 scale and zero
+point (<code>hvx_quant_rows_u8_params</code>), whatever number of experts use it. Rows
+are then packed into <em>slot order</em>: every active expert's rows,
+contiguous, padded to a 64-row block. A token routed to four experts
+occupies four slots. Padding slots repeat row 0 and are never read back.</p>
+<p><strong>Path decision</strong> (<code>use_m1</code>):</p>
+<pre><code>use_m1 = (flags &amp; HEXKL_MOE_FLAG_M1_GEMV)
+         &amp;&amp; M &lt;= MOE_M1_MAX_ROWS (4)
+         &amp;&amp; widest row_count &lt;= 4
+         &amp;&amp; 1 &lt;= active experts &lt;= MOE_M1_MAX_EXPERTS (16)
+</code></pre>
+<p>Prefill (M in the hundreds) can never enter the GEMV branch, so decode-side
+changes cannot slow prefill. The <code>widest</code> term restates M ≤ 4 for a caller
+that repeats a row inside an expert, because the GEMV's accumulator tiles
+hold four rows. 16 experts is the top-4 bound at M = 4. A wider routing
+falls back to the HMX loop rather than growing the scratch. The kernel
+header documents <code>HEXKL_MOE_FLAG_M1_GEMV</code> as &quot;off by default&quot;; that is the
+kernel's view (<code>flags = 0</code> is the HMX loop). The ARM side sets the bit
+unless <code>NNTR_MOE_HTP_M1_GEMV=0</code>, so in practice it is on.</p>
+<p>Inside the GEMV branch a second decision picks the weight source:</p>
+<pre><code>m1_feed = use_m1 &amp;&amp; feed bit (default 1)
+          &amp;&amp; 2 * gate_up bytes &lt;= arena &amp;&amp; 2 * down bytes &lt;= gate_up bytes
+</code></pre>
+<p>With <code>m1_feed</code> the weights are staged into VTCM (§6); without it the GEMV
+reads them from the arena behind its own <code>l2fetch</code> (§4.3).</p>
+<h2 id="3-the-hmx-path-prefill">3. The HMX path (prefill) <a class="hd" aria-label="link to this section" href="#3-the-hmx-path-prefill">#</a></h2>
+<p><em>Provenance: upstream PR #4327.</em></p>
+<h3 id="31-vtcm-layout">3.1 VTCM layout <a class="hd" aria-label="link to this section" href="#31-vtcm-layout">#</a></h3>
+<p><code>hexkl_mm_u8i4_moe_layout</code> carves the arena into fixed regions. Its sizes
+at the LFM2 shape:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>region</th>
+<th>holds</th>
+<th style="text-align:right">size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>act_off</code></td>
+<td>one 64-row activation block, AH tiles</td>
+<td style="text-align:right">128 KiB</td>
+</tr>
+<tr>
+<td><code>w_gu_off</code> (buffer A)</td>
+<td>one expert's gate_up weights</td>
+<td style="text-align:right">3.5 MiB</td>
+</tr>
+<tr>
+<td><code>w_dn_off</code> (buffer B)</td>
+<td>one expert's down weights</td>
+<td style="text-align:right">1.75 MiB</td>
+</tr>
+<tr>
+<td><code>gate_off</code></td>
+<td>64 × 1792 f32: <code>silu(gate)·up</code>, written by the fused epilogue</td>
+<td style="text-align:right">448 KiB</td>
+</tr>
+<tr>
+<td><code>mid_off</code></td>
+<td>the requantized SwiGLU output, AH tiles</td>
+<td style="text-align:right">112 KiB</td>
+</tr>
+<tr>
+<td><code>result_off</code></td>
+<td>two staging buffers of 32 accumulator tiles each</td>
+<td style="text-align:right">512 KiB</td>
+</tr>
+<tr>
+<td><code>res_f32_off</code></td>
+<td>64 × 2048 f32, down's dequantized block</td>
+<td style="text-align:right">512 KiB</td>
+</tr>
+<tr>
+<td><strong>total</strong></td>
+<td></td>
+<td style="text-align:right"><strong>≈ 6.9 MiB</strong> of the ≈ 8.3 MB arena</td>
+</tr>
+</tbody>
+</table></div>
+<p>Two design points follow from this table:</p>
+<ul>
+<li><strong>Weights are not double-buffered.</strong> Two copies of gate_up and down would
+be 10.5 MiB. Instead each buffer is reused with a time offset: once
+expert <em>e</em>'s last gate_up matmul is done, buffer A is dead, and expert
+<em>e+1</em>'s gate_up is pulled into it while <em>e</em>'s down matmul runs.</li>
+<li><strong>The accumulator count is capped at 32 tiles</strong>, not maximized. It is
+also the weight chunk size: 32 leaves gate_up in 4 chunks of paired
+columns and down in 2. A smaller chunk lets the matmul start sooner.</li>
+</ul>
+<p>&quot;Activation&quot; in VTCM is one 64-row block, not the whole M. The first
+version sized it for all rows and failed with <code>AEE_ENOMEMORY</code> on expert 6
+of a real run. The layout function now computes and rejects the layout
+before any hardware is touched, which also makes it testable on a host.</p>
+<h3 id="32-per-block-stage-by-stage">3.2 Per block, stage by stage <a class="hd" aria-label="link to this section" href="#32-per-block-stage-by-stage">#</a></h3>
+<p>The caller thread issues HMX work and owns the DMA ring. A worker pool (one
+lane per HVX context) runs the HVX epilogues <strong>one job behind</strong> the HMX. The
+names in <code>code</code> are the <code>[HTP-PROFILE]</code> columns (level 2) that time each
+step. Most columns time only the <em>exposed</em> wait, not the work that ran
+hidden.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>order</th>
+<th>step</th>
+<th>profile column</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Grow the scratch if needed</td>
+<td><code>alloc</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Copy the activation in by DMA; zero the output</td>
+<td><code>stage</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Push expert 0's gate_up chunks, <strong>before</strong> quantization: nothing in the scan needs VTCM, so 3.5 MiB of transfer hides behind it</td>
+<td><code>push</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Row scan; background pack of slot blocks in 16-row units on the pool's background lane; wait only for the block about to be queued</td>
+<td><code>quant</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Wait for the activation block; copy its row scales</td>
+<td><code>gather</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>First block of an expert: push its <strong>down</strong> chunks now, behind the activation and ahead of the whole gate_up matmul</td>
+<td><code>push</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Per gate_up batch: wait for the chunk (first block only)</td>
+<td><code>drain</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>HMX: 16 gate + 16 up column tiles × 64 k-tiles into staging buffer <code>ci &amp; 1</code></td>
+<td><code>mm</code>, <code>acc</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>Retire the previous pool job (the previous block's scatter, or epilogue <code>ci-1</code>), then submit this batch's <strong>fused dequant + SwiGLU</strong> into <code>gate_off</code></td>
+<td><code>scatter</code> / <code>dequant</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td>Wait for the last epilogue (requant needs all of <code>gate_off</code>)</td>
+<td><code>dequant</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td>Buffer A is dead: push the next activation block, or, on the expert's last block, the next expert's first activation block and then its gate_up chunks</td>
+<td><code>push</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td>Requantize <code>gate_off</code> to u8 AH tiles in <code>mid_off</code>, on the pool, synchronously</td>
+<td><code>requant</code></td>
+</tr>
+<tr>
+<td>13</td>
+<td>Per down batch: wait for the chunk (first block only), HMX, submit dequant into <code>res_f32</code></td>
+<td><code>drain</code> (dn), <code>mm</code>, <code>acc</code>, <code>dequant</code></td>
+</tr>
+<tr>
+<td>14</td>
+<td>Submit the routing multiply + scatter-add; it runs under the next block's first gate_up batch</td>
+<td><code>scatter</code></td>
+</tr>
+<tr>
+<td>15</td>
+<td>After the last block: wait for the scatter, copy the output out by DMA</td>
+<td><code>scatter</code>, <code>stage</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>rest</code> is the DSP clock minus every named column. <code>drain</code> also has a
+<code>DMA_FIRST</code> sub-reading: the first gate_up wait of the call, which has
+nothing to hide behind.</p>
+<figure>
+<svg viewBox="0 0 880 713" role="img" aria-label="Sequence of one 64-row expert block: the caller thread issues HMX work and owns the DMA ring, the HVX pool runs epilogues one job behind" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="moe-ffn-1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <line x1="120" y1="56" x2="120" y2="705" stroke="#c3c2b7" stroke-width="1.2"/>
+  <line x1="450" y1="56" x2="450" y2="705" stroke="#c3c2b7" stroke-width="1.2"/>
+  <line x1="770" y1="56" x2="770" y2="705" stroke="#c3c2b7" stroke-width="1.2"/>
+  <rect x="28.0" y="12" width="184" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="120" y="30.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">Caller thread</text>
+  <text x="120" y="47" fill="#0b0b0b" text-anchor="middle">(HMX issue, ring owner)</text>
+  <rect x="375.0" y="12" width="150" height="44" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="450" y="30.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">DMA ring</text>
+  <text x="450" y="47" fill="#0b0b0b" text-anchor="middle">(in push order)</text>
+  <rect x="705.0" y="12" width="130" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="770" y="30.1" fill="#0b0b0b" text-anchor="middle" font-weight="bold">HVX pool</text>
+  <text x="770" y="47" fill="#0b0b0b" text-anchor="middle">(epilogues)</text>
+  <rect x="45.0" y="66" width="800" height="26" rx="4" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="445" y="83.2" font-size="12" fill="#52514e" text-anchor="middle">expert e, one 64-row block (all of decode, the last block at prefill)</text>
+  <text x="285" y="119" font-size="12" fill="#0b0b0b" text-anchor="middle">wait act block e (gather)</text>
+  <path d="M120,125 H440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="125" r="9" fill="#52514e"/>
+  <text x="120" y="129" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">1</text>
+  <text x="285" y="154" font-size="12" fill="#0b0b0b" text-anchor="middle">push down[e] chunks 0,1</text>
+  <path d="M120,160 H440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="160" r="9" fill="#52514e"/>
+  <text x="120" y="164" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">2</text>
+  <text x="285" y="219" font-size="12" fill="#0b0b0b" text-anchor="middle">wait gate_up[e] chunk ci (drain)</text>
+  <path d="M120,225 H440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="225" r="9" fill="#52514e"/>
+  <text x="120" y="229" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">3</text>
+  <path d="M120,245 H150 V263 H129" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="245" r="9" fill="#52514e"/>
+  <text x="120" y="249" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">4</text>
+  <text x="160" y="250.5" font-size="12" fill="#0b0b0b">HMX 32 tiles x 64 k-tiles into staging</text>
+  <text x="160" y="265.5" font-size="12" fill="#0b0b0b">buffer ci mod 2 (mm, acc)</text>
+  <text x="610" y="296.5" font-size="12" fill="#0b0b0b" text-anchor="middle">retire previous job, submit</text>
+  <text x="610" y="311.5" font-size="12" fill="#0b0b0b" text-anchor="middle">dequant+SwiGLU of batch ci</text>
+  <path d="M120,317.5 H760" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="317.5" r="9" fill="#52514e"/>
+  <text x="120" y="321.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">5</text>
+  <rect x="30" y="174" width="830" height="151.5" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+  <path d="M30,174 H74.0 V186 L68.0,192 H30 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+  <text x="36" y="187" font-size="11" fill="#52514e" font-weight="bold">loop</text>
+  <text x="82" y="187" font-size="12" fill="#52514e">gate_up batch ci = 0..3</text>
+  <text x="610" y="354.5" font-size="12" fill="#0b0b0b" text-anchor="middle">wait last epilogue (dequant)</text>
+  <path d="M120,360.5 H760" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="360.5" r="9" fill="#52514e"/>
+  <text x="120" y="364.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">6</text>
+  <text x="285" y="389.5" font-size="12" fill="#0b0b0b" text-anchor="middle">push act block e+1, then</text>
+  <text x="285" y="404.5" font-size="12" fill="#0b0b0b" text-anchor="middle">gate_up[e+1] chunks 0..3</text>
+  <path d="M120,410.5 H440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="410.5" r="9" fill="#52514e"/>
+  <text x="120" y="414.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">7</text>
+  <rect x="285.0" y="424.5" width="330" height="42" rx="4" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="450" y="441.7" font-size="12" fill="#52514e" text-anchor="middle">gate_up[e+1] lands in buffer A</text>
+  <text x="450" y="457.7" font-size="12" fill="#52514e" text-anchor="middle">during requant and down of e</text>
+  <text x="610" y="493.5" font-size="12" fill="#0b0b0b" text-anchor="middle">requant gate to mid, synchronous (requant)</text>
+  <path d="M120,499.5 H760" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="499.5" r="9" fill="#52514e"/>
+  <text x="120" y="503.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">8</text>
+  <text x="285" y="558.5" font-size="12" fill="#0b0b0b" text-anchor="middle">wait down[e] chunk (drain_dn)</text>
+  <path d="M120,564.5 H440" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="564.5" r="9" fill="#52514e"/>
+  <text x="120" y="568.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">9</text>
+  <path d="M120,584.5 H150 V602.5 H129" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="584.5" r="9" fill="#52514e"/>
+  <text x="120" y="588.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">10</text>
+  <text x="160" y="597.5" font-size="12" fill="#0b0b0b">HMX 32 tiles x 56 k-tiles (mm, acc)</text>
+  <text x="610" y="631.5" font-size="12" fill="#0b0b0b" text-anchor="middle">submit dequant into res_f32</text>
+  <path d="M120,637.5 H760" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="637.5" r="9" fill="#52514e"/>
+  <text x="120" y="641.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">11</text>
+  <rect x="30" y="513.5" width="830" height="132.0" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+  <path d="M30,513.5 H74.0 V525.5 L68.0,531.5 H30 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+  <text x="36" y="526.5" font-size="11" fill="#52514e" font-weight="bold">loop</text>
+  <text x="82" y="526.5" font-size="12" fill="#52514e">down batch 0..1</text>
+  <text x="610" y="674.5" font-size="12" fill="#0b0b0b" text-anchor="middle">submit scatter (retired under the</text>
+  <text x="610" y="689.5" font-size="12" fill="#0b0b0b" text-anchor="middle">next block's first gate_up batch)</text>
+  <path d="M120,695.5 H760" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-1-arrow)"/>
+  <circle cx="120" cy="695.5" r="9" fill="#52514e"/>
+  <text x="120" y="699.5" font-size="11" fill="#ffffff" text-anchor="middle" font-weight="bold">12</text>
+</svg>
+<figcaption>One expert block on the HMX path. The caller thread waits on the DMA ring and issues the matmuls; each HVX epilogue runs one job behind on the pool. Step 7 refills buffer A with expert e+1's gate_up as soon as the last gate_up epilogue is done, so that transfer hides under e's requant and down matmul. Labels in parentheses are the <code>[HTP-PROFILE]</code> columns.</figcaption>
+</figure>
+<p>Three ordering rules make this work. The code comments name each one as easy
+to undo by accident:</p>
+<ul>
+<li><strong>Activation ahead of weights.</strong> The ring retires in push order, so a
+wait on index <em>i</em> waits for everything pushed before it. With the 128 KiB
+activation queued behind 5.25 MiB of weights, the &quot;gather&quot; wait covered
+the whole weight transfer (795 µs at decode). Queued first, the wait
+times only what it waits for. This one reorder was worth ≈ 2.8 ms per
+prefill call (PR author's device).</li>
+<li><strong>Paired gate/up chunks.</strong> The epilogue consumes gate tile <em>j</em> and up tile
+<em>j</em> together (<code>hvx_dequant_swiglu_acc_tiles_to_f32</code>), so
+<code>moe_push_gate_up_chunks</code> sends each chunk as the gate columns and the up
+columns opposite them. Chunked by plain column order, the first batch
+would wait for three quarters of the weight.</li>
+<li><strong>Every pool wait sits where the dependency is.</strong> Two staging buffers
+alternate under the HMX issue; <code>res_f32</code> has its own region so the
+scatter can read it while the next block's epilogue writes <code>gate_off</code>.
+Waiting for the scatter at the head of the block instead of after the
+first batch read 1056 µs per call; moved, it reads 23 µs.</li>
+</ul>
+<p><strong>Fused SwiGLU in the dequant.</strong> The gate and up accumulators never
+materialize as separate f32 arrays. The epilogue dequantizes both tiles and
+writes <code>silu(gate)·up</code> straight into <code>gate_off</code>, using the same deterministic
+SwiGLU function (<code>hvx_swiglu_det_sf</code>) on the same two vectors as the
+unfused sequence, so no output byte changed.</p>
+<p><strong>Where a prefill call's time goes</strong> (M &gt; 1 row, 17.5 ms per call,
+2026-09-16, prompt 444, PR author's device):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>column</th>
+<th style="text-align:right">ms/call</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mm</code> (HMX issue)</td>
+<td style="text-align:right">9.25</td>
+</tr>
+<tr>
+<td><code>acc</code> (accumulator read-out)</td>
+<td style="text-align:right">2.93</td>
+</tr>
+<tr>
+<td>transport (ARM ↔ DSP)</td>
+<td style="text-align:right">2.1</td>
+</tr>
+<tr>
+<td><code>requant</code></td>
+<td style="text-align:right">1.06</td>
+</tr>
+<tr>
+<td><code>dequant</code> (exposed)</td>
+<td style="text-align:right">0.85</td>
+</tr>
+<tr>
+<td><code>stage</code>, <code>quant</code>, <code>drain</code>, <code>rest</code>, <code>gather</code>, <code>scatter</code>, <code>push</code></td>
+<td style="text-align:right">0.36 + 0.26 + 0.22 + 0.19 + 0.14 + 0.05 + 0.05</td>
+</tr>
+</tbody>
+</table></div>
+<p>The HMX work itself is 70 % of the call. Everything else is at most 6 %
+each. In our sittings the M &gt; 1 <code>dsp</code> reads ≈ 16.4 ms per call (#117,
+2026-09-23) and prefill runs at ≈ 400–530 tok/s for a 512-token prompt,
+against the CPU's 270–340.</p>
+<p><strong>At decode this path pays for 64 rows to compute 1.</strong> Four experts × one
+64-row block, plus a 22 MB weight DMA that one live row cannot hide:
+<code>dsp</code> 1384.6 µs, <code>mm</code> 783.1 µs, weight DMA 15.9 GB/s (#100, 2026-09-23,
+M == 1). That is why decode left this path.</p>
+<h2 id="4-the-gemv-path-decode-m--4">4. The GEMV path (decode, M ≤ 4) <a class="hd" aria-label="link to this section" href="#4-the-gemv-path-decode-m--4">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (PR #86, #108, #115, #118). The kernel
+<code>hvx_gemm_u8i4_wh_col</code> was first written upstream for the prefill tail
+path (§7) and is reused here.</em></p>
+<h3 id="41-stages">4.1 Stages <a class="hd" aria-label="link to this section" href="#41-stages">#</a></h3>
+<p>With <code>use_m1</code>, the call never touches the HMX. Each expert's rows are packed
+inline into their slot block. Three stages follow on the worker pool, each
+across every lane (6 on v79: 5 workers + the caller), with a full join
+between them. The diagram shows the stages with weights read from the arena
+(the opt-out, <code>NNTR_MOE_HTP_GEMV_FEED=0</code>), where each stage is one pool
+run; §6 shows how the default feed splits stages A and C into one run per
+expert.</p>
+<figure>
+<svg viewBox="0 0 880 668" role="img" aria-label="The M equals 1 GEMV path: quant, then stage A pair worker, stage B requant, stage C down worker on the HVX pool, scatter and stage out" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="moe-ffn-2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <rect x="160" y="16" width="560" height="46" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="35" fill="#0b0b0b" text-anchor="middle">quant: scan the M rows once, pack each expert's rows</text>
+  <text x="440" y="52" fill="#0b0b0b" text-anchor="middle">into its AH slot block (inline, no background job)</text>
+  <path d="M440,62 V85" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="40" y="86" width="800" height="200" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+  <text x="54" y="106" fill="#52514e" font-weight="bold">Stage A: pool_run(moe_m1_pair_worker), wall timed as mm</text>
+  <rect x="230" y="118" width="420" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="136.1" fill="#0b0b0b" text-anchor="middle">units = active experts x 56 gate/up column pairs</text>
+  <text x="440" y="153.1" fill="#0b0b0b" text-anchor="middle">(224 at top-4, about 37 per lane)</text>
+  <path d="M440,162 V179" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="230" y="180" width="420" height="30" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="199.6" fill="#0b0b0b" text-anchor="middle">lane i takes a contiguous, expert-major slice</text>
+  <path d="M440,210 V227" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="230" y="228" width="420" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="246.1" fill="#0b0b0b" text-anchor="middle">per unit j: gemv gate col j, gemv up col 56+j,</text>
+  <text x="440" y="263.1" fill="#0b0b0b" text-anchor="middle">fused dequant + SwiGLU into gate_f32</text>
+  <path d="M440,286 V309" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="160" y="310" width="560" height="46" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="329.1" fill="#0b0b0b" text-anchor="middle">Stage B: pool_run(moe_m1_requant_worker), requant</text>
+  <text x="440" y="346.1" fill="#0b0b0b" text-anchor="middle">one unit per expert: gate_f32 to u8 AH (mid_ah)</text>
+  <path d="M440,356 V379" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="40" y="380" width="800" height="152" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+  <text x="54" y="400" fill="#52514e" font-weight="bold">Stage C: pool_run(moe_m1_down_worker), wall timed as mm</text>
+  <rect x="230" y="412" width="420" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="430.1" fill="#0b0b0b" text-anchor="middle">units = active experts x 64 down columns</text>
+  <text x="440" y="447.1" fill="#0b0b0b" text-anchor="middle">(256 at top-4, about 43 per lane)</text>
+  <path d="M440,456 V473" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="230" y="474" width="420" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="492.1" fill="#0b0b0b" text-anchor="middle">per unit: gemv down col over 56 k-tiles,</text>
+  <text x="440" y="509.1" fill="#0b0b0b" text-anchor="middle">dequant into the expert's res row</text>
+  <path d="M440,532 V555" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="160" y="556" width="560" height="46" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="575" fill="#0b0b0b" text-anchor="middle">scatter on the caller, expert order then row order:</text>
+  <text x="440" y="592" fill="#0b0b0b" text-anchor="middle">out += weight x res (hvx_scale_add_rows_f32)</text>
+  <path d="M440,602 V625" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#moe-ffn-2-arrow)"/>
+  <rect x="230" y="626" width="420" height="30" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="440" y="645.5" fill="#0b0b0b" text-anchor="middle">stage: DMA the output row back to the ARM buffer</text>
+</svg>
+<figcaption>The M == 1 decode path never touches the HMX: three pool runs across every lane (6 on v79), with a full join between them. Shown with weights read straight from the arena (<code>NNTR_MOE_HTP_GEMV_FEED=0</code>); the default VTCM feed splits stages A and C into one run per expert.</figcaption>
+</figure>
+<p>Stage A and C's per-unit bodies are exactly the tail path's
+(<code>moe_tail_pair_unit</code>, <code>moe_tail_down_unit</code>) on per-expert buffers carved
+from the scratch. Reserved for 16 experts, that is ≈ 4.2 MB of heap, and
+only when a decode call comes before any prefill call (a prefill call's
+12.8 MB already covers it). At M == 1 the profile reads <code>blocks=0</code> and
+<code>m1_gemv=calls/calls</code>, which is the per-call proof that this path ran.</p>
+<p>The <code>swiglu</code> column means something else here: the summed wall time of every
+lane inside stages A and C (<code>moe_tail_probe_add</code>). <code>swiglu / mm</code> therefore
+reads as &quot;lanes busy&quot;, ≈ 5.8 of 6 in #100. The printer
+(<code>htp_moe_row_rest_us</code> in <code>htp_moe_opts.h</code>) leaves it out of <code>rest</code> on this
+path.</p>
+<h3 id="42-the-gemv-kernel">4.2 The GEMV kernel <a class="hd" aria-label="link to this section" href="#42-the-gemv-kernel">#</a></h3>
+<p><code>hvx_gemm_u8i4_wh_col</code> in <code>nntrainer/tensor/htp_backend/hvx/hvx_gemm_u8i4_wh.c</code>
+computes one 32-wide output column for up to 16 rows, reading the <strong>same
+weight bytes the HMX reads</strong> (<code>QS4CX_WH</code> tiles in the arena). The layout is
+what makes it cheap. Each 128-byte quarter of a 512-byte weight tile is one
+HVX vector whose lane <em>c</em> holds four consecutive k values of column <em>c</em>.
+That is exactly what <code>vrmpy</code> (u8 × i8 four-way dot product) multiplies
+against four activation bytes.</p>
+<ul>
+<li>The nibbles are turned into <code>16·w</code> bytes by a shift-and-mask (low nibble)
+or a mask (high nibble), so one final arithmetic shift by 4 undoes the
+scaling exactly.</li>
+<li><code>gemm_rows4</code> computes four rows with four accumulators: 8 <code>vrmpy</code> per
+quarter-tile, of which only 2 are stored at m = 1.</li>
+<li><code>gemm_row1</code> computes a lone last row with one accumulator chain. It is
+<code>gemm_rows4</code>'s row-0 sequence with the other three rows left out.
+<code>rows1 = 1</code> selects it for m = 1, 5, 9, 13.</li>
+</ul>
+<p><code>hvx_gemm_u8i4_wh_col</code> issues its own <code>l2fetch</code> for the column before
+computing it. <code>hvx_gemm_u8i4_wh_col_nopf</code> does not, for callers that
+prefetched ahead of time.</p>
+<h3 id="43-the-l2fetch-lead-and-why-it-helps-one-loop-and-hurts-the-other">4.3 The <code>l2fetch</code> lead, and why it helps one loop and hurts the other <a class="hd" aria-label="link to this section" href="#43-the-l2fetch-lead-and-why-it-helps-one-loop-and-hurts-the-other">#</a></h3>
+<p>This applies to the arena read only; under the feed the lead is off (§6).
+Reading from the arena, the GEMV pulls 22 MB straight from DDR with vector
+loads. The
+arithmetic is ≈ 240 µs; the rest of <code>mm</code> is waiting for bytes. With a
+lead (<code>lead_kb</code> &gt; 0), each lane issues a 2D <code>l2fetch</code> box over its <em>next</em>
+block of units before computing the current one. A box covers at most 127
+tiles (the width field is 16 bits over 512-byte tiles), never crosses an
+expert, and stays inside the lane's slice (<code>moe_m1_block_end</code>,
+<code>moe_m1_lead_units</code>). At 192 KB that is 3 stage-A units (64 KB each: two
+columns × 64 k-tiles × 512 B) or 6 stage-C units (28 KB each).</p>
+<p>The hardware queues three <code>l2fetch</code> per thread and stalls the thread on a
+fourth. Stage A therefore issues block <em>b+1</em>'s gate box before block <em>b</em>'s
+first gate column and its up box only after block <em>b</em>'s last gate column. The
+gate half gets the full lead; the up half gets about two column-computes of
+it. The lead is read as an ordinal setting, not a byte count.</p>
+<p>Measured on the whole (loop × lead) matrix (<code>MoeM1GemvFeedVsCompute</code>,
+ns per weight tile, arena weights, #113, 2026-09-23):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>lead (KB)</th>
+<th style="text-align:right">0</th>
+<th style="text-align:right">192</th>
+<th style="text-align:right">384</th>
+<th style="text-align:right">768</th>
+<th style="text-align:right">1536</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>four-row loop, arena</td>
+<td style="text-align:right"><strong>133.5</strong></td>
+<td style="text-align:right">282.3</td>
+<td style="text-align:right">316.4</td>
+<td style="text-align:right">323.1</td>
+<td style="text-align:right">328.4</td>
+</tr>
+<tr>
+<td>one-row loop, arena</td>
+<td style="text-align:right">154.3</td>
+<td style="text-align:right"><strong>129.1</strong></td>
+<td style="text-align:right">139.4</td>
+<td style="text-align:right">147.3</td>
+<td style="text-align:right">155.2</td>
+</tr>
+<tr>
+<td>four-row loop, L2-hot</td>
+<td style="text-align:right">72.2</td>
+<td style="text-align:right">73.1</td>
+<td style="text-align:right">71.7</td>
+<td style="text-align:right">73.5</td>
+<td style="text-align:right">73.1</td>
+</tr>
+<tr>
+<td>one-row loop, L2-hot</td>
+<td style="text-align:right">42.7</td>
+<td style="text-align:right"><strong>31.3</strong></td>
+<td style="text-align:right">31.7</td>
+<td style="text-align:right">34.0</td>
+<td style="text-align:right">32.6</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>The one-row loop is latency-starved.</strong> With 2 <code>vrmpy</code> per quarter-tile
+it has few loads in flight to cover DDR latency. Alone it is <em>slower</em>
+than the four-row loop on the arena (154.3 vs 133.5), even though it is
+2.3× faster when the data is already in L2. The lead supplies the
+missing loads in flight, down to a minimum at 192 KB. Past that the lanes'
+in-flight boxes (2 × lead × 6 lanes) exceed the L2 budget and it degrades.</li>
+<li><strong>The four-row loop is not latency-starved.</strong> Its 8 <code>vrmpy</code> of loads per
+quarter-tile already cover the latency. Any lead makes it 2.1–2.5×
+slower, starting at the first non-zero value rather than at a capacity
+limit, while its L2-hot cell stays flat. That signature is
+<strong>interference</strong>: the prefetch boxes compete with the loop's own demand
+loads for L2 and the bus. It is not eviction.</li>
+</ul>
+<p>In the layer call the same ranking holds: one-row + 192 KB (D192) <code>mm</code>
+937.0 µs is the minimum of the matrix; four-row + 192 KB reads 1925.5
+(#113). D192 has been the default loop and lead since PR #115. Under the
+feed only its loop half matters.</p>
+<h3 id="44-why-the-output-is-bit-identical-to-the-hmx-path">4.4 Why the output is bit-identical to the HMX path <a class="hd" aria-label="link to this section" href="#44-why-the-output-is-bit-identical-to-the-hmx-path">#</a></h3>
+<ol>
+<li><strong>Integer sums are exact.</strong> Both units sum u8 × i4 products into int32
+with no rounding. <code>|sum| &lt; 255 · 8 · 32 · 16 · k_tiles</code> fits int32, so
+the order of accumulation cannot change a bit, and the loop choice
+(<code>rows1</code>) and the lead cannot either.</li>
+<li><strong>The epilogues are the same functions on the same numbers:</strong> the fused
+dequant + SwiGLU, the requantization and the down dequant.</li>
+<li><strong>Activation quantization does not depend on grouping.</strong> A row's scale,
+zero point and bytes are the same whichever expert block it lands in.</li>
+<li><strong>The f32 adds run in the same order.</strong> The scatter adds each expert's
+contribution in expert order, row by row, which is the sequence
+<code>moe_scatter_worker</code> produces on the HMX path (blocks sequential across
+experts, distinct rows within one).</li>
+</ol>
+<p>Checks that hold this, from host to silicon:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>check</th>
+<th>where</th>
+<th>what it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gemv_native_check.c</code></td>
+<td>host, x86, the SDK's HVX emulation</td>
+<td>The real kernel source equals a scalar sum over the WH nibbles for m = 1..16, <code>rows1</code> 0 and 1, both entries, random and extreme data (activation 255 against nibble −8); rows past m untouched</td>
+</tr>
+<tr>
+<td><code>moe_layer_host_check.c</code></td>
+<td>host, scalar stand-ins for HMX and HVX</td>
+<td>The GEMV path and the HMX path produce byte-identical output at M = 1, 2, 4, on a tiny and the real shape, under the build default and every (lead × loop) word, with the feed off and on. With the arena read, every column is covered by its lane's prefetch box. With the feed, a scoreboard fails any read of a slab before its wait and any push onto a slab still being read</td>
+</tr>
+<tr>
+<td><code>moe_opts_host_check.c</code></td>
+<td>host</td>
+<td>The option word for every env combination (<code>0x303e1</code> unset, <code>0x103e1</code> with the feed off, <code>0xe1</code> for the pre-PR #115 cell)</td>
+</tr>
+<tr>
+<td><code>MoeLayerM1GemvMatchesHmx</code></td>
+<td>device gtest (<code>test/unittest/unittest_hvx_mm_u8i4.cpp</code>)</td>
+<td>The same layer call with option word 0 (HMX) and with the GEMV bit, byte-compared at M = 1 and M = 4 (one expert holding all four tokens), for all ten (lead × loop) pairs × {arena, feed}; the skel's echo must equal the word sent</td>
+</tr>
+<tr>
+<td>Generated text</td>
+<td>every device sitting</td>
+<td>Text byte-identical between variants of one sitting (e.g. 36/36 runs in #117)</td>
+</tr>
+</tbody>
+</table></div>
+<p>The host checks run with <code>test/htp/host/run_host_checks.sh</code>; no DSP is
+needed.</p>
+<h2 id="5-the-option-word-moe_set_opts">5. The option word (<code>moe_set_opts</code>) <a class="hd" aria-label="link to this section" href="#5-the-option-word-moe_set_opts">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (PR #86; bits 6–16 from PR #115; bits 5 and 17 from
+PR #118).</em></p>
+<p>The ARM side builds one 32-bit word per session (<code>htp_moe_opts_flags</code> in
+<code>nntrainer/tensor/htp_backend/htp_moe_opts.h</code>) and sends it once through
+<code>nntr_hvx_moe_set_opts</code> (<code>sendMoeOptsOnce</code> in <code>htp_compute_ops.cpp</code>). The
+skel keeps only the bits it knows (<code>HEXKL_MOE_FLAGS_KNOWN</code>) and echoes them
+back as <code>applied</code>.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>bits</th>
+<th>mask</th>
+<th>name (DSP / ARM)</th>
+<th>meaning</th>
+<th>env variable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>0x1</code></td>
+<td><code>HEXKL_MOE_FLAG_M1_GEMV</code> / <code>HTP_MOE_FLAG_M1_GEMV</code></td>
+<td>calls with M ≤ 4 may take the GEMV path</td>
+<td><code>NNTR_MOE_HTP_M1_GEMV</code> (unset = on, <code>0</code> = off)</td>
+</tr>
+<tr>
+<td>1–4</td>
+<td>—</td>
+<td>—</td>
+<td>unused</td>
+<td></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>0x20</code></td>
+<td><code>HEXKL_MOE_FLAG_GEMV_FEED_SET</code></td>
+<td>bit 17 is authoritative</td>
+<td></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>0x40</code></td>
+<td><code>HEXKL_MOE_FLAG_GEMV_ROWS1_SET</code></td>
+<td>bit 16 is authoritative</td>
+<td></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>0x80</code></td>
+<td><code>HEXKL_MOE_FLAG_GEMV_LEAD_SET</code></td>
+<td>bits 15:8 are authoritative</td>
+<td></td>
+</tr>
+<tr>
+<td>15:8</td>
+<td><code>0xFF00</code></td>
+<td><code>HEXKL_MOE_GEMV_LEAD_SHIFT/BITS</code></td>
+<td><code>l2fetch</code> lead in 64 KB units (ARM rounds to the nearest unit, clamps to 127)</td>
+<td><code>NNTR_MOE_HTP_GEMV_LEAD_KB</code> (default 192)</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>0x10000</code></td>
+<td><code>HEXKL_MOE_FLAG_GEMV_ROWS1</code></td>
+<td>1 = one-row loop for a lone row</td>
+<td><code>NNTR_MOE_HTP_GEMV_ROWS1</code> (default 1)</td>
+</tr>
+<tr>
+<td>17</td>
+<td><code>0x20000</code></td>
+<td><code>HEXKL_MOE_FLAG_GEMV_FEED</code></td>
+<td>1 = VTCM feed, 0 = arena read</td>
+<td><code>NNTR_MOE_HTP_GEMV_FEED</code> (default 1)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each tuning field has its own &quot;set&quot; bit. With the bit clear, the DSP uses its
+compile-time default (<code>HVX_GEMV_PF_LEAD_KB</code>, <code>HVX_GEMV_M1_ROWS1</code>,
+<code>HVX_GEMV_M1_FEED</code>), so naming
+one knob never silently resets another to zero. The ARM side always sets
+every &quot;set&quot; bit and fills the fields from env or from its own copy of the
+defaults. The words that appear in logs:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>word</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x303e1</code></td>
+<td>the unset run today: GEMV on, one-row loop, lead field 192 KB (ignored under the feed), VTCM feed</td>
+</tr>
+<tr>
+<td><code>0x103e1</code></td>
+<td><code>NNTR_MOE_HTP_GEMV_FEED=0</code>: D192 reading the arena (the opt-out)</td>
+</tr>
+<tr>
+<td><code>0xe1</code></td>
+<td><code>LEAD_KB=0 ROWS1=0 FEED=0</code>: four-row loop, no lead, arena (the pre-PR #115 cell)</td>
+</tr>
+<tr>
+<td><code>0x103c1</code>, <code>0xc1</code></td>
+<td>the same two arena cells as printed by apps built before PR #118 (no feed &quot;set&quot; bit); the #113 and #117 logs carry these</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>The echo is a version check.</strong> A skel older than a bit masks it off, so
+<code>applied</code> differs from what was sent, and the ARM side throws instead of
+measuring the wrong variant. The same check made the matrix sweep of §4.3
+possible: one skel and one app serve every (loop, lead) cell, and each log's
+banner <code>[HTP] moe m1 gemv: on (applied=0x303e1) lead=192KB rows1=1 feed=vtcm source=default</code> names the cell that ran. With the GEMV bit off, only bit 0
+must match, so an opt-out run still works on an older skel.</p>
+<h2 id="6-the-vtcm-feed-decode-default">6. The VTCM feed (decode default) <a class="hd" aria-label="link to this section" href="#6-the-vtcm-feed-decode-default">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code>, PR #118 (merged as <code>d79c0efe</code>; <code>99fdbbf4</code> flips
+<code>HVX_GEMV_M1_FEED</code> to 1), measured in #117. The numbers below are #117's
+variant B, a lever cell: the feed has not yet been measured as the control
+of its own sitting, so the reference &quot;now&quot; is still #117's variant A (the
+arena read).</em></p>
+<p><strong>Why.</strong> At m = 1 the GEMV is bound by how fast weights arrive. HVX vector
+loads from DDR top out at 21–27 GB/s (≈ 23.6 GB/s under D192), while the DMA
+engine moves the same bytes at 31–37 GB/s depending on the unit. HVX
+reading VTCM beside a concurrent DMA into it costs 0.1–0.3 % (#100). So the
+feed stages each expert into VTCM with the DMA engine and lets the GEMV read
+the VTCM copy.</p>
+<p><strong>Slabs.</strong> The GEMV path uses no VTCM otherwise, so the whole arena is free.
+Two gate_up-sized slabs are enough, and the feed runs only when they fit
+(<code>2 · gu_bytes ≤ arena</code> and <code>2 · dn_bytes ≤ gu_bytes</code>; otherwise the call
+falls back to the arena read):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>slab</th>
+<th>offset</th>
+<th>first holds</th>
+<th>then holds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G0</td>
+<td>0</td>
+<td>gate_up of experts 0, 2</td>
+<td>down of experts 0 and 1 (two 1.75 MiB halves)</td>
+</tr>
+<tr>
+<td>G1</td>
+<td>3.5 MiB</td>
+<td>gate_up of experts 1, 3</td>
+<td>down of experts 2 and 3</td>
+</tr>
+</tbody>
+</table></div>
+<p>7 MiB of the ≈ 8.3 MB arena. <code>moe_m1_gu_off</code> and <code>moe_m1_dn_off</code> compute
+the offsets. Each push is one whole-matrix descriptor (<code>moe_m1_push</code>), which
+is the <code>f2</code> shape #100 certified: 8 weight descriptors per call at top-4,
+plus the two copy descriptors, so the ring reads <code>desc=10/call</code>.</p>
+<p><strong>Schedule.</strong> Stage A and stage C become one pool run <em>per expert</em>. Each
+slab reuse follows the join of the run that read it, so every reuse is a
+barrier that the host scoreboard in <code>moe_layer_host_check.c</code> can verify
+exactly. Only the caller touches the ring.</p>
+<pre><code>push gu(e0) -&gt; G0, gu(e1) -&gt; G1            before the quant scan
+A(e0): wait gu(e0); run;  push gu(e2) -&gt; G0
+A(e1): wait gu(e1); run;  push gu(e3) -&gt; G1
+A(e2): wait gu(e2); run;  push dn(e0), dn(e1) -&gt; G0
+A(e3): wait gu(e3); run;  push dn(e2), dn(e3) -&gt; G1
+B:     requant, all experts (unchanged)
+C(e):  wait dn(e); run                       e = 0..3
+</code></pre>
+<p>A slab's compute (≈ 40 µs for a gate_up, ≈ 20 µs for a down, across 6
+lanes) is shorter than its transfer (≈ 100–115 µs and ≈ 50–58 µs), so the
+next push always lands while the engine is still busy with the previous
+one. The DMA never idles and the compute hides under it:</p>
+<figure>
+<svg viewBox="0 0 880 250" role="img" aria-label="Timeline of the VTCM feed in one decode call: DMA engine lane streaming gate_up and down slabs back to back, HVX pool stages A and C starting as each slab lands" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="moe-ffn-3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+  <text x="16" y="22" font-size="14" fill="#0b0b0b" font-weight="bold">VTCM feed, one decode call, schematic</text>
+  <line x1="150.0" y1="38" x2="150.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="248.0" y1="38" x2="248.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="346.0" y1="38" x2="346.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="444.0" y1="38" x2="444.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="542.0" y1="38" x2="542.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="640.0" y1="38" x2="640.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="738.0" y1="38" x2="738.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <line x1="836.0" y1="38" x2="836.0" y2="196" stroke="#e1e0d9" stroke-width="1"/>
+  <text x="16" y="66" fill="#0b0b0b" font-weight="bold">DMA engine</text>
+  <text x="16" y="130" fill="#0b0b0b" font-weight="bold">HVX pool</text>
+  <text x="16" y="146" font-size="11" fill="#52514e">(6 lanes)</text>
+  <line x1="12" y1="88" x2="868" y2="88" stroke="#c3c2b7" stroke-width="1"/>
+  <line x1="257.8" y1="80" x2="257.8" y2="96" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="365.6" y1="80" x2="365.6" y2="96" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="473.4" y1="80" x2="473.4" y2="96" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="581.2" y1="80" x2="581.2" y2="96" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="635.1" y1="80" x2="635.1" y2="130" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="689.0" y1="80" x2="689.0" y2="130" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="742.9" y1="80" x2="742.9" y2="130" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="796.8" y1="80" x2="796.8" y2="130" stroke="#898781" stroke-width="1" stroke-dasharray="3 3"/>
+  <rect x="150.0" y="44" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="203.9" y="66" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e0 → G0</text>
+  <rect x="257.8" y="44" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="311.7" y="66" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e1 → G1</text>
+  <rect x="365.6" y="44" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="419.5" y="66" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e2 → G0</text>
+  <rect x="473.4" y="44" width="107.8" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="527.3" y="66" font-size="11" fill="#0b0b0b" text-anchor="middle">gate_up e3 → G1</text>
+  <rect x="581.2" y="44" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="608.15" y="59.4" font-size="11" fill="#0b0b0b" text-anchor="middle">down e0</text>
+  <text x="608.15" y="72.3" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G0</text>
+  <rect x="635.1" y="44" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="662.05" y="59.4" font-size="11" fill="#0b0b0b" text-anchor="middle">down e1</text>
+  <text x="662.05" y="72.3" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G0</text>
+  <rect x="689.0" y="44" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="715.95" y="59.4" font-size="11" fill="#0b0b0b" text-anchor="middle">down e2</text>
+  <text x="715.95" y="72.3" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G1</text>
+  <rect x="742.9" y="44" width="53.9" height="36" rx="3" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+  <text x="769.85" y="59.4" font-size="11" fill="#0b0b0b" text-anchor="middle">down e3</text>
+  <text x="769.85" y="72.3" font-size="11" fill="#0b0b0b" text-anchor="middle">→ G1</text>
+  <rect x="257.8" y="96" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="277.4" y="113" font-size="11" fill="#0b0b0b" text-anchor="middle">A e0</text>
+  <rect x="365.6" y="96" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="385.2" y="113" font-size="11" fill="#0b0b0b" text-anchor="middle">A e1</text>
+  <rect x="473.4" y="96" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="493" y="113" font-size="11" fill="#0b0b0b" text-anchor="middle">A e2</text>
+  <rect x="581.2" y="96" width="39.2" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="600.8" y="113" font-size="11" fill="#0b0b0b" text-anchor="middle">A e3</text>
+  <rect x="635.1" y="130" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="658.7" y="147" font-size="11" fill="#0b0b0b">C e0</text>
+  <rect x="689.0" y="130" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="712.6" y="147" font-size="11" fill="#0b0b0b">C e1</text>
+  <rect x="742.9" y="130" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="766.5" y="147" font-size="11" fill="#0b0b0b">C e2</text>
+  <rect x="796.8" y="130" width="19.6" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="820.4" y="147" font-size="11" fill="#0b0b0b">C e3</text>
+  <rect x="150.0" y="164" width="9.8" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="164.8" y="181" font-size="11" fill="#0b0b0b">quant scan and pack</text>
+  <rect x="620.4" y="164" width="9.8" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="615.4" y="181" font-size="11" fill="#0b0b0b" text-anchor="end">B requant</text>
+  <rect x="816.4" y="164" width="24.5" height="26" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="811.4" y="181" font-size="11" fill="#0b0b0b" text-anchor="end">scatter and copy out</text>
+  <line x1="150" y1="196" x2="855.6" y2="196" stroke="#52514e" stroke-width="1"/>
+  <line x1="150.0" y1="196" x2="150.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="150" y="215" font-size="11" fill="#52514e" text-anchor="middle">0</text>
+  <line x1="248.0" y1="196" x2="248.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="248" y="215" font-size="11" fill="#52514e" text-anchor="middle">100</text>
+  <line x1="346.0" y1="196" x2="346.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="346" y="215" font-size="11" fill="#52514e" text-anchor="middle">200</text>
+  <line x1="444.0" y1="196" x2="444.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="444" y="215" font-size="11" fill="#52514e" text-anchor="middle">300</text>
+  <line x1="542.0" y1="196" x2="542.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="542" y="215" font-size="11" fill="#52514e" text-anchor="middle">400</text>
+  <line x1="640.0" y1="196" x2="640.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="640" y="215" font-size="11" fill="#52514e" text-anchor="middle">500</text>
+  <line x1="738.0" y1="196" x2="738.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="738" y="215" font-size="11" fill="#52514e" text-anchor="middle">600</text>
+  <line x1="836.0" y1="196" x2="836.0" y2="201" stroke="#52514e" stroke-width="1"/>
+  <text x="836" y="215" font-size="11" fill="#52514e" text-anchor="middle">700</text>
+  <text x="855.6" y="234" font-size="11" fill="#52514e" text-anchor="end">time in the call (µs)</text>
+</svg>
+<figcaption>A schematic of the default VTCM feed in one decode call at top-4, with bars sized from the measured rates, not traced. The DMA engine streams each expert's gate_up and then its down weights into slabs G0 and G1 back to back. Each stage-A or stage-C run starts when its slab lands (dotted), and it finishes before the next slab arrives, so the engine never idles and the compute hides under the transfer.</figcaption>
+</figure>
+<p>The bars are sized from the measured rates, not traced. Measured in the
+same call (#117 sitting 2, level-2 profile): the first gate_up is ready at
+121–122 µs, the last weight is issued at ≈ 500 µs, and the engine is busy
+for 640–682 µs of the 712 µs <code>dsp</code>. The pushes and waits run inside the
+<code>mm</code> bracket, so <code>mm</code> reads the whole feed + compute wall; they are not
+added to <code>drain</code>, which the <code>rest</code> subtraction would otherwise count twice.</p>
+<p><strong>The lead is off under the feed</strong> by construction. An <code>l2fetch</code> of a VTCM
+address is meaningless, and one of the arena bytes would pull the same DDR
+bytes twice. Workers take the <code>_nopf</code> entry and issue no box. The loop stays
+one-row (L2-hot cell 31 vs 72 ns/tile).</p>
+<p><strong>Measured</strong> (#117, 2026-09-23, two sittings, gen 64
+level-2 profile, µs per M == 1 call):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right"><code>mm</code></th>
+<th style="text-align:right"><code>dsp</code></th>
+<th style="text-align:right">transport</th>
+<th style="text-align:right">weight read rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D192, arena read (A)</td>
+<td style="text-align:right">922.7 / 931.9</td>
+<td style="text-align:right">985.4 / 995.1</td>
+<td style="text-align:right">184.6 / 190.3</td>
+<td style="text-align:right">≈ 23.6 GB/s</td>
+</tr>
+<tr>
+<td>D192 + VTCM feed (B)</td>
+<td style="text-align:right"><strong>676.6 / 676.4</strong></td>
+<td style="text-align:right"><strong>711.2 / 711.9</strong></td>
+<td style="text-align:right"><strong>82.0 / 92.3</strong></td>
+<td style="text-align:right">≈ 32.6 GB/s</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>Decode, B vs A, same sitting: +25.2 / +35.7 / +23.2 % (sitting 1, warm)
+and <strong>+32.5 / +30.9 / +28.6 %</strong> (sitting 2, cooled) at gen 64 / 512 /
+1024. Text identical in 36/36 runs.</li>
+<li>Bit identity: <code>MoeLayerM1GemvMatchesHmx</code> extended to ten (lead × loop)
+pairs × {arena, feed}, 0 bad elements at M = 1 and M = 4, both sittings.</li>
+<li>The <code>vtcm</code> microbench cell runs at the engine rate: 579 µs for 22.02 MB,
+no measurable compute tail. So the design alternative (one pool run per
+stage with workers polling the ring) has nothing left to win and was not
+built.</li>
+<li>Transport fell by ≈ 100 µs per call as well. The &quot;+100 µs of the GEMV
+path&quot; seen in #100 belonged to the direct arena read, not to the GEMV.
+The cause is not separated.</li>
+<li>Prefill: the feed never runs at M &gt; 1 (<code>feed=0/23</code>); M &gt; 1 <code>dsp</code> moved
+±0.04 %.</li>
+</ul>
+<p><strong>The gain depends on the unit.</strong> This unit's DMA engine reads 37.3 GB/s
+on an untouched reference cell; the other S25 Ultra used in this project
+reads 31.2. The HVX arena read is the same on both. On the slower unit the
+same <code>mm</code> would read ≈ 805–809 µs and decode would gain ≈ +10 % instead of
+≈ +30 %. The floor per call is 22.02 MB divided by the engine rate: ≈ 590 µs
+here, ≈ 705 µs there.</p>
+<h2 id="7-measured-per-path-per-call">7. Measured, per path, per call <a class="hd" aria-label="link to this section" href="#7-measured-per-path-per-call">#</a></h2>
+<p>M == 1 row of the level-2 <code>[HTP-PROFILE]</code>, gen 64, µs per call. Rows inside
+one block come from one sitting and can be compared; blocks cannot be
+compared with each other (different day, different unit).</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>sitting</th>
+<th>path</th>
+<th style="text-align:right"><code>mm</code></th>
+<th style="text-align:right"><code>dsp</code></th>
+<th style="text-align:right">transport</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#100, 2026-09-23</td>
+<td>HMX block loop</td>
+<td style="text-align:right">783.1</td>
+<td style="text-align:right">1384.6</td>
+<td style="text-align:right">84.6</td>
+</tr>
+<tr>
+<td></td>
+<td>GEMV, four-row, no lead</td>
+<td style="text-align:right">980.9</td>
+<td style="text-align:right">1041.5</td>
+<td style="text-align:right">185.8</td>
+</tr>
+<tr>
+<td>#105, 2026-09-22</td>
+<td>GEMV, four-row, no lead</td>
+<td style="text-align:right">973.0</td>
+<td style="text-align:right">1032.6</td>
+<td style="text-align:right">182–184</td>
+</tr>
+<tr>
+<td></td>
+<td>GEMV, one-row, no lead</td>
+<td style="text-align:right">1044.6</td>
+<td style="text-align:right">1104.9</td>
+<td style="text-align:right">—</td>
+</tr>
+<tr>
+<td></td>
+<td>GEMV, one-row, 192 KB</td>
+<td style="text-align:right">930.9</td>
+<td style="text-align:right">991.1</td>
+<td style="text-align:right">186–191</td>
+</tr>
+<tr>
+<td>#113, 2026-09-23</td>
+<td>GEMV, four-row, no lead</td>
+<td style="text-align:right">1000.2</td>
+<td style="text-align:right">1059.4</td>
+<td style="text-align:right">180.8</td>
+</tr>
+<tr>
+<td></td>
+<td>GEMV, four-row, 192 KB</td>
+<td style="text-align:right">1925.5</td>
+<td style="text-align:right">1985.9</td>
+<td style="text-align:right">182.6</td>
+</tr>
+<tr>
+<td></td>
+<td>GEMV, one-row, 384 KB</td>
+<td style="text-align:right">1042.8</td>
+<td style="text-align:right">1103.8</td>
+<td style="text-align:right">185.0</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>GEMV, D192</strong> (one-row, 192 KB)</td>
+<td style="text-align:right"><strong>937.0</strong></td>
+<td style="text-align:right"><strong>995.5</strong></td>
+<td style="text-align:right">179.5</td>
+</tr>
+<tr>
+<td>#117 sitting 2, 2026-09-23</td>
+<td>GEMV, four-row, no lead</td>
+<td style="text-align:right">997.4</td>
+<td style="text-align:right">1059.4</td>
+<td style="text-align:right">185.2</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>GEMV, D192, arena read</strong> (opt-out since PR #118)</td>
+<td style="text-align:right"><strong>931.9</strong></td>
+<td style="text-align:right"><strong>995.1</strong></td>
+<td style="text-align:right">190.3</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>GEMV, D192 + VTCM feed</strong> (default since PR #118)</td>
+<td style="text-align:right"><strong>676.4</strong></td>
+<td style="text-align:right"><strong>711.9</strong></td>
+<td style="text-align:right"><strong>92.3</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>mm</code> on the HMX row is the HMX issue alone; the weight wait is in <code>drain</code>
+and <code>gather</code>. On the GEMV rows <code>mm</code> includes waiting for the weights.</p>
+<p>Decode tok/s, in-sitting A/B only: GEMV vs HMX <strong>+13.5 %</strong> at gen 64
+(#100); D192 vs four-row <strong>+4.11 / +3.29 / +4.26 %</strong> (#113) and <strong>+2.41 /
++4.16 / +3.91 %</strong> (#117 sitting 2); feed vs D192 <strong>+32.5 / +30.9 / +28.6 %</strong>
+(#117 sitting 2).</p>
+<p>Prefill, prompt 444 on the PR author's device: 181 → 353 → 523 tok/s over
+the upstream pipeline work (2026-09-15/16). Prompt 512 in our sittings:
+≈ 400–530 tok/s (e.g. 401.9–528.9 in #117 sitting 2). No change in this
+chapter moved the M &gt; 1 <code>dsp</code> by more than 0.1 % in its own sitting.</p>
+<h2 id="8-tried-and-dropped">8. Tried and dropped <a class="hd" aria-label="link to this section" href="#8-tried-and-dropped">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-expert FastRPC calls (upstream PR #4327, early)</td>
+<td>176 calls per decode token; ≈ 57 ms/token of transport before any compute</td>
+<td>The reason the whole layer is one call</td>
+</tr>
+<tr>
+<td>VTCM layout sized for all M rows (upstream, 2026-09-08)</td>
+<td><code>AEE_ENOMEMORY</code> on expert 6 of a real run (≈ 8.75 MB needed at <code>m_pad</code> 128)</td>
+<td>The layout holds one 64-row block, and <code>hexkl_mm_u8i4_moe_layout</code> rejects a non-fitting layout before any work</td>
+</tr>
+<tr>
+<td>Quant fused into one dispatch split by 4-row groups (&quot;Q1&quot;), splat hoisting in dequant (&quot;DQ1&quot;), on the earlier two-call path (2026-09-10, PR author's device)</td>
+<td>Q1: <code>quant</code> 98.5 → 295.5 µs (scattered 128-byte writes into uncached DDR); DQ1: no effect. Both rolled back. Queuing the weight DMA before the activation quant (&quot;D1&quot;) cut <code>drain</code> 80 % and survived</td>
+<td>Memory type and access pattern decide the time here, not instruction counts. D1 survives as &quot;first gate_up before the scan&quot; (§3.2 step 3)</td>
+</tr>
+<tr>
+<td>Requant row scan fused into the SwiGLU epilogue (&quot;O4&quot;, 2026-09-16)</td>
+<td>No change; reverted</td>
+<td>The requant cost was worker wake-ups, not the scan. The fix was spin-before-sleep in the pool (<code>HVX_WORKER_POOL_SPIN</code>): <code>dequant</code> 1237 → 849, <code>requant</code> 1271 → 1059 µs, prefill 494 → 523 tok/s</td>
+</tr>
+<tr>
+<td>Expert tail blocks (≤ 16 rows) on HVX during prefill (&quot;O1&quot;, 2026-09-16)</td>
+<td>3.5 tails per call left the HMX (−0.59 ms), but tails finished late and held workers the epilogues waited for (+1.07 ms): net <code>dsp</code> +0.47 ms per call</td>
+<td>Code kept, off by default (<code>MOE_TAIL_MAX_ROWS 0</code>), host-checked at 16. Its three stages became the decode GEMV path</td>
+</tr>
+<tr>
+<td>GEMV instead of HMX at M = 1 for the dense FC path</td>
+<td>Rejected there: the 64-row padding cost only ≈ 40 µs per matmul</td>
+<td>Does not transfer to the MoE: at decode the 64-row tiles cost 1.03 ms of a 1.35 ms MoE call, which is why the GEMV was re-opened for it</td>
+</tr>
+<tr>
+<td>One-row loop without a lead (#105, 2026-09-22)</td>
+<td><code>mm</code> 973.0 → 1044.6 µs (+7.4 %), decode −4.1 / −4.0 / −8.4 %</td>
+<td>Cutting compute on a latency-bound loop makes it slower. The one-row loop only pays together with a lead, or when reading VTCM</td>
+</tr>
+<tr>
+<td>Four-row loop with a lead (#113, 2026-09-23)</td>
+<td>192 KB: <code>mm</code> 1000.2 → 1925.5 µs; 384 KB: 2126.9</td>
+<td>Prefetch interferes with a loop that already has enough loads in flight. A prefetch knob gets its own L2-hot vs arena cell before it lands</td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="pager"><span>← <a href="hmx-matmul.html">HMX matmul</a></span><span><a href="measurement.html">Measurement</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>
