@@ -1,0 +1,1380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Measurement</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html" class="here">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>Measurement</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-how-we-measure">1. How we measure <a class="header-anchor hd" href="#1-how-we-measure">#</a></a></li><ul><li><a href="#11-the-run">1.1 The run <a class="header-anchor hd" href="#11-the-run">#</a></a></li><li><a href="#12-sittings-variant-a-first-mirrored-order">1.2 Sittings, variant A first, mirrored order <a class="header-anchor hd" href="#12-sittings-variant-a-first-mirrored-order">#</a></a></li><li><a href="#13-units">1.3 Units <a class="header-anchor hd" href="#13-units">#</a></a></li><li><a href="#14-thermal-handling">1.4 Thermal handling <a class="header-anchor hd" href="#14-thermal-handling">#</a></a></li><li><a href="#15-gates">1.5 Gates <a class="header-anchor hd" href="#15-gates">#</a></a></li><li><a href="#16-path-banners-are-the-proof-of-which-path-ran">1.6 Path banners are the proof of which path ran <a class="header-anchor hd" href="#16-path-banners-are-the-proof-of-which-path-ran">#</a></a></li><li><a href="#17-artifact-provenance">1.7 Artifact provenance <a class="header-anchor hd" href="#17-artifact-provenance">#</a></a></li></ul><li><a href="#2-how-to-read-a-profile">2. How to read a profile <a class="header-anchor hd" href="#2-how-to-read-a-profile">#</a></a></li><ul><li><a href="#21-levels">2.1 Levels <a class="header-anchor hd" href="#21-levels">#</a></a></li><li><a href="#22-the-row">2.2 The row <a class="header-anchor hd" href="#22-the-row">#</a></a></li><li><a href="#23-the-lines-under-the-row">2.3 The lines under the row <a class="header-anchor hd" href="#23-the-lines-under-the-row">#</a></a></li><li><a href="#24-the-current-paths-per-call">2.4 The current paths, per call <a class="header-anchor hd" href="#24-the-current-paths-per-call">#</a></a></li><li><a href="#25-the-per-token-budget">2.5 The per-token budget <a class="header-anchor hd" href="#25-the-per-token-budget">#</a></a></li></ul><li><a href="#3-verification-ladder">3. Verification ladder <a class="header-anchor hd" href="#3-verification-ladder">#</a></a></li><li><a href="#4-benchmark-table">4. Benchmark table <a class="header-anchor hd" href="#4-benchmark-table">#</a></a></li><ul><li><a href="#current-reference-now">Current reference (&quot;now&quot;) <a class="header-anchor hd" href="#current-reference-now">#</a></a></li><li><a href="#history">History <a class="header-anchor hd" href="#history">#</a></a></li></ul><li><a href="#5-goals">5. Goals <a class="header-anchor hd" href="#5-goals">#</a></a></li><li><a href="#6-updating-this-chapter">6. Updating this chapter <a class="header-anchor hd" href="#6-updating-this-chapter">#</a></a></li></ul></details>
+<p>This chapter covers how LFM2.5-8B-A1B decode speed is measured on the
+phone, how to read the NPU profile the runtime prints, the checks a change
+must pass before it goes to the phone, and the benchmark and goal tables
+themselves. The last section is the checklist a person follows to add a new
+measurement sitting to this chapter, with no tooling beyond a shell and a
+text editor.</p>
+<p>Provenance: the profiler's base (levels 1–3, the <code>host</code> / <code>dsp</code> /
+<code>transport</code> columns, the stage columns, <code>blocks=</code>, the <code>weight DMA:</code> line)
+comes from <strong>upstream PR #4327</strong>. The measurement protocol, the <code>DMA ring:</code>
+and <code>staging:</code> lines, <code>m1_gemv=</code>, the swiglu lane-time reading, the host
+checks added after the PR and every number below are <strong>htp_moe</strong>.</p>
+<h2 id="1-how-we-measure">1. How we measure <a class="hd" aria-label="link to this section" href="#1-how-we-measure">#</a></h2>
+<h3 id="11-the-run">1.1 The run <a class="hd" aria-label="link to this section" href="#11-the-run">#</a></h3>
+<p>Every number in this chapter comes from a <strong>full-model end-to-end run</strong> on
+the phone: <code>nntrainer_causallm</code> with the real 8B model, never a kernel
+benchmark on its own. Kernel tests and probes may run next to it but never
+replace it.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>setting</th>
+<th>value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>binary</td>
+<td><code>nntrainer_causallm</code>, release build with <code>--htp</code>. A <code>--profile</code> build is never used for tok/s, because it inflates prefill by about 83 %</td>
+</tr>
+<tr>
+<td>threads</td>
+<td><code>NNTR_NUM_THREADS=8</code>, for both the CPU and the NPU model</td>
+</tr>
+<tr>
+<td>prompt</td>
+<td>512 tokens (<code>prompt512.txt</code>, md5 <code>fc65c158…</code>)</td>
+</tr>
+<tr>
+<td>generation</td>
+<td>64, 512 and 1024 tokens (<code>&quot;num_to_generate&quot;</code> in the model's <code>nntr_config.json</code>)</td>
+</tr>
+<tr>
+<td>decoding</td>
+<td>greedy (<code>&quot;do_sample&quot;: false</code>, <code>&quot;bad_word_ids&quot;: [124900]</code>) so the text can be compared byte for byte</td>
+</tr>
+<tr>
+<td>repeats</td>
+<td>two runs per cell (variant × G), reported as the mean of the two</td>
+</tr>
+<tr>
+<td>NPU model</td>
+<td><code>q40-qs4cx-wh</code>: MoE experts in <code>QS4CX_WH</code>, everything else Q4_0; <code>&quot;moe_engine&quot;: &quot;htp&quot;</code>, <code>&quot;moe_htp_layers&quot;: &quot;&quot;</code></td>
+</tr>
+<tr>
+<td>CPU model</td>
+<td><code>q40</code>: all Q4_0, no HTP</td>
+</tr>
+</tbody>
+</table></div>
+<p>The run prints one block at the end (<code>Applications/CausalLM/models/causal_lm.cpp</code>,
+<code>CausalLM::run</code>):</p>
+<pre><code>prefill: 512 tokens, &lt;ms&gt; ms, &lt;tok/s&gt; TPS
+generation: &lt;G&gt; tokens, &lt;ms&gt; ms, &lt;tok/s&gt; TPS
+total: &lt;ms&gt; ms
+peak memory: &lt;KB&gt; KB
+</code></pre>
+<p><code>prefill:</code> with a count other than 512 voids that run's prefill column.
+<code>generation:</code> with a count other than G means the config edit failed.
+Decode tok/s is the <code>generation:</code> line, averaged over the whole
+generation. A &quot;last 64 tokens&quot; rate is planned (#89) but not printed yet.</p>
+<p>The device command, from <code>/data/local/tmp/nntrainer/causallm</code> on the phone:</p>
+<pre><code>adb shell &quot;cd /data/local/tmp/nntrainer/causallm &amp;&amp; \
+  &lt;variant env&gt; NNTR_NUM_THREADS=8 LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
+  ./nntrainer_causallm ./models/q40-qs4cx-wh \&quot;\$(cat prompt512.txt)\&quot;&quot; 2&gt;&amp;1 | tee &lt;log&gt;
+</code></pre>
+<p>The CPU control is the same command with <code>./models/q40</code> and no variant
+environment.</p>
+<h3 id="12-sittings-variant-a-first-mirrored-order">1.2 Sittings, variant A first, mirrored order <a class="hd" aria-label="link to this section" href="#12-sittings-variant-a-first-mirrored-order">#</a></h3>
+<p>A <strong>sitting</strong> is one session on one phone with one set of pushed files.
+The phone's decode speed drifts between sittings with no code cause: up to
+±9 % on the CPU and −7 to −16 % on the NPU on the same unit from one day to
+the next, while the DSP-side profile columns move ≤ 4 %. So:</p>
+<ul>
+<li><strong>Variant A</strong>, the unchanged reference binary, runs first in every sitting.
+Every other variant (at most four in total) is read only against the A of
+the same sitting. A tok/s from another sitting is never a verdict.</li>
+<li>Inside each G block, variants run in <strong>mirrored order</strong> (A, A0, B, B, A0,
+A), so the thermal ramp over the block hits every variant equally. The
+mean of the mirrored pair is the cell's value.</li>
+<li>Where possible the variants are <strong>one binary set</strong> switched by
+environment variables. Then the only thing that differs between cells is
+the variable, and the log proves which path ran (§1.6).</li>
+</ul>
+<figure>
+<svg viewBox="0 0 880 188" role="img" aria-label="One device sitting in order: push files, thermal checkpoint, cold DMA anchor, kernel gtests, level-2 profiles, then G=64, G=512 and G=1024 blocks in mirrored order A A0 B B A0 A, then workstation checks" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="meas1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <!-- row 1: preparation -->
+  <g stroke-width="1.2">
+    <rect x="16" y="16" width="160" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="188" y="16" width="160" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="360" y="16" width="160" height="52" rx="6" fill="#e9f1fb" stroke="#2a78d6"/>
+    <rect x="532" y="16" width="160" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="704" y="16" width="160" height="52" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="96" y="37">Push files</text>
+    <text x="96" y="55" font-size="12" fill="#52514e">record device md5sum</text>
+    <text x="268" y="37">thermal checkpoint 0</text>
+    <text x="268" y="55" font-size="12" fill="#52514e">screen off, charger in</text>
+    <text x="440" y="37">DMA anchor, cold</text>
+    <text x="440" y="55" font-size="12" fill="#52514e">(once per sitting)</text>
+    <text x="612" y="37">kernel gtests</text>
+    <text x="612" y="55" font-size="12" fill="#52514e">bit-identity</text>
+    <text x="784" y="37">level-2 profiles</text>
+    <text x="784" y="55" font-size="12" fill="#52514e">G=64, one run per variant</text>
+  </g>
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#meas1-arrow)">
+    <path d="M176,42 H187"/>
+    <path d="M348,42 H359"/>
+    <path d="M520,42 H531"/>
+    <path d="M692,42 H703"/>
+    <path d="M784,68 V88 H116 V107"/>
+  </g>
+  <!-- row 2: decode blocks in mirrored order -->
+  <g stroke-width="1.2">
+    <rect x="16" y="108" width="200" height="66" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="232" y="108" width="200" height="66" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="448" y="108" width="200" height="66" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="664" y="108" width="200" height="66" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+  </g>
+  <g text-anchor="middle" font-weight="600" fill="#0b0b0b">
+    <text x="116" y="128">G=64</text>
+    <text x="332" y="128">G=512</text>
+    <text x="548" y="128">G=1024</text>
+  </g>
+  <g font-size="12" text-anchor="middle" fill="#0b0b0b">
+    <!-- G=64 cells -->
+    <g stroke="#c3c2b7" stroke-width="1" fill="#f4f3ee">
+      <rect x="22" y="138" width="28" height="24" rx="4"/><rect x="54" y="138" width="28" height="24" rx="4"/><rect x="86" y="138" width="28" height="24" rx="4"/><rect x="118" y="138" width="28" height="24" rx="4"/><rect x="150" y="138" width="28" height="24" rx="4"/><rect x="182" y="138" width="28" height="24" rx="4"/>
+      <rect x="238" y="138" width="28" height="24" rx="4"/><rect x="270" y="138" width="28" height="24" rx="4"/><rect x="302" y="138" width="28" height="24" rx="4"/><rect x="334" y="138" width="28" height="24" rx="4"/><rect x="366" y="138" width="28" height="24" rx="4"/><rect x="398" y="138" width="28" height="24" rx="4"/>
+      <rect x="454" y="138" width="28" height="24" rx="4"/><rect x="486" y="138" width="28" height="24" rx="4"/><rect x="518" y="138" width="28" height="24" rx="4"/><rect x="550" y="138" width="28" height="24" rx="4"/><rect x="582" y="138" width="28" height="24" rx="4"/><rect x="614" y="138" width="28" height="24" rx="4"/>
+    </g>
+    <text x="36" y="154" font-weight="600">A</text><text x="68" y="154">A0</text><text x="100" y="154">B</text><text x="132" y="154">B</text><text x="164" y="154">A0</text><text x="196" y="154" font-weight="600">A</text>
+    <text x="252" y="154" font-weight="600">A</text><text x="284" y="154">A0</text><text x="316" y="154">B</text><text x="348" y="154">B</text><text x="380" y="154">A0</text><text x="412" y="154" font-weight="600">A</text>
+    <text x="468" y="154" font-weight="600">A</text><text x="500" y="154">A0</text><text x="532" y="154">B</text><text x="564" y="154">B</text><text x="596" y="154">A0</text><text x="628" y="154" font-weight="600">A</text>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="764" y="136">workstation checks</text>
+    <text x="764" y="155" font-size="12" fill="#52514e">banners, text diff, md5</text>
+  </g>
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#meas1-arrow)">
+    <path d="M216,141 H231"/>
+    <path d="M432,141 H447"/>
+    <path d="M648,141 H663"/>
+  </g>
+</svg>
+<figcaption>One sitting, in order: setup and a cold DMA anchor, the kernel gtests, one level-2 profile run per variant at G=64, then three decode blocks (G=64, 512, 1024) that each run the variants in mirrored order A, A0, B, B, A0, A so the thermal ramp hits every variant equally, and finally the workstation checks. A cool-down goes before each profile and each G block; profile runs are never read for tok/s.</figcaption>
+</figure>
+<p>A cool-down goes before each profile and each G block (§1.4). Profile runs
+are never read for tok/s.</p>
+<h3 id="13-units">1.3 Units <a class="hd" aria-label="link to this section" href="#13-units">#</a></h3>
+<p>Two Galaxy S25 Ultra phones (SM-S938N, Snapdragon 8 Elite, Hexagon v79)
+have been used. The PR author measured on a third one. Any unit is allowed,
+but every row records which one ran it.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>unit</th>
+<th>DMA anchor (<code>DMA_REPLAY workers=1 load=0 pace=0</code>)</th>
+<th>sittings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>R3CY205ZMND</code></td>
+<td>724.0 µs/call = <strong>31.2 GB/s</strong> (#113, 2026-09-23); 719.6 / 31.4 in #100</td>
+<td>#77, #94, #88, #105, #100, #113</td>
+</tr>
+<tr>
+<td><code>R3CY10WM83Y</code></td>
+<td>607.9 / 605.3 µs/call = <strong>37.1 / 37.3 GB/s</strong> (#117, both sittings, 2026-09-23)</td>
+<td>#117</td>
+</tr>
+</tbody>
+</table></div>
+<p>The anchor is an untouched replay of one MoE call's weight copy through the
+DSP's DMA engine, one worker, no compute. It runs first, while the phone is
+cold:</p>
+<pre><code>adb shell &quot;cd /data/local/tmp/htp_u8i4_layer_test &amp;&amp; LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
+  ./unittest_hvx_dma_probe --gtest_filter='*MoeChunkReplay*'&quot; | grep 'DMA_REPLAY '
+</code></pre>
+<p>The two units' DMA engines differ by about 19 %, but their HVX reads of the
+same memory do not (the D192 <code>mm</code> column read 931.9 µs on the fast unit and
+937.0 on the slow one). Therefore:</p>
+<ul>
+<li>A per-call DSP time on a <strong>DMA-fed</strong> path (for example the VTCM feed,
+PR #118) is compared across units only after scaling it by the ratio of
+the two anchors. #117's feed <code>mm</code> of 676.4 µs would read about 805–809 µs
+on <code>R3CY205ZMND</code>.</li>
+<li>A direct-read path's <code>mm</code> transfers across units as it is.</li>
+<li>tok/s never transfers across units. Two units were already 6–8.6 % apart
+on one binary before this project.</li>
+</ul>
+<p>The <code>DMA_REPLAY workers=</code> lines print <code>checksum_ok=n</code> and the test reports
+<code>FAILED</code>. This is a known, pre-existing condition of the old replay cells
+(#99), not a new failure. The timing on the line is still valid.</p>
+<h3 id="14-thermal-handling">1.4 Thermal handling <a class="hd" aria-label="link to this section" href="#14-thermal-handling">#</a></h3>
+<p>Temperature moves prefill a lot and decode somewhat, so it is recorded
+rather than argued about afterwards.</p>
+<ul>
+<li>Record battery level, battery temperature and <code>thermal_zone0</code> at the
+start, after the profiles and after each G block:
+<code>adb shell dumpsys battery | grep -E 'level|temperature'; adb shell cat /sys/class/thermal/thermal_zone0/temp</code>.</li>
+<li>Start cold: screen off, charger in. Run the DMA anchor before anything
+warms the phone.</li>
+<li>Cool down before each profile and each G block: wait until the battery
+reads ≤ 33.0 °C and <code>thermal_zone0</code> &lt; 38 °C, for at most 5 minutes.</li>
+<li>Even so, <code>thermal_zone0</code> reads 55–60 °C during every E2E run. The two
+#117 sittings on the same unit and files (first warm, second with
+cool-downs) differed by 1–9 % in decode for every variant alike. That is
+why only same-sitting ratios count.</li>
+<li>A lone run far below its pair after a hot block (#100's A run 3: 16.71
+against 27.89) is thermal. It is noted, not averaged in.</li>
+</ul>
+<h3 id="15-gates">1.5 Gates <a class="hd" aria-label="link to this section" href="#15-gates">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>gate</th>
+<th>rule</th>
+<th>where it is read</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>decode</strong></td>
+<td>the variant beats A at <strong>all three</strong> G, as means of mirrored pairs in one sitting. The issue may set its own threshold (default ±5 %)</td>
+<td>E2E</td>
+</tr>
+<tr>
+<td><strong>prefill</strong></td>
+<td>no variant falls below <strong>−5 % of the same sitting's A</strong></td>
+<td>E2E prefill tok/s, with the profile's M&gt;1 <code>dsp=</code> as tie-breaker</td>
+</tr>
+<tr>
+<td><strong>text</strong></td>
+<td>the generated text is byte-identical to the <strong>same sitting's A</strong>, with the <code>[HTP]</code> banner and md5 lines excluded</td>
+<td><code>diff</code> of the logs up to the <code>=====</code> line</td>
+</tr>
+<tr>
+<td><strong>kernel</strong></td>
+<td>the DSP kernel is bit-identical to its scalar spec and to the reference path</td>
+<td>host checks (§3) and the device gtest <code>MoeLayerM1GemvMatchesHmx</code> (<code>bit_identical value=yes</code>, <code>bad_elems_M1 value=0</code>, <code>bad_elems_M4 value=0</code>)</td>
+</tr>
+<tr>
+<td><strong>real-model diff</strong></td>
+<td><code>NNTR_L2_DIFF</code> = 0 when a variant changes DSP arithmetic</td>
+<td>E2E with the variable set</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Prefill tie-breaker.</strong> One sitting's A spreads by ±13 % in prefill
+(389–527 tok/s in #94 sitting 2), and a run's position in the mirrored
+block alone moved #105's A pairs by −15 to −24 %. A single cell 5 % low is
+therefore noise. When a cell misses −5 %, read the level-2 profile's M&gt;1
+row: if its <code>dsp=</code> is within about 2.5 % of A's, the prefill path did not
+change and the gate passes. Example: #117's feed variant read −8.5 % at
+G=1024. Its M&gt;1 <code>dsp</code> moved −0.04 %, and the feed does not run at M&gt;1 at
+all (<code>m1_gemv=0/23</code>), so it passed. The planning contract's older form of
+this gate (an absolute floor of 497 tok/s) is superseded by the
+same-sitting form.</p>
+<p><strong>Why text is compared to A and not to the CPU.</strong> The NPU model's MoE
+weights (<code>QS4CX_WH</code>) are a different quantisation from the CPU model's
+(<code>Q4_0</code>), so the two texts are expected to differ. A change on the NPU path
+must leave the NPU text unchanged. A mismatch fails the variant: it is
+filed and never averaged in.</p>
+<h3 id="16-path-banners-are-the-proof-of-which-path-ran">1.6 Path banners are the proof of which path ran <a class="hd" aria-label="link to this section" href="#16-path-banners-are-the-proof-of-which-path-ran">#</a></h3>
+<p>Each run prints one line on stderr when the first MoE call is set up
+(<code>HtpComputeOps::sendMoeOptsOnce</code> in
+<code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code>). An unset run at
+<code>9fb1a3bc</code> prints:</p>
+<pre><code>[HTP] moe m1 gemv: on (applied=0x303e1) lead=192KB rows1=1 feed=vtcm source=default
+</code></pre>
+<ul>
+<li><code>applied=</code> is the option word the DSP echoed back, not the one the ARM
+side sent. If the two differ, the run throws instead of falling back. A
+skel older than the ARM side therefore fails loudly.</li>
+<li><code>source=default</code> means <code>NNTR_MOE_HTP_M1_GEMV</code> was unset. <code>source=env</code>
+means it was set explicitly.</li>
+<li>The knobs are <code>NNTR_MOE_HTP_M1_GEMV</code> (<code>0</code> = the HMX block loop),
+<code>NNTR_MOE_HTP_GEMV_LEAD_KB</code>, <code>NNTR_MOE_HTP_GEMV_ROWS1</code> and
+<code>NNTR_MOE_HTP_GEMV_FEED</code> (<code>htp_moe_opts_flags</code> in <code>htp_moe_opts.h</code>).</li>
+</ul>
+<p>Since PR #118 (merged as <code>d79c0efe</code>; <code>99fdbbf4</code> flips the default) the
+VTCM feed is the default. The next sitting's cells are:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>cell</th>
+<th>env</th>
+<th><code>applied=</code></th>
+<th>banner words</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong> (the default)</td>
+<td>unset</td>
+<td><code>0x303e1</code></td>
+<td><code>lead=192KB rows1=1 feed=vtcm source=default</code></td>
+</tr>
+<tr>
+<td>A0 (D192 arena read, the previous default)</td>
+<td><code>NNTR_MOE_HTP_GEMV_FEED=0</code></td>
+<td><code>0x103e1</code></td>
+<td><code>lead=192KB rows1=1 feed=arena</code></td>
+</tr>
+<tr>
+<td>pre-#115 cell (four-row, no lead)</td>
+<td><code>NNTR_MOE_HTP_GEMV_LEAD_KB=0 NNTR_MOE_HTP_GEMV_ROWS1=0 NNTR_MOE_HTP_GEMV_FEED=0</code></td>
+<td><code>0xe1</code></td>
+<td><code>lead=0KB rows1=0 feed=arena</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Rule.</strong> Every E2E and profile log must contain <strong>exactly one</strong> banner,
+and it must carry the variant's expected word. From PR #118 on, variant A
+must print <code>feed=vtcm source=default</code>. An A log with <code>feed=arena</code> or
+<code>feed=default</code> is a pre-flip build and voids the sitting. Check it before
+reading any number:</p>
+<pre><code>grep -c 'moe m1 gemv: on' logs/*_G*_r*.log logs/prof_*.log     # 1 in each
+grep -l 'HTP-PROFILE' logs/*_G*_r*.log                         # nothing: no E2E run was profiled
+</code></pre>
+<p>The #117 numbers in this chapter predate the flip. They were measured on
+PR #118's branch (<code>3c4912fa</code>), where the feed was opt-in: A printed
+<code>applied=0x103c1 lead=192KB rows1=1 feed=default source=env</code> and the feed
+variant B printed <code>applied=0x303e1 … feed=vtcm</code>. The flipped default has
+the same word as that B, but it has <strong>not yet run on silicon as a sitting's
+control</strong>.</p>
+<h3 id="17-artifact-provenance">1.7 Artifact provenance <a class="hd" aria-label="link to this section" href="#17-artifact-provenance">#</a></h3>
+<ul>
+<li>Every pushed file has an md5 and the commit it was built from. The device
+side is checked with <code>adb shell md5sum …</code>, and every E2E command also
+prints the skel's md5 into its log.</li>
+<li><strong>Compiled files are not byte-reproducible.</strong> Two builds of the same
+source give two skel md5s, and other workstations give other app md5s.
+The identity is the md5 of the file actually pushed. A rebuild from the
+commit is fine: record the new md5s next to the commit and the exact
+build line.</li>
+<li>Non-compiled inputs must match everywhere: model <code>.bin</code>, <code>tokenizer.json</code>,
+<code>prompt512.txt</code>, <code>libc++_shared.so</code>, <code>libsdkl.so</code>.</li>
+<li>If variants are different binaries, every results row carries the md5 of
+the file that differs, and the source diff between the variant commits is
+exactly the change under test. Otherwise the sitting is void.</li>
+<li>A skel from before an IDL or DSP change fails on the phone with
+<code>AEE_EBADPARM (0x8000040E)</code>. A skel missing a project symbol fails to
+load with <code>0x80000406</code>. Never push the link-time stub <code>libcdsprpc.so</code>.</li>
+<li>Build lines always set <code>HEXKL_SDK_VER=6.4.0.1</code>. Without it,
+<code>test/htp/build.sh</code> picks the newest HexKL on the machine.</li>
+</ul>
+<p><strong>Current reference set</strong>: what #117 ran (both sittings, unit
+<code>R3CY10WM83Y</code>, built at <code>3c4912fa</code> = PR #118's branch with the feed still
+opt-in; one skel and one app set for every variant):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>file</th>
+<th>md5</th>
+<th>built with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>libnntr_hvx_skel.so</code></td>
+<td><code>5cea0a5a35c72c72ce2daffa8e7588e5</code></td>
+<td><code>HEXKL_SDK_VER=6.4.0.1 ./test/htp/build.sh</code></td>
+</tr>
+<tr>
+<td><code>nntrainer_causallm</code></td>
+<td><code>21221e9006636d054844361a83a3836a</code></td>
+<td><code>Applications/CausalLM/build_android.sh --htp</code></td>
+</tr>
+<tr>
+<td><code>libcausallm_core.so</code></td>
+<td><code>ffbe434507a695132eb5dae7877fc647</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>libnntrainer.so</code></td>
+<td><code>39e375adb165e41e908e00b85d7bcd66</code></td>
+<td>same (<code>jni/obj/local/arm64-v8a/</code>)</td>
+</tr>
+<tr>
+<td><code>libccapi-nntrainer.so</code></td>
+<td><code>d1bf42a37f3a5e530567fd180df414af</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>unittest_hvx_mm_u8i4</code></td>
+<td><code>2781e9fb2a70ac00bed6eb1da6608856</code></td>
+<td><code>ndk-build … unittest_hvx_mm_u8i4</code></td>
+</tr>
+<tr>
+<td><code>unittest_hvx_dma_probe</code></td>
+<td><code>639c2eb4993fee118f8a86ddeb7adbe4</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>libc++_shared.so</code></td>
+<td><code>b1586b9b512712800fd36a24abac1c0a</code></td>
+<td>NDK r30 sysroot</td>
+</tr>
+<tr>
+<td><code>libsdkl.so</code></td>
+<td><code>0ad4e22a70e4f135bce38ad8fd1e001b</code></td>
+<td>HexKL <code>lib/6.4.0.1/armv8_android26</code></td>
+</tr>
+<tr>
+<td><code>prompt512.txt</code></td>
+<td><code>fc65c1588dc66dd764c7013fe96cbb75</code></td>
+<td>the fixed 512-token prompt</td>
+</tr>
+<tr>
+<td>NPU model <code>q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 316 133 120 B)</td>
+<td><code>7b7867fab51845664c0050c0a837073e</code></td>
+<td><code>nntr_quantize_stream … --moe_dtype QS4CX_WH --isa ARM</code></td>
+</tr>
+<tr>
+<td>CPU model <code>q40/nntr_lfm2_8b_a1b_q40_arm.bin</code> (4 768 855 808 B)</td>
+<td><code>d28f55c5bd7adeb8bf73b02de582eb88</code></td>
+<td><code>nntr_quantize_stream … --isa ARM</code>, all Q4_0</td>
+</tr>
+<tr>
+<td><code>tokenizer.json</code></td>
+<td><code>7b8067a580173d3eb1697afae3b456f5</code></td>
+<td>from the HF model</td>
+</tr>
+</tbody>
+</table></div>
+<p>The flipped-default build (<code>99fdbbf4</code>) was restaged for the next sitting.
+Three files changed: skel <code>b42d2e3bc321ac77b3a1a644db4c3801</code>,
+<code>libnntrainer.so</code> <code>6b3e92b5f45d5d13368b37796f3d94c9</code> and
+<code>unittest_hvx_mm_u8i4</code> <code>e6adeeb367779382a3244a6d762db5d3</code>. The rest are as
+above. It has not run on the phone yet. Once a sitting runs it, its set
+replaces this table.</p>
+<h2 id="2-how-to-read-a-profile">2. How to read a profile <a class="hd" aria-label="link to this section" href="#2-how-to-read-a-profile">#</a></h2>
+<h3 id="21-levels">2.1 Levels <a class="hd" aria-label="link to this section" href="#21-levels">#</a></h3>
+<p><code>NNTR_HTP_PROFILE</code> is read once (<code>HtpProfile</code> in
+<code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code>), and the report is
+printed to stderr when the process exits. A profiled run is <strong>never</strong> read
+for tok/s.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>level</th>
+<th>what it adds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>per-shape call counts and <code>host=</code> (ARM wall time per call), weight registration cost</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td>the DSP times itself: <code>dsp=</code>, <code>transport=</code> and every stage column, plus the <code>weight DMA:</code>, <code>DMA ring:</code> and <code>staging:</code> lines. <strong>This is the level to read.</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td>runs each MoE call 5 times on the same input and keeps the fastest. This removes DDR noise from the DSP columns, but it inflates the model-level <code>[M0-PROF] ffn=</code> about 5×. Only <code>host</code>, <code>dsp</code> and <code>transport</code> compare between levels 2 and 3</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>NNTR_HTP_DMA_TRACE=&lt;n&gt;</code> (default 3) sets how many per-descriptor DMA dumps
+are printed. The header line <code>[HTP-PROFILE] level=2 qos_mode=2 …</code> must show
+<code>qos_mode=2</code> (polling). With any other mode the transport numbers are not
+comparable.</p>
+<h3 id="22-the-row">2.2 The row <a class="hd" aria-label="link to this section" href="#22-the-row">#</a></h3>
+<p>One row per call shape. The MoE layer call is <code>K=2048 N=2048</code>. The two
+rows that matter are <code>M==1</code> (decode: 1408 calls = 22 layers × 64 tokens at
+G=64) and <code>M&gt;1</code> (prefill: 23 calls).</p>
+<pre><code>[HTP-PROFILE]   K=2048  N=2048  M==1    calls=1408    rows=…  host=… ms ( 1185.4 us/call)
+  dsp=  995.1 us/call (…%) transport=  190.3 us/call  [quant … gather … requant … swiglu …
+  dequant … acc … drain …+… push … scatter … alloc … stage … mm 931.9 | rest&lt;=… (…% of host)
+  blocks=0 m1_gemv=1408/1408 feed=0/1408]
+</code></pre>
+<figure>
+<svg viewBox="0 0 880 212" role="img" aria-label="How one call's time splits: host is the ARM wall time; host minus dsp is transport; dsp splits into named stages, mm, and rest" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <!-- level 1: host (ARM clock) -->
+  <rect x="16" y="16" width="848" height="36" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+  <text x="440" y="39" text-anchor="middle" fill="#0b0b0b"><tspan font-weight="600">host</tspan> = ARM wall time of one call</text>
+  <!-- level 2: dsp + transport -->
+  <rect x="16" y="64" width="656" height="36" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <text x="344" y="87" text-anchor="middle" fill="#0b0b0b"><tspan font-weight="600">dsp</tspan> = DSP's own clock for the call</text>
+  <rect x="680" y="64" width="184" height="36" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <text x="772" y="87" text-anchor="middle" fill="#0b0b0b"><tspan font-weight="600">transport</tspan> = host − dsp</text>
+  <g font-size="12" fill="#52514e" text-anchor="middle">
+    <text x="772" y="120">FastRPC round trip,</text>
+    <text x="772" y="136">cache maintenance, poll</text>
+  </g>
+  <!-- level 3: inside dsp -->
+  <rect x="16" y="112" width="196" height="36" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <rect x="220" y="112" width="292" height="36" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+  <rect x="520" y="112" width="152" height="36" rx="6" fill="#f6f9fd" stroke="#2a78d6" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <g text-anchor="middle" fill="#0b0b0b" font-weight="600">
+    <text x="114" y="135">named stages</text>
+    <text x="366" y="135">mm</text>
+    <text x="596" y="135">rest</text>
+  </g>
+  <g font-size="12" fill="#52514e" text-anchor="middle">
+    <text x="114" y="168">quant, gather, requant,</text>
+    <text x="114" y="184">dequant, acc, drain gu+dn,</text>
+    <text x="114" y="200">push, scatter, alloc, stage</text>
+    <text x="366" y="168">the matmul stage (GEMV or HMX),</text>
+    <text x="366" y="184">including its weight reads</text>
+    <text x="596" y="168">≤ dsp − all named stages</text>
+    <text x="596" y="184">(upper bound on</text>
+    <text x="596" y="200">untimed work)</text>
+  </g>
+</svg>
+<figcaption>How one MoE call's time splits in a level-2 profile row (widths not to scale). <code>host</code> is the ARM wall time; <code>dsp</code> is the part the DSP clocks itself, and the rest of <code>host</code> is <code>transport</code>. Inside <code>dsp</code>, the named stages and <code>mm</code> are timed; <code>rest</code> (dashed) is only an upper bound on untimed work.</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>column</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>host</code></td>
+<td>ARM-side µs per call, from the call to its return</td>
+</tr>
+<tr>
+<td><code>dsp</code></td>
+<td>µs per call as the DSP timed it. <code>(x%)</code> is its share of <code>host</code></td>
+</tr>
+<tr>
+<td><code>transport</code></td>
+<td><code>host − dsp</code>: FastRPC, cache maintenance and poll. It drifts between sittings like tok/s, so it is read only as an A/B inside a sitting. A DSP-side change can move it (the VTCM feed cut it 190 → 92 µs), so it is always read next to <code>mm</code></td>
+</tr>
+<tr>
+<td><code>quant</code></td>
+<td>fp32 activation → u8 on the DSP</td>
+</tr>
+<tr>
+<td><code>gather</code></td>
+<td>copying the routed rows into place (HMX path)</td>
+</tr>
+<tr>
+<td><code>requant</code></td>
+<td>intermediate → u8 between gate/up and down</td>
+</tr>
+<tr>
+<td><code>swiglu</code></td>
+<td>HMX path: the SwiGLU stage. <strong>M=1 GEMV path: lane-time</strong>, the sum of every worker lane's wall time inside the two GEMV stages. It is not on the call's clock; <code>swiglu / mm</code> is the number of lanes busy (6 on v79)</td>
+</tr>
+<tr>
+<td><code>dequant</code>, <code>acc</code></td>
+<td>int32 → fp32 and accumulator reads</td>
+</tr>
+<tr>
+<td><code>drain X+Y</code></td>
+<td>waits for weight DMA before gate/up (X) and down (Y)</td>
+</tr>
+<tr>
+<td><code>push</code></td>
+<td>DMA descriptor issue</td>
+</tr>
+<tr>
+<td><code>scatter</code></td>
+<td>routing-weight multiply and scatter-add into the output rows</td>
+</tr>
+<tr>
+<td><code>alloc</code></td>
+<td>the call's own allocations</td>
+</tr>
+<tr>
+<td><code>stage</code></td>
+<td>the stage slot for per-call staging copies</td>
+</tr>
+<tr>
+<td><code>mm</code></td>
+<td>the matmul stage, timed on the DSP. On the GEMV path it includes the direct weight read from DDR, so it is the column the decode work moves</td>
+</tr>
+<tr>
+<td><code>rest&lt;=</code></td>
+<td><code>dsp</code> minus every named stage (<code>htp_moe_row_rest_us</code>, <code>htp_moe_opts.h</code>). On GEMV rows <code>swiglu</code> is not subtracted, because it is lane-time. A healthy row keeps it within a few % of <code>host</code></td>
+</tr>
+<tr>
+<td><code>blocks=</code></td>
+<td>HMX 64-row tiles issued. It is 0 when every call took the GEMV path</td>
+</tr>
+<tr>
+<td><code>m1_gemv=n/calls</code></td>
+<td>calls that took the M=1 HVX GEMV. <code>1408/1408</code> on the M==1 row and <code>0/23</code> on the M&gt;1 row is the per-call proof of the path</td>
+</tr>
+<tr>
+<td><code>feed=n/calls</code></td>
+<td>calls whose weights came through the VTCM DMA feed (PR #118). <code>1408/1408</code> on the M==1 row under the feed; <code>0/23</code> on every M&gt;1 row, because the feed runs only at M=1</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="23-the-lines-under-the-row">2.3 The lines under the row <a class="hd" aria-label="link to this section" href="#23-the-lines-under-the-row">#</a></h3>
+<p><strong><code>weight DMA:</code></strong> has two forms:</p>
+<ul>
+<li>Ring-fed paths (HMX, or the VTCM feed):
+<code>weight DMA: 21504 KB/call, first 3584 KB took 110 us = 33.2 GB/s; averaged over the call 31.0 GB/s</code>.
+The &quot;first&quot; rate times one chunk with an empty ring. The &quot;averaged&quot; rate
+divides by the whole <code>dsp</code>, so it understates the engine.</li>
+<li>The direct-read GEMV path:
+<code>weight DMA: n/a (direct arena read inside mm, no ring; swiglu = lane-time, 5.76 lanes busy over mm)</code>.</li>
+</ul>
+<p><strong><code>DMA ring:</code></strong> is printed when the call pushed descriptors:</p>
+<pre><code>DMA ring: desc=10/call waits=10 (blocked 9.9) wait=442 us [act 0.0 gu 0.0+dn 0.0]
+  busy=640..681 us -&gt; engine 32.3..34.4 GB/s  depth max=4  first expert ready at 121 us  last issue at 500 us of 711
+</code></pre>
+<p><code>desc</code> and <code>waits</code> are per call; <code>blocked</code> is how many waits actually
+stalled. <code>busy</code> is a bracket (lower..upper), so the engine rate is a
+range, and the <strong>lower bound is the in-situ rate</strong> to compare against the
+unit's anchor. <code>busy ≈ mm</code> means the engine never idled. <code>busy ≪ mm</code>
+measures the gap. On the direct-read path the ring carries only two small
+copies (<code>desc=2/call</code>).</p>
+<p><strong><code>staging:</code></strong> shows the call's transport inventory:
+<code>staging: act 65536 B out 65536 B ion=y rpc allocs=19 (session) non-ION in-args=6/464 B</code>.
+<code>act</code> / <code>out</code> are the staging buffer classes, and <code>ion=y</code> means both are
+ION (shared) memory. <code>rpc allocs</code> is process-wide and must <strong>not</strong> grow with
+the number of calls. The in-args are the bytes the driver copies outside
+ION.</p>
+<p>The report ends with <code>layer calls total</code>, <code>arm staging memcpy</code> (outside
+every <code>host=</code>) and <code>HTP host time</code>.</p>
+<h3 id="24-the-current-paths-per-call">2.4 The current paths, per call <a class="hd" aria-label="link to this section" href="#24-the-current-paths-per-call">#</a></h3>
+<p>Level 2, M==1, G=64, #117 sitting 2, unit <code>R3CY10WM83Y</code>, 2026-09-23
+(µs/call, <code>blocks=0 m1_gemv=1408/1408</code> in all three; <code>feed=0/1408</code> for A0
+and A, <code>1408/1408</code> for B). This sitting's labels are used. Since PR #118,
+B is the default path and A is the next sitting's A0.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>variant</th>
+<th>path</th>
+<th style="text-align:right">host</th>
+<th style="text-align:right">dsp</th>
+<th style="text-align:right">transport</th>
+<th style="text-align:right">mm</th>
+<th style="text-align:right">M&gt;1 dsp</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A0</td>
+<td>four-row GEMV, no lead (the pre-#115 default)</td>
+<td style="text-align:right">—</td>
+<td style="text-align:right">1059.4</td>
+<td style="text-align:right">185.2</td>
+<td style="text-align:right">997.4</td>
+<td style="text-align:right">16447.2</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td>one-row GEMV + 192 KB <code>l2fetch</code> lead, direct DDR read (the default until PR #118; the &quot;now&quot;)</td>
+<td style="text-align:right">1185.4</td>
+<td style="text-align:right">995.1</td>
+<td style="text-align:right">190.3</td>
+<td style="text-align:right">931.9</td>
+<td style="text-align:right">16469.9</td>
+</tr>
+<tr>
+<td>B</td>
+<td>A + VTCM DMA feed (opt-in then; the default since PR #118)</td>
+<td style="text-align:right">804.2</td>
+<td style="text-align:right">711.9</td>
+<td style="text-align:right">92.3</td>
+<td style="text-align:right">676.4</td>
+<td style="text-align:right">16463.0</td>
+</tr>
+</tbody>
+</table></div>
+<p>B's ring: <code>desc=10/call</code>, engine 32.3–34.4 GB/s, against this unit's
+anchor of 37.3.</p>
+<h3 id="25-the-per-token-budget">2.5 The per-token budget <a class="hd" aria-label="link to this section" href="#25-the-per-token-budget">#</a></h3>
+<p>The profile is per call; tok/s is per token. They join like this, for one
+G (512 is the reference) and <strong>one sitting</strong>:</p>
+<ol>
+<li>token time = 1000 / decode tok/s (ms), from the non-profiled E2E means.</li>
+<li>MoE on the DSP = 22 × M==1 <code>dsp</code>; round trips = 22 × M==1 <code>transport</code>
+(22 MoE layers, one call each per token).</li>
+<li><strong>Outside the MoE call = token time − 22 × M==1 <code>host</code></strong>. This covers
+everything the CPU does: attention, conv, the dense FFNs, norms,
+lm_head, the router.</li>
+</ol>
+<p>#117 sitting 2, G=512 (profile at G=64 from the same sitting):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">A (D192 arena, the &quot;now&quot;)</th>
+<th style="text-align:right">B (VTCM feed, now the default)</th>
+<th style="text-align:right">needed for 50 tok/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>token (1000 / tok/s)</td>
+<td style="text-align:right">35.86 ms (27.89)</td>
+<td style="text-align:right">27.40 ms (36.49)</td>
+<td style="text-align:right">20 ms</td>
+</tr>
+<tr>
+<td>MoE on the DSP (22 × dsp)</td>
+<td style="text-align:right">21.9</td>
+<td style="text-align:right">15.7</td>
+<td style="text-align:right">13.0–15.5 (byte floor)</td>
+</tr>
+<tr>
+<td>round trips (22 × transport)</td>
+<td style="text-align:right">4.2</td>
+<td style="text-align:right">2.0</td>
+<td style="text-align:right">≈ 0</td>
+</tr>
+<tr>
+<td>outside the call (token − 22 × host)</td>
+<td style="text-align:right">9.8</td>
+<td style="text-align:right">9.7</td>
+<td style="text-align:right">≈ 8.2 (byte floor)</td>
+</tr>
+</tbody>
+</table></div>
+<p>The MoE byte floor is 22.02 MB per call × 22 = 484 MB per token, divided by
+the unit's DMA anchor: 13.0 ms at 37.3 GB/s, 15.5 ms at 31.2 GB/s. The
+rest of the model reads 408 MB per token on the CPU (lm_head 147, conv
+projections 170, attention 35, dense FFN 50, routers 6;
+<a href="weight-format.html">weight-format.html</a>). At the ≈ 50 GB/s the CPU shows in
+its own decode, that is ≈ 8.2 ms. The two floors add up to ≈ 21–24 ms,
+above the 20 ms that 50 tok/s needs. <a href="roadmap.html">roadmap.html</a> §1 works
+through what that means.</p>
+<h2 id="3-verification-ladder">3. Verification ladder <a class="hd" aria-label="link to this section" href="#3-verification-ladder">#</a></h2>
+<p>Everything runs on the workstation from the repo root after
+<code>source tools/htp/env.sh</code> (Hexagon SDK 6.4.0.1, HexKL <code>lib/6.4.0.1</code>, NDK
+r30, <code>HEX_ARCH=v79</code>). Export <code>HEXKL_ROOT</code> explicitly if the package is not
+at the default path. The rungs are cumulative. A rung counts as passed only
+when its pass line appears in the output. Provenance: host checks from
+<strong>upstream PR #4327</strong>, extended in <strong>htp_moe</strong> (GEMV, DMA trace, replay,
+option-word checks).</p>
+<figure>
+<svg viewBox="0 0 880 146" role="img" aria-label="Verification ladder: 0 Format, 1 Host, 2 DSP skel, 3 Android app and device gtests, 4 Device sitting" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="meas3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <g stroke-width="1.2">
+    <rect x="16" y="72" width="152" height="60" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="190" y="58" width="152" height="60" rx="6" fill="#fcfcfb" stroke="#c3c2b7"/>
+    <rect x="364" y="44" width="152" height="60" rx="6" fill="#e9f1fb" stroke="#2a78d6"/>
+    <rect x="538" y="30" width="152" height="60" rx="6" fill="#fdeee6" stroke="#eb6834"/>
+    <rect x="712" y="16" width="152" height="60" rx="6" fill="#fcfcfb" stroke="#52514e"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="92" y="97" font-weight="600">0 Format</text>
+    <text x="92" y="115" font-size="12" fill="#52514e">clang-format-14</text>
+    <text x="266" y="77" font-weight="600">1 Host</text>
+    <text x="266" y="94" font-size="12" fill="#52514e">build + gtests +</text>
+    <text x="266" y="109" font-size="12" fill="#52514e">run_host_checks.sh</text>
+    <text x="440" y="69" font-weight="600">2 DSP skel</text>
+    <text x="440" y="87" font-size="12" fill="#52514e">test/htp/build.sh</text>
+    <text x="614" y="55" font-weight="600">3 Android app</text>
+    <text x="614" y="73" font-size="12" fill="#52514e">+ device gtests</text>
+    <text x="788" y="35" font-weight="600">4 Device sitting</text>
+    <text x="788" y="52" font-size="12" fill="#52514e">(person with</text>
+    <text x="788" y="67" font-size="12" fill="#52514e">the phone)</text>
+  </g>
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#meas3-arrow)">
+    <path d="M168,102 L189,88"/>
+    <path d="M342,88 L363,74"/>
+    <path d="M516,74 L537,60"/>
+    <path d="M690,60 L711,46"/>
+  </g>
+</svg>
+<figcaption>The verification ladder. The rungs are cumulative: each one counts only once its pass line appears and every rung below it has passed. Rungs 0–3 run on the workstation (2 builds the DSP code, 3 the ARM app); rung 4 needs the person with the phone.</figcaption>
+</figure>
+<p><strong>0. Format.</strong> Run <code>clang-format-14 -i &lt;changed .c .cpp .h&gt;</code>, on changed
+lines only. Pass: <code>git diff --stat</code> shows only the files you meant to
+change.</p>
+<p><strong>1. Host (no SDK needed; minutes).</strong></p>
+<pre><code>ninja -C build
+./build/test/unittest/unittest_nntrainer_cpu_backend --gtest_filter='*qs4cx*'
+NNTR_QUANTIZE_BIN=$PWD/build/Applications/CausalLM/nntr_quantize \
+NNTR_QUANTIZE_STREAM_BIN=$PWD/build/Applications/CausalLM/nntr_quantize_stream \
+  ./build/Applications/CausalLM/unittest_causallm_models --gtest_filter='*Lfm2Moe*'
+bash test/htp/host/run_host_checks.sh
+bash tools/htp_syntax_check.sh
+</code></pre>
+<p>Pass:</p>
+<ul>
+<li>Every gtest ends with <code>[  PASSED  ]</code>. <code>*Lfm2Moe*</code> must pass 6 tests with
+none <code>SKIPPED</code>. The tiny fixture's weights are generated once per
+checkout with
+<code>python3 test/unittest/models/causallm_reference/generators/generate_lfm2_moe_reference.py</code>,
+then <code>git checkout -- test/unittest/models/causallm_reference/lfm2_moe_tiny/</code>.</li>
+<li><code>run_host_checks.sh</code> prints <code>M1 GEMV PATH BIT-IDENTICAL TO HMX PATH (…)</code>,
+<code>M1 GEMV VTCM FEED SCHEDULE OK (…)</code>, <code>ALL CHECKS PASS</code>,
+<code>WORKER POOL LANES OK</code>, <code>DMA PROBE PLAN OK</code>,
+<code>MOE M1 GEMV OPTS: unset=on(0x303e1) 0=off 1=on</code>,
+<code>MOE PROFILE ROW: gemv rest&gt;=0 hmx unchanged</code>, <code>DMA TRACE ARITHMETIC OK</code>,
+<code>REPLAY CELLS PLAN OK (…)</code> and <code>SKEL REPLAY MATCHES TAG SIMULATOR (…)</code>,
+and exits 0. Any <code>FAIL</code> or <code>DIFFERS</code> line is a failure.</li>
+<li>With the SDK sourced, it also prints
+<code>HVX GEMV NATIVE BIT-IDENTICAL (libnative; m=1..16 x rows1=0,1)</code> and two
+<code>HVX GEMV MUTANT CAUGHT</code> lines. The mutants show that the check can
+catch a one-token change in the kernel. Without the SDK the script prints
+<code>HVX GEMV NATIVE CHECK SKIPPED</code>, which is not a pass for a GEMV change.</li>
+<li>The syntax check exits 0.</li>
+</ul>
+<p>The <code>build/</code> directory is configured with
+<code>meson setup build -Denable-transformer=true -Denable-tflite-backbone=false -Denable-tflite-interpreter=false</code>.</p>
+<p>The host checks replace the HMX and HVX primitives with scalar stand-ins,
+except the GEMV native check, which runs the real HVX source under the
+SDK's x86 emulation. They verify routing, buffer reuse, the DMA plans and
+the arithmetic of the profile row. They do <strong>not</strong> verify the hardware's
+arithmetic or any timing.</p>
+<p><strong>2. DSP skel (SDK; seconds).</strong></p>
+<pre><code>HEXKL_SDK_VER=6.4.0.1 ./test/htp/build.sh
+md5sum test/htp/build/libnntr_hvx_skel.so
+</code></pre>
+<p>Pass: the build is <code>-Wall -Werror</code> clean and prints
+<code>UNDEFINED SYMBOLS OK (&lt;n&gt; runtime imports)</code> (46 at <code>9fb1a3bc</code>). If the IDL
+changed, redo rungs 1 and 3 as well.</p>
+<p><strong>3. Android app and device gtests (SDK + NDK; about 10 min from scratch).</strong></p>
+<pre><code>(cd Applications/CausalLM &amp;&amp; ./build_android.sh --htp)        # --cache reuses builddir
+readelf -d builddir/android_build_result/lib/arm64-v8a/libnntrainer.so | grep -E 'libsdkl|libcdsprpc'
+ln -sfn $PWD/subprojects/googletest/googletest test/jni/googletest     # once per checkout
+(cd test/jni &amp;&amp; $ANDROID_NDK/ndk-build NDK_PROJECT_PATH=. NDK_APPLICATION_MK=./Application.mk \
+   APP_BUILD_SCRIPT=./Android.mk NNTRAINER_ROOT=$PWD/../.. HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT \
+   unittest_hvx_mm_u8i4 unittest_hvx_dma_probe -j8)
+md5sum Applications/CausalLM/jni/obj/local/arm64-v8a/{nntrainer_causallm,libcausallm_core.so,libnntrainer.so,libccapi-nntrainer.so}
+</code></pre>
+<p>Pass: both <code>NEEDED</code> lines (<code>libsdkl.so</code>, <code>libcdsprpc.so</code>) are present, the
+binaries exist, and the md5s are recorded.</p>
+<p>Traps:</p>
+<ul>
+<li>With NDK r30 the shared libraries stay under <code>jni/obj/local/arm64-v8a/</code>,
+so push them from there.</li>
+<li><code>--cache</code> skips <code>builddir</code> entirely. After any edit under <code>nntrainer/</code>,
+run <code>ninja -C builddir &amp;&amp; ninja -C builddir install</code> first, or
+<code>libnntrainer.so</code> stays stale.</li>
+<li><code>--clean</code> on a <code>--htp</code> builddir silently drops the HTP option.</li>
+<li>A fresh checkout needs <code>git submodule update --init --depth 1</code> and the
+per-checkout tokenizer library
+<code>Applications/CausalLM/lib/libtokenizers_android_c.a</code>
+(<code>build_tokenizer_android.sh</code>).</li>
+</ul>
+<p><strong>4. Device.</strong> This rung is run by a person with the phone, as a sitting
+(§1). Kernel bit-identity on silicon:</p>
+<pre><code>adb shell &quot;cd /data/local/tmp/htp_u8i4_layer_test &amp;&amp; LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
+  ./unittest_hvx_mm_u8i4 --gtest_filter='*MoeLayerM1GemvMatchesHmx*:*MoeM1GemvFeedVsCompute*'&quot;
+</code></pre>
+<p>Pass: <code>U8I4_FIELD … field=bit_identical value=yes</code>, <code>bad_elems_M1 value=0</code>,
+<code>bad_elems_M4 value=0</code>, no <code>bad_cell_M*</code> line, no <code>INVALID</code>, and
+<code>[  PASSED  ] 2 tests.</code> Then run the E2E cells. Performance conclusions
+come only from this rung, read as an A/B inside one sitting.</p>
+<h2 id="4-benchmark-table">4. Benchmark table <a class="hd" aria-label="link to this section" href="#4-benchmark-table">#</a></h2>
+<p>Model LFM2.5-8B-A1B, prompt 512 (444 in the PR author's rows), 8 threads.
+Decode is the mean of two runs (one run where noted). Prefill is the range
+over all runs of that variant. <strong>Now</strong> marks the current reference rows.
+Rows from different sittings are <strong>not</strong> comparable with each other (§1.2).
+Means are rounded half up from the per-run values, so a few older ones
+differ in the last digit from earlier write-ups.</p>
+<p>Units: <code>…5ZMND</code> = <code>R3CY205ZMND</code>, <code>…WM83Y</code> = <code>R3CY10WM83Y</code>.</p>
+<h3 id="current-reference-now">Current reference (&quot;now&quot;) <a class="hd" aria-label="link to this section" href="#current-reference-now">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>date</th>
+<th>issue</th>
+<th>unit</th>
+<th>variant</th>
+<th>prefill tok/s</th>
+<th>decode 64 / 512 / 1024</th>
+<th>text</th>
+<th>note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s2</td>
+<td>…WM83Y</td>
+<td>NPU A: the default at the time (one-row GEMV + 192 KB lead, direct DDR read)</td>
+<td>401.9–528.9 (means 512.3 / 433.2 / 465.4)</td>
+<td><strong>28.22 / 27.89 / 27.23</strong></td>
+<td>control</td>
+<td><strong>now (NPU)</strong>; cooled sitting</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#94 s2</td>
+<td>…5ZMND</td>
+<td>CPU control, <code>q40</code></td>
+<td>267.8–339.7</td>
+<td><strong>52.43 / 49.22 / 48.31</strong></td>
+<td>reference</td>
+<td><strong>now (CPU)</strong>; no later sitting ran a CPU cell</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s2</td>
+<td>…WM83Y</td>
+<td>NPU B: A + VTCM DMA feed (PR #118)</td>
+<td>399.7–502.0</td>
+<td>37.38 / 36.49 / 35.01</td>
+<td>= A, 6/6</td>
+<td>+32.5 / +30.9 / +28.6 % vs A; <strong>the default since PR #118</strong>, but not &quot;now&quot; until a sitting measures it as its own A</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="history">History <a class="hd" aria-label="link to this section" href="#history">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>date</th>
+<th>issue</th>
+<th>unit</th>
+<th>variant</th>
+<th>prefill tok/s</th>
+<th>decode 64 / 512 / 1024</th>
+<th>text</th>
+<th>note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-09-16/17</td>
+<td>PR</td>
+<td>PR author's device</td>
+<td>NPU, PR head as-is (MoE on HMX)</td>
+<td>523</td>
+<td>— / 20.8 / —</td>
+<td>n/a</td>
+<td>(PR author's device), prompt 444, one cell</td>
+</tr>
+<tr>
+<td>2026-09-16/17</td>
+<td>PR</td>
+<td>PR author's device</td>
+<td>CPU, all Q4_0</td>
+<td>334</td>
+<td>— / 48 / —</td>
+<td>reference</td>
+<td>(PR author's device), prompt 444</td>
+</tr>
+<tr>
+<td>2026-09-21</td>
+<td>PR</td>
+<td>PR author's device</td>
+<td>NPU + conv in_proj on HTP</td>
+<td>532</td>
+<td>— / 16.5 / —</td>
+<td>= previous run</td>
+<td>(PR author's device); drop unexplained, no control run</td>
+</tr>
+<tr>
+<td>2026-09-21</td>
+<td>#77</td>
+<td>…5ZMND</td>
+<td>CPU control</td>
+<td>231.5–336.4</td>
+<td>53.52 / 52.32 / 47.49</td>
+<td>reference</td>
+<td>first handoff</td>
+</tr>
+<tr>
+<td>2026-09-21</td>
+<td>#77</td>
+<td>…5ZMND</td>
+<td>NPU, PR head as-is (HMX block loop)</td>
+<td>403.5–541.2</td>
+<td>20.48 / 18.31 / 18.00</td>
+<td>r1 = r2</td>
+<td>the starting point</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#94 s1</td>
+<td>…5ZMND</td>
+<td>CPU control</td>
+<td>202.7–287.2</td>
+<td>53.25 / 51.12 / 49.04</td>
+<td>reference</td>
+<td>NPU not measured: the skel failed to load (<code>0x80000406</code>, #97)</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#94 s2</td>
+<td>…5ZMND</td>
+<td>NPU A: <code>htp_moe</code> @ <code>2a75f7d9</code>, GEMV switch off (HMX)</td>
+<td>389.1–527.3</td>
+<td>17.73 / 17.03 / 17.31</td>
+<td>control</td>
+<td></td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#94 s2</td>
+<td>…5ZMND</td>
+<td>NPU C: same binary, <code>NNTR_MOE_HTP_M1_GEMV=1</code> (HVX GEMV over DDR)</td>
+<td>426.0–529.5</td>
+<td>18.83 / 18.34 / 17.59</td>
+<td>= A</td>
+<td>first GEMV reading, +6.2 / +7.7 / +1.7 %</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#88</td>
+<td>…5ZMND</td>
+<td>NPU A: <code>htp_moe</code> @ <code>08afbb10</code> (before the transport fix)</td>
+<td>425.6–534.4</td>
+<td>18.73 / 16.84 / 16.46</td>
+<td>control</td>
+<td></td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#88</td>
+<td>…5ZMND</td>
+<td>NPU B: PR #103 (size-class ION staging + 5 ms poll)</td>
+<td>429.9–505.9</td>
+<td>24.50 / 23.80 / 23.52</td>
+<td>= A</td>
+<td>+30.9 / +41.4 / +42.9 %; transport 401 → 88 µs/call</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#88</td>
+<td>…5ZMND</td>
+<td>NPU C: B with <code>NNTR_HTP_POLL_US=100</code></td>
+<td>439.5</td>
+<td>21.82 / — / —</td>
+<td>= A</td>
+<td>one run, G=64: the poll alone is worth ≈ 11 %</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#105</td>
+<td>…5ZMND</td>
+<td>NPU A: GEMV on + transport fix (four-row loop)</td>
+<td>359.8–539.5</td>
+<td>27.74 / 26.88 / 24.83</td>
+<td>control</td>
+<td></td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#105</td>
+<td>…5ZMND</td>
+<td>NPU B1: one-row loop, per-column <code>l2fetch</code> (lead 0)</td>
+<td>364.2–506.4</td>
+<td>26.62 / 25.80 / 22.75</td>
+<td>= A, 6/6</td>
+<td>−4.06 / −4.03 / −8.36 %</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#105</td>
+<td>…5ZMND</td>
+<td>NPU B2: one-row, 64 KB lead</td>
+<td>331.0–487.6</td>
+<td>27.22 / 25.72 / 23.38</td>
+<td>= A, 6/6</td>
+<td>−1.90 / −4.33 / −5.84 %</td>
+</tr>
+<tr>
+<td>2026-09-22</td>
+<td>#105</td>
+<td>…5ZMND</td>
+<td>NPU B3: one-row, 192 KB lead</td>
+<td>356.3–493.3</td>
+<td>28.47 / 27.48 / 24.42</td>
+<td>= A, 6/6</td>
+<td>+2.62 / +2.24 / −1.65 %; later re-measured as D192</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#100</td>
+<td>…5ZMND</td>
+<td>NPU A: GEMV default (PR #108)</td>
+<td>421.1–540.1</td>
+<td>27.85 / 27.09 / 26.45</td>
+<td>control</td>
+<td>a third A run after the profiles read 16.71 (thermal, excluded)</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#100</td>
+<td>…5ZMND</td>
+<td>NPU A0: A with <code>NNTR_MOE_HTP_M1_GEMV=0</code> (HMX)</td>
+<td>506.4</td>
+<td>24.58 / — / —</td>
+<td>= A</td>
+<td>one run, G=64: GEMV is +13.5 %</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#113</td>
+<td>…5ZMND</td>
+<td>NPU A: four-row, lead 0 (then default)</td>
+<td>415.6–547.6</td>
+<td>27.44 / 26.83 / 25.93</td>
+<td>control</td>
+<td></td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#113</td>
+<td>…5ZMND</td>
+<td>NPU D192: one-row + 192 KB lead</td>
+<td>435.4–532.8</td>
+<td>28.57 / 27.71 / 27.04</td>
+<td>= A, 6/6</td>
+<td>+4.11 / +3.29 / +4.26 %; became the default (PR #115)</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s1</td>
+<td>…WM83Y</td>
+<td>NPU A: D192 default</td>
+<td>357.8–508.4</td>
+<td>28.48 / 26.47 / 25.55</td>
+<td>control</td>
+<td>warm phone</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s1</td>
+<td>…WM83Y</td>
+<td>NPU A0: pre-D192 cell (<code>LEAD_KB=0 ROWS1=0</code>)</td>
+<td>349.5–507.4</td>
+<td>27.50 / 25.85 / 24.58</td>
+<td>= A, 6/6</td>
+<td>A is +3.56 / +2.41 / +3.93 %</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s1</td>
+<td>…WM83Y</td>
+<td>NPU B: VTCM DMA feed (PR #118)</td>
+<td>366.5–489.0</td>
+<td>35.66 / 35.93 / 31.47</td>
+<td>= A, 6/6</td>
+<td>+25.2 / +35.7 / +23.2 %</td>
+</tr>
+<tr>
+<td>2026-09-23</td>
+<td>#117 s2</td>
+<td>…WM83Y</td>
+<td>NPU A0: pre-D192 cell</td>
+<td>401.9–506.4</td>
+<td>27.56 / 26.77 / 26.20</td>
+<td>= A, 6/6</td>
+<td>A is +2.41 / +4.16 / +3.91 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>The &quot;now&quot; rows are listed once, in the table above. #113's other matrix
+cells (four-row with a lead, one-row with 384 KB) failed the profile gate
+and were not run end to end.</p>
+<h2 id="5-goals">5. Goals <a class="hd" aria-label="link to this section" href="#5-goals">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>goal</th>
+<th>now</th>
+<th>target</th>
+<th>byte floor</th>
+<th>distance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NPU decode tok/s, G 64 / 512 / 1024</td>
+<td>28.22 / 27.89 / 27.23 (#117 s2 A, …WM83Y)</td>
+<td><strong>≥ 50</strong> at every G</td>
+<td>≈ 42–47 by bytes with the current CPU/DSP split (<a href="roadmap.html">roadmap.html</a> §1)</td>
+<td><strong>1.79×</strong> at G=512 (1.77× / 1.84× at 64 / 1024). With the feed (#117 s2 B, 36.49): <strong>1.37×</strong> (1.34× / 1.43×)</td>
+</tr>
+<tr>
+<td>CPU decode tok/s (the bar to beat)</td>
+<td>52.43 / 49.22 / 48.31 (#94 s2, …5ZMND)</td>
+<td>—</td>
+<td>—</td>
+<td>the CPU reads ≈ 953 MB per token at ≈ 50 GB/s: it clears 50 at G=64 in every sitting, at G=512 in some, and never reliably at G=1024</td>
+</tr>
+<tr>
+<td>NPU prefill tok/s, prompt 512</td>
+<td>401.9–528.9 (#117 s2 A)</td>
+<td>gate: ≥ −5 % of the same sitting's A</td>
+<td>—</td>
+<td>a gate, not a goal. The CPU does 268–340</td>
+</tr>
+<tr>
+<td>accuracy</td>
+<td>text = own control, kernel bit-identical</td>
+<td>identical</td>
+<td>—</td>
+<td>gate</td>
+</tr>
+</tbody>
+</table></div>
+<p>Distance = 50 / now, per G. Per-token budget at G=512: 35.86 ms for the
+&quot;now&quot;, 27.40 ms with the feed, 20 ms needed (§2.5).</p>
+<p><strong>&quot;Now&quot; stays #117 A (28.22 / 27.89 / 27.23)</strong> even though the feed is the
+<code>htp_moe</code> default since PR #118. The feed was measured only as an opt-in
+lever (#117's B). It becomes &quot;now&quot; when a later sitting runs the flipped
+build as its A (banner <code>feed=vtcm source=default</code>, <code>applied=0x303e1</code>) and
+reads it against A0 (<code>NNTR_MOE_HTP_GEMV_FEED=0</code>) in the same sitting. That
+sitting also reads A's <code>DMA ring:</code> engine rate against its own DMA anchor.</p>
+<h2 id="6-updating-this-chapter">6. Updating this chapter <a class="hd" aria-label="link to this section" href="#6-updating-this-chapter">#</a></h2>
+<p>Follow this checklist when a sitting is finished and its logs are on the
+workstation.</p>
+<p><strong>Check the sitting is valid.</strong></p>
+<ol>
+<li>The device <code>md5sum</code> lines match the artifact table of the sitting, or a
+rebuild from the named commit is recorded with its new md5s (§1.7). If
+the variants are different binaries, every row carries the md5 of the
+differing file.</li>
+<li>Every E2E and profile log has exactly one <code>[HTP] moe m1 gemv:</code> banner
+with the variant's expected word, and no E2E log contains
+<code>[HTP-PROFILE]</code> (§1.6). If A's banner is wrong, the sitting is void:
+stop here.</li>
+<li>Every profile header shows <code>qos_mode=2</code>.</li>
+<li><code>prefill: 512 tokens</code> and <code>generation: &lt;G&gt; tokens</code> appear in every
+E2E log.</li>
+<li>Text: <code>diff</code> each variant's log against A's for the same G and run, up
+to the <code>=====</code> line, excluding banner and md5 lines. Every diff must be
+empty.</li>
+</ol>
+<p><strong>Add rows.</strong></p>
+<ol start="6">
+<li>Add one row per variant to <strong>History</strong> (§4): the mean of each mirrored
+pair per G (two decimals, rounded half up from the run values), the
+prefill range over all of that variant's runs, the unit serial, the
+text result and a one-line note with the % vs this sitting's A. Leave
+out a lone thermal outlier, but mention it in the note.</li>
+<li>If the sitting ran the DMA anchor, update the unit's row in §1.3. If a
+new phone was used, add its row there. Keep units separate: never
+average or compare tok/s across units, and scale a DMA-fed <code>mm</code> by the
+anchor ratio before comparing it.</li>
+</ol>
+<p><strong>Decide whether &quot;now&quot; changes.</strong></p>
+<figure>
+<svg viewBox="0 0 720 308" role="img" aria-label="Decision: only variant A of its own sitting that runs the current htp_moe default replaces 'now'; otherwise keep 'now'" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="meas4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker>
+  </defs>
+  <!-- questions -->
+  <g fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2" stroke-linejoin="round">
+    <polygon points="16,46 38,16 314,16 336,46 314,76 38,76"/>
+    <polygon points="16,156 38,116 314,116 336,156 314,196 38,196"/>
+  </g>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="176" y="42">Is the variant its own</text>
+    <text x="176" y="60">sitting's control (A)?</text>
+    <text x="176" y="145">Is A the current</text>
+    <text x="176" y="162">htp_moe default path?</text>
+    <text x="176" y="179" font-size="12" fill="#52514e">(banner source=default word)</text>
+  </g>
+  <!-- outcomes -->
+  <rect x="420" y="13" width="284" height="66" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <rect x="420" y="136" width="284" height="40" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+  <rect x="16" y="236" width="320" height="56" rx="6" fill="#e8f3e8" stroke="#006300" stroke-width="1.2"/>
+  <g text-anchor="middle" fill="#0b0b0b">
+    <text x="562" y="35" font-weight="600">Keep 'now'.</text>
+    <text x="562" y="53" font-size="12" fill="#52514e">A winning B is a lever cell:</text>
+    <text x="562" y="69" font-size="12" fill="#52514e">list it as 'the next default'</text>
+    <text x="562" y="161" font-weight="600">Keep 'now'</text>
+    <text x="176" y="259" font-weight="600" fill="#006300">Replace 'now' with this A.</text>
+    <text x="176" y="278" font-size="12" fill="#52514e">Move the old 'now' row to History</text>
+  </g>
+  <!-- edges -->
+  <g stroke="#52514e" stroke-width="1.3" fill="none" marker-end="url(#meas4-arrow)">
+    <path d="M336,46 H419"/>
+    <path d="M176,76 V115"/>
+    <path d="M336,156 H419"/>
+    <path d="M176,196 V235"/>
+  </g>
+  <g font-size="12" fill="#52514e">
+    <text x="378" y="40" text-anchor="middle">no</text>
+    <text x="378" y="150" text-anchor="middle">no</text>
+    <text x="184" y="100">yes</text>
+    <text x="184" y="220">yes</text>
+  </g>
+</svg>
+<figcaption>When a sitting's row replaces "now": only when it is variant A of its own sitting and A runs the current <code>htp_moe</code> default (the banner's <code>source=default</code> word). A variant that beats A is a lever cell and stays out of "now" until its default flip lands.</figcaption>
+</figure>
+<ol start="8">
+<li>&quot;Now&quot; changes <strong>only</strong> when the new row is variant A of its own sitting
+<strong>and</strong> A runs the current <code>htp_moe</code> default. A variant that beats A,
+however clearly, is a lever. It becomes &quot;now&quot; only after its default
+flip has landed and a later sitting measures it as that sitting's A.
+The CPU &quot;now&quot; changes only when a sitting runs a CPU control cell.</li>
+<li>If &quot;now&quot; changed:
+<ul>
+<li>Replace the row in <strong>Current reference</strong>, move the old one into
+History, and update the &quot;now&quot; column of §5.</li>
+<li>Recompute <strong>distance</strong> = 50 / now at each G, including the &quot;with the
+next default&quot; figure if a lever row exists.</li>
+<li>Recompute the <strong>per-token budget</strong> (§2.5) from the new sitting's
+level-2 M==1 <code>host</code> / <code>dsp</code> / <code>transport</code> and its G=512 decode mean.
+Use only numbers from that one sitting.</li>
+<li>Update §2.4 if the sitting's profile rows describe the current paths.</li>
+<li>Replace the <strong>current reference set</strong> md5 table (§1.7) with the new
+sitting's files. Old sets are not kept.</li>
+<li>Update the headline table in <a href="index.html">index.html</a> (&quot;Where we are&quot;)
+and its &quot;where a token's time goes&quot; table to the same numbers, and
+update the chart there if a new change landed.</li>
+</ul>
+</li>
+<li>Update the <code>As of</code> line at the top of this chapter to the date and the
+<code>htp_moe</code> commit the new &quot;now&quot; was measured on.</li>
+<li>If a gate or a rule of the method changed (a new env knob, a new
+banner word, a new profile field), update §1.5, §1.6 or §2.2. Check the
+code (<code>htp_compute_ops.cpp</code>: <code>sendMoeOptsOnce</code>, <code>HtpProfile::dump</code>)
+rather than a plan or handoff.</li>
+</ol>
+
+<div class="pager"><span>← <a href="moe-ffn.html">MoE FFN</a></span><span><a href="lessons.html">Lessons</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

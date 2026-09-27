@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Architecture</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="architecture.html" class="here">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>Architecture</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>. All numbers are from the
+Galaxy S25 Ultra. Code is named by path and symbol, not by line number.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-the-hardware">1. The hardware <a class="header-anchor hd" href="#1-the-hardware">#</a></a></li><li><a href="#2-the-model-and-who-runs-what">2. The model and who runs what <a class="header-anchor hd" href="#2-the-model-and-who-runs-what">#</a></a></li><li><a href="#3-one-token-end-to-end">3. One token, end to end <a class="header-anchor hd" href="#3-one-token-end-to-end">#</a></a></li><li><a href="#4-one-moe-call-step-by-step">4. One MoE call, step by step <a class="header-anchor hd" href="#4-one-moe-call-step-by-step">#</a></a></li><ul><li><a href="#41-on-the-arm">4.1 On the ARM <a class="header-anchor hd" href="#41-on-the-arm">#</a></a></li><li><a href="#42-on-the-dsp-which-path">4.2 On the DSP: which path <a class="header-anchor hd" href="#42-on-the-dsp-which-path">#</a></a></li><li><a href="#43-the-decode-path-hvx-gemv">4.3 The decode path (HVX GEMV) <a class="header-anchor hd" href="#43-the-decode-path-hvx-gemv">#</a></a></li><li><a href="#44-the-prefill-path-hmx">4.4 The prefill path (HMX) <a class="header-anchor hd" href="#44-the-prefill-path-hmx">#</a></a></li></ul><li><a href="#5-the-weight-format">5. The weight format <a class="header-anchor hd" href="#5-the-weight-format">#</a></a></li><li><a href="#6-runtime-switches">6. Runtime switches <a class="header-anchor hd" href="#6-runtime-switches">#</a></a></li><li><a href="#7-code-map">7. Code map <a class="header-anchor hd" href="#7-code-map">#</a></a></li><li><a href="#8-where-the-design-goes-next">8. Where the design goes next <a class="header-anchor hd" href="#8-where-the-design-goes-next">#</a></a></li></ul></details>
+<p>This chapter walks the system once, top-down. It covers the hardware, which
+processor runs which part of the model, one token end to end, one MoE call
+step by step, where the weight bytes travel, and where the code lives. Each
+later chapter goes deeper into one part. Sections are tagged
+<code>upstream PR #4327</code> (the backend as the PR built it) or <code>htp_moe</code> (the
+decode work after it).</p>
+<h2 id="1-the-hardware">1. The hardware <a class="hd" aria-label="link to this section" href="#1-the-hardware">#</a></h2>
+<figure class="diagram">
+<svg viewBox="0 0 870 432" role="img" aria-label="Snapdragon 8 Elite: ARM CPU and Hexagon v79 NPU (scalar cores, HVX, HMX, VTCM, DMA, L2) and the LPDDR5X DRAM, with the bandwidth of each path" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="10" y="10" width="850" height="312" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="22" y="30" font-size="14" text-anchor="start" fill="#0b0b0b" font-weight="700">Snapdragon 8 Elite</text>
+<rect x="28" y="80" width="170" height="84" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="113.0" y="102.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">ARM CPU (Oryon)</text>
+<text x="113.0" y="118.3" font-size="12" text-anchor="middle" fill="#0b0b0b">runs nntrainer, the</text>
+<text x="113.0" y="134.3" font-size="12" text-anchor="middle" fill="#0b0b0b">model graph, everything</text>
+<text x="113.0" y="150.3" font-size="12" text-anchor="middle" fill="#0b0b0b">except the MoE FFN</text>
+<rect x="340" y="44" width="510" height="262" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="352" y="64" font-size="13" text-anchor="start" fill="#0b0b0b" font-weight="700">Hexagon v79 NPU (the “HTP”)</text>
+<rect x="356" y="80" width="160" height="66" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="436.0" y="109.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">scalar cores</text>
+<text x="436.0" y="125.3" font-size="12" text-anchor="middle" fill="#0b0b0b">(control, FastRPC skel)</text>
+<rect x="536" y="80" width="150" height="66" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="611.0" y="101.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">HVX</text>
+<text x="611.0" y="117.3" font-size="12" text-anchor="middle" fill="#0b0b0b">1024-bit vector units</text>
+<text x="611.0" y="133.3" font-size="12" text-anchor="middle" fill="#0b0b0b">6 worker lanes</text>
+<rect x="700" y="80" width="144" height="66" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="772.0" y="101.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">HMX</text>
+<text x="772.0" y="117.3" font-size="12" text-anchor="middle" fill="#0b0b0b">matrix unit</text>
+<text x="772.0" y="133.3" font-size="12" text-anchor="middle" fill="#0b0b0b">64-row int8 tiles</text>
+<rect x="536" y="176" width="150" height="50" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="611.0" y="205.3" font-size="12" text-anchor="middle" fill="#0b0b0b">L2 cache</text>
+<rect x="700" y="176" width="144" height="50" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="772.0" y="197.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">VTCM</text>
+<text x="772.0" y="213.3" font-size="12" text-anchor="middle" fill="#0b0b0b">8 MiB on-chip scratch</text>
+<rect x="700" y="256" width="144" height="36" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="772.0" y="278.3" font-size="12" text-anchor="middle" fill="#0b0b0b">DMA engine</text>
+<rect x="28" y="372" width="816" height="44" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="436.0" y="398.7" font-size="13" text-anchor="middle" fill="#0b0b0b">LPDDR5X DRAM</text>
+<path d="M198,113 L356,113" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)" marker-start="url(#arch1-arrow)"/>
+<text x="269" y="97" font-size="11" text-anchor="middle" fill="#52514e">FastRPC call</text>
+<text x="269" y="132" font-size="11" text-anchor="middle" fill="#52514e">(one per MoE layer)</text>
+<path d="M113,164 L113,372" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)" marker-start="url(#arch1-arrow)"/>
+<text x="121" y="262" font-size="11" text-anchor="start" fill="#52514e">≈ 50 GB/s</text>
+<text x="121" y="277" font-size="11" text-anchor="start" fill="#52514e">(CPU decode)</text>
+<path d="M611,372 L611,226" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+<text x="603" y="268" font-size="11" text-anchor="end" fill="#52514e">vector loads + l2fetch</text>
+<text x="603" y="283" font-size="11" text-anchor="end" fill="#52514e">≈ 23.5 GB/s</text>
+<path d="M611,176 L611,146" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+<path d="M772,372 L772,292" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+<path d="M772,256 L772,226" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+<text x="764" y="245" font-size="11" text-anchor="end" fill="#52514e">31–37 GB/s</text>
+<path d="M772,176 L772,146" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+<path d="M712,176 L680,146" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch1-arrow)"/>
+</svg>
+<figcaption>The Snapdragon 8 Elite as the backend uses it. The ARM CPU runs everything except the MoE FFN and makes one FastRPC call per MoE layer to the DSP’s scalar cores. The DSP reads weights from DRAM either by DMA into the 8 MiB VTCM (31–37 GB/s, the only source HMX can read) or by HVX vector loads through the L2 cache with l2fetch (≈ 23.5 GB/s); the CPU’s own decode reads DRAM at ≈ 50 GB/s.</figcaption>
+</figure>
+<p>The terms used throughout:</p>
+<ul>
+<li><strong>HTP / DSP / NPU</strong>: the same device, Qualcomm's Hexagon Tensor
+Processor. The code calls it <code>htp</code>.</li>
+<li><strong>HVX</strong>: the DSP's vector unit. It is good at one-row work (matrix ×
+vector).</li>
+<li><strong>HMX</strong>: the DSP's matrix unit. It is fast for many rows, but it always
+computes 64-row tiles.</li>
+<li><strong>VTCM</strong>: fast on-chip memory. HMX reads only from here; HVX reads from
+here or through the L2 cache.</li>
+<li><strong>ION arena</strong>: DDR memory that both the ARM and the DSP map. All MoE
+expert weights live in it, loaded once at model load.</li>
+<li><strong>FastRPC</strong>: Qualcomm's ARM → DSP remote call. The interface is
+<code>test/htp/nntr_hvx.idl</code>. <code>qaic</code> generates the ARM stub and the DSP skel
+from it.</li>
+</ul>
+<h2 id="2-the-model-and-who-runs-what">2. The model and who runs what <a class="hd" aria-label="link to this section" href="#2-the-model-and-who-runs-what">#</a></h2>
+<p>LFM2.5-8B-A1B: 24 layers, hidden width 2048, vocabulary 128 000, lm_head
+tied to the input embedding.</p>
+<ul>
+<li><strong>Mixers</strong>: 18 layers use a short convolution and 6 use attention.</li>
+<li><strong>Feed-forward blocks</strong>: 22 layers use a <strong>MoE FFN</strong> (32 experts, the
+router picks 4 per token, each expert 2048 → 1792 → 2048 with SwiGLU).
+The other 2 use a dense FFN.</li>
+</ul>
+<figure class="diagram">
+<svg viewBox="0 0 860 652" role="img" aria-label="LFM2.5-8B-A1B decode graph: embedding, 24 layers of RMSNorm, conv or attention mixer, residual, RMSNorm, MoE or dense FFN, residual, then output norm, lm_head and argmax; only the MoE FFN runs on the DSP" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="690" y="14" width="14" height="14" rx="3" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="710" y="25" font-size="12" text-anchor="start" fill="#0b0b0b">CPU</text>
+<rect x="760" y="14" width="14" height="14" rx="3" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="780" y="25" font-size="12" text-anchor="start" fill="#0b0b0b">DSP</text>
+<rect x="330" y="10" width="200" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="31.3" font-size="12" text-anchor="middle" fill="#0b0b0b">embedding row (Q4_0)</text>
+<path d="M430,44 L430,64" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="60" y="64" width="740" height="510" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="72" y="84" font-size="14" text-anchor="start" fill="#0b0b0b" font-weight="700">× 24 layers</text>
+<rect x="370" y="92" width="120" height="30" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="111.3" font-size="12" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+<path d="M430,122 L430,146" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<polygon points="375.0,164 393.0,146.0 467.0,146.0 485.0,164 467.0,182.0 393.0,182.0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="430" y="168.3" font-size="12" text-anchor="middle" fill="#0b0b0b">mixer</text>
+<path d="M375,164 L240,164 L240,206" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="268.3" y="146" width="63.4" height="16" rx="3" fill="#f9f9f7"/>
+<text x="300" y="157" font-size="11" text-anchor="middle" fill="#52514e">18 layers</text>
+<path d="M485,164 L620,164 L620,206" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="531.4" y="146" width="57.3" height="16" rx="3" fill="#f9f9f7"/>
+<text x="560" y="157" font-size="11" text-anchor="middle" fill="#52514e">6 layers</text>
+<rect x="80" y="206" width="320" height="50" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="240.0" y="227.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">conv</text>
+<text x="240.0" y="243.3" font-size="12" text-anchor="middle" fill="#0b0b0b">in_proj → gates → causal conv1d → out_proj</text>
+<rect x="460" y="206" width="320" height="50" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="620.0" y="227.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">attention</text>
+<text x="620.0" y="243.3" font-size="12" text-anchor="middle" fill="#0b0b0b">q/k/v → q/k norm → RoPE → KV cache → o</text>
+<rect x="370" y="284" width="120" height="30" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="303.3" font-size="12" text-anchor="middle" fill="#0b0b0b">+ residual</text>
+<path d="M240,256 L240,299 L370,299" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<path d="M620,256 L620,299 L490,299" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<path d="M430,314 L430,338" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="370" y="338" width="120" height="30" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="357.3" font-size="12" text-anchor="middle" fill="#0b0b0b">RMSNorm</text>
+<path d="M430,368 L430,392" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<polygon points="375.0,410 393.0,392.0 467.0,392.0 485.0,410 467.0,428.0 393.0,428.0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="430" y="414.3" font-size="12" text-anchor="middle" fill="#0b0b0b">FFN</text>
+<path d="M375,410 L240,410 L240,452" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="268.3" y="392" width="63.4" height="16" rx="3" fill="#f9f9f7"/>
+<text x="300" y="403" font-size="11" text-anchor="middle" fill="#52514e">22 layers</text>
+<path d="M485,410 L620,410 L620,452" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="531.4" y="392" width="57.3" height="16" rx="3" fill="#f9f9f7"/>
+<text x="560" y="403" font-size="11" text-anchor="middle" fill="#52514e">2 layers</text>
+<rect x="80" y="452" width="320" height="50" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="240.0" y="473.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">MoE FFN</text>
+<text x="240.0" y="489.3" font-size="12" text-anchor="middle" fill="#0b0b0b">router on CPU, experts on DSP</text>
+<rect x="460" y="452" width="320" height="50" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="620.0" y="481.3" font-size="12" text-anchor="middle" fill="#0b0b0b">dense FFN (SwiGLU)</text>
+<rect x="370" y="530" width="120" height="30" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="549.3" font-size="12" text-anchor="middle" fill="#0b0b0b">+ residual</text>
+<path d="M240,502 L240,545 L370,545" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<path d="M620,502 L620,545 L490,545" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<path d="M210,574 L210,606" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="140" y="606" width="140" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="210.0" y="627.3" font-size="12" text-anchor="middle" fill="#0b0b0b">output RMSNorm</text>
+<path d="M280,623 L330,623" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="330" y="606" width="200" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430.0" y="627.3" font-size="12" text-anchor="middle" fill="#0b0b0b">lm_head 128000 × 2048</text>
+<path d="M530,623 L580,623" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch2-arrow)"/>
+<rect x="580" y="606" width="180" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="670.0" y="627.3" font-size="12" text-anchor="middle" fill="#0b0b0b">argmax → next token</text>
+</svg>
+<figcaption>One decode token through LFM2.5-8B-A1B. Blue boxes run on the DSP and orange boxes on the CPU: in the NPU configuration only the MoE FFN (22 of the 24 layers) leaves the CPU, and even there the router runs on the CPU and only the experts run on the DSP.</figcaption>
+</figure>
+<p>Blue means the DSP, orange means the CPU. In the NPU configuration <strong>only
+the 22 MoE FFN blocks leave the CPU</strong>. Kernels also exist for attention and
+for the FC projections on the DSP (§7, <code>upstream PR #4327</code>). The FC route
+is switched per model config (<code>*_engine</code> keys) and is <strong>off</strong> in the
+measured configuration. The fused attention kernel runs only in its device
+tests; the app's attention (<code>mha_core</code>) runs on the CPU.</p>
+<p>The CPU still reads ≈ 408 MB of the ≈ 893 MB each token needs (lm_head
+147, conv and attention projections 205, dense FFN 50, routers 6). That, plus the 22 round trips, is why the long-term design
+is <strong>one DSP call per token</strong> (§8).</p>
+<h2 id="3-one-token-end-to-end">3. One token, end to end <a class="hd" aria-label="link to this section" href="#3-one-token-end-to-end">#</a></h2>
+<p>Decode means the prompt is already processed, and the model now produces one
+token at a time. Every matrix product is one row (M = 1) times a weight
+matrix.</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 486" role="img" aria-label="Sequence of one decode token: for each of 24 layers the CPU runs norm and mixer; in 22 MoE layers it routes and makes a FastRPC call to the DSP, which runs 4 experts and returns the row; 2 dense layers stay on the CPU; finally norm, lm_head, argmax on the CPU" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="200" y="10" width="200" height="44" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="300.0" y="28.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">ARM CPU</text>
+<text x="300.0" y="44.3" font-size="12" text-anchor="middle" fill="#0b0b0b">(nntrainer graph)</text>
+<rect x="590" y="10" width="200" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="690.0" y="36.3" font-size="12" text-anchor="middle" fill="#0b0b0b">Hexagon DSP</text>
+<line x1="300" y1="54" x2="300" y2="476" stroke="#898781" stroke-width="1.2"/>
+<line x1="690" y1="54" x2="690" y2="476" stroke="#898781" stroke-width="1.2"/>
+<rect x="60" y="66" width="760" height="364" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+<path d="M60,66 H104 V78 L96,86 H60 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+<text x="67" y="80" font-size="11" text-anchor="start" fill="#52514e" font-weight="700">loop</text>
+<text x="112" y="80" font-size="11" text-anchor="start" fill="#52514e">24 layers</text>
+<path d="M300,97 L328,97 L328,111 L303,111" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="346" cy="104" r="9" fill="#52514e"/>
+<text x="346" y="108" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">1</text>
+<text x="362" y="108" font-size="12" text-anchor="start" fill="#0b0b0b">norm, mixer (conv or attention), residual</text>
+<rect x="80" y="126" width="720" height="242" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+<path d="M80,126 H117 V138 L109,146 H80 Z" fill="#f6f5f1" stroke="#898781" stroke-width="1"/>
+<text x="87" y="140" font-size="11" text-anchor="start" fill="#52514e" font-weight="700">alt</text>
+<text x="125" y="140" font-size="11" text-anchor="start" fill="#52514e">[MoE layer (22 of 24)]</text>
+<path d="M300,161 L328,161 L328,175 L303,175" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="346" cy="168" r="9" fill="#52514e"/>
+<text x="346" y="172" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">2</text>
+<text x="362" y="172" font-size="12" text-anchor="start" fill="#0b0b0b">router: 32 scores → top-4 experts + weights</text>
+<circle cx="316" cy="214" r="9" fill="#52514e"/>
+<text x="316" y="218" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">3</text>
+<path d="M326,214 L690,214" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<text x="505" y="206" font-size="12" text-anchor="middle" fill="#0b0b0b">FastRPC: row (8 KiB) + routing (a few hundred bytes)</text>
+<path d="M690,249 L718,249 L718,263 L693,263" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="736" cy="256" r="9" fill="#52514e"/>
+<text x="736" y="260" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">4</text>
+<text x="676" y="252.0" font-size="12" text-anchor="end" fill="#0b0b0b">4 experts × (gate_up → SwiGLU → down),</text>
+<text x="676" y="268.0" font-size="12" text-anchor="end" fill="#0b0b0b">weighted sum</text>
+<circle cx="674" cy="304" r="9" fill="#52514e"/>
+<text x="674" y="308" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">5</text>
+<path d="M664,304 L300,304" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arch3-arrow)"/>
+<text x="495" y="296" font-size="12" text-anchor="middle" fill="#0b0b0b">output row (8 KiB)</text>
+<line x1="80" y1="322" x2="800" y2="322" stroke="#898781" stroke-width="1" stroke-dasharray="5 4"/>
+<text x="88" y="337" font-size="11" text-anchor="start" fill="#52514e">[dense layer (2 of 24)]</text>
+<path d="M300,343 L328,343 L328,357 L303,357" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="346" cy="350" r="9" fill="#52514e"/>
+<text x="346" y="354" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">6</text>
+<text x="362" y="354" font-size="12" text-anchor="start" fill="#0b0b0b">dense FFN</text>
+<path d="M300,393 L328,393 L328,407 L303,407" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="346" cy="400" r="9" fill="#52514e"/>
+<text x="346" y="404" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">7</text>
+<text x="362" y="404" font-size="12" text-anchor="start" fill="#0b0b0b">residual add</text>
+<path d="M300,449 L328,449 L328,463 L303,463" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch3-arrow)"/>
+<circle cx="346" cy="456" r="9" fill="#52514e"/>
+<text x="346" y="460" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="700">8</text>
+<text x="362" y="460" font-size="12" text-anchor="start" fill="#0b0b0b">norm, lm_head, argmax</text>
+</svg>
+<figcaption>One decode token. The CPU runs every layer’s norm and mixer; in each of the 22 MoE layers it routes (step 2), makes one blocking FastRPC call carrying an 8 KiB row plus a few hundred bytes of routing (3), and the DSP runs the 4 chosen experts and returns an 8 KiB row (4–5). The 2 dense-FFN layers and the final norm, lm_head and argmax never leave the CPU.</figcaption>
+</figure>
+<p>At gen 512, with the VTCM feed on, the token takes ≈ 27.4 ms:</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 146" role="img" aria-label="Stacked bar of one 27.4 ms decode token at gen 512 with the VTCM feed: MoE work on the DSP 15.7 ms, ARM-DSP round trips 2.0 ms, CPU work between calls 9.7 ms" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<text x="30" y="22" font-size="14" text-anchor="start" fill="#0b0b0b" font-weight="700">One decode token at gen 512 with the feed (ms)</text>
+<rect x="30.0" y="66" width="458.4" height="44" fill="#2a78d6"/>
+<rect x="488.4" y="66" width="58.4" height="44" fill="#898781"/>
+<rect x="546.8" y="66" width="283.2" height="44" fill="#eb6834"/>
+<line x1="488.4" y1="66" x2="488.4" y2="110" stroke="#ffffff" stroke-width="1.5"/>
+<line x1="546.8" y1="66" x2="546.8" y2="110" stroke="#ffffff" stroke-width="1.5"/>
+<text x="42" y="85" font-size="12" text-anchor="start" fill="#ffffff" font-weight="600">MoE work on the DSP (22 calls)</text>
+<text x="42" y="101" font-size="12" text-anchor="start" fill="#ffffff">15.7 ms · 57 %</text>
+<text x="818.0" y="85" font-size="12" text-anchor="end" fill="#ffffff" font-weight="600">CPU work between calls</text>
+<text x="818.0" y="101" font-size="12" text-anchor="end" fill="#ffffff">9.7 ms · 35 %</text>
+<text x="517.5912408759124" y="46" font-size="12" text-anchor="middle" fill="#0b0b0b">ARM ↔ DSP round trips: 2.0 ms · 7 %</text>
+<line x1="517.6" y1="51" x2="517.6" y2="64" stroke="#52514e" stroke-width="1"/>
+<line x1="30" y1="118" x2="830" y2="118" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="30.0" y1="118" x2="30.0" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="30.0" y="137" font-size="11" text-anchor="middle" fill="#52514e">0</text>
+<line x1="176.0" y1="118" x2="176.0" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="176.0" y="137" font-size="11" text-anchor="middle" fill="#52514e">5</text>
+<line x1="322.0" y1="118" x2="322.0" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="322.0" y="137" font-size="11" text-anchor="middle" fill="#52514e">10</text>
+<line x1="468.0" y1="118" x2="468.0" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="468.0" y="137" font-size="11" text-anchor="middle" fill="#52514e">15</text>
+<line x1="613.9" y1="118" x2="613.9" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="613.9" y="137" font-size="11" text-anchor="middle" fill="#52514e">20</text>
+<line x1="759.9" y1="118" x2="759.9" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="759.9" y="137" font-size="11" text-anchor="middle" fill="#52514e">25</text>
+<line x1="830" y1="118" x2="830" y2="123" stroke="#898781" stroke-width="1"/>
+<text x="830" y="22" font-size="13" text-anchor="end" fill="#0b0b0b" font-weight="700">total ≈ 27.4 ms</text>
+</svg>
+<figcaption>Where one decode token’s ≈ 27.4 ms goes at gen 512 with the VTCM feed on: 15.7 ms of MoE work on the DSP across 22 calls, 2.0 ms of ARM ↔ DSP round trips and 9.7 ms of CPU work between the calls. Only the first part can be sped up inside the MoE call.</figcaption>
+</figure>
+<h2 id="4-one-moe-call-step-by-step">4. One MoE call, step by step <a class="hd" aria-label="link to this section" href="#4-one-moe-call-step-by-step">#</a></h2>
+<p><code>upstream PR #4327</code> built the call and the HMX path; <code>htp_moe</code> added the
+size-class staging, the options word and the HVX decode path. Full detail:
+<a href="moe-ffn.html">moe-ffn.html</a>.</p>
+<h3 id="41-on-the-arm">4.1 On the ARM <a class="hd" aria-label="link to this section" href="#41-on-the-arm">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>step</th>
+<th>what happens</th>
+<th>code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>route</td>
+<td>The normalized row × router matrix gives 32 logits. Sigmoid, plus a per-expert bias used only for ranking, gives the top 4. Their weights are the bias-free sigmoids, normalized</td>
+<td><code>Applications/CausalLM/models/lfm2_moe/lfm2_moe_layer.cpp</code>: <code>buildExpertAssignments</code></td>
+</tr>
+<tr>
+<td>decide</td>
+<td><code>QS4CX_WH</code> expert weights always go to the DSP: no CPU kernel reads that layout</td>
+<td>same file: <code>tryMoeLayerOnAccelerator</code></td>
+</tr>
+<tr>
+<td>arrays</td>
+<td>The routing becomes <code>row_index</code>, <code>row_count[32]</code> and <code>row_weight</code>, in expert order</td>
+<td>same file</td>
+</tr>
+<tr>
+<td>stage</td>
+<td>The activation row is copied into a shared ION buffer. Buffers come in power-of-two size classes from 64 KiB up, so a decode call touches a 64 KiB pair and not the 4 MiB pair sized for the prompt</td>
+<td><code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code>: <code>StagingPool</code>, <code>stage</code></td>
+</tr>
+<tr>
+<td>call</td>
+<td><code>nntr_hvx_mm_u8i4_moe_layer(...)</code> blocks until the DSP returns. The ARM polls for the reply for up to 5 ms before falling back to an interrupt wake-up</td>
+<td><code>htp_compute_ops.cpp</code>; poll window <code>NNTR_HTP_POLL_US</code> in <code>htp_backend.cpp</code></td>
+</tr>
+<tr>
+<td>options</td>
+<td>Once per session, <code>moe_set_opts</code> sends the kernel's switches (GEMV path, loop, prefetch lead, feed) as one bit word. The DSP echoes what it applied, and the ARM prints it as the <code>[HTP] moe m1 gemv: ...</code> banner, which proves which path a run took</td>
+<td><code>sendMoeOptsOnce</code>; <code>htp_moe_opts.h</code></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="42-on-the-dsp-which-path">4.2 On the DSP: which path <a class="hd" aria-label="link to this section" href="#42-on-the-dsp-which-path">#</a></h3>
+<p>The whole MoE layer is one kernel entry, <code>hexkl_mm_u8i4_moe_layer_run</code> in
+<code>nntrainer/tensor/htp_backend/hmx/hexkl_mm_u8i4_moe.c</code>. Its first decision
+is the path:</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 444" role="img" aria-label="Decision inside the MoE kernel: after quantizing the row, M greater than 4 goes to the HMX path; decode goes to HVX GEMV, fed from VTCM by default or read from DDR when the feed flag is off; all three produce the weighted sum of 4 experts" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="310" y="10" width="240" height="32" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="430.0" y="30.3" font-size="12" text-anchor="middle" fill="#0b0b0b">call arrives: M rows, routing</text>
+<path d="M430,42 L430,64" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<rect x="300" y="64" width="260" height="32" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="430.0" y="84.3" font-size="12" text-anchor="middle" fill="#0b0b0b">quantize the activation row to u8</text>
+<path d="M430,96 L430,118" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<polygon points="310.0,150 342.0,118.0 518.0,118.0 550.0,150 518.0,182.0 342.0,182.0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="430" y="138.3" font-size="12" text-anchor="middle" fill="#0b0b0b">GEMV flag on</text>
+<text x="430" y="154.3" font-size="12" text-anchor="middle" fill="#0b0b0b">and M ≤ 4</text>
+<text x="430" y="170.3" font-size="12" text-anchor="middle" fill="#0b0b0b">and ≤ 16 active experts?</text>
+<path d="M310,150 L170,150 L170,290" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<rect x="174.0" y="211" width="125.0" height="16" rx="3" fill="#f9f9f7"/>
+<text x="178" y="222" font-size="11" text-anchor="start" fill="#52514e">no (prefill, M &gt; 4)</text>
+<path d="M550,150 L620,150 L620,196" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<rect x="624.0" y="165" width="81.9" height="16" rx="3" fill="#f9f9f7"/>
+<text x="628" y="176" font-size="11" text-anchor="start" fill="#52514e">yes (decode)</text>
+<polygon points="545.0,214 563.0,196.0 677.0,196.0 695.0,214 677.0,232.0 563.0,232.0" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="620" y="218.3" font-size="12" text-anchor="middle" fill="#0b0b0b">feed flag on?</text>
+<path d="M545,214 L490,214 L490,290" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<rect x="494.0" y="245" width="88.1" height="16" rx="3" fill="#f9f9f7"/>
+<text x="498" y="256" font-size="11" text-anchor="start" fill="#52514e">yes (default)</text>
+<path d="M695,214 L740,214 L740,290" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<rect x="744.0" y="245" width="81.9" height="16" rx="3" fill="#f9f9f7"/>
+<text x="748" y="256" font-size="11" text-anchor="start" fill="#52514e">no (opt-out)</text>
+<rect x="40" y="290" width="260" height="70" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="170.0" y="313.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">HMX path</text>
+<text x="170.0" y="329.3" font-size="12" text-anchor="middle" fill="#0b0b0b">64-row tiles, weights DMA’d into</text>
+<text x="170.0" y="345.3" font-size="12" text-anchor="middle" fill="#0b0b0b">VTCM through a descriptor ring</text>
+<rect x="380" y="290" width="220" height="70" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="490.0" y="313.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">HVX GEMV, VTCM feed</text>
+<text x="490.0" y="329.3" font-size="12" text-anchor="middle" fill="#0b0b0b">each expert DMA’d into VTCM</text>
+<text x="490.0" y="345.3" font-size="12" text-anchor="middle" fill="#0b0b0b">one expert ahead of compute</text>
+<rect x="630" y="290" width="220" height="70" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="740.0" y="313.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">HVX GEMV, arena read</text>
+<text x="740.0" y="329.3" font-size="12" text-anchor="middle" fill="#0b0b0b">vector loads from DDR behind</text>
+<text x="740.0" y="345.3" font-size="12" text-anchor="middle" fill="#0b0b0b">a 192 KB l2fetch lead</text>
+<rect x="300" y="398" width="280" height="34" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="440.0" y="419.3" font-size="12" text-anchor="middle" fill="#0b0b0b">weighted sum of 4 experts → output row</text>
+<path d="M170,360 L170,415 L300,415" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<path d="M490,360 L490,398" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+<path d="M740,360 L740,415 L580,415" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch5-arrow)"/>
+</svg>
+<figcaption>The first decision of <code>hexkl_mm_u8i4_moe_layer_run</code>. Prefill (M &gt; 4) always takes the HMX path; decode takes the HVX GEMV path, by default with each expert DMA’d into VTCM one expert ahead of compute, or (feed flag off) with vector loads from DDR behind a 192 KB l2fetch lead. All three paths end in the same weighted sum of 4 experts.</figcaption>
+</figure>
+<p>All three paths produce <strong>byte-identical output</strong>. Integer sums do not
+depend on order, and the final f32 adds run in the same sequence. Host and
+device tests check that on every change (<code>MoeLayerM1GemvMatchesHmx</code>).
+Prefill (M &gt; 4) never enters the GEMV branch, so decode work cannot slow
+prefill by construction.</p>
+<h3 id="43-the-decode-path-hvx-gemv">4.3 The decode path (HVX GEMV) <a class="hd" aria-label="link to this section" href="#43-the-decode-path-hvx-gemv">#</a></h3>
+<p><code>htp_moe</code>.</p>
+<p>The GEMV path runs on a worker pool with one lane per HVX context (6 on v79)
+and synchronizes with barriers:</p>
+<figure class="diagram">
+<svg viewBox="0 0 830 168" role="img" aria-label="HVX GEMV decode pipeline: pack the row per expert, Stage A gate and up with SwiGLU, Stage B requantize, Stage C down tiles and dequantize, then scatter weighted by expert" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch6-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="150" y="10" width="504" height="150" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="162" y="30" font-size="12" text-anchor="start" fill="#0b0b0b" font-weight="700">worker pool: stages A–C, barrier between stages</text>
+<rect x="20" y="48" width="110" height="100" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="75.0" y="94.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">pack the row</text>
+<text x="75.0" y="110.3" font-size="12" text-anchor="middle" fill="#0b0b0b">per expert</text>
+<rect x="166" y="48" width="130" height="100" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="231.0" y="70.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">Stage A (pool)</text>
+<text x="231.0" y="86.3" font-size="12" text-anchor="middle" fill="#0b0b0b">4 experts ×</text>
+<text x="231.0" y="102.3" font-size="12" text-anchor="middle" fill="#0b0b0b">56 column pairs</text>
+<text x="231.0" y="118.3" font-size="12" text-anchor="middle" fill="#0b0b0b">gate·x, up·x →</text>
+<text x="231.0" y="134.3" font-size="12" text-anchor="middle" fill="#0b0b0b">silu(gate)·up</text>
+<rect x="332" y="48" width="130" height="100" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="397.0" y="78.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">Stage B (pool)</text>
+<text x="397.0" y="94.3" font-size="12" text-anchor="middle" fill="#0b0b0b">requantize the</text>
+<text x="397.0" y="110.3" font-size="12" text-anchor="middle" fill="#0b0b0b">1792-wide row</text>
+<text x="397.0" y="126.3" font-size="12" text-anchor="middle" fill="#0b0b0b">to u8, per expert</text>
+<rect x="498" y="48" width="140" height="100" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="568.0" y="78.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">Stage C (pool)</text>
+<text x="568.0" y="94.3" font-size="12" text-anchor="middle" fill="#0b0b0b">4 experts ×</text>
+<text x="568.0" y="110.3" font-size="12" text-anchor="middle" fill="#0b0b0b">64 down tiles</text>
+<text x="568.0" y="126.3" font-size="12" text-anchor="middle" fill="#0b0b0b">→ dequantize to f32</text>
+<rect x="690" y="48" width="124" height="100" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="752.0" y="78.3" font-size="13" text-anchor="middle" fill="#0b0b0b" font-weight="600">scatter</text>
+<text x="752.0" y="94.3" font-size="12" text-anchor="middle" fill="#0b0b0b">out += weight ·</text>
+<text x="752.0" y="110.3" font-size="12" text-anchor="middle" fill="#0b0b0b">expert_out</text>
+<text x="752.0" y="126.3" font-size="12" text-anchor="middle" fill="#0b0b0b">(expert order)</text>
+<path d="M130,98.0 L166,98.0" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch6-arrow)"/>
+<path d="M296,98.0 L332,98.0" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch6-arrow)"/>
+<path d="M462,98.0 L498,98.0" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch6-arrow)"/>
+<path d="M638,98.0 L690,98.0" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch6-arrow)"/>
+</svg>
+<figcaption>One MoE call on the decode path. Stages A–C each spread their work over the worker pool (one lane per HVX context, 6 on v79) with a barrier between stages; the final scatter adds each expert’s output, times its routing weight, in expert order.</figcaption>
+</figure>
+<p>Per call (gen 64, level-2 profile, unit <code>R3CY10WM83Y</code>):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">arena read (before PR #118)</th>
+<th style="text-align:right">VTCM feed (default)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mm</code>: matrix work incl. waiting for weights</td>
+<td style="text-align:right">931.9 µs</td>
+<td style="text-align:right">676.4 µs</td>
+</tr>
+<tr>
+<td><code>dsp</code>: whole call on the DSP</td>
+<td style="text-align:right">995.1 µs</td>
+<td style="text-align:right">711.9 µs</td>
+</tr>
+<tr>
+<td>transport: round trip minus DSP time</td>
+<td style="text-align:right">190.3 µs</td>
+<td style="text-align:right">92.3 µs</td>
+</tr>
+<tr>
+<td>weight read rate</td>
+<td style="text-align:right">≈ 23.6 GB/s</td>
+<td style="text-align:right">≈ 32.6 GB/s</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each call reads <strong>22.02 MB</strong> of weights: 4 experts × (gate_up 3.5 MiB +
+down 1.75 MiB). The arithmetic itself takes ≈ 240 µs. The rest of <code>mm</code> is
+waiting for bytes. So the decode kernel is <strong>bound by how fast the weights
+arrive</strong>, and each improvement to it has been an improvement to that feed:</p>
+<ol>
+<li>Prefetch lead (default since PR #115): the one-row loop asks the L2
+cache for the next 192 KB before it needs it. It gives +3–4 % decode.</li>
+<li>VTCM feed (default since PR #118): the DMA engine copies each expert
+into VTCM while HVX computes on the previous one. This hides the
+arithmetic under the copy and gives +29–33 % decode.</li>
+</ol>
+<p>The floor is the bytes divided by the DMA rate: 22.02 MB at 37.3 GB/s is
+≈ 590 µs per call, so there is little left inside the call.</p>
+<h3 id="44-the-prefill-path-hmx">4.4 The prefill path (HMX) <a class="hd" aria-label="link to this section" href="#44-the-prefill-path-hmx">#</a></h3>
+<p><code>upstream PR #4327</code>.</p>
+<p>The path upstream shipped, kept for prefill and as an opt-out
+(<code>NNTR_MOE_HTP_M1_GEMV=0</code>). VTCM is carved into fixed regions (activation
+block, gate_up weights 3.5 MiB, down weights 1.75 MiB, accumulators,
+results). For each expert, the weights are DMA'd from the arena into VTCM in
+column chunks. The HMX then multiplies 64-row tiles, and HVX workers
+dequantize, apply SwiGLU, requantize and scatter. At M = 1, 63 of the 64
+rows are padding. That is why decode moved off this path.</p>
+<h2 id="5-the-weight-format">5. The weight format <a class="hd" aria-label="link to this section" href="#5-the-weight-format">#</a></h2>
+<p><code>upstream PR #4327</code>. Full detail: <a href="weight-format.html">weight-format.html</a>.</p>
+<p>Expert weights use <strong><code>QS4CX_WH</code></strong>: 4-bit signed weights with one scale per
+output channel, stored as 32 × 32 tiles of 512 bytes in the order the HMX
+reads, followed by a per-channel column sum (it corrects for the
+activation's zero point without recomputing it per call). The class is
+<code>QS4CX_WH_Tensor</code> in <code>nntrainer/tensor/qs4cx_tensor.h</code>. Activations are 8-bit
+unsigned (u8) with a per-row scale and zero point, which is why the kernels
+are named <code>u8i4</code>. The HVX GEMV reads the same bytes in the same order, so
+both paths share one weight blob per expert. The format is produced
+offline by <code>Applications/CausalLM/quantize_stream.cpp</code>
+(<code>--moe_dtype QS4CX_WH</code>). Everything else in the model stays <code>Q4_0</code> on the
+CPU.</p>
+<h2 id="6-runtime-switches">6. Runtime switches <a class="hd" aria-label="link to this section" href="#6-runtime-switches">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>variable / key</th>
+<th>default</th>
+<th>what it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>moe_engine</code> (<code>nntr_config.json</code>)</td>
+<td><code>cpu</code></td>
+<td><code>htp</code> sends the MoE FFN to the DSP</td>
+</tr>
+<tr>
+<td><code>attn_proj_engine</code>, <code>conv_in_proj_engine</code>, <code>conv_out_proj_engine</code>, <code>dense_ffn_engine</code></td>
+<td><code>cpu</code></td>
+<td>route those projections to the DSP; off in the measured config</td>
+</tr>
+<tr>
+<td><code>NNTR_MOE_HTP_M1_GEMV</code></td>
+<td>on</td>
+<td><code>0</code> sends decode back to the HMX path</td>
+</tr>
+<tr>
+<td><code>NNTR_MOE_HTP_GEMV_FEED</code></td>
+<td><code>1</code></td>
+<td><code>0</code> reads the weights straight from DDR instead of staging them in VTCM</td>
+</tr>
+<tr>
+<td><code>NNTR_MOE_HTP_GEMV_ROWS1</code>, <code>NNTR_MOE_HTP_GEMV_LEAD_KB</code></td>
+<td><code>1</code>, <code>192</code></td>
+<td>the GEMV loop shape and the prefetch lead (the lead is forced off under the feed)</td>
+</tr>
+<tr>
+<td><code>NNTR_HTP_POLL_US</code></td>
+<td>5000</td>
+<td>how long the ARM polls for the DSP's reply</td>
+</tr>
+<tr>
+<td><code>NNTR_HTP_PROFILE</code></td>
+<td>off</td>
+<td><code>2</code>/<code>3</code>: per-stage µs per call (<code>[HTP-PROFILE]</code>), DMA ring line</td>
+</tr>
+<tr>
+<td><code>NNTR_HTP_DMA_TRACE</code></td>
+<td>off</td>
+<td>a per-descriptor DMA dump</td>
+</tr>
+<tr>
+<td><code>NNTR_L2_CHECK</code>, <code>NNTR_L2_DIFF</code>, <code>NNTR_L2_SHADOW</code></td>
+<td>off</td>
+<td>compare DSP output against a CPU reference in-run</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="7-code-map">7. Code map <a class="hd" aria-label="link to this section" href="#7-code-map">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>area</th>
+<th>paths / symbols</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ARM side of every DSP call</td>
+<td><code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code> (<code>StagingPool</code>, <code>sendMoeOptsOnce</code>, the <code>[HTP-PROFILE]</code> printer), <code>htp_backend.cpp</code> (session, poll), <code>htp_rpcmem.h</code> (ION), <code>htp_moe_opts.h</code></td>
+</tr>
+<tr>
+<td>Call interface</td>
+<td><code>test/htp/nntr_hvx.idl</code>; the skel entry <code>test/htp/nntr_hvx_mm_u8i4.c</code></td>
+</tr>
+<tr>
+<td>MoE layer kernel</td>
+<td><code>nntrainer/tensor/htp_backend/hmx/hexkl_mm_u8i4_moe.{c,h}</code> (<code>hexkl_mm_u8i4_moe_layer_run</code>, <code>moe_push_weight_chunk</code>, the <code>use_m1</code> branch)</td>
+</tr>
+<tr>
+<td>DMA</td>
+<td><code>hmx/hexkl_dma_ring.c</code>, <code>hmx/hexkl_mm_u8i4_dma.c</code>, <code>hmx/hexkl_dma_trace.c</code></td>
+</tr>
+<tr>
+<td>HVX kernels</td>
+<td><code>hvx/hvx_gemm_u8i4_wh.c</code> (<code>hvx_gemm_u8i4_wh_col</code>, <code>gemm_row1</code>), <code>hvx_worker_pool.c</code>, <code>hvx_quant_u8.c</code>, <code>hvx_dequant_i32.c</code>, <code>hvx_swiglu_*</code>, <code>hvx_softmax*</code></td>
+</tr>
+<tr>
+<td>Attention / FC on the DSP (built, off by default)</td>
+<td><code>hmx/hexkl_attn_u8.c</code>, <code>hmx/hexkl_attn_dtype.c</code>, <code>hmx/hexkl_kv_quant.c</code>, <code>hmx/hexkl_mm_u8i8_dma.c</code></td>
+</tr>
+<tr>
+<td>Model</td>
+<td><code>Applications/CausalLM/models/lfm2_moe/</code> (<code>lfm2_moe_layer.cpp</code>: router, <code>tryMoeLayerOnAccelerator</code>; <code>lfm2_moe_causallm.cpp</code>), <code>Applications/CausalLM/models/lfm2/lfm2_causallm.cpp</code> (graph, <code>*_engine</code> keys)</td>
+</tr>
+<tr>
+<td>Weight conversion</td>
+<td><code>Applications/CausalLM/quantize_stream.cpp</code>, <code>Applications/CausalLM/res/lfm2_moe/lfm2-8b-a1b/weight_converter.py</code></td>
+</tr>
+<tr>
+<td>Tests</td>
+<td>host checks <code>test/htp/host/*_host_check.c</code> + <code>run_host_checks.sh</code> (no DSP needed); device gtests <code>test/unittest/unittest_hvx_*</code>; DMA probes <code>unittest_hvx_dma_probe</code></td>
+</tr>
+<tr>
+<td>Build</td>
+<td><code>test/htp/build.sh</code> (DSP skel), <code>Applications/CausalLM/build_android.sh --htp</code> (app)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="8-where-the-design-goes-next">8. Where the design goes next <a class="hd" aria-label="link to this section" href="#8-where-the-design-goes-next">#</a></h2>
+<p>Today's shape is <strong>22 DSP calls per token, with the CPU working in between</strong>.
+After the feed, what remains is the 2.0 ms of round trips and the 9.7 ms of
+CPU work between calls. Neither can be removed call by call. The planned
+shape is one call per token: the ARM sends a token in and gets logits back,
+and every layer op runs on the DSP.</p>
+<figure class="diagram">
+<svg viewBox="0 0 860 196" role="img" aria-label="Today each token alternates CPU layer ops and 22 DSP MoE calls; the planned design makes one DSP call per token that runs all 24 layers and lm_head" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="arch7-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="10" y="10" width="840" height="84" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="22" y="30" font-size="13" text-anchor="start" fill="#0b0b0b" font-weight="700">today</text>
+<rect x="30" y="44" width="120" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="90.0" y="65.3" font-size="12" text-anchor="middle" fill="#0b0b0b">CPU: layer ops</text>
+<rect x="190" y="44" width="90" height="34" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="235.0" y="65.3" font-size="12" text-anchor="middle" fill="#0b0b0b">DSP: MoE</text>
+<path d="M150,61 L190,61" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+<rect x="320" y="44" width="120" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="380.0" y="65.3" font-size="12" text-anchor="middle" fill="#0b0b0b">CPU: layer ops</text>
+<path d="M280,61 L320,61" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+<rect x="480" y="44" width="90" height="34" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="525.0" y="65.3" font-size="12" text-anchor="middle" fill="#0b0b0b">DSP: MoE</text>
+<path d="M440,61 L480,61" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+<rect x="610" y="44" width="80" height="34" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="650.0" y="65.3" font-size="12" text-anchor="middle" fill="#0b0b0b">… × 22</text>
+<path d="M570,61 L610,61" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+<rect x="10" y="104" width="840" height="84" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="22" y="124" font-size="13" text-anchor="start" fill="#0b0b0b" font-weight="700">planned: one call per token</text>
+<rect x="30" y="138" width="120" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="90.0" y="159.3" font-size="12" text-anchor="middle" fill="#0b0b0b">CPU: token id</text>
+<rect x="190" y="138" width="210" height="34" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="295.0" y="159.3" font-size="12" text-anchor="middle" fill="#0b0b0b">DSP: all 24 layers + lm_head</text>
+<path d="M150,155 L190,155" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+<rect x="440" y="138" width="160" height="34" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="520.0" y="159.3" font-size="12" text-anchor="middle" fill="#0b0b0b">CPU: logits → argmax</text>
+<path d="M400,155 L440,155" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#arch7-arrow)"/>
+</svg>
+<figcaption>Today a token alternates between CPU layer ops and a DSP MoE call, 22 times. The planned shape makes one DSP call per token: the CPU sends the token id, the DSP runs all 24 layers and lm_head, and the CPU only takes the argmax of the logits.</figcaption>
+</figure>
+<p>The steps:</p>
+<ol>
+<li>An entry point with a validated op table (#85).</li>
+<li>M = 1 kernels for RMSNorm, q/k norm, RoPE and conv1d + gating (#82).</li>
+<li>Attention with a DSP-resident KV cache (#81).</li>
+<li>The FC projections, router and lm_head, which no issue covers yet.</li>
+</ol>
+<p>None of these saves time alone. The call count drops only when every op
+between two MoE layers is resident.
+Plans and budget: <a href="roadmap.html">roadmap.html</a>.</p>
+
+<div class="pager"><span>← <a href="index.html">Overview</a></span><span><a href="foundation.html">Foundation</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

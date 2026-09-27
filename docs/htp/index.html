@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — nntrainer on the Hexagon NPU (HTP backend) — technical overview</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html" class="here">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>nntrainer on the Hexagon NPU (HTP backend) — technical overview</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code> (fork <code>dlwlzzero/nntrainer</code>).
+Device: Samsung Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79).
+Model: LFM2.5-8B-A1B, an 8B-parameter mixture-of-experts language model.</p>
+<p>This tree holds two bodies of work, tagged throughout these docs:</p>
+<ul>
+<li><strong><code>upstream PR #4327</code></strong>: the HTP backend itself. It includes FastRPC
+plumbing, integer matrix multiply on the matrix unit (HMX), attention and
+FC kernels, and the MoE FFN on the NPU. That PR is frozen here at
+<code>2ce38d65</code> (2026-07-08 to 2026-09-21).</li>
+<li><strong><code>htp_moe</code></strong>: the work after it, aimed at decode speed. It covers the
+call transport, a vector-unit (HVX) decode path for the MoE FFN, weight
+prefetch and streaming, and measurement tooling (2026-09-21 onward).</li>
+</ul>
+<h2 id="summary">Summary <a class="hd" aria-label="link to this section" href="#summary">#</a></h2>
+<h3 id="what-runs-on-the-npu-today">What runs on the NPU today <a class="hd" aria-label="link to this section" href="#what-runs-on-the-npu-today">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>operation (layers per token)</th>
+<th>prefill (many tokens at once)</th>
+<th>decode (one token at a time)</th>
+<th>origin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MoE FFN</strong> (22)</td>
+<td><strong>On the NPU</strong>, matrix-unit path</td>
+<td><strong>On the NPU</strong>, vector-unit path</td>
+<td>PR #4327 (prefill), htp_moe (decode)</td>
+</tr>
+<tr>
+<td>Attention core (6)</td>
+<td>CPU. NPU kernels built and tested, <strong>off</strong></td>
+<td>CPU</td>
+<td>PR #4327</td>
+</tr>
+<tr>
+<td>FC projections: conv in/out, attention q/k/v/o, dense FFN</td>
+<td>CPU. NPU route built, <strong>off</strong> by config</td>
+<td>CPU</td>
+<td>PR #4327</td>
+</tr>
+<tr>
+<td>Norms, RoPE, conv1d, router, lm_head</td>
+<td>CPU</td>
+<td>CPU</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>In the measured configuration only the MoE FFN runs on the NPU. The other
+NPU kernels exist, but switching them on did not pay in this setup. Moving
+<em>every</em> layer onto the NPU is the plan for decode (<a href="roadmap.html">roadmap</a>).</p>
+<h3 id="results">Results <a class="hd" aria-label="link to this section" href="#results">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">NPU</th>
+<th style="text-align:right">CPU (8 threads)</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Prefill</strong> tok/s, prompt 512</td>
+<td style="text-align:right">≈ 400–530</td>
+<td style="text-align:right">≈ 270–340</td>
+<td>NPU is ahead, ≈ 1.6×</td>
+</tr>
+<tr>
+<td><strong>Decode</strong> tok/s, gen 512: reference, before the feed</td>
+<td style="text-align:right">27.89</td>
+<td style="text-align:right"><strong>49.22</strong></td>
+<td>NPU is behind</td>
+</tr>
+<tr>
+<td><strong>Decode</strong> tok/s, gen 512: VTCM weight feed, the default since PR #118</td>
+<td style="text-align:right"><strong>36.49</strong></td>
+<td style="text-align:right"></td>
+<td>+31 % in the same sitting, text identical</td>
+</tr>
+<tr>
+<td><strong>Decode target</strong></td>
+<td style="text-align:right"><strong>≥ 50</strong></td>
+<td style="text-align:right"></td>
+<td>see below: not reachable by bytes with today's CPU/NPU split</td>
+</tr>
+</tbody>
+</table></div>
+<p>Sources: NPU #117 (2026-09-23), CPU #94 (2026-09-22). The feed was
+measured as a variant against the reference in #117 and merged as the
+default the same day. It becomes the reference row once a sitting measures
+it as its own control. The full table is in <a href="measurement.html">measurement.html</a>.</p>
+<p><strong>Why decode is the hard part.</strong> Decode speed is set by how fast weights
+are read: each token reads ≈ 893 MB on the NPU model. The NPU reads its
+484 MB of experts through one DMA stream at 31–37 GB/s, depending on the
+phone. The CPU reads the other 408 MB at ≈ 50 GB/s (the CPU model reads
+953 MB at 52 tok/s). Done one after the other, the floor is ≈ 21–24 ms per
+token (≈ 42–47 tok/s). That is above the 20 ms that 50 tok/s needs
+(<a href="roadmap.html">roadmap.html</a> §1).</p>
+<figure>
+<svg viewBox="0 0 820 318" role="img" aria-label="Weight megabytes read per decode token on the NPU model: MoE experts 484 on the NPU; conv projections 170, lm_head 147, dense FFN 50, attention projections 35, routers 6 on the CPU" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<line x1="200.0" y1="36" x2="200.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="258.0" y1="36" x2="258.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="316.0" y1="36" x2="316.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="374.0" y1="36" x2="374.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="432.0" y1="36" x2="432.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="490.0" y1="36" x2="490.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="548.0" y1="36" x2="548.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="606.0" y1="36" x2="606.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="664.0" y1="36" x2="664.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="722.0" y1="36" x2="722.0" y2="272" stroke="#e1e0d9" stroke-width="1"/>
+<text x="16" y="22" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">Weight MB read per decode token, NPU model</text>
+<text x="190" y="59" font-size="13" fill="#52514e" text-anchor="end">By processor</text>
+<rect x="200" y="42" width="280.7" height="26" fill="#2a78d6"/>
+<rect x="480.7" y="42" width="236.6" height="26" fill="#eb6834"/>
+<text x="210" y="60" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600">NPU: 484 MB</text>
+<text x="490.72" y="60" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600">CPU: 408 MB</text>
+<text x="725.36" y="60" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">892 MB total</text>
+<text x="200" y="288" font-size="11" fill="#898781" text-anchor="middle">0</text>
+<text x="258" y="288" font-size="11" fill="#898781" text-anchor="middle">100</text>
+<text x="316" y="288" font-size="11" fill="#898781" text-anchor="middle">200</text>
+<text x="374" y="288" font-size="11" fill="#898781" text-anchor="middle">300</text>
+<text x="432" y="288" font-size="11" fill="#898781" text-anchor="middle">400</text>
+<text x="490" y="288" font-size="11" fill="#898781" text-anchor="middle">500</text>
+<text x="548" y="288" font-size="11" fill="#898781" text-anchor="middle">600</text>
+<text x="606" y="288" font-size="11" fill="#898781" text-anchor="middle">700</text>
+<text x="664" y="288" font-size="11" fill="#898781" text-anchor="middle">800</text>
+<text x="722" y="288" font-size="11" fill="#898781" text-anchor="middle">900</text>
+<text x="740" y="288" font-size="11" fill="#898781" text-anchor="start">MB</text>
+<text x="190" y="111" font-size="13" fill="#0b0b0b" text-anchor="end">MoE experts, NPU</text>
+<rect x="200" y="96" width="280.72" height="20" fill="#2a78d6" rx="2"/>
+<text x="486.72" y="111" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">484</text>
+<text x="190" y="141" font-size="13" fill="#0b0b0b" text-anchor="end">Conv projections, CPU</text>
+<rect x="200" y="126" width="98.6" height="20" fill="#eb6834" rx="2"/>
+<text x="304.6" y="141" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">170</text>
+<text x="190" y="171" font-size="13" fill="#0b0b0b" text-anchor="end">lm_head, CPU</text>
+<rect x="200" y="156" width="85.26" height="20" fill="#eb6834" rx="2"/>
+<text x="291.26" y="171" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">147</text>
+<text x="190" y="201" font-size="13" fill="#0b0b0b" text-anchor="end">Dense FFN, CPU</text>
+<rect x="200" y="186" width="29" height="20" fill="#eb6834" rx="2"/>
+<text x="235" y="201" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">50</text>
+<text x="190" y="231" font-size="13" fill="#0b0b0b" text-anchor="end">Attention projections, CPU</text>
+<rect x="200" y="216" width="20.3" height="20" fill="#eb6834" rx="2"/>
+<text x="226.3" y="231" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">35</text>
+<text x="190" y="261" font-size="13" fill="#0b0b0b" text-anchor="end">Routers, CPU</text>
+<rect x="200" y="246" width="3.48" height="20" fill="#eb6834" rx="2"/>
+<text x="209.48" y="261" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">6</text>
+</svg>
+<figcaption>Each decode token reads 892 MB of weights on the NPU model (the per-part MB, rounded; the text says ≈ 893): the NPU reads the 484 MB of MoE experts through one DMA stream, and the CPU reads the other 408 MB (conv projections, lm_head, dense FFN, attention projections and routers). Both rows share one MB axis.</figcaption>
+</figure>
+<figure>
+<svg viewBox="0 0 820 316" role="img" aria-label="NPU decode tokens per second at gen 512 by landed change: start 18.3, transport fix 23.8, HVX GEMV 27.1, prefetch lead 27.9, VTCM feed 36.5, against a target of 50" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<text x="16" y="22" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">NPU decode tok/s at gen 512, by landed change</text>
+<line x1="64" y1="250.0" x2="800" y2="250.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="254" font-size="11" fill="#898781" text-anchor="end">0</text>
+<line x1="64" y1="213.6" x2="800" y2="213.6" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="217.636" font-size="11" fill="#898781" text-anchor="end">10</text>
+<line x1="64" y1="177.3" x2="800" y2="177.3" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="181.273" font-size="11" fill="#898781" text-anchor="end">20</text>
+<line x1="64" y1="140.9" x2="800" y2="140.9" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="144.909" font-size="11" fill="#898781" text-anchor="end">30</text>
+<line x1="64" y1="104.5" x2="800" y2="104.5" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="108.545" font-size="11" fill="#898781" text-anchor="end">40</text>
+<line x1="64" y1="68.2" x2="800" y2="68.2" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="72.1818" font-size="11" fill="#898781" text-anchor="end">50</text>
+<text x="18" y="150" font-size="11" fill="#898781" text-anchor="middle" transform="rotate(-90 18 150)">tok/s</text>
+<rect x="95.6" y="183.5" width="84" height="66.5" fill="#2a78d6" rx="2"/>
+<text x="137.6" y="176.455" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">18.3</text>
+<text x="137.6" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">Start (PR as-is)</text>
+<text x="137.6" y="287" font-size="11" fill="#898781" text-anchor="middle">sitting #77</text>
+<rect x="242.8" y="163.5" width="84" height="86.5" fill="#2a78d6" rx="2"/>
+<text x="284.8" y="156.455" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">23.8</text>
+<text x="284.8" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">Transport fix</text>
+<text x="284.8" y="287" font-size="11" fill="#898781" text-anchor="middle">sitting #88</text>
+<rect x="390.0" y="151.5" width="84" height="98.5" fill="#2a78d6" rx="2"/>
+<text x="432" y="144.455" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.1</text>
+<text x="432" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">HVX GEMV</text>
+<text x="432" y="287" font-size="11" fill="#898781" text-anchor="middle">sitting #100</text>
+<rect x="537.2" y="148.5" width="84" height="101.5" fill="#2a78d6" rx="2"/>
+<text x="579.2" y="141.545" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.9</text>
+<text x="579.2" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">Prefetch lead</text>
+<text x="579.2" y="287" font-size="11" fill="#898781" text-anchor="middle">sitting #117 A</text>
+<rect x="684.4" y="117.3" width="84" height="132.7" fill="#2a78d6" rx="2"/>
+<text x="726.4" y="110.273" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">36.5</text>
+<text x="726.4" y="270" font-size="13" fill="#0b0b0b" text-anchor="middle">VTCM feed</text>
+<text x="726.4" y="287" font-size="11" fill="#898781" text-anchor="middle">sitting #117 B</text>
+<line x1="64" y1="250" x2="800" y2="250" stroke="#52514e" stroke-width="1"/>
+<line x1="64" y1="68.2" x2="800" y2="68.2" stroke="#52514e" stroke-width="1.5" stroke-dasharray="6 4"/>
+<rect x="682" y="49.2" width="118" height="16" fill="#ffffff"/>
+<text x="798" y="61.1818" font-size="12" fill="#52514e" text-anchor="end" font-weight="600">target 50 tok/s</text>
+</svg>
+<figcaption>Each landed change raised NPU decode speed at gen 512, from 18.3 to 36.5 tok/s; the dashed line is the 50 tok/s target. The bars come from different sittings (#77, #88, #100, #117 A, #117 B), and only an A/B inside one sitting is a verdict, so they show direction, not exact gains.</figcaption>
+</figure>
+<p>The line is the target. The bars come from
+different sittings (#77, #88, #100, #117 A, #117 B). Only an A/B inside one
+sitting is a verdict, so the bars show direction, not exact gains.</p>
+<p><strong>Where a decode token's time goes</strong> (gen 512):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:right">before the feed</th>
+<th style="text-align:right">with the feed (default now)</th>
+<th style="text-align:right">needed for 50 tok/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE on the NPU (22 calls)</td>
+<td style="text-align:right">21.9 ms</td>
+<td style="text-align:right">15.7 ms</td>
+<td style="text-align:right">13.0–15.5 (byte floor)</td>
+</tr>
+<tr>
+<td>CPU ↔ NPU round trips</td>
+<td style="text-align:right">4.2 ms</td>
+<td style="text-align:right">2.0 ms</td>
+<td style="text-align:right">≈ 0</td>
+</tr>
+<tr>
+<td>Everything else, on the CPU</td>
+<td style="text-align:right">9.8 ms</td>
+<td style="text-align:right">9.7 ms</td>
+<td style="text-align:right">≈ 8.2 (byte floor)</td>
+</tr>
+<tr>
+<td><strong>token</strong></td>
+<td style="text-align:right"><strong>35.9 ms</strong></td>
+<td style="text-align:right"><strong>27.4 ms</strong></td>
+<td style="text-align:right"><strong>20 ms</strong>, but the floors add up to ≈ 21–24</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="what-is-next">What is next <a class="hd" aria-label="link to this section" href="#what-is-next">#</a></h3>
+<ol>
+<li>
+<p>Measure the feed default as its own sitting's control. That makes
+≈ 36.5 tok/s the reference number.</p>
+</li>
+<li>
+<p><strong>Decide how to get under the byte floor.</strong> The options are:</p>
+<ul>
+<li>CPU and NPU reading at the same time,</li>
+<li>fewer bytes per token,</li>
+<li>a faster NPU read.</li>
+</ul>
+<p>The planned one-call-per-token track (#85 → #82 → #81) removes the
+2 ms of round trips. But it moves the CPU's 408 MB onto the NPU's
+slower DMA stream, so it needs a bandwidth measurement first.</p>
+</li>
+<li>
+<p>Sync the ≈ 40 newer upstream PR commits (#120). They add fused conv,
+q/k/v and dense-FFN block calls.</p>
+</li>
+<li>
+<p>The project's earlier &quot;48–52 tok/s physical ceiling&quot; came from an
+estimate of 730 MB per token and 34–38 GB/s of memory bandwidth. Both
+were low, and it is withdrawn (<a href="lessons.html">lessons.html</a> D1).</p>
+</li>
+</ol>
+<h3 id="timeline">Timeline <a class="hd" aria-label="link to this section" href="#timeline">#</a></h3>
+<figure>
+<svg viewBox="0 0 880 424" role="img" aria-label="Timeline of the HTP backend work: upstream PR #4327 from August 3 to September 21, 2026, then htp_moe from September 21 to 23" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<text x="16" y="22" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">HTP backend work</text>
+<rect x="12" y="40" width="864" height="244" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<rect x="12" y="294" width="864" height="100" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<line x1="240.00" y1="40" x2="240.00" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="240" y="416" font-size="11" fill="#898781" text-anchor="middle">08/03</text>
+<line x1="277.50" y1="40" x2="277.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="277.5" y="416" font-size="11" fill="#898781" text-anchor="middle">08/05</text>
+<line x1="315.00" y1="40" x2="315.00" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="315" y="416" font-size="11" fill="#898781" text-anchor="middle">08/07</text>
+<line x1="352.50" y1="40" x2="352.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="352.5" y="416" font-size="11" fill="#898781" text-anchor="middle">08/09</text>
+<line x1="390.00" y1="40" x2="390.00" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="390" y="416" font-size="11" fill="#898781" text-anchor="middle">08/11</text>
+<line x1="522.50" y1="40" x2="522.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="522.5" y="416" font-size="11" fill="#898781" text-anchor="middle">09/06</text>
+<line x1="597.50" y1="40" x2="597.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="597.5" y="416" font-size="11" fill="#898781" text-anchor="middle">09/10</text>
+<line x1="672.50" y1="40" x2="672.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="672.5" y="416" font-size="11" fill="#898781" text-anchor="middle">09/14</text>
+<line x1="747.50" y1="40" x2="747.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="747.5" y="416" font-size="11" fill="#898781" text-anchor="middle">09/18</text>
+<line x1="822.50" y1="40" x2="822.50" y2="400" stroke="#e1e0d9" stroke-width="1"/>
+<text x="822.5" y="416" font-size="11" fill="#898781" text-anchor="middle">09/22</text>
+<text x="22" y="57" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="bold">upstream PR #4327</text>
+<text x="226" y="77" font-size="12.5" fill="#0b0b0b" text-anchor="end">HVX bring-up, FastRPC</text>
+<rect x="240.00" y="66" width="37.50" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="101" font-size="12.5" fill="#0b0b0b" text-anchor="end">HMX integer matmul (HexKL)</text>
+<rect x="258.75" y="90" width="56.25" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="125" font-size="12.5" fill="#0b0b0b" text-anchor="end">Attention and FC kernels</text>
+<rect x="277.50" y="114" width="93.75" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="149" font-size="12.5" fill="#0b0b0b" text-anchor="end">LFM2-MoE on the CPU</text>
+<rect x="390.00" y="138" width="18.75" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="173" font-size="12.5" fill="#0b0b0b" text-anchor="end">MoE FFN on the NPU</text>
+<rect x="466.25" y="162" width="131.25" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="197" font-size="12.5" fill="#0b0b0b" text-anchor="end">One call per MoE layer</text>
+<rect x="597.50" y="186" width="75.00" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="221" font-size="12.5" fill="#0b0b0b" text-anchor="end">Weight format, ION arena</text>
+<rect x="672.50" y="210" width="18.75" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="245" font-size="12.5" fill="#0b0b0b" text-anchor="end">Prefill tuning</text>
+<rect x="691.25" y="234" width="37.50" height="14" fill="#2a78d6" rx="3"/>
+<text x="226" y="269" font-size="12.5" fill="#0b0b0b" text-anchor="end">FC projections route</text>
+<rect x="747.50" y="258" width="56.25" height="14" fill="#2a78d6" rx="3"/>
+<text x="22" y="311" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="bold">htp_moe</text>
+<text x="226" y="331" font-size="12.5" fill="#0b0b0b" text-anchor="end">Baseline on our phones</text>
+<rect x="803.75" y="320" width="18.75" height="14" fill="#eb6834" rx="3"/>
+<text x="226" y="355" font-size="12.5" fill="#0b0b0b" text-anchor="end">Transport fix, HVX GEMV decode</text>
+<rect x="822.50" y="344" width="18.75" height="14" fill="#eb6834" rx="3"/>
+<text x="226" y="379" font-size="12.5" fill="#0b0b0b" text-anchor="end">Prefetch lead, VTCM feed</text>
+<rect x="841.25" y="368" width="18.75" height="14" fill="#eb6834" rx="3"/>
+<line x1="240.0" y1="400" x2="431.50" y2="400" stroke="#52514e" stroke-width="1"/>
+<line x1="443.50" y1="400" x2="860.00" y2="400" stroke="#52514e" stroke-width="1"/>
+<line x1="428.50" y1="405" x2="434.50" y2="395" stroke="#52514e" stroke-width="1.2"/>
+<line x1="440.50" y1="405" x2="446.50" y2="395" stroke="#52514e" stroke-width="1.2"/>
+</svg>
+<figcaption>The upstream PR #4327 built the HVX/HMX kernels in early August and the MoE FFN on the NPU in September; the htp_moe work then ran one change a day from 09/21 to 09/23. The time axis is broken between 08/13 and 09/02, when no listed work ran.</figcaption>
+</figure>
+<h2 id="chapters">Chapters <a class="hd" aria-label="link to this section" href="#chapters">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>chapter</th>
+<th>what it covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="architecture.html">architecture.html</a></td>
+<td>The whole system in one pass: hardware, who runs what, one token, one MoE call, code map</td>
+</tr>
+<tr>
+<td><a href="foundation.html">foundation.html</a></td>
+<td>FastRPC, the IDL and skel, sessions, shared memory, call cost, build and deploy</td>
+</tr>
+<tr>
+<td><a href="hmx-matmul.html">hmx-matmul.html</a></td>
+<td>Integer matrix multiply on the HMX, tile layouts, the DMA ring, VTCM</td>
+</tr>
+<tr>
+<td><a href="weight-format.html">weight-format.html</a></td>
+<td>From the checkpoint to NPU bytes: formats, the offline packer, bytes per token</td>
+</tr>
+<tr>
+<td><a href="moe-ffn.html">moe-ffn.html</a></td>
+<td>The MoE FFN kernel: the prefill (HMX) path, the decode (HVX GEMV) path, the VTCM feed</td>
+</tr>
+<tr>
+<td><a href="measurement.html">measurement.html</a></td>
+<td>How we measure, how to read a profile, the verification ladder, <strong>the benchmark table</strong></td>
+</tr>
+<tr>
+<td><a href="lessons.html">lessons.html</a></td>
+<td>Rules learned on silicon, closed questions, negative results</td>
+</tr>
+<tr>
+<td><a href="roadmap.html">roadmap.html</a></td>
+<td>What is left, one call per token, upstream sync, prior work</td>
+</tr>
+</tbody>
+</table></div>
+<p>Written after the upstream sync (#120): attention, FC and block calls,
+model integration.</p>
+<h2 id="reading-the-numbers">Reading the numbers <a class="hd" aria-label="link to this section" href="#reading-the-numbers">#</a></h2>
+<ul>
+<li><strong>Sitting.</strong> One session on one phone. Variant A (the unchanged
+reference) runs first, and every comparison is inside one sitting.
+Phones drift up to ~16 % between sittings.</li>
+<li><strong>Gen 64 / 512 / 1024.</strong> Tokens generated after a 512-token prompt.</li>
+<li><strong>Unit.</strong> Two S25 Ultra phones were used. Their NPU DMA engines differ by
+≈ 19 % (31.2 vs 37.3 GB/s), so per-call NPU times are not compared across
+them unscaled.</li>
+<li><strong>(PR author's device).</strong> Numbers the upstream PR measured on its
+author's phone, with its own method. They are shown for context and never
+compared directly with ours.</li>
+<li><strong>Text identical.</strong> The NPU model's expert weights (<code>QS4CX_WH</code>) differ
+from the CPU model's (<code>Q4_0</code>), so NPU runs are checked against their own
+control, and kernels are proven bit-identical to the reference path by
+tests.</li>
+</ul>
+
+<div class="pager"><span></span><span><a href="architecture.html">Architecture</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

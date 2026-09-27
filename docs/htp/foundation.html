@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — Foundation: FastRPC, session, memory, build</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html" class="here">Foundation</a><a href="hmx-matmul.html">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>Foundation: FastRPC, session, memory, build</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-fastrpc-one-interface-two-generated-halves">1. FastRPC: one interface, two generated halves <a class="header-anchor hd" href="#1-fastrpc-one-interface-two-generated-halves">#</a></a></li><ul><li><a href="#11-the-idl">1.1 The IDL <a class="header-anchor hd" href="#11-the-idl">#</a></a></li><li><a href="#12-stub-and-skel-generation">1.2 Stub and skel generation <a class="header-anchor hd" href="#12-stub-and-skel-generation">#</a></a></li><li><a href="#13-the-skel-entry-files">1.3 The skel entry files <a class="header-anchor hd" href="#13-the-skel-entry-files">#</a></a></li><li><a href="#14-the-_timed-twins">1.4 The <code>_timed</code> twins <a class="header-anchor hd" href="#14-the-_timed-twins">#</a></a></li><li><a href="#15-adding-a-method">1.5 Adding a method <a class="header-anchor hd" href="#15-adding-a-method">#</a></a></li></ul><li><a href="#2-the-session">2. The session <a class="header-anchor hd" href="#2-the-session">#</a></a></li><ul><li><a href="#21-arm-side-htpbackend">2.1 ARM side: <code>HtpBackend</code> <a class="header-anchor hd" href="#21-arm-side-htpbackend">#</a></a></li><li><a href="#22-dsp-side-nntr_hvx_open">2.2 DSP side: <code>nntr_hvx_open</code> <a class="header-anchor hd" href="#22-dsp-side-nntr_hvx_open">#</a></a></li></ul><li><a href="#3-memory">3. Memory <a class="header-anchor hd" href="#3-memory">#</a></a></li><ul><li><a href="#31-the-regions">3.1 The regions <a class="header-anchor hd" href="#31-the-regions">#</a></a></li><li><a href="#32-the-rpcmem-wrapper">3.2 The rpcmem wrapper <a class="header-anchor hd" href="#32-the-rpcmem-wrapper">#</a></a></li><li><a href="#33-the-weight-arena">3.3 The weight arena <a class="header-anchor hd" href="#33-the-weight-arena">#</a></a></li><li><a href="#34-staging-activations-and-outputs">3.4 Staging: activations and outputs <a class="header-anchor hd" href="#34-staging-activations-and-outputs">#</a></a></li></ul><li><a href="#4-what-a-call-costs">4. What a call costs <a class="header-anchor hd" href="#4-what-a-call-costs">#</a></a></li><ul><li><a href="#41-measured">4.1 Measured <a class="header-anchor hd" href="#41-measured">#</a></a></li><li><a href="#42-considered-and-not-built">4.2 Considered and not built <a class="header-anchor hd" href="#42-considered-and-not-built">#</a></a></li></ul><li><a href="#5-build-and-deploy">5. Build and deploy <a class="header-anchor hd" href="#5-build-and-deploy">#</a></a></li><ul><li><a href="#51-the-dsp-skel-testhtpbuildsh">5.1 The DSP skel: <code>test/htp/build.sh</code> <a class="header-anchor hd" href="#51-the-dsp-skel-testhtpbuildsh">#</a></a></li><li><a href="#52-the-app-applicationscausallmbuild_androidsh---htp">5.2 The app: <code>Applications/CausalLM/build_android.sh --htp</code> <a class="header-anchor hd" href="#52-the-app-applicationscausallmbuild_androidsh---htp">#</a></a></li><li><a href="#53-app-and-skel-must-match">5.3 App and skel must match <a class="header-anchor hd" href="#53-app-and-skel-must-match">#</a></a></li></ul><li><a href="#6-host-checks-without-a-dsp">6. Host checks without a DSP <a class="header-anchor hd" href="#6-host-checks-without-a-dsp">#</a></a></li><li><a href="#tried-and-dropped">Tried and dropped <a class="header-anchor hd" href="#tried-and-dropped">#</a></a></li><li><a href="#code-map">Code map <a class="header-anchor hd" href="#code-map">#</a></a></li></ul></details>
+<p>This chapter covers the plumbing that every HTP kernel sits on. It explains
+how an ARM function call becomes a DSP function call (FastRPC), what the DSP
+session holds for its lifetime, where each byte lives (heap, shared ION
+buffers, the weight arena, VTCM), what one call costs and why, and how the
+two halves are built and kept in step. Kernels themselves are in other
+chapters.</p>
+<p>Terms used below:</p>
+<ul>
+<li><strong>FastRPC</strong>: Qualcomm's remote procedure call from the ARM CPU to the DSP.
+The ARM calls an ordinary C function (the <strong>stub</strong>); the kernel driver
+carries the arguments over; a DSP-side dispatcher (the <strong>skel</strong>) unpacks
+them and calls our C function on the DSP.</li>
+<li><strong>PD</strong> (protection domain): the DSP-side process our skel runs in. It has
+its own 32-bit virtual address space.</li>
+<li><strong>ION / rpcmem</strong>: Android's shared-memory allocator, reached through
+Qualcomm's <code>rpcmem_*</code> API. An ION buffer is DDR that both the ARM and the
+DSP can map.</li>
+<li><strong>VTCM</strong>: 8 MiB of on-chip scratch memory on the DSP. HMX reads only from
+it.</li>
+</ul>
+<h2 id="1-fastrpc-one-interface-two-generated-halves">1. FastRPC: one interface, two generated halves <a class="hd" aria-label="link to this section" href="#1-fastrpc-one-interface-two-generated-halves">#</a></h2>
+<p><em>Provenance: upstream PR #4327 (interface, skel, stub generation); <code>htp_moe</code>
+added <code>moe_set_opts</code>, <code>dma_probe</code>, <code>dma_replay</code>, <code>moe_dma_trace_read</code>.</em></p>
+<h3 id="11-the-idl">1.1 The IDL <a class="hd" aria-label="link to this section" href="#11-the-idl">#</a></h3>
+<p>The whole ARM ↔ DSP interface is one file, <code>test/htp/nntr_hvx.idl</code>: one
+interface <code>nntr_hvx</code> derived from <code>remote_handle64</code> with 39 methods. A
+method takes scalars (<code>in uint32</code>, <code>in float</code>), input arrays
+(<code>in sequence&lt;T&gt;</code>) and output arrays (<code>rout sequence&lt;T&gt;</code>). The <code>rout uint32</code>
+form returns a scalar, such as a weight handle.</p>
+<p>The methods fall into six groups:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>group</th>
+<th>methods</th>
+<th>skel file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>session</td>
+<td><code>open</code>, <code>close</code> (implicit from <code>remote_handle64</code>), <code>add_f32</code> (smoke test)</td>
+<td><code>test/htp/hvx_add_f32.c</code></td>
+</tr>
+<tr>
+<td>u8i4 matmul and MoE</td>
+<td><code>weight_register_u8i4[_arena]</code>, <code>weight_release_u8i4</code>, <code>arena_attach/detach</code>, <code>mm_u8i4_layer*</code>, <code>mm_u8i4_moe_layer[_timed]</code>, <code>moe_set_opts</code>, probes</td>
+<td><code>test/htp/nntr_hvx_mm_u8i4.c</code></td>
+</tr>
+<tr>
+<td>u8i8 matmul</td>
+<td><code>weight_register_u8i8</code>, <code>mm_u8i8_layer[_timed]</code></td>
+<td><code>test/htp/nntr_hvx_mm_u8i8.c</code></td>
+</tr>
+<tr>
+<td>softmax / SwiGLU checks</td>
+<td><code>exp_f32</code>, <code>swiglu_det_f32</code>, <code>softmax_f32</code>, <code>softmax_blocked_f32</code></td>
+<td><code>test/htp/nntr_hvx_softmax.c</code></td>
+</tr>
+<tr>
+<td>attention</td>
+<td><code>attn_register</code>, <code>attn_kv_append</code>, <code>attn_forward[_timed]</code>, …</td>
+<td><code>test/htp/nntr_hvx_attn.c</code></td>
+</tr>
+<tr>
+<td>DMA measurement</td>
+<td><code>dma_probe</code>, <code>dma_replay</code></td>
+<td><code>test/htp/nntr_hvx_dma_probe.c</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The measured decode configuration uses four of them per run:
+<code>arena_attach</code> and <code>weight_register_u8i4_arena</code> at load, <code>moe_set_opts</code> once
+per session, and <code>mm_u8i4_moe_layer</code> 22 times per token.</p>
+<h3 id="12-stub-and-skel-generation">1.2 Stub and skel generation <a class="hd" aria-label="link to this section" href="#12-stub-and-skel-generation">#</a></h3>
+<p>Qualcomm's <code>qaic</code> compiler turns the IDL into three files:
+<code>nntr_hvx.h</code> (the C prototypes both sides share), <code>nntr_hvx_stub.c</code> (ARM)
+and <code>nntr_hvx_skel.c</code> (DSP). It runs twice, into two directories, and
+neither output is checked in:</p>
+<figure>
+<svg viewBox="0 0 860 244" role="img" aria-label="One IDL file is compiled twice by qaic: into the ARM stub linked into libnntrainer.so and into the DSP skel linked into libnntr_hvx_skel.so; the two libraries talk over FastRPC by method id." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="foundation-1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="16" y="100" width="160" height="44" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="96" y="126.5" text-anchor="middle" fill="#0b0b0b">test/htp/nntr_hvx.idl</text>
+<rect x="320" y="20" width="230" height="56" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="435" y="44.5" text-anchor="middle" fill="#0b0b0b">htp_backend/generated/</text>
+<text x="435" y="60.5" font-size="12" text-anchor="middle" fill="#0b0b0b">nntr_hvx.h, nntr_hvx_stub.c</text>
+<rect x="320" y="168" width="230" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="435" y="192.5" text-anchor="middle" fill="#0b0b0b">test/htp/generated/</text>
+<text x="435" y="208.5" font-size="12" text-anchor="middle" fill="#0b0b0b">nntr_hvx.h, nntr_hvx_skel.c</text>
+<rect x="610" y="20" width="240" height="56" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="730" y="44.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">libnntrainer.so (ARM)</text>
+<text x="730" y="60.5" font-size="12" text-anchor="middle" fill="#52514e">meson -Denable-htp=true</text>
+<rect x="610" y="168" width="240" height="56" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="730" y="192.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">libnntr_hvx_skel.so (DSP)</text>
+<text x="730" y="208.5" font-size="12" text-anchor="middle" fill="#52514e">hexagon-clang + libhexkl_micro.a</text>
+<path d="M176,112 L196,112 L196,48 L318,48" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-1-arrow)"/>
+<text x="206" y="29" font-size="11" fill="#52514e">qaic -mdll</text>
+<text x="206" y="43" font-size="11" fill="#52514e">generate_stub.sh</text>
+<path d="M176,132 L196,132 L196,196 L318,196" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-1-arrow)"/>
+<text x="206" y="215" font-size="11" fill="#52514e">qaic -mdll</text>
+<text x="206" y="229" font-size="11" fill="#52514e">test/htp/build.sh</text>
+<path d="M550,48 L608,48" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-1-arrow)"/>
+<path d="M550,196 L608,196" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-1-arrow)"/>
+<path d="M730,76 L730,166" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-1-arrow)"/>
+<rect x="625.1" y="102.0" width="209.8" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="730" y="113" font-size="12" text-anchor="middle" fill="#52514e">FastRPC</text>
+<text x="730" y="128" font-size="12" text-anchor="middle" fill="#52514e">method id = declaration order</text>
+</svg>
+<figcaption>One IDL, two generated halves. <code>qaic</code> runs twice on <code>nntr_hvx.idl</code>: <code>generate_stub.sh</code> produces the ARM stub that meson links into <code>libnntrainer.so</code>, and <code>test/htp/build.sh</code> produces the DSP skel that hexagon-clang links with <code>libhexkl_micro.a</code>. At run time the two meet over FastRPC, where a method is identified only by its id, i.e. its declaration order in the IDL.</figcaption>
+</figure>
+<ul>
+<li><code>nntrainer/tensor/htp_backend/generate_stub.sh</code> writes the ARM stub and
+deletes the skel it also produced. <code>meson.build</code> in the same directory adds
+the stub to <code>nntrainer_sources</code>. It fails the configure step if the stub is
+missing, and also if the IDL is newer than the generated header. The second
+check exists because a stale stub used to surface later as an unrelated
+compile error, or not at all.</li>
+<li><code>test/htp/build.sh</code> regenerates its own copy and links the skel (§5).</li>
+</ul>
+<p>In the generated code each method is a numbered <strong>method id</strong>, assigned in
+declaration order: ids 0 and 1 are <code>open</code> and <code>close</code>, <code>add_f32</code> is 2,
+<code>moe_set_opts</code> is 40. A generated <code>methods[]</code> table also records the scalar
+and buffer counts for each method. So an app and a skel built from different
+IDLs disagree on what a method id means, or on how many buffers it carries.
+§5.3 covers what that looks like on the device.</p>
+<h3 id="13-the-skel-entry-files">1.3 The skel entry files <a class="hd" aria-label="link to this section" href="#13-the-skel-entry-files">#</a></h3>
+<p>Each IDL method <code>foo</code> becomes a DSP function <code>nntr_hvx_foo(remote_handle64 handle, …)</code>. A <code>sequence&lt;T&gt;</code> argument arrives as a pointer plus an <code>int</code>
+length (<code>act_f32</code>, <code>act_f32Len</code>). The handle is the session pointer that
+<code>nntr_hvx_open</code> returned (§2.2), cast back. The entry functions are thin.
+They validate every length against the shapes (a mismatch returns
+<code>AEE_EBADPARM</code>) and call a kernel under <code>nntrainer/tensor/htp_backend/hmx/</code>
+or <code>hvx/</code>. For example, <code>nntr_hvx_mm_u8i4_moe_layer</code> runs
+<code>check_moe_layer_args</code> and <code>check_moe_row_totals</code>, then calls
+<code>hexkl_mm_u8i4_moe_layer_run</code> with the session's VTCM, weight table, worker
+pool, scratch and flags.</p>
+<h3 id="14-the-_timed-twins">1.4 The <code>_timed</code> twins <a class="hd" aria-label="link to this section" href="#14-the-_timed-twins">#</a></h3>
+<p>Seven methods have a <code>_timed</code> twin, for example <code>mm_u8i4_moe_layer_timed</code>.
+The twin takes identical arguments plus <code>rout sequence&lt;uint32&gt; stage_us</code>. It
+runs the same kernel between two DSP timer reads and fills a per-stage
+microsecond table. It is a separate method rather than a flag so that the
+production call pays nothing for the probes. The ARM side picks the twin
+when <code>NNTR_HTP_PROFILE &gt;= 2</code> (<code>HtpComputeOps::invokeMoeLayer</code>). The DSP checks
+<code>stage_usLen == MOE_N_STAGES</code> and returns <code>AEE_EBADPARM</code> otherwise. A mismatch
+there is the most common symptom of an app and a skel that were built apart
+(§5.3).</p>
+<p>The twin is what makes <strong>transport</strong> a measured number and not a guess:</p>
+<blockquote>
+<p>transport = host wall time around the stub call − the DSP's own <code>dsp_total</code></p>
+</blockquote>
+<p>The ARM-side staging <code>memcpy</code> sits outside the host timer, so transport
+covers only the FastRPC round trip.</p>
+<h3 id="15-adding-a-method">1.5 Adding a method <a class="hd" aria-label="link to this section" href="#15-adding-a-method">#</a></h3>
+<ol>
+<li><strong>Append</strong> it at the end of <code>nntr_hvx.idl</code>. Appending keeps every
+existing method id, so an older skel still serves the old methods.</li>
+<li>Implement <code>nntr_hvx_&lt;name&gt;</code> in the skel file of its group. Validate every
+length and handle and return <code>AEE_EBADPARM</code> on a mismatch, because the ARM
+side is a trust boundary for the DSP.</li>
+<li>Add any new <code>.c</code> file to <code>SRCS</code> in <code>test/htp/build.sh</code>. The
+undefined-symbol check (§5.1) catches a forgotten one at build time.</li>
+<li>If you need per-stage timing, add a <code>_timed</code> twin, not a flag.</li>
+<li>Rebuild <strong>both</strong> halves (§5) and push both. <code>build_android.sh --htp</code>
+regenerates the stub but never rebuilds the skel.</li>
+<li>If the ARM side depends on the new method, make it fail loudly on an old
+skel. <code>sendMoeOptsOnce</code> is the model. The DSP echoes the option bits it
+applied (<code>applied</code>), and the ARM throws with a rebuild hint when the call
+fails or the echo differs from what it sent. Without that, the run could
+silently take a different kernel path.</li>
+</ol>
+<h2 id="2-the-session">2. The session <a class="hd" aria-label="link to this section" href="#2-the-session">#</a></h2>
+<p><em>Provenance: upstream PR #4327; the 5 ms poll default and the
+<code>NNTR_HTP_POLL_US</code> knob are upstream commits made after the PR's freeze,
+brought into <code>htp_moe</code> by PR #103. The skel's bus-vote compile switch is
+<code>htp_moe</code>.</em></p>
+<p>A process opens exactly one session and keeps it until exit.</p>
+<h3 id="21-arm-side-htpbackend">2.1 ARM side: <code>HtpBackend</code> <a class="hd" aria-label="link to this section" href="#21-arm-side-htpbackend">#</a></h3>
+<p><code>nntrainer/tensor/htp_backend/htp_backend.cpp</code>, <code>HtpBackend::HtpBackend</code>
+(a process-wide singleton, <code>HtpBackend::global()</code>):</p>
+<ol>
+<li><strong>Unsigned PD.</strong> <code>remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE, {CDSP_DOMAIN_ID, 1})</code> lets an unsigned development skel load on the
+compute DSP. A failure here is only logged, because a signed skel does not
+need it. On the S25 Ultra used for bring-up no test signature was
+needed.</li>
+<li><strong>Open.</strong> <code>nntr_hvx_open(nntr_hvx_URI &quot;&amp;_dom=cdsp&quot;, &amp;h)</code>. If this fails
+(skel not on <code>ADSP_LIBRARY_PATH</code>, driver error), the backend stays
+disabled. <code>nntrainer/htp_context.cpp</code> then attaches no HTP ops and layers
+run on the CPU. One exception: a model quantized to <code>QS4CX_WH</code> has no
+CPU kernel for its expert weights (<code>float_tensor.cpp</code> throws), so with
+the backend disabled it fails instead of falling back.</li>
+<li><strong>Latency QoS.</strong> <code>remote_handle64_control(h, DSPRPC_CONTROL_LATENCY, …)</code>
+with <code>RPC_POLL_QOS</code> and <code>latency = 5000</code> µs (<code>NNTR_HTP_POLL_US</code>
+overrides it). In poll mode the ARM thread spins on the reply for up to
+that long, then falls back to sleeping until an interrupt. If the driver
+rejects poll mode, the code tries <code>RPC_PM_QOS</code> with 100 µs. The result is
+stored as <code>qosMode()</code>: 2 = poll, 1 = PM, 0 = both rejected. The profile's
+first line prints it (<code>[HTP-PROFILE] level=… qos_mode=…</code>). A transport
+number is only meaningful at <code>qos_mode=2</code>.</li>
+</ol>
+<p>The poll window matters because a decode call runs about 1–1.4 ms. With a
+100 µs window every call ended on the slow interrupt wake-up (§4). Asking
+for 10 000 µs was refused by the driver on the PR author's device (the
+session fell back to PM QoS, <code>qos_mode=1</code>), even though <code>remote.h</code>
+documents 10 000 as the maximum. So 5000 is the default. The cost is one
+ARM core spinning while the DSP works, and that thread is blocked anyway.</p>
+<p>The removed alternative matters too. <code>HtpBackend</code> used to open a HexKL
+<em>macro</em> API (SDKL) session. Once a process has used the <em>micro</em> API that
+our skel is built on, a later macro session fails permanently
+(<code>0x80000401</code>, no recovery with backoff). So one process cannot mix the two,
+and the backend is micro-only.</p>
+<h3 id="22-dsp-side-nntr_hvx_open">2.2 DSP side: <code>nntr_hvx_open</code> <a class="hd" aria-label="link to this section" href="#22-dsp-side-nntr_hvx_open">#</a></h3>
+<p><code>test/htp/hvx_add_f32.c</code>, <code>nntr_hvx_open</code>, allocates one
+<code>nntr_hvx_session</code> (<code>test/htp/nntr_hvx_session.h</code>) and returns its address
+as the handle. Everything below is done <strong>once per session, not per call</strong>:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>step</th>
+<th>call</th>
+<th>what the session keeps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HVX present</td>
+<td><code>qurt_hvx_get_units()</code>, bits 15:8 = number of 128-byte HVX contexts; 0 → <code>AEE_EUNSUPPORTED</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>VTCM + power-up</td>
+<td><code>hexkl_micro_hw_init(&amp;vtcm_base, &amp;vtcm_size, &amp;hmx_fp16_rate)</code> (HexKL's reference initializer; <code>-DNNTR_HEXKL_HW_INIT_2ARG</code> for older HexKL drops)</td>
+<td><code>vtcm_base</code>, <code>vtcm_size</code></td>
+</tr>
+<tr>
+<td>HMX config slot</td>
+<td><code>config_off = (vtcm_size − hexkl_micro_hmx_config_size())</code> aligned down: the HMX config sits at the top of VTCM</td>
+<td><code>config_off</code></td>
+</tr>
+<tr>
+<td>HMX lock</td>
+<td><code>hexkl_micro_hmx_lock()</code>, held until <code>close</code></td>
+<td><code>hmx_locked</code></td>
+</tr>
+<tr>
+<td>accumulator readout</td>
+<td><code>hexkl_micro_hmx_setup_acc_read_int32</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>worker pool</td>
+<td><code>hvx_worker_pool_create(n_hvx − 1)</code>: one worker per HVX context minus one, because the calling FastRPC thread takes the last lane itself. On the S25 Ultra that is 6 lanes (#100 reads 5.76 lanes busy over <code>mm</code>)</td>
+<td><code>quant_pool</code></td>
+</tr>
+<tr>
+<td>power votes</td>
+<td><code>HAP_power_set</code>: apptype <code>COMPUTE_CLIENT_CLASS</code>; DCVS v2 performance mode, NOM…TURBO corners, 100 µs wake latency; bus 40 GB/s at 100 % (drop with <code>-DNNTR_HVX_NO_BUS_VOTE</code>). All best effort</td>
+<td>votes die with the PD</td>
+</tr>
+</tbody>
+</table></div>
+<p>The session also holds the u8i4 and u8i8 weight tables (2048 and 512
+slots), up to <code>NNTR_HVX_MAX_ARENAS</code> = 32 attached arena chunks, the MoE
+call's heap scratch (<code>moe_scratch</code>, grown on demand), and <code>moe_flags</code> from
+<code>moe_set_opts</code> (0 = the HMX loop, because the session is <code>calloc</code>'d).</p>
+<p><code>nntr_hvx_close</code> releases in reverse. It frees weight slots before it puts
+back the arena mappings, because a borrowed slot points into an arena. Then
+it frees the scratch, destroys the pool and unlocks the HMX.</p>
+<p>The design assumes <strong>one client process per DSP</strong>: <code>hexkl_micro_hw_init</code> and
+the HMX lock are DSP-wide singletons. On the ARM side a single
+<code>invoke_mutex_</code> in <code>HtpComputeOps</code> serializes every call into the session.</p>
+<h2 id="3-memory">3. Memory <a class="hd" aria-label="link to this section" href="#3-memory">#</a></h2>
+<p><em>Provenance: upstream PR #4327 (rpcmem wrapper, arena, weight
+registration); size-class staging is an upstream commit made after the
+freeze, brought in by <code>htp_moe</code> PR #103.</em></p>
+<h3 id="31-the-regions">3.1 The regions <a class="hd" aria-label="link to this section" href="#31-the-regions">#</a></h3>
+<figure>
+<svg viewBox="0 0 860 684" role="img" aria-label="Memory regions of the HTP backend: the ARM heap, the cached ION staging pool and uncached ION weight arena in shared DDR, the DSP process domain&#x27;s mappings and heap, and the 8 MiB VTCM feeding the HVX registers." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="foundation-2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="16" y="10" width="828" height="104" rx="10" fill="#fef7f3" stroke="#eb6834" stroke-width="1"/>
+<text x="28" y="30" font-size="14" fill="#eb6834" font-weight="bold">ARM process (64-bit)</text>
+<rect x="250" y="38" width="360" height="62" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="430" y="57.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">ARM heap</text>
+<text x="430" y="73.5" font-size="12" text-anchor="middle" fill="#52514e">model tensors, routing vectors</text>
+<text x="430" y="89.5" font-size="12" text-anchor="middle" fill="#52514e">(the DSP cannot see these)</text>
+<rect x="16" y="190" width="828" height="116" rx="10" fill="#faf8f1" stroke="#8a7f5c" stroke-width="1"/>
+<text x="28" y="210" font-size="14" fill="#8a7f5c" font-weight="bold">DDR shared with the DSP (ION / rpcmem)</text>
+<rect x="40" y="222" width="360" height="66" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="220" y="243.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">Staging pool: cached ION</text>
+<text x="220" y="259.5" font-size="12" text-anchor="middle" fill="#52514e">one act + one out buffer per size class</text>
+<text x="220" y="275.5" font-size="12" text-anchor="middle" fill="#52514e">64 KiB (decode) … 4 MiB (prefill 512)</text>
+<rect x="460" y="222" width="360" height="66" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="640" y="243.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">Weight arena: uncached ION</text>
+<text x="640" y="259.5" font-size="12" text-anchor="middle" fill="#52514e">15 × 256 MiB chunks, 3696 MiB of expert weights</text>
+<text x="640" y="275.5" font-size="12" text-anchor="middle" fill="#52514e">written once at load</text>
+<path d="M350,100 L350,220" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+<text x="342" y="152" font-size="12" text-anchor="end" fill="#52514e">memcpy in (stage)</text>
+<path d="M380,222 L380,102" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+<text x="388" y="152" font-size="12" fill="#52514e">memcpy out</text>
+<path d="M570,100 L570,220" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+<text x="578" y="146" font-size="12" fill="#52514e">memcpy once per weight,</text>
+<text x="578" y="161" font-size="12" fill="#52514e">then madvise(DONTNEED)</text>
+<rect x="16" y="356" width="828" height="196" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="28" y="376" font-size="14" fill="#2a78d6" font-weight="bold">DSP PD: one 32-bit (4 GiB) address space</text>
+<rect x="40" y="392" width="360" height="48" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="220" y="412.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">per-call mapping of the staging buffers</text>
+<text x="220" y="428.5" font-size="12" text-anchor="middle" fill="#52514e">(the driver, per call)</text>
+<rect x="460" y="392" width="360" height="48" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="640" y="412.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">arena mappings</text>
+<text x="640" y="428.5" font-size="12" text-anchor="middle" fill="#52514e">HAP_mmap_get, for the session lifetime</text>
+<rect x="40" y="456" width="360" height="80" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="220" y="476.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">DSP heap</text>
+<text x="220" y="492.5" font-size="12" text-anchor="middle" fill="#52514e">session, weight tables (scales, colsums),</text>
+<text x="220" y="508.5" font-size="12" text-anchor="middle" fill="#52514e">MoE scratch (about 182 MiB left beside</text>
+<text x="220" y="524.5" font-size="12" text-anchor="middle" fill="#52514e">3840 MiB of arena)</text>
+<path d="M385,288 L385,392" fill="none" stroke="#52514e" stroke-width="1.3"/>
+<path d="M640,288 L640,392" fill="none" stroke="#52514e" stroke-width="1.3"/>
+<rect x="460" y="604" width="180" height="64" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="550" y="624.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">VTCM, 8 MiB on-chip</text>
+<text x="550" y="640.5" font-size="12" text-anchor="middle" fill="#52514e">from hexkl_micro_hw_init</text>
+<text x="550" y="656.5" font-size="12" text-anchor="middle" fill="#52514e">HMX config at the top</text>
+<rect x="700" y="614" width="124" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="762" y="640.5" text-anchor="middle" fill="#0b0b0b">HVX registers</text>
+<path d="M500,440 L500,602" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+<text x="508" y="576" font-size="12" fill="#52514e">DMA (HMX path, and the</text>
+<text x="508" y="591" font-size="12" fill="#52514e">decode default: VTCM feed)</text>
+<path d="M762,440 L762,612" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+<text x="752" y="476" font-size="12" text-anchor="end" fill="#52514e">vector loads via L2</text>
+<text x="752" y="491" font-size="12" text-anchor="end" fill="#52514e">(GEMV arena read,</text>
+<text x="752" y="506" font-size="12" text-anchor="end" fill="#52514e">NNTR_MOE_HTP_GEMV_FEED opt-out)</text>
+<path d="M640,636 L698,636" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-2-arrow)"/>
+</svg>
+<figcaption>Where each byte lives and how it moves. The DSP cannot see the ARM heap, so activations are copied through the cached ION staging pool on every call, while expert weights are copied once into the uncached ION arena and then released on the ARM side with <code>madvise(DONTNEED)</code>. Plain lines mean “mapped into the DSP PD as”: the driver maps the staging buffers per call, the arena stays mapped for the session. All of it, plus the DSP heap, shares one 32-bit (4 GiB) address space, which is why only about 182 MiB of heap is left beside 3840 MiB of arena. Weights reach the HVX registers either through VTCM by DMA (the HMX path and the decode default) or by vector loads straight from the arena via L2 (the GEMV arena read, the <code>NNTR_MOE_HTP_GEMV_FEED</code> opt-out).</figcaption>
+</figure>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>region</th>
+<th>allocated by</th>
+<th>mapped to DSP</th>
+<th>cache</th>
+<th>lifetime</th>
+<th>holds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ARM heap</td>
+<td>nntrainer</td>
+<td>never</td>
+<td>cached</td>
+<td>model</td>
+<td>tensors, activations</td>
+</tr>
+<tr>
+<td>staging pool</td>
+<td><code>HtpRpcBuffer</code> (<code>rpcmem_alloc</code>, default flags = cached) via <code>stage()</code></td>
+<td>by the driver, on each call that passes it</td>
+<td>cached ARM side; the driver cleans and invalidates the whole buffer per call</td>
+<td>process</td>
+<td>one call's activation in and output back</td>
+</tr>
+<tr>
+<td>weight arena</td>
+<td><code>HtpRpcBuffer(size, HTP_RPC_FLAGS_UNCACHED)</code> in <code>tryChunk</code></td>
+<td>once: <code>fastrpc_mmap(…, FASTRPC_MAP_FD)</code> + <code>arena_attach</code> → <code>HAP_mmap_get</code></td>
+<td>uncached ARM side, so ARM writes reach DDR with nothing to flush</td>
+<td>process</td>
+<td>expert weights, <code>QS4CX_WH</code> bytes as-is</td>
+</tr>
+<tr>
+<td>DSP heap</td>
+<td><code>malloc</code> inside the PD</td>
+<td>native</td>
+<td>cached</td>
+<td>session</td>
+<td>session struct, weight tables, <code>moe_scratch</code></td>
+</tr>
+<tr>
+<td>VTCM</td>
+<td><code>hexkl_micro_hw_init</code></td>
+<td>native</td>
+<td>on-chip SRAM</td>
+<td>session</td>
+<td>per-call working set of the kernels</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="32-the-rpcmem-wrapper">3.2 The rpcmem wrapper <a class="hd" aria-label="link to this section" href="#32-the-rpcmem-wrapper">#</a></h3>
+<p><code>nntrainer/tensor/htp_backend/htp_rpcmem.h</code>:</p>
+<ul>
+<li><code>HtpRpcMemApi::get()</code> resolves <code>rpcmem_init/alloc/free/to_fd</code> and
+<code>fastrpc_mmap/munmap</code> with <code>dlsym(RTLD_DEFAULT, …)</code> from the device's
+<code>libcdsprpc.so</code>, which the process already loaded for the session. The
+SDK's link-time stub library does not export them, so never push that
+stub to the phone. If either <code>alloc</code> or <code>free</code> is missing, both are
+treated as absent, so an rpcmem allocation is never freed with libc
+<code>free</code>.</li>
+<li><code>HtpRpcBuffer</code> is one byte buffer. It is ION when rpcmem is available and
+falls back to <code>malloc</code> otherwise. <code>isIon()</code> reports which one it got, and
+<code>fd()</code> returns the ION fd, which is needed only for the arena.</li>
+<li><code>HtpRpcBuffer::allocCount()</code> counts constructions process-wide. The
+profile's <code>staging:</code> line prints it, and it must not grow with the call
+count.</li>
+</ul>
+<p>Why ION at all: FastRPC pins and maps a plain heap pointer on <strong>every</strong>
+call. The driver recognizes an rpcmem buffer and keeps its SMMU mapping
+across calls. Before this, weight registration over plain heap moved about
+155 MB/s. On ION-backed buffers the PR author measured 44.6 GB/s sustained
+(PR author's device).</p>
+<h3 id="33-the-weight-arena">3.3 The weight arena <a class="hd" aria-label="link to this section" href="#33-the-weight-arena">#</a></h3>
+<p>The MoE expert weights (1408 matrices: 22 layers × 32 experts × gate_up
+and down, 3696 MiB) do not travel per call. They live in the <strong>arena</strong>:
+ION memory that the DSP maps once and reads in place.</p>
+<p><code>HtpComputeOps::get_or_register_wh</code>, per weight, at load:</p>
+<ol>
+<li><code>ensureArena</code>: the arena needs both <code>rpcmem_to_fd</code> and <code>fastrpc_mmap</code>.
+Without them a <code>QS4CX_WH</code> model throws: its bytes have no other home.</li>
+<li><code>place</code> → <code>placeExisting</code> scans every chunk for room at the next
+<strong>4 KiB</strong> boundary (the DSP requires 512 B). A page-aligned weight is
+never split across a page by alignment alone, and the waste is under
+0.25 %. Scanning all chunks lets a 1.75 MiB down weight fill tails that a
+3.5 MiB gate_up cannot.</li>
+<li>If no chunk has room, <code>newChunk</code> → <code>tryChunk</code> makes one. The steps are
+<code>rpcmem_alloc</code> (uncached) → <code>rpcmem_to_fd</code> →
+<code>fastrpc_mmap(CDSP_DOMAIN_ID, fd, …, FASTRPC_MAP_FD)</code> →
+<code>nntr_hvx_arena_attach(fd)</code>, which calls <code>HAP_mmap_get</code> on the DSP. Each
+failure is reported by name, because each means something different:
+host ION exhausted, DSP address space exhausted, or the DSP arena table
+full. A refused size is halved, down to 64 MiB, and the cap is
+remembered.</li>
+<li><code>memcpy</code> the WH bytes into the chunk. Then
+<code>nntr_hvx_weight_register_u8i4_arena(K, N, arena, off, scales, colsums, bias)</code> sends only the 3 × N small arrays. On the DSP, the slot <em>borrows</em>
+<code>arena_va + off</code> (no copy) and copies the three arrays onto the DSP heap.
+The DSP checks that <code>off + (K/32)(N/32)·512</code> lies inside the mapping.</li>
+<li><code>releaseArmSource</code> calls <code>madvise(MADV_DONTNEED)</code> on the ARM copy's
+pages. Without it the model holds every weight twice, and registration
+stopped at 1170 of 1408 weights before this was added. <code>NNTR_HTP_KEEP_ARM_WEIGHTS=1</code>
+keeps the copy for debugging.</li>
+</ol>
+<p><strong>The limit is the DSP's 32-bit address space, not host RAM.</strong> The arena
+mappings and the DSP heap share one 4 GiB space. A clean process maps
+3840 MiB in 256 MiB chunks, after which the heap answered <code>AEE_ENOMEMORY</code>
+after about 182 MiB more. With 1 GiB chunks it stopped at 3072 MiB. Each
+mapping is aligned to its own size, so 1 GiB chunks land at 1, 2 and 3 GiB,
+and the 768 MiB below the first one can no longer be reached. That is why
+<code>kArenaChunkMax</code> is 256 MiB. The model's 3696 MiB leaves about 144 MiB of
+margin. A larger model would first need fewer bytes per weight, not a new
+allocator.</p>
+<p>The arena is never <code>fastrpc_munmap</code>'d. <code>nntr_hvx_close</code> puts every mapping
+back (<code>nntr_hvx_arenas_put_all</code>), and process exit reclaims the ION. A
+process that loads and unloads models would leak one arena per model. This
+is marked <code>ponytail:</code> in the code, with an explicit shutdown hook as the fix.</p>
+<p>The older DSP-heap path (<code>weight_register_u8i4</code>: send int4 weights, bake
+them to WH layout on the DSP, keep them on the DSP heap) still serves
+<code>QS4CX</code> models. It stops at about 1.89 GB of weights, which is why
+<code>QS4CX_WH</code> and the arena exist.</p>
+<h3 id="34-staging-activations-and-outputs">3.4 Staging: activations and outputs <a class="hd" aria-label="link to this section" href="#34-staging-activations-and-outputs">#</a></h3>
+<p>Each call copies the activation into a shared buffer, and the output comes
+back through another. <code>HtpComputeOps::stage(StagingPool &amp;, bytes)</code> rounds
+the size up to a power of two from 64 KiB and returns that class's buffer,
+creating it on first use. Two pools exist, <code>act_pool_</code> and <code>out_pool_</code>, and
+all classes stay allocated. A decode MoE call (8 KiB each way) uses the
+64 KiB pair. A prefill call at prompt 512 (4 MiB) uses the 4 MiB pair.</p>
+<p><strong>Why classes: cache maintenance scales with the buffer, not the payload.</strong>
+The staging buffers are cached on the ARM. Before the DSP reads the
+activation, the driver must write the ARM cache back to DDR (clean). Before
+the ARM reads the output, the driver must drop stale lines (invalidate).
+The driver does this over the <strong>whole dma-buf</strong> it was handed, not over the
+bytes the call uses. The PR author measured 36–59 µs per MB of buffer
+(PR author's device). The earlier design grew one pair to the largest shape
+seen (<code>ensureCapacity</code>). After a 512-token prompt, every decode call moved
+16 KiB on 8 MiB of buffers. That cost 553 µs of transport on a 3.6 MB pair
+and 1633 µs on a 12.7 MB pair (PR author's device).</p>
+<p>The profile prints the inventory under each MoE row:</p>
+<pre><code>[HTP-PROFILE]     staging: act 65536 B out 65536 B ion=y  rpc allocs=19 (session)  non-ION in-args=6/464 B
+</code></pre>
+<p>At decode, the only bytes the driver copies outside ION are 464 B. That is
+a 48 B block of scalars plus the five small arrays: <code>h_gate_up</code>, <code>h_down</code>,
+<code>row_index</code>, <code>row_count</code> and <code>row_weight</code>.</p>
+<h2 id="4-what-a-call-costs">4. What a call costs <a class="hd" aria-label="link to this section" href="#4-what-a-call-costs">#</a></h2>
+<p><em>Provenance: <code>htp_moe</code> (measurements; the fix is PR #103).</em></p>
+<p>One synchronous MoE call at decode, end to end:</p>
+<figure>
+<svg viewBox="0 0 880 936" role="img" aria-label="Sequence of one synchronous MoE call at decode across the ARM layer thread, ARM stub, FastRPC driver, DSP skel and the DSP entry and kernel, in 14 numbered steps." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="foundation-3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<line x1="80" y1="56" x2="80" y2="928" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="262" y1="56" x2="262" y2="928" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="432" y1="56" x2="432" y2="928" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="598" y1="56" x2="598" y2="928" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="772" y1="56" x2="772" y2="928" stroke="#c3c2b7" stroke-width="1.2"/>
+<rect x="12" y="12" width="136" height="44" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="80" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">ARM layer thread</text>
+<text x="80" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(invokeMoeLayer)</text>
+<rect x="196" y="12" width="132" height="44" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="262" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">ARM stub</text>
+<text x="262" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(nntr_hvx_stub.c)</text>
+<rect x="370" y="12" width="124" height="44" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="432" y="38.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">FastRPC driver</text>
+<rect x="532" y="12" width="132" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="598" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">DSP skel</text>
+<text x="598" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(nntr_hvx_skel.c)</text>
+<rect x="672" y="12" width="200" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="772" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">entry + kernel</text>
+<text x="772" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(nntr_hvx_mm_u8i4_moe_layer)</text>
+<path d="M90,91 L110,91 L110,105 L83,105" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="80" cy="91" r="9" fill="#52514e"/>
+<text x="80" y="95" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">1</text>
+<rect x="116.0" y="84.0" width="195.9" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="120" y="95" font-size="12" fill="#52514e">lock invoke_mutex_, stage()</text>
+<text x="120" y="110" font-size="12" fill="#52514e">→ 64 KiB act/out pair</text>
+<path d="M90,147 L110,147 L110,161 L83,161" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="80" cy="147" r="9" fill="#52514e"/>
+<text x="80" y="151" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">2</text>
+<rect x="116.0" y="140.0" width="230.7" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="120" y="151" font-size="12" fill="#52514e">memcpy 8 KiB activation into ION</text>
+<text x="120" y="166" font-size="12" fill="#52514e">(outside the host timer)</text>
+<rect x="73.0" y="195.0" width="195.9" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="171" y="206" font-size="12" text-anchor="middle" fill="#52514e">nntr_hvx_mm_u8i4_moe_layer(</text>
+<text x="171" y="221" font-size="12" text-anchor="middle" fill="#52514e">h, M, K, …, act, out)</text>
+<path d="M90,234 L260,234" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="80" cy="234" r="9" fill="#52514e"/>
+<text x="80" y="238" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">3</text>
+<rect x="228.2" y="255.0" width="237.7" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="347" y="266" font-size="12" text-anchor="middle" fill="#52514e">remote_handle64_invoke(method id,</text>
+<text x="347" y="281" font-size="12" text-anchor="middle" fill="#52514e">7 in + 1 rout buffers)</text>
+<path d="M272,294 L430,294" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="262" cy="294" r="9" fill="#52514e"/>
+<text x="262" y="298" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">4</text>
+<path d="M442,323 L462,323 L462,337 L435,337" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="432" cy="323" r="9" fill="#52514e"/>
+<text x="432" y="327" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">5</text>
+<rect x="468.0" y="316.0" width="293.4" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="472" y="327" font-size="12" fill="#52514e">copy 464 B non-ION args into the message</text>
+<text x="472" y="342" font-size="12" fill="#52514e">clean ARM cache over the whole act buffer</text>
+<rect x="444.9" y="371.0" width="140.2" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="515" y="382" font-size="12" text-anchor="middle" fill="#52514e">wake a DSP thread</text>
+<text x="515" y="397" font-size="12" text-anchor="middle" fill="#52514e">in the session&#x27;s PD</text>
+<path d="M442,410 L596,410" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="432" cy="410" r="9" fill="#52514e"/>
+<text x="432" y="414" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">6</text>
+<rect x="590.5" y="431.0" width="189.0" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="685" y="442" font-size="12" text-anchor="middle" fill="#52514e">unpack, call</text>
+<text x="685" y="457" font-size="12" text-anchor="middle" fill="#52514e">nntr_hvx_mm_u8i4_moe_layer</text>
+<path d="M608,470 L770,470" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="598" cy="470" r="9" fill="#52514e"/>
+<text x="598" y="474" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">7</text>
+<path d="M762,499 L742,499 L742,513 L769,513" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="772" cy="499" r="9" fill="#52514e"/>
+<text x="772" y="503" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">8</text>
+<rect x="407.8" y="492.0" width="328.2" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="732" y="503" font-size="12" text-anchor="end" fill="#52514e">check shapes, then hexkl_mm_u8i4_moe_layer_run</text>
+<text x="732" y="518" font-size="12" text-anchor="end" fill="#52514e">(VTCM, weight table, pool from the session)</text>
+<rect x="597.5" y="547.0" width="175.0" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="685" y="558" font-size="12" text-anchor="middle" fill="#52514e">AEE_SUCCESS, out written</text>
+<text x="685" y="573" font-size="12" text-anchor="middle" fill="#52514e">through its mapping</text>
+<path d="M762,586 L600,586" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="772" cy="586" r="9" fill="#52514e"/>
+<text x="772" y="590" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">9</text>
+<rect x="490.1" y="607.0" width="49.8" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="515" y="618" font-size="12" text-anchor="middle" fill="#52514e">return</text>
+<path d="M588,631 L434,631" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="598" cy="631" r="9" fill="#52514e"/>
+<text x="598" y="635" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">10</text>
+<rect x="212" y="651" width="270" height="44" rx="4" fill="#fdeee6" stroke="#eb6834" stroke-width="1"/>
+<text x="347" y="671" font-size="12" text-anchor="middle" fill="#0b0b0b">ARM thread polls the reply for up to 5 ms,</text>
+<text x="347" y="687" font-size="12" text-anchor="middle" fill="#0b0b0b">then sleeps until an interrupt</text>
+<path d="M442,720 L462,720 L462,734 L435,734" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="432" cy="720" r="9" fill="#52514e"/>
+<text x="432" y="724" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">11</text>
+<rect x="468.0" y="713.0" width="182.0" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="472" y="724" font-size="12" fill="#52514e">invalidate ARM cache over</text>
+<text x="472" y="739" font-size="12" fill="#52514e">the whole out buffer</text>
+<rect x="304.7" y="768.0" width="84.6" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="347" y="779" font-size="12" text-anchor="middle" fill="#52514e">return code</text>
+<path d="M422,792 L264,792" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="432" cy="792" r="9" fill="#52514e"/>
+<text x="432" y="796" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">12</text>
+<rect x="48.7" y="813.0" width="244.6" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="171" y="824" font-size="12" text-anchor="middle" fill="#52514e">return code</text>
+<text x="171" y="839" font-size="12" text-anchor="middle" fill="#52514e">(0x8000040E = stale skel, see 5.3)</text>
+<path d="M252,852 L82,852" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="262" cy="852" r="9" fill="#52514e"/>
+<text x="262" y="856" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">13</text>
+<path d="M90,881 L110,881 L110,895 L83,895" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#foundation-3-arrow)"/>
+<circle cx="80" cy="881" r="9" fill="#52514e"/>
+<text x="80" y="885" font-size="11" text-anchor="middle" fill="#ffffff" font-weight="bold">14</text>
+<rect x="116.0" y="874.0" width="175.0" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="120" y="885" font-size="12" fill="#52514e">memcpy 8 KiB output back</text>
+<text x="120" y="900" font-size="12" fill="#52514e">to the tensor</text>
+</svg>
+<figcaption>One synchronous MoE call at decode, end to end. Steps 1–2 and 14 are ARM-side staging copies; <em>transport</em> is steps 3–13 minus the DSP's own time in step 8, and it includes the driver's cache maintenance over the <em>whole</em> act and out buffers (steps 5 and 11) and the reply poll of up to 5 ms before the ARM thread sleeps. A return code of 0x8000040E in step 13 means a stale skel (§5.3).</figcaption>
+</figure>
+<p><code>transport</code> is steps 3–13 minus the DSP's own time in step 8. The DSP side
+of the boundary is small: unpacking (the <code>stage</code> column, about 4–5 µs) and
+scratch setup (<code>alloc</code>, below 1 µs).</p>
+<h3 id="41-measured">4.1 Measured <a class="hd" aria-label="link to this section" href="#41-measured">#</a></h3>
+<p>All rows are the M==1 (decode) MoE call at profile level 2, in µs per
+call, <code>qos_mode=2</code>. <strong>Compare only inside a sitting.</strong> Transport drifts
+between sittings as much as tok/s does. Identical sources on the same unit
+and the same day read 648.6 and 401.3 about two hours apart, while the
+<code>dsp</code> column moved −0.2 %. Only <code>dsp</code> is comparable across sittings.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>sitting</th>
+<th>variant</th>
+<th style="text-align:right">transport</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#88, 2026-09-22, unit <code>R3CY205ZMND</code></td>
+<td>A: before the fix (one grow-only 4 MiB pair, 100 µs poll), HMX path</td>
+<td style="text-align:right">401.3</td>
+</tr>
+<tr>
+<td></td>
+<td>C: size-class staging, poll forced back to 100 µs</td>
+<td style="text-align:right">155.5</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>B: size-class staging + 5 ms poll (PR #103)</strong></td>
+<td style="text-align:right"><strong>87.9</strong></td>
+</tr>
+<tr>
+<td>#100, 2026-09-23, unit <code>R3CY205ZMND</code></td>
+<td>HMX path (<code>NNTR_MOE_HTP_M1_GEMV=0</code>)</td>
+<td style="text-align:right">84.6</td>
+</tr>
+<tr>
+<td></td>
+<td>HVX GEMV reading the arena directly (the default until PR #118)</td>
+<td style="text-align:right">185.8</td>
+</tr>
+<tr>
+<td>#117, 2026-09-23, unit <code>R3CY10WM83Y</code>, two sittings</td>
+<td>A: GEMV, arena read</td>
+<td style="text-align:right">184.6 / 190.3</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>B: GEMV fed from VTCM by DMA (PR #118, the decode default since its merge)</strong></td>
+<td style="text-align:right"><strong>82.0 / 92.3</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>What the rows say:</p>
+<ul>
+<li><strong>#88 took 313.4 µs off the call: 245.8 µs (78 %) was staging, 67.6 µs
+(22 %) the poll window.</strong> C isolates the poll. In the same sitting decode
+went 18.72 / 16.83 / 16.46 → 24.50 / 23.80 / 23.52 tok/s at gen 64 / 512
+/ 1024, with text bit-identical and prefill −0.9 %. The transport column
+explains only about 6.9 of the 12.6 ms/token gained. About 5 ms landed
+outside the MoE call. Candidates are the poll keeping the calling core
+and its cluster clock up between calls, and cache maintenance around the
+call. Not decided.</li>
+<li><strong>The DSP-side read pattern moves the host-side number.</strong> In one sitting
+and one binary, the GEMV path's direct arena read cost about 100 µs more
+transport per call than the HMX path, and the VTCM feed brought it back
+to the HMX level. The cause is not separated. Candidates: the direct HVX
+read leaves more cache maintenance or DMA-link sync at the call boundary,
+or the shorter call simply ends inside the poll window. So read
+<code>transport</code> beside <code>mm</code> whenever a DSP-side change is measured.</li>
+<li><strong>The remaining ≈ 85–90 µs per call is the synchronous floor.</strong> It is
+464 argument bytes, cache maintenance on two 64 KiB buffers (about 5 µs
+at the measured rate), and the invoke, wake and return. At 22 calls per
+token it is ≈ 2 ms/token. Getting below it takes fewer calls, not a
+cheaper call (see the table below).</li>
+</ul>
+<p>The rule that follows: moving a matmul to the DSP pays only when the
+matmul costs clearly more than a round trip. The conv <code>in_proj</code> on the DSP
+saved 13 ms of an expected 65–100 ms (PR author's device), which is why those projections
+stay on the CPU in the measured configuration.</p>
+<h3 id="42-considered-and-not-built">4.2 Considered and not built <a class="hd" aria-label="link to this section" href="#42-considered-and-not-built">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>option</th>
+<th>why not (yet)</th>
+<th>reopens when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Prebind</strong> per-layer handles (<code>moe_layer_bind</code> / <code>moe_layer_run</code>, removing <code>h_gate_up</code>/<code>h_down</code> from each call)</td>
+<td>removes 256 of the 464 non-ION bytes: ≤ 5–10 µs of an ≈ 88 µs floor, for an IDL change</td>
+<td>one call per token (#85) needs per-layer tables on the DSP anyway</td>
+</tr>
+<tr>
+<td><strong>Uncached staging pair</strong> for decode</td>
+<td>removes the ≈ 5 µs of maintenance, but the ARM then reads its output from uncached DDR every call, and it forks the prefill path</td>
+<td>not planned</td>
+</tr>
+<tr>
+<td><strong>dspqueue</strong> / a resident DSP worker (async packet queue, no per-call invoke)</td>
+<td>the measured cost was buffer size and the poll window, both fixed on plain FastRPC</td>
+<td>#85 lands and transport is still ≥ 10 % of the per-token DSP time; then pipelining token <em>t+1</em>'s dispatch is the only way under the floor</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="5-build-and-deploy">5. Build and deploy <a class="hd" aria-label="link to this section" href="#5-build-and-deploy">#</a></h2>
+<p><em>Provenance: upstream PR #4327 (<code>build.sh</code>, <code>generate_stub.sh</code>,
+<code>build_android.sh --htp</code>); <code>htp_moe</code> added the undefined-symbol check (#97)
+and <code>HEX_EXTRA_CFLAGS</code>.</em></p>
+<h3 id="51-the-dsp-skel-testhtpbuildsh">5.1 The DSP skel: <code>test/htp/build.sh</code> <a class="hd" aria-label="link to this section" href="#51-the-dsp-skel-testhtpbuildsh">#</a></h3>
+<p>Prerequisite: <code>source $HEXAGON_SDK_ROOT/setup_sdk_env.source</code>. It:</p>
+<ol>
+<li>Finds HexKL's <code>libhexkl_micro.a</code> at
+<code>$HEXKL_ROOT/lib/$HEXKL_SDK_VER/hexagon_toolv19_v79/</code>. The SDK must be
+6.1.1.0 or newer (no v79 build of HexKL before it). <strong>6.4.0.1 is the
+verified combination</strong> and the one every measurement handoff pins with
+<code>HEXKL_SDK_VER=6.4.0.1</code>. Left unset, <code>HEXKL_SDK_VER</code> picks the newest
+version under <code>$HEXKL_ROOT/lib</code>, which is not necessarily the verified
+one. <code>HEX_ARCH</code> defaults to <code>v79</code>. If the library is missing, the script
+says which part of the path is wrong.</li>
+<li>Runs <code>qaic</code> into <code>test/htp/generated/</code>.</li>
+<li>Compiles the six skel entry files, the generated skel, and every
+<code>hmx/*.c</code> and <code>hvx/*.c</code> the kernels need (the <code>SRCS</code> list) with
+<code>hexagon-clang -mv79 -mhvx -mhvx-length=128B -O3 -fPIC -shared -Wall -Werror</code>, linking <code>libhexkl_micro.a</code>, into
+<code>test/htp/build/libnntr_hvx_skel.so</code>. Add extra defines through
+<code>HEX_EXTRA_CFLAGS</code>.</li>
+<li><strong>Undefined-symbol check.</strong> A Hexagon shared object links even with
+unresolved symbols, and the device loader then refuses it with
+<code>0x80000406</code> and a message that looks like an ELF-layout bug. The script
+lists the skel's undefined dynamic symbols with <code>hexagon-readelf --dyn-syms</code> and fails on anything outside the set the DSP image provides:
+<code>HAP_*</code>, <code>compute_resource_*</code>, <code>qurt_*</code>, compiler runtime, and a short
+libc list. It also fails if the list is empty, so a missing <code>readelf</code>
+cannot pass the check vacuously. This was added after a skel that
+compiled cleanly still failed to load on the phone (#94, #97).</li>
+</ol>
+<h3 id="52-the-app-applicationscausallmbuild_androidsh---htp">5.2 The app: <code>Applications/CausalLM/build_android.sh --htp</code> <a class="hd" aria-label="link to this section" href="#52-the-app-applicationscausallmbuild_androidsh---htp">#</a></h3>
+<p><code>--htp</code> runs <code>generate_stub.sh</code> (the ARM stub), locates <code>libsdkl.so</code> in the
+HexKL addon (<code>HEXKL_ROOT</code>, <code>HEXKL_ARCH=armv8_android26</code>), and configures
+nntrainer with <code>-Denable-htp=true -Dhexkl-sdk-root=… -Dhexkl-lib-subdir=… -Dhexagon-sdk-root=…</code>. It prints a reminder that it does <strong>not</strong> build the
+skel. Measurement handoffs build with <code>build_android.sh --htp</code>, then
+<code>--htp --cache</code>, and name the commit. They never name a local path.</p>
+<p>On the device, the skel goes into a directory on <code>ADSP_LIBRARY_PATH</code>, and
+the app's libraries go on <code>LD_LIBRARY_PATH</code>. Only the device's own
+<code>libcdsprpc.so</code> may be used, never the SDK's link-time stub.</p>
+<h3 id="53-app-and-skel-must-match">5.3 App and skel must match <a class="hd" aria-label="link to this section" href="#53-app-and-skel-must-match">#</a></h3>
+<p>The stub and the skel must come from the same IDL, and the skel must come
+from the same DSP sources the app expects. The failure modes are
+distinguishable:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>symptom</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AEE_EBADPARM</code> (<code>0x8000040E</code>) on a call whose shapes are right</td>
+<td>skel older than the app, e.g. a different <code>stage_us</code> count in a <code>_timed</code> twin. <code>invokeMoeLayer</code> appends this hint to its error</td>
+</tr>
+<tr>
+<td><code>nntr_hvx_moe_set_opts failed … applied=…</code></td>
+<td>skel predates <code>moe_set_opts</code> or one of its bits. The app throws instead of running another path</td>
+</tr>
+<tr>
+<td><code>0x80000406</code> at open (<code>dlopen</code> of the skel)</td>
+<td>the skel itself does not load, usually an undefined symbol (§5.1)</td>
+</tr>
+<tr>
+<td><code>nntr_hvx_open failed … Is libnntr_hvx_skel.so on ADSP_LIBRARY_PATH?</code></td>
+<td>skel not found. The backend disables itself (§2.1)</td>
+</tr>
+<tr>
+<td>configure error &quot;stub is older than nntr_hvx.idl&quot;</td>
+<td>IDL changed and the stub was not regenerated</td>
+</tr>
+</tbody>
+</table></div>
+<p>The rule: <strong>any change to the IDL or to a DSP source means rebuilding the
+skel with <code>test/htp/build.sh</code> and pushing it.</strong> An IDL change also means
+regenerating the stub, which <code>build_android.sh --htp</code> does.</p>
+<h2 id="6-host-checks-without-a-dsp">6. Host checks without a DSP <a class="hd" aria-label="link to this section" href="#6-host-checks-without-a-dsp">#</a></h2>
+<p><em>Provenance: upstream PR #4327 (<code>moe_layer_host_check</code>,
+<code>worker_pool_host_check</code>, stubs); <code>htp_moe</code> added the DMA, options, replay
+and <code>gemv_native</code> checks.</em></p>
+<p><code>test/htp/host/run_host_checks.sh</code> compiles DSP sources with the host <code>gcc</code>
+against stand-in headers. It needs no phone and no SDK.</p>
+<ul>
+<li><code>test/htp/host/stub/</code> provides <code>qurt.h</code> (threads mapped to pthreads),
+<code>hexkl_micro.h</code>, <code>HAP_perf.h</code> and <code>AEEStdErr.h</code>, so kernels and the
+worker pool compile on x86. <code>replay_stub/</code> adds <code>remote.h</code>, the HVX type
+headers and a hand-written <code>nntr_hvx.h</code> for the replay entry.</li>
+<li>HMX and HVX arithmetic are <strong>scalar stand-ins</strong> here, so these checks do
+not verify the hardware's arithmetic. They verify everything around it:
+routing, buffer reuse (the DMA stand-in completes at once, so a transfer
+into a live buffer shows up as a wrong result), scatter, VTCM layout
+arithmetic, option-word encoding and DMA plans.</li>
+<li>The exception is <code>gemv_native_check.c</code>. When the SDK's x86 HVX emulation
+library (<code>libnative.a</code>) is present, it builds the real
+<code>hvx/hvx_gemm_u8i4_wh.c</code> on x86. It also checks that two deliberate
+mutations of the kernel make it fail.</li>
+</ul>
+<p>The rest of the verification ladder (DSP skel build, device gtests,
+full-model runs) is covered in the measurement chapter.</p>
+<h2 id="tried-and-dropped">Tried and dropped <a class="hd" aria-label="link to this section" href="#tried-and-dropped">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Passing plain heap tensors straight to FastRPC</td>
+<td>pinned and mapped on every call; weight registration moved about 155 MB/s</td>
+<td>why <code>HtpRpcBuffer</code> exists and why every call stages through ION</td>
+</tr>
+<tr>
+<td>One grow-only staging pair (<code>ensureCapacity</code>)</td>
+<td>every decode call paid cache maintenance on the largest buffer: 553–1633 µs of transport (PR author's device); 401 µs in #88 A</td>
+<td>why <code>StagingPool</code> has size classes. Do not &quot;simplify&quot; it back</td>
+</tr>
+<tr>
+<td>100 µs poll window</td>
+<td>every decode call ended on the interrupt wake; 67.6 µs/call of #88's cut</td>
+<td>why the default is 5000 µs</td>
+</tr>
+<tr>
+<td>10 000 µs poll window</td>
+<td>refused by the driver, session fell to PM QoS (PR author's device)</td>
+<td>5000 is the tested ceiling; check <code>qos_mode=2</code> after any change</td>
+</tr>
+<tr>
+<td><code>fastrpc_mmap</code> with flags 0 (<code>FASTRPC_MAP_STATIC</code>) for the arena</td>
+<td><code>HAP_mmap_get</code> refused the fd; three device runs</td>
+<td>the arena must use <code>FASTRPC_MAP_FD</code></td>
+</tr>
+<tr>
+<td>1 GiB arena chunks</td>
+<td>stopped at 3072 MiB, then refused at every size down to 64 MiB</td>
+<td>alignment waste in the 4 GiB DSP space; 256 MiB chunks reach 3840 MiB</td>
+</tr>
+<tr>
+<td>Weights on the DSP heap (bake on the DSP)</td>
+<td>ceiling about 1.89 GB</td>
+<td>why <code>QS4CX_WH</code> + the arena exist; the path remains for <code>QS4CX</code></td>
+</tr>
+<tr>
+<td>HexKL macro (SDKL) session beside the micro API</td>
+<td>a macro session opened after any micro call fails permanently</td>
+<td>the backend is micro-only; no mixing within a process</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="code-map">Code map <a class="hd" aria-label="link to this section" href="#code-map">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>topic</th>
+<th>path : symbol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>interface</td>
+<td><code>test/htp/nntr_hvx.idl</code></td>
+</tr>
+<tr>
+<td>ARM stub generation</td>
+<td><code>nntrainer/tensor/htp_backend/generate_stub.sh</code>; stale/missing check in <code>nntrainer/tensor/htp_backend/meson.build</code></td>
+</tr>
+<tr>
+<td>ARM session</td>
+<td><code>nntrainer/tensor/htp_backend/htp_backend.{h,cpp}</code>: <code>HtpBackend</code>, <code>qosMode</code></td>
+</tr>
+<tr>
+<td>backend attach / fallback</td>
+<td><code>nntrainer/htp_context.cpp</code></td>
+</tr>
+<tr>
+<td>rpcmem / ION</td>
+<td><code>nntrainer/tensor/htp_backend/htp_rpcmem.h</code>: <code>HtpRpcMemApi</code>, <code>HtpRpcBuffer</code>, <code>allocCount</code></td>
+</tr>
+<tr>
+<td>staging, calls, profile</td>
+<td><code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code>: <code>StagingPool</code>, <code>stage</code>, <code>stagedMemcpy</code>, <code>invokeMoeLayer</code>, <code>sendMoeOptsOnce</code>, <code>HtpProfile</code></td>
+</tr>
+<tr>
+<td>arena, registration</td>
+<td>same file: <code>get_or_register_wh</code>, <code>ensureArena</code>, <code>place</code>, <code>placeExisting</code>, <code>newChunk</code>, <code>tryChunk</code>, <code>registerFromArena</code>, <code>releaseArmSource</code>, <code>kArenaChunkMax</code></td>
+</tr>
+<tr>
+<td>DSP session</td>
+<td><code>test/htp/nntr_hvx_session.h</code>: <code>nntr_hvx_session</code>; <code>test/htp/hvx_add_f32.c</code>: <code>nntr_hvx_open</code>, <code>nntr_hvx_close</code></td>
+</tr>
+<tr>
+<td>DSP arena, weights</td>
+<td><code>test/htp/nntr_hvx_mm_u8i4.c</code>: <code>nntr_hvx_arena_attach</code>, <code>nntr_hvx_weight_register_u8i4_arena</code>, <code>nntr_hvx_arenas_put_all</code>; <code>hmx/hexkl_mm_u8i4_dma.c</code>: <code>hexkl_weight_u8i4_register_arena</code></td>
+</tr>
+<tr>
+<td>worker pool</td>
+<td><code>nntrainer/tensor/htp_backend/hvx/hvx_worker_pool.c</code>: <code>hvx_worker_pool_create</code></td>
+</tr>
+<tr>
+<td>builds</td>
+<td><code>test/htp/build.sh</code>; <code>Applications/CausalLM/build_android.sh --htp</code></td>
+</tr>
+<tr>
+<td>host checks</td>
+<td><code>test/htp/host/run_host_checks.sh</code>, <code>test/htp/host/stub/</code>, <code>test/htp/host/replay_stub/</code></td>
+</tr>
+</tbody>
+</table></div>
+
+<div class="pager"><span>← <a href="architecture.html">Architecture</a></span><span><a href="hmx-matmul.html">HMX matmul</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>

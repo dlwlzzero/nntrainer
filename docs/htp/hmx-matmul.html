@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — The HMX integer matmul layer</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+p,li{max-width:70ch}
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Overview</a><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="hmx-matmul.html" class="here">HMX matmul</a><a href="weight-format.html">Weight format</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+<h1>The HMX integer matmul layer</h1>
+<p>As of <strong>2026-09-23</strong>, <code>htp_moe</code> @ <code>9fb1a3bc</code>.</p>
+<details class="toc" open><summary>On this page</summary><ul><li><a href="#1-where-this-layer-sits">1. Where this layer sits <a class="header-anchor hd" href="#1-where-this-layer-sits">#</a></a></li><li><a href="#2-hexkl">2. HexKL <a class="header-anchor hd" href="#2-hexkl">#</a></a></li><li><a href="#3-data-types-and-the-math">3. Data types and the math <a class="header-anchor hd" href="#3-data-types-and-the-math">#</a></a></li><li><a href="#4-tiles-and-layouts">4. Tiles and layouts <a class="header-anchor hd" href="#4-tiles-and-layouts">#</a></a></li><li><a href="#5-the-entry-points-what-is-live">5. The entry points: what is live <a class="header-anchor hd" href="#5-the-entry-points-what-is-live">#</a></a></li><li><a href="#6-the-dma-ring">6. The DMA ring <a class="header-anchor hd" href="#6-the-dma-ring">#</a></a></li><li><a href="#7-hvx-helpers-around-the-hmx">7. HVX helpers around the HMX <a class="header-anchor hd" href="#7-hvx-helpers-around-the-hmx">#</a></a></li><li><a href="#8-measured-behaviour">8. Measured behaviour <a class="header-anchor hd" href="#8-measured-behaviour">#</a></a></li><ul><li><a href="#81-the-dma-engine">8.1 The DMA engine <a class="header-anchor hd" href="#81-the-dma-engine">#</a></a></li><li><a href="#82-tried-and-dropped">8.2 Tried and dropped <a class="header-anchor hd" href="#82-tried-and-dropped">#</a></a></li><li><a href="#83-fc-against-qnn-and-sdkl">8.3 FC against QNN and SDKL <a class="header-anchor hd" href="#83-fc-against-qnn-and-sdkl">#</a></a></li></ul><li><a href="#9-tests">9. Tests <a class="header-anchor hd" href="#9-tests">#</a></a></li></ul></details>
+<p>This chapter describes the integer matrix-multiply layer on the Hexagon matrix
+unit (HMX). The MoE kernel, the FC projections and the attention kernels are
+all built on it. It covers the vendor library underneath (HexKL), the data
+types and tile layouts, the dequantization math, the DMA ring that moves
+weights into VTCM, the HVX helpers around the HMX, and what the DMA engine was
+measured to deliver. The MoE-specific scheduling on top of this layer is only
+touched where it explains the ring. The decode path that bypasses the HMX
+(HVX GEMV) has its own chapter. It still uses this layer's ring and VTCM:
+since PR #118 its weights are DMA'd into VTCM (§6).</p>
+<p>Provenance: the layer is <strong>upstream PR #4327</strong>, from its HMX matmul phase (P2,
+early August 2026) on. <code>htp_moe</code> added the DMA trace, the per-worker DMA probe,
+the skel's undefined-symbol guard, the M = 1 VTCM feed's use of the ring
+(PR #118) and every DMA measurement from #77 on.</p>
+<h2 id="1-where-this-layer-sits">1. Where this layer sits <a class="hd" aria-label="link to this section" href="#1-where-this-layer-sits">#</a></h2>
+<figure>
+<svg viewBox="0 0 860 400" role="img" aria-label="Three DSP callers (the MoE layer kernel, FC projections, attention) each use all four pieces of the HMX matmul layer (weight registry, DMA ring, accumulator layout probe, HVX helpers), which sits on Qualcomm&#x27;s HexKL micro API." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="hmx-matmul-1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="16" y="10" width="828" height="128" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="28" y="30" font-size="14" fill="#52514e" font-weight="bold">callers (each has its own chapter)</text>
+<rect x="32" y="40" width="252" height="84" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="158" y="62.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">MoE layer kernel</text>
+<text x="158" y="78.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_mm_u8i4_moe.c</text>
+<text x="158" y="94.5" font-size="12" text-anchor="middle" fill="#52514e">live: HMX at prefill,</text>
+<text x="158" y="110.5" font-size="12" text-anchor="middle" fill="#52514e">ring + VTCM for the decode feed</text>
+<rect x="304" y="40" width="252" height="84" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="430" y="70.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">FC projections</text>
+<text x="430" y="86.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_mm_u8i4_layer_run</text>
+<text x="430" y="102.5" font-size="12" text-anchor="middle" fill="#52514e">built, off by default</text>
+<rect x="576" y="40" width="252" height="84" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="702" y="62.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">attention</text>
+<text x="702" y="78.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_attn_u8.c via</text>
+<text x="702" y="94.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_attn_dtype.c</text>
+<text x="702" y="110.5" font-size="12" text-anchor="middle" fill="#52514e">built, off by default</text>
+<rect x="16" y="186" width="828" height="110" rx="10" fill="#f4f8fd" stroke="#2a78d6" stroke-width="1"/>
+<text x="28" y="206" font-size="14" fill="#2a78d6" font-weight="bold">this chapter</text>
+<rect x="32" y="218" width="187" height="62" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="125.5" y="245.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">weight registry</text>
+<text x="125.5" y="261.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_weight_u8i4 / u8i8</text>
+<rect x="235" y="218" width="187" height="62" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="328.5" y="245.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">DMA ring</text>
+<text x="328.5" y="261.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_dma_ring.c</text>
+<rect x="438" y="218" width="187" height="62" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="531.5" y="245.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">accumulator layout probe</text>
+<text x="531.5" y="261.5" font-size="12" text-anchor="middle" fill="#52514e">hexkl_acc_tile.c</text>
+<rect x="641" y="218" width="187" height="62" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="734.5" y="237.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">HVX helpers</text>
+<text x="734.5" y="253.5" font-size="12" text-anchor="middle" fill="#52514e">quant, dequant, SwiGLU,</text>
+<text x="734.5" y="269.5" font-size="12" text-anchor="middle" fill="#52514e">worker pool</text>
+<path d="M158,124 L158,184" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-1-arrow)"/>
+<text x="166" y="163" font-size="11" fill="#52514e">uses all four</text>
+<path d="M430,124 L430,184" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-1-arrow)"/>
+<text x="438" y="163" font-size="11" fill="#52514e">uses all four</text>
+<path d="M702,124 L702,184" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-1-arrow)"/>
+<text x="710" y="163" font-size="11" fill="#52514e">uses all four</text>
+<rect x="300" y="340" width="260" height="48" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="430" y="360.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">HexKL micro API</text>
+<text x="430" y="376.5" font-size="12" text-anchor="middle" fill="#52514e">libhexkl_micro.a (Qualcomm)</text>
+<path d="M430,296 L430,338" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-1-arrow)"/>
+</svg>
+<figcaption>The HMX matmul layer is shared plumbing between its callers and HexKL. Each of the three callers uses all four pieces of the layer: the weight registry (<code>hexkl_weight_u8i4</code> / <code>u8i8</code>), the DMA ring, the accumulator layout probe and the HVX helpers (quant, dequant, SwiGLU, worker pool). Only the MoE layer kernel is live (the HMX at prefill, the ring and VTCM for the decode feed); the FC and attention paths are built but off by default.</figcaption>
+</figure>
+<p>All of it runs inside one DSP library, the FastRPC skel
+<code>libnntr_hvx_skel.so</code>, built by <code>test/htp/build.sh</code>. The skel holds a session
+(<code>nntr_hvx_session</code> in <code>test/htp/nntr_hvx_session.h</code>). <code>nntr_hvx_open</code> in
+<code>test/htp/hvx_add_f32.c</code> sets the session up once per process: VTCM, the HMX
+lock, the accumulator read config and the worker pool. No per-call number
+includes that setup.</p>
+<h2 id="2-hexkl">2. HexKL <a class="hd" aria-label="link to this section" href="#2-hexkl">#</a></h2>
+<p><strong>What it is.</strong> HexKL is Qualcomm's HMX kernel library. It ships as an add-on
+to the Hexagon SDK (<code>hexkl_addon</code>). It has two APIs:</p>
+<ul>
+<li>The <strong>macro API</strong> (<code>sdkl.h</code>, <code>libsdkl.so</code>) runs on the ARM side. Each call is
+one whole matmul, sent to the DSP over FastRPC.</li>
+<li>The <strong>micro API</strong> (<code>hexkl_micro.h</code>, <code>libhexkl_micro.a</code>) runs on the DSP.
+It exposes single HMX tile operations, so the caller owns the loop, the VTCM
+layout and the DMA.</li>
+</ul>
+<p><strong>Which one is used.</strong> Only the micro API. The macro API is not used at
+run time, for two reasons:</p>
+<ol>
+<li>It cannot prefetch. Each macro call stages its own weight and cannot see
+the next matmul. A hand-written micro-API loop with cross-matmul weight
+prefetch beat the macro kernel 1.7–2.0× on the DSP (§8.3).</li>
+<li>It is a one-way door. A macro-API session opened after any micro-API
+FastRPC session fails permanently. The skel holds a micro-API session, so
+the old macro-API session in <code>HtpBackend</code> was removed (see the header
+comment in <code>nntrainer/tensor/htp_backend/htp_backend.h</code>).</li>
+</ol>
+<p>The micro-API calls this tree uses are these, and no others:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>call</th>
+<th>what it does</th>
+<th>used in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hexkl_micro_hw_init</code></td>
+<td>Maps the VTCM arena (8 MiB on v79). Returns its base and size</td>
+<td><code>nntr_hvx_open</code></td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_lock</code> / <code>_unlock</code></td>
+<td>Takes the HMX for the session</td>
+<td><code>nntr_hvx_open</code> / close</td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_config_size</code>, <code>_setup_acc_read_int32</code></td>
+<td>Reserves and writes the accumulator read config at the top of VTCM (<code>config_off</code>)</td>
+<td><code>nntr_hvx_open</code></td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_rm_to_wh_i4</code> / <code>_i8</code></td>
+<td>Converts one 32 × 32 weight tile from row-major to the WH layout</td>
+<td>registration (<code>hexkl_weight_u8i4_register</code>, <code>hexkl_weight_u8i8_register</code>)</td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_acc_clear_int32</code></td>
+<td>Zeroes the accumulator</td>
+<td>every matmul loop</td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_mm_u8i4</code> / <code>_u8i8</code></td>
+<td>One tile multiply-accumulate: 64 × 32 u8 activation × 32 × 32 weight</td>
+<td>every matmul loop</td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_acc_read_int32</code></td>
+<td>Writes the accumulator out as one 64 × 32 int32 tile in VTCM</td>
+<td>every matmul loop</td>
+</tr>
+<tr>
+<td><code>hexkl_micro_hmx_copy_32b_to_submatrix</code></td>
+<td>Un-shuffles that tile into a row-major matrix (scalar)</td>
+<td>the layout probe, plus a fallback path</td>
+</tr>
+</tbody>
+</table></div>
+<p>The micro API has no bias, scale or zero-point support. That is why the HVX
+dequant pass in §3 exists at all.</p>
+<p><strong>Linking and versions.</strong></p>
+<ul>
+<li>The DSP skel links <code>libhexkl_micro.a</code> statically from
+<code>$HEXKL_ROOT/lib/$HEXKL_SDK_VER/hexagon_toolv19_v79/</code>. The package is HexKL
+<strong>1.0.0-beta.2</strong>, and <code>tools/htp/env.sh</code> points <code>HEXKL_ROOT</code> at it.</li>
+<li><code>build.sh</code> requires Hexagon SDK <strong>6.1.1.0 or newer</strong>, because older SDK
+directories of the add-on carry no v79 library. The upstream PR built with
+SDK 6.4.0.2. The <code>htp_moe</code> workstation builds with <strong>6.4.0.1</strong>, which
+<code>build.sh</code> names as the verified combination.</li>
+<li>The ARM app links <code>libsdkl.so</code> only when meson runs with
+<code>-Denable-htp=true</code> (see <code>meson.build</code>). That link is left over from the
+macro API; nothing calls into it at run time.</li>
+<li><code>hexkl_micro_hw_init</code> takes three arguments in beta.2 and took two in an
+older drop. <code>nntr_hvx_open</code> uses the three-argument form, and
+<code>-DNNTR_HEXKL_HW_INIT_2ARG</code> switches to the old one.</li>
+<li>Since <code>htp_moe</code> #97, <code>build.sh</code> lists the skel's undefined dynamic symbols
+and fails the build if any <code>hexkl_*</code>/<code>hvx_*</code>/<code>nntr_*</code> symbol is left
+unresolved. The linker accepts such a symbol, but the on-device loader
+rejects it with <code>0x80000406</code>.</li>
+</ul>
+<h2 id="3-data-types-and-the-math">3. Data types and the math <a class="hd" aria-label="link to this section" href="#3-data-types-and-the-math">#</a></h2>
+<p>The HMX activation port is always 8-bit unsigned. The weight port takes
+4-bit or 8-bit signed values. Hence the two variants:</p>
+<ul>
+<li><strong>u8i4</strong>: u8 activations × i4 weights. Every live path uses it.</li>
+<li><strong>u8i8</strong>: u8 activations × i8 weights. The weight tile doubles to 1024 B;
+everything else is the same.</li>
+</ul>
+<p><strong>Activation quantization</strong> (per row, asymmetric, done on HVX by
+<code>hvx_quant_rows_u8_params</code> in <code>hvx/hvx_quant_u8.c</code>):</p>
+<pre><code class="language-text">rmin = min(0, min_k x[m][k])          rmax = max(0, max_k x[m][k])
+s[m] = (rmax - rmin) / 255
+z[m] = clamp(round_half_even(-rmin / s[m]), 0, 255)
+u[m][k] = clamp(round_half_even(x[m][k] · (1 / s[m])) + z[m], 0, 255)     so x ≈ s[m] · (u - z[m])
+</code></pre>
+<p>A row that is all zeros keeps <code>s = 1</code>, <code>z = 0</code>. Padding rows (≥ M) get the
+same values, so a host reference can reproduce them without special cases.</p>
+<p><strong>Weights</strong> are symmetric int4 with one scale per output channel <code>n</code>:
+<code>w[k][n] ≈ d[n] · q[k][n]</code>, <code>q ∈ [-8, 7]</code>. The format is <code>QS4CX_WH</code>, covered in
+the weight-format chapter. At registration each weight also carries
+<code>colsum_w[n] = Σ_k q[k][n]</code> and <code>bias[n]</code>.</p>
+<p><strong>Dequantization.</strong> The HMX returns <code>acc[m][n] = Σ_k u[m][k] · q[k][n]</code> in
+int32. Expanding the product:</p>
+<pre><code class="language-text">y[m][n] = Σ_k x[m][k] · w[k][n]
+        = s[m] · d[n] · ( Σ_k u·q  −  z[m] · Σ_k q )
+        = ( acc[m][n] − z[m] · colsum_w[n] ) · s[m] · d[n]  +  bias[n]
+</code></pre>
+<p>The zero-point term depends only on the weight, so it is a precomputed table
+and costs one multiply per output. <code>hvx_dequant_i32_to_f32</code> and
+<code>hvx_dequant_acc_tile_to_f32</code> (<code>hvx/hvx_dequant_i32.c</code>) compute exactly this,
+in f32, in this order: convert <code>acc</code> and <code>colsum_w</code> to f32, subtract
+<code>z · colsum</code>, multiply by <code>s</code>, multiply by <code>d</code>, add <code>bias</code>. By arithmetic, at
+the model's K = 2048, <code>|acc|</code> and <code>z · colsum</code> stay below 255 · 8 · 2048 ≈
+4.2 M &lt; 2²⁴, so the int-to-f32 conversions are exact.</p>
+<h2 id="4-tiles-and-layouts">4. Tiles and layouts <a class="hd" aria-label="link to this section" href="#4-tiles-and-layouts">#</a></h2>
+<p>The HMX works on fixed tiles. The constants come from <code>hexkl_micro.h</code>
+(<code>HEXKL_HMX_INT8_BLOCK_N_ROW</code> = 64, <code>_N_COL</code> = 32, <code>_N_INNER</code> = 32). One
+<code>hexkl_micro_hmx_mm_u8i4</code> call multiplies a 64 × 32 activation tile by a
+32 × 32 weight tile and adds the result into a 64 × 32 int32 accumulator. A
+64 × 32 block of output takes K/32 such calls, then one read-out.</p>
+<figure>
+<svg viewBox="0 0 860 326" role="img" aria-label="Data path of one u8i4 HMX matmul: f32 activations are quantized by HVX into AH tiles in VTCM, int4 weights are DMA&#x27;d from DDR into WH tiles, the HMX accumulates, the int32 result tile is read into VTCM and HVX dequantizes it with the weight tables into the f32 output." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="hmx-matmul-2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<rect x="16" y="12" width="220" height="280" rx="10" fill="#faf8f1" stroke="#8a7f5c" stroke-width="1"/>
+<text x="28" y="32" font-size="14" fill="#8a7f5c" font-weight="bold">DDR</text>
+<rect x="376" y="12" width="208" height="280" rx="10" fill="#faf8f1" stroke="#8a7f5c" stroke-width="1"/>
+<text x="388" y="32" font-size="14" fill="#8a7f5c" font-weight="bold">VTCM (8 MiB)</text>
+<rect x="30" y="50" width="192" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="126" y="69.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">activation f32</text>
+<text x="126" y="85.5" font-size="12" text-anchor="middle" fill="#52514e">M × K</text>
+<rect x="30" y="116" width="192" height="62" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="126" y="135.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">weight, WH layout</text>
+<text x="126" y="151.5" font-size="12" text-anchor="middle" fill="#52514e">K/32 × N/32 tiles × 512 B</text>
+<text x="126" y="167.5" font-size="12" text-anchor="middle" fill="#52514e">(ION arena or DSP heap)</text>
+<rect x="30" y="226" width="192" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="126" y="245.5" text-anchor="middle" fill="#0b0b0b">w_scale d[n],</text>
+<text x="126" y="261.5" font-size="12" text-anchor="middle" fill="#0b0b0b">colsum_w[n], bias[n]</text>
+<rect x="390" y="50" width="180" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="480" y="69.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">AH tiles, u8</text>
+<text x="480" y="85.5" font-size="12" text-anchor="middle" fill="#52514e">64 × 32 = 2048 B each</text>
+<rect x="390" y="124" width="180" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="480" y="143.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">WH tiles, i4</text>
+<text x="480" y="159.5" font-size="12" text-anchor="middle" fill="#52514e">32 × 32 = 512 B each</text>
+<rect x="390" y="226" width="180" height="46" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="480" y="245.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">result tile</text>
+<text x="480" y="261.5" font-size="12" text-anchor="middle" fill="#52514e">64 × 32 int32 = 8 KiB</text>
+<rect x="680" y="50" width="172" height="120" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="766" y="98.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">HMX accumulator</text>
+<text x="766" y="114.5" font-size="12" text-anchor="middle" fill="#52514e">clear, then</text>
+<text x="766" y="130.5" font-size="12" text-anchor="middle" fill="#52514e">K/32 × mm_u8i4</text>
+<rect x="680" y="218" width="172" height="62" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="766" y="237.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">y, f32</text>
+<text x="766" y="253.5" font-size="12" text-anchor="middle" fill="#52514e">(DDR, or VTCM for</text>
+<text x="766" y="269.5" font-size="12" text-anchor="middle" fill="#52514e">the next stage)</text>
+<path d="M222,73 L388,73" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<text x="306" y="66" font-size="12" text-anchor="middle" fill="#52514e">HVX: quantize + pack</text>
+<path d="M222,147 L388,147" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<text x="306" y="126" font-size="12" text-anchor="middle" fill="#52514e">DMA ring:</text>
+<text x="306" y="141" font-size="12" text-anchor="middle" fill="#52514e">2D descriptors</text>
+<path d="M570,73 L678,73" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<path d="M570,147 L678,147" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<path d="M766,170 L766,198 L480,198 L480,224" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<text x="700" y="192" font-size="12" text-anchor="middle" fill="#52514e">acc_read_int32</text>
+<path d="M570,249 L678,249" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<text x="625" y="228" font-size="12" text-anchor="middle" fill="#52514e">HVX: dequant</text>
+<text x="625" y="243" font-size="12" text-anchor="middle" fill="#52514e">in place</text>
+<path d="M126,272 L126,312 L766,312 L766,282" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-2-arrow)"/>
+<rect x="400.5" y="296.0" width="90.9" height="15.0" rx="3" fill="#f9f9f7"/>
+<text x="446" y="306" font-size="11" text-anchor="middle" fill="#52514e">weight tables</text>
+</svg>
+<figcaption>One matmul through the HMX. HVX quantizes and packs the f32 activation straight into AH tiles, the DMA ring copies the int4 weight's WH tiles from DDR (the ION arena or the DSP heap) into VTCM with 2D descriptors, and the HMX clears its accumulator and runs K/32 <code>mm_u8i4</code> steps per output block. <code>acc_read_int32</code> writes the 64 × 32 int32 result tile to VTCM, where HVX dequantizes it in place using the weight's tables (<code>w_scale d[n]</code>, <code>colsum_w[n]</code>, <code>bias[n]</code>) into the f32 output <code>y</code>, which goes to DDR or stays in VTCM for the next stage.</figcaption>
+</figure>
+<p><strong>Activation, &quot;AH&quot; layout.</strong> Each tile holds 64 rows × 32 columns, stored flat
+and row-major inside the tile. Tiles are ordered by (row block, k tile) at a
+2048-byte stride:</p>
+<pre><code class="language-text">offset(m, k) = ((m / 64) · (K / 32) + k / 32) · 2048  +  (m % 64) · 32  +  (k % 32)
+</code></pre>
+<p><code>hvx_quant_pack_u8_ah</code> quantizes and writes straight into this layout, with
+no separate layout pass. There is also an ARM-side twin,
+<code>htp_quant_pack_u8_ah</code> in <code>nntrainer/tensor/htp_act_quant.h</code>, which produces
+the same bytes bit for bit. It feeds the u8-in entry (§5).</p>
+<p><strong>Weight, &quot;WH&quot; layout.</strong> A tile is 32 × 32 int4 values, which is exactly
+512 bytes, so the layout can only be a permutation of nibbles. For element
+(r, c) of a tile, where r is the k index and c the n index:</p>
+<pre><code class="language-text">byte   = (r / 8) · 128 + c · 4 + (r % 4)
+nibble = (r / 4) % 2          (0 = low half)
+tile t = kt · (N / 32) + nt   stored at t · 512   (k-major)
+</code></pre>
+<p>Each byte holds two k values, four rows apart, for the same column. The
+formula was read off the device's own converter. <code>whSlot</code> in
+<code>nntrainer/tensor/htp_wh_layout.h</code> implements it on the host, so the offline
+quantizer can write WH bytes without a DSP. The gtest
+<code>HmxMmU8I4Layer.WhPackReferenceMatchesDspBake</code> checks it byte for byte against
+the DSP bake. The ARM-side <code>sdkl_cpu_i4_rm_to_i4_wh</code> produces the
+<strong>transposed</strong> tile. A square test cannot tell the two apart, which cost two
+device rounds.</p>
+<p>Because tiles are k-major, the tiles for a run of output columns
+[nt0, nt0 + cn) form <code>cn · 512</code> contiguous bytes, repeated K/32 times at a
+stride of <code>(N / 32) · 512</code>. That is exactly one 2D DMA descriptor. §6 uses
+this to stream a weight in column chunks without re-baking it.</p>
+<p><strong>Accumulator read-out.</strong> <code>hexkl_micro_hmx_acc_read_int32</code> lands a 64 × 32
+int32 tile (8 KiB) in VTCM, in a layout HexKL does not document. The vendor's
+<code>copy_32b_to_submatrix</code> knows the shuffle, but it is scalar: it took
+<strong>52.8 µs per tile</strong> (PR author's device). That was 80 % of a prefill
+attention layer and 97 % of a decode one. <code>hexkl_acc_layout_get</code> in
+<code>hmx/hexkl_acc_tile.c</code> avoids the copy with a trick:</p>
+<ol>
+<li>Write the ramp 0, 1, …, 2047 into the result tile.</li>
+<li>Run the vendor copy once.</li>
+<li>Now each destination slot holds the index of the source element that
+landed there. That is the permutation, taken from the vendor's own code.</li>
+<li>Accept the permutation only if <strong>every</strong> element fits
+<code>base + r · row_stride + c</code>. Each tile row is then 32 contiguous int32,
+which is one HVX vector, and the dequant reads the tile where it sits.</li>
+</ol>
+<p>On v79 the probe finds <code>row_stride</code> = 32. If a future SDK reshuffles the
+tile, the probe either follows the new layout or reports <code>usable = 0</code>, and
+<code>hexkl_mm_u8i4_layer_run</code> falls back to the vendor copy. The fused kernels
+return <code>AEE_EUNSUPPORTED</code> instead, because they have no fallback. The probe
+runs once per process and overwrites the result tile, so every caller runs
+it before its matmul loop starts.</p>
+<p><strong>Why M = 1 wastes 63/64 of the HMX.</strong> The accumulator is always 64 rows. At
+decode there is one real row, so every tile multiply computes 63 rows of
+padding. The weight DMA and the number of <code>mm</code> calls do not shrink either.
+Only the read-out side skips the padding: the dequant emits <code>cnt = min(64, M − m0)</code> rows. The cost depends on the caller:</p>
+<ul>
+<li><strong>FC projection, q_proj shape.</strong> The padding tax was about 40 µs of a
+113 µs DSP call (PR author's device, 2026-08-08). The FastRPC round trip
+dominated, so the FC path simply declines M = 1:
+<code>HtpComputeOps::accelerates_q4_0_at_m1()</code> returns false.</li>
+<li><strong>MoE layer at decode.</strong> The padding was the main cost (&quot;wall 1&quot;). In one
+sitting, the HMX path took <strong>1384.6 µs</strong> on the DSP per call, against
+<strong>1041.5 µs</strong> for the HVX GEMV that replaced it (#100, 2026-09-23). Decode
+now leaves the HMX; see the GEMV chapter.</li>
+</ul>
+<h2 id="5-the-entry-points-what-is-live">5. The entry points: what is live <a class="hd" aria-label="link to this section" href="#5-the-entry-points-what-is-live">#</a></h2>
+<p>Weights are registered once and stay resident. A registered weight is a slot
+(<code>hexkl_weight_u8i4</code>) holding WH bytes plus <code>w_scale</code>, <code>colsum_w</code> and <code>bias</code>.
+There are two ways to register:</p>
+<ul>
+<li><strong>Bake</strong> (<code>hexkl_weight_u8i4_register</code>): the DSP converts the weight tile
+by tile into VTCM scratch, split over the worker pool, then copies the
+result to the DSP heap. It is slow: about 25 ms per 2048 × 3584 weight.</li>
+<li><strong>Borrow</strong> (<code>hexkl_weight_u8i4_register_arena</code>): the WH bytes already sit
+in a host ION arena, written offline in WH order. The slot points at them
+in place, and nothing is baked or copied. The MoE path registers this way.</li>
+</ul>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>file</th>
+<th>symbol</th>
+<th>what it is</th>
+<th>state at <code>9fb1a3bc</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hmx/hexkl_mm_u8i4.c</code></td>
+<td><code>hexkl_mm_u8i4_plan</code>, <code>_bake_weights</code>, <code>_run</code></td>
+<td>First harness: one matmul, weight baked into VTCM each call, vendor read-out</td>
+<td><strong>built, test only</strong> (<code>nntr_hvx_mm_u8i4</code> accuracy entry)</td>
+</tr>
+<tr>
+<td><code>hmx/hexkl_mm_u8i4_dma.c</code></td>
+<td><code>hexkl_weight_u8i4_register[_arena]</code>, <code>_export</code>, <code>_release</code></td>
+<td>Weight registry, up to 2048 slots</td>
+<td><strong>live</strong> (every u8i4 caller)</td>
+</tr>
+<tr>
+<td>same</td>
+<td><code>hexkl_mm_u8i4_layer_run</code></td>
+<td>N weights sharing one activation (q/k/v, gate/up): double-buffered, next weight prefetched, in-place dequant. <code>hexkl_mm_opts</code> adds a pool, caller-given scale/zp, accumulate, and a pre-packed u8 activation (the u8-in entry)</td>
+<td><strong>built, off by default</strong>: FC projections and the per-expert MoE path at M &gt; 1, only when the model config sends them to the HTP</td>
+</tr>
+<tr>
+<td>same</td>
+<td><code>hexkl_mm_u8i4_gate_up_swiglu_run</code></td>
+<td>Per-expert gate_up → SwiGLU → requantize to u8 AH. The caller then runs <code>layer_run</code> on down through the u8-in path</td>
+<td><strong>built, off by default</strong>: reached only for plain <code>QS4CX</code> experts at M &gt; 1</td>
+</tr>
+<tr>
+<td>same</td>
+<td><code>hexkl_mm_u8i4_fused_run</code></td>
+<td>Whole expert FFN in one call</td>
+<td><strong>dormant</strong>: <code>invokeFused</code> has no caller. Wrong output on real weights, root cause never found (§8.2)</td>
+</tr>
+<tr>
+<td><code>hmx/hexkl_mm_u8i8_dma.c</code></td>
+<td><code>hexkl_weight_u8i8_register</code>, <code>hexkl_mm_u8i8_layer_run</code></td>
+<td>u8i4's registry and <code>layer_run</code> mirrored at 1024 B tiles; no borrow path, 512 slots</td>
+<td><strong>built, off</strong>: reached through <code>hexkl_attn_dtype.c</code> (attention, off) and the <code>mm_u8i8_layer</code> IDL test entry. No model path registers i8 weights</td>
+</tr>
+<tr>
+<td><code>hmx/hexkl_acc_tile.c</code></td>
+<td><code>hexkl_acc_layout_get</code></td>
+<td>Ramp probe of the accumulator layout</td>
+<td><strong>live</strong></td>
+</tr>
+<tr>
+<td><code>hmx/hexkl_dma_ring.c</code></td>
+<td><code>hexkl_dma_ring_*</code></td>
+<td>DMA ring (§6)</td>
+<td><strong>live</strong></td>
+</tr>
+<tr>
+<td><code>hmx/hexkl_mm_u8i4_moe.c</code></td>
+<td><code>hexkl_mm_u8i4_moe_layer_run</code></td>
+<td>The whole-layer MoE kernel. It calls <code>hexkl_micro_hmx_mm_u8i4</code> directly and reuses the registry, ring, probe and HVX helpers</td>
+<td><strong>live</strong>: HMX loop at prefill (and at decode with <code>NNTR_MOE_HTP_M1_GEMV=0</code>); at decode, the ring feeds the HVX GEMV's weights into VTCM (<code>NNTR_MOE_HTP_GEMV_FEED=0</code> turns the feed off)</td>
+</tr>
+</tbody>
+</table></div>
+<p>In the measured configuration (<code>moe_engine = htp</code>, all other <code>*_engine</code> keys
+<code>cpu</code>), everything in this layer that runs is inside
+<code>hexkl_mm_u8i4_moe_layer_run</code>: the HMX loop at prefill, and the ring and
+VTCM at decode, where they feed the HVX GEMV.</p>
+<p><code>layer_run</code> is short enough to state as a schedule. It serves the FC
+projections and the per-expert path:</p>
+<ol>
+<li><code>hexkl_dma_ring_reset</code>, then push weight 0 into buffer 0.</li>
+<li>Quantize and pack the activation into VTCM while weight 0 is in flight.
+Moving the push ahead of the quantization cut gate_up's wait from
+111.9 µs to 22.8 µs per call (PR author's device, 2026-09-10).</li>
+<li><code>drain</code>. Then, for each weight i:
+<ul>
+<li>push weight i+1 into the other buffer;</li>
+<li>run all tiles of weight i on the HMX and dequantize each result tile in
+place;</li>
+<li><code>drain</code>.</li>
+</ul>
+</li>
+</ol>
+<figure>
+<svg viewBox="0 0 860 204" role="img" aria-label="Timeline of layer_run with 3 weights at the q_proj shape, M = 64: only weight 1&#x27;s 35 microsecond DMA is exposed; the DMA of weights 2 and 3 overlaps the HMX and dequant of the previous weight, and the run ends at 155 microseconds." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="hmx-matmul-3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<text x="16" y="22" font-size="14" fill="#0b0b0b" font-weight="bold">layer_run with 3 weights (q_proj shape, M = 64, µs, rounded)</text>
+<line x1="150" y1="42" x2="150" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="150" y="168" font-size="12" text-anchor="middle" fill="#52514e">0</text>
+<line x1="260" y1="42" x2="260" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="260" y="168" font-size="12" text-anchor="middle" fill="#52514e">25</text>
+<line x1="370" y1="42" x2="370" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="370" y="168" font-size="12" text-anchor="middle" fill="#52514e">50</text>
+<line x1="480" y1="42" x2="480" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="480" y="168" font-size="12" text-anchor="middle" fill="#52514e">75</text>
+<line x1="590" y1="42" x2="590" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="590" y="168" font-size="12" text-anchor="middle" fill="#52514e">100</text>
+<line x1="700" y1="42" x2="700" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="700" y="168" font-size="12" text-anchor="middle" fill="#52514e">125</text>
+<line x1="810" y1="42" x2="810" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<text x="810" y="168" font-size="12" text-anchor="middle" fill="#52514e">150</text>
+<line x1="832" y1="42" x2="832" y2="152" stroke="#e1e0d9" stroke-width="1"/>
+<line x1="150" y1="152" x2="832" y2="152" stroke="#52514e" stroke-width="1"/>
+<text x="491" y="188" font-size="12" text-anchor="middle" fill="#52514e">time (µs)</text>
+<text x="16" y="63" fill="#0b0b0b" font-weight="bold">DMA</text>
+<text x="16" y="78" font-size="11" fill="#52514e">into VTCM</text>
+<rect x="151" y="48" width="152" height="34" rx="4" fill="#f4efe1" stroke="#b35c00" stroke-width="1.2"/>
+<text x="227" y="63" font-size="12" text-anchor="middle" fill="#b35c00">weight 1 (exposed)</text>
+<text x="227" y="77" font-size="11" text-anchor="middle" fill="#52514e">0–35</text>
+<rect x="305" y="48" width="152" height="34" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="381" y="63" font-size="12" text-anchor="middle" fill="#0b0b0b">weight 2 (hidden)</text>
+<text x="381" y="77" font-size="11" text-anchor="middle" fill="#52514e">35–70</text>
+<rect x="481" y="48" width="152" height="34" rx="4" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="557" y="63" font-size="12" text-anchor="middle" fill="#0b0b0b">weight 3 (hidden)</text>
+<text x="557" y="77" font-size="11" text-anchor="middle" fill="#52514e">75–110</text>
+<text x="16" y="120" fill="#0b0b0b" font-weight="bold">HMX + dequant</text>
+<rect x="305" y="98" width="174" height="34" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="392" y="113" font-size="12" text-anchor="middle" fill="#0b0b0b">weight 1</text>
+<text x="392" y="127" font-size="11" text-anchor="middle" fill="#52514e">35–75</text>
+<rect x="481" y="98" width="174" height="34" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="568" y="113" font-size="12" text-anchor="middle" fill="#0b0b0b">weight 2</text>
+<text x="568" y="127" font-size="11" text-anchor="middle" fill="#52514e">75–115</text>
+<rect x="657" y="98" width="174" height="34" rx="4" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="744" y="113" font-size="12" text-anchor="middle" fill="#0b0b0b">weight 3</text>
+<text x="744" y="127" font-size="11" text-anchor="middle" fill="#52514e">115–155</text>
+</svg>
+<figcaption><code>layer_run</code> with 3 weights (q_proj shape, M = 64, stage times in µs, rounded). Only the first weight's DMA (0–35 µs) is exposed: while the HMX multiplies and dequantizes weight i, the DMA ring is already fetching weight i+1 into the other VTCM buffer, so the DMA of weights 2 and 3 is hidden and the run ends at 155 µs.</figcaption>
+</figure>
+<p>These are the stage times of the FC run, PR author's device, 2026-08-08. One
+weight alone pays 75 µs of DMA plus multiply. Three weights in one call pay
+55 µs each, because the DMA wait per weight falls from 35 to 12.3 µs.</p>
+<h2 id="6-the-dma-ring">6. The DMA ring <a class="hd" aria-label="link to this section" href="#6-the-dma-ring">#</a></h2>
+<p><code>hmx/hexkl_dma_ring.c</code> is a small user-mode DMA queue. It was ported from
+llama.cpp's ggml-hexagon <code>dma-queue</code> and is shared by every caller.</p>
+<ul>
+<li><strong>Descriptor.</strong> <code>hexkl_dma_desc2d</code> is the hardware's 2D descriptor, 128-byte
+aligned, type 9. Its fields are <code>src</code>, <code>dst</code>, <code>row_size</code>, <code>nrows</code>,
+<code>src_stride</code> and <code>dst_stride</code>, plus bypass bits for VTCM endpoints. The
+struct is also used by the DMA probe in <code>test/htp/nntr_hvx_dma_probe.c</code>.</li>
+<li><strong>Ring.</strong> The ring holds 256 descriptors (<code>HEXKL_DMA_RING_N</code>) and serves the
+calling thread's single DMA engine. <code>hexkl_dma_ring_push2d</code> fills the next
+slot and flushes it from the cache (<code>dccleaninva</code>). It then either starts
+the engine (<code>dmstart</code>) or chains the slot onto the in-flight tail
+(<code>dmlink</code>). Push never blocks, except when the ring is full, which no
+caller reaches: a MoE layer call at prefill queues about 194, and a decode
+call with the feed queues 8.</li>
+<li><strong>Order.</strong> Chained descriptors retire in push order. So
+<code>hexkl_dma_ring_wait(idx)</code> (spin on the slot's <code>done</code> bit with <code>dmpoll</code>)
+also covers everything pushed before <code>idx</code>. <code>hexkl_dma_ring_next_idx</code>
+returns the slot the next push will take, so a caller can wait for one
+chunk of a transfer. <code>hexkl_dma_ring_drain</code> waits for everything and marks
+the engine idle.</li>
+<li><strong>Row size.</strong> A single-row DMA with <code>row_size</code> above about 512 KB
+<strong>silently corrupts</strong> on this device, so the code never issues one.
+<code>hexkl_mm_u8i4_dma.c</code> caps rows at 256 KiB, and <code>hexkl_mm_u8i4_moe.c</code>
+(<code>moe_dma_row_size</code>) at 16 KiB. Both pick the largest power of two that
+divides the transfer and use <code>nrows</code> for the rest.</li>
+<li><strong>Trace</strong> (<code>htp_moe</code>, #87). <code>hexkl_dma_ring_is_done</code> reads a done bit once,
+and <code>hmx/hexkl_dma_trace.c</code> records push, wait and completion per
+descriptor when <code>NNTR_HTP_PROFILE</code> / <code>NNTR_HTP_DMA_TRACE</code> are set. It costs
+nothing when off.</li>
+</ul>
+<p><strong>Column chunks.</strong> The MoE kernel does not wait for a whole weight. Two
+helpers split it:</p>
+<ul>
+<li><code>moe_push_weight_chunk</code> issues output columns [nt0, nt0 + cn) as one
+descriptor: <code>row = cn · 512</code>, <code>nrows = K/32</code>, <code>stride = (N/32) · 512</code>. The
+destination keeps the WH layout, so the matmul indexing does not change.</li>
+<li><code>moe_push_gate_up_chunks</code> pairs each gate chunk with the matching up chunk,
+because the fused epilogue consumes gate tile j and up tile j together.</li>
+</ul>
+<p>With the chunk size capped at 32 tiles (<code>hexkl_moe_layout.acc_tiles</code>), at the
+model shape:</p>
+<ul>
+<li>gate_up (3.5 MiB) goes as 4 paired chunks. Each descriptor is 8 KiB × 64
+rows at a 56 KiB stride.</li>
+<li>down (1.75 MiB) goes as 2 chunks.</li>
+</ul>
+<p>Before chunking, waiting for all of gate_up cost 110 µs per expert out of a
+136 µs transfer (PR author's device).</p>
+<p>The decode feed (PR #118) goes the other way: <code>moe_m1_push</code> sends each
+whole matrix as <strong>one</strong> descriptor (56 KiB rows × 64, contiguous), 8 per
+call at top-4. That is the <code>f2</code> shape certified in #100: chunking bought
+nothing there, because the GEMV is one expert behind the DMA anyway.</p>
+<figure>
+<svg viewBox="0 0 860 770" role="img" aria-label="Per-expert schedule of the MoE kernel thread against the DMA ring, the DMA engine and the HVX pool: wait for the activation, queue the down chunks, run the four gate_up chunks as they land, prefetch the next expert into region A, requantize, then run the two down chunks." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="hmx-matmul-4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
+<line x1="110" y1="56" x2="110" y2="762" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="350" y1="56" x2="350" y2="762" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="540" y1="56" x2="540" y2="762" stroke="#c3c2b7" stroke-width="1.2"/>
+<line x1="740" y1="56" x2="740" y2="762" stroke="#c3c2b7" stroke-width="1.2"/>
+<rect x="22" y="12" width="176" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="110" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">kernel thread</text>
+<text x="110" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(scalar + HMX issue)</text>
+<rect x="288" y="12" width="124" height="44" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="350" y="30.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">ring</text>
+<text x="350" y="46.5" font-size="12" text-anchor="middle" fill="#52514e">(256 slots)</text>
+<rect x="478" y="12" width="124" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="540" y="38.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">DMA engine</text>
+<rect x="678" y="12" width="124" height="44" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="740" y="38.5" text-anchor="middle" fill="#0b0b0b" font-weight="bold">HVX pool</text>
+<rect x="50" y="82" width="550" height="44" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<text x="325" y="102" font-size="12" text-anchor="middle" fill="#0b0b0b">expert i: act block 0 and gate_up[i] chunks 0..3</text>
+<text x="325" y="118" font-size="12" text-anchor="middle" fill="#0b0b0b">were pushed during expert i-1</text>
+<rect x="128.6" y="143.0" width="202.9" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="154" font-size="12" text-anchor="middle" fill="#52514e">wait(act_idx),</text>
+<text x="230" y="169" font-size="12" text-anchor="middle" fill="#52514e">the 128 KiB activation block</text>
+<path d="M112,182 L348,182" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="111.2" y="203.0" width="237.7" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="214" font-size="12" text-anchor="middle" fill="#52514e">push down[i] chunks 0, 1 (dmlink)</text>
+<path d="M112,227 L348,227" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="125.1" y="272.0" width="209.8" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="283" font-size="12" text-anchor="middle" fill="#52514e">wait(gu_idx[c]), block 0 only</text>
+<path d="M112,296 L348,296" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="184.2" y="317.0" width="91.5" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="328" font-size="12" text-anchor="middle" fill="#52514e">done bit set</text>
+<path d="M348,341 L112,341" fill="none" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#hmx-matmul-4-arrow)"/>
+<path d="M112,370 L140,370 L140,384 L113,384" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="146.0" y="363.0" width="175.0" height="31.0" rx="3" fill="#f9f9f7"/>
+<text x="150" y="374" font-size="12" fill="#52514e">HMX: 32 tiles →</text>
+<text x="150" y="389" font-size="12" fill="#52514e">staging buffer (c mod 2)</text>
+<rect x="288.8" y="418.0" width="272.5" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="425" y="429" font-size="12" text-anchor="middle" fill="#52514e">submit dequant + SwiGLU of that buffer</text>
+<path d="M112,442 L738,442" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="428" y="462" width="224" height="28" rx="4" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1"/>
+<text x="540" y="482" font-size="12" text-anchor="middle" fill="#0b0b0b">later chunks keep landing meanwhile</text>
+<rect x="24" y="247" width="812" height="255" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+<path d="M24,265 L62,265 L68,259 L68,247" fill="#f9f9f7" stroke="#898781" stroke-width="1"/>
+<text x="32" y="260" font-size="11" fill="#52514e" font-weight="bold">loop</text>
+<rect x="74.0" y="250.0" width="161.1" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="78" y="261" font-size="12" fill="#0b0b0b">gate_up chunk c = 0..3</text>
+<rect x="118.1" y="517.0" width="223.8" height="46.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="528" font-size="12" text-anchor="middle" fill="#52514e">push act block 0 of expert i+1,</text>
+<text x="230" y="543" font-size="12" text-anchor="middle" fill="#52514e">then gate_up[i+1] chunks</text>
+<text x="230" y="558" font-size="12" text-anchor="middle" fill="#52514e">(region A is free now)</text>
+<path d="M112,571 L348,571" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="271.4" y="592.0" width="307.3" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="425" y="603" font-size="12" text-anchor="middle" fill="#52514e">requantize the SwiGLU output to u8 AH (mid)</text>
+<path d="M112,616 L738,616" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="173.8" y="661.0" width="112.4" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="230" y="672" font-size="12" text-anchor="middle" fill="#52514e">wait(dn_idx[c])</text>
+<path d="M112,685 L348,685" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<path d="M112,714 L140,714 L140,728 L113,728" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#hmx-matmul-4-arrow)"/>
+<rect x="146.0" y="707.0" width="202.9" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="150" y="718" font-size="12" fill="#52514e">HMX → staging, P dequantizes</text>
+<rect x="24" y="636" width="812" height="112" rx="4" fill="none" stroke="#898781" stroke-width="1"/>
+<path d="M24,654 L62,654 L68,648 L68,636" fill="#f9f9f7" stroke="#898781" stroke-width="1"/>
+<text x="32" y="649" font-size="11" fill="#52514e" font-weight="bold">loop</text>
+<rect x="74.0" y="639.0" width="140.2" height="16.0" rx="3" fill="#f9f9f7"/>
+<text x="78" y="650" font-size="12" fill="#0b0b0b">down chunk c = 0, 1</text>
+</svg>
+<figcaption>How one expert's matmuls overlap the DMA at prefill. The kernel thread only waits on the ring for the chunk it needs next (block 0 of each gate_up chunk), multiplies it on the HMX into one of two staging buffers, and hands the dequant and SwiGLU to the HVX pool while later chunks keep landing. Once gate_up[i] is done, region A is free, so expert i+1's activation block and gate_up chunks are pushed into it before expert i's down chunks run.</figcaption>
+</figure>
+<p>The activation block is always pushed <strong>ahead</strong> of the weight chunks it is
+computed against. The ring retires in order, so a wait on a block queued
+behind 5.25 MB of weights would also wait for those weights. That mistake
+cost 795 µs at decode, and the profile booked it as &quot;gather&quot; (PR author's
+device).</p>
+<p><strong>VTCM carve-up.</strong> The arena is the 8 MiB from <code>hexkl_micro_hw_init</code>. The
+HMX config region takes its top (<code>config_off</code>). Each caller lays out the rest
+by offset, and every region is aligned to 2048 bytes
+(<code>HEXKL_HMX_ACTIVATION_ALIGNMENT</code>):</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>caller</th>
+<th>regions, in order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layer_run</code> (u8i4 and u8i8)</td>
+<td>activation, all row blocks · weight buffer 0 · weight buffer 1, each sized for the widest handle · one 8 KiB result tile</td>
+</tr>
+<tr>
+<td><code>gate_up_swiglu_run</code></td>
+<td>one 64-row activation block · gate_up weight, single buffer · gate f32 · up f32 · result tile</td>
+</tr>
+<tr>
+<td><code>moe_layer_run</code>, HMX path (<code>hexkl_mm_u8i4_moe_layout</code>)</td>
+<td>see the next table</td>
+</tr>
+<tr>
+<td><code>moe_layer_run</code>, M = 1 feed (<code>moe_m1_gu_off</code>, <code>moe_m1_dn_off</code>)</td>
+<td>two gate_up-sized slabs at 0 and 3.5 MiB (7 MiB). Expert i's gate_up lands in slab i &amp; 1. Once a slab has no gate_up left to hold, two down matrices land in it: down j goes to slab (j &gt;&gt; 1) &amp; 1, half j &amp; 1. A slab is reused only after the pool run that read it has joined, which <code>test/htp/host/moe_layer_host_check.c</code> checks. A shape whose two slabs do not fit falls back to the arena read</td>
+</tr>
+</tbody>
+</table></div>
+<p>The MoE layout at the model shape (K = 2048, inter = 1792, N_out = 2048),
+computed from <code>hexkl_mm_u8i4_moe_layout</code>:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>region</th>
+<th style="text-align:right">size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>activation, one 64-row block (<code>act_off</code>)</td>
+<td style="text-align:right">128 KiB</td>
+</tr>
+<tr>
+<td>gate_up WH, region &quot;A&quot; (<code>w_gu_off</code>)</td>
+<td style="text-align:right">3.5 MiB</td>
+</tr>
+<tr>
+<td>down WH (<code>w_dn_off</code>)</td>
+<td style="text-align:right">1.75 MiB</td>
+</tr>
+<tr>
+<td>silu(gate) · up, f32 (<code>gate_off</code>)</td>
+<td style="text-align:right">448 KiB</td>
+</tr>
+<tr>
+<td>requantized mid, u8 AH (<code>mid_off</code>)</td>
+<td style="text-align:right">112 KiB</td>
+</tr>
+<tr>
+<td>2 staging buffers × 32 result tiles (<code>result_off</code>)</td>
+<td style="text-align:right">512 KiB</td>
+</tr>
+<tr>
+<td>block output, f32 (<code>res_f32_off</code>)</td>
+<td style="text-align:right">512 KiB</td>
+</tr>
+<tr>
+<td><strong>total</strong></td>
+<td style="text-align:right"><strong>≈ 6.92 MiB</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>The weights are <strong>not</strong> double-buffered, because 2 × 5.25 MiB does not fit.
+Instead the schedule reuses region A in time. Once expert i's gate_up
+matmul is done, A is dead, and expert i+1's gate_up streams into it while
+expert i's down runs.</p>
+<h2 id="7-hvx-helpers-around-the-hmx">7. HVX helpers around the HMX <a class="hd" aria-label="link to this section" href="#7-hvx-helpers-around-the-hmx">#</a></h2>
+<p>All in <code>nntrainer/tensor/htp_backend/hvx/</code>. The HMX only multiplies. Every
+other step of a matmul runs on HVX.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>file</th>
+<th>symbols</th>
+<th>role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hvx_quant_u8.c</code></td>
+<td><code>hvx_quant_rows_u8_params</code> (K1), <code>hvx_quant_pack_u8_ah</code> (K2), <code>_mapped</code>, <code>_rows</code></td>
+<td>K1 computes the per-row scale and zero point. K2 quantizes (round half to even) and writes AH tiles. <code>_mapped</code> packs rows in expert order through a row map. <code>_rows</code> packs a 4-row-aligned range, so the MoE kernel can run the pack as background units while it issues HMX work</td>
+</tr>
+<tr>
+<td><code>hvx_dequant_i32.c</code></td>
+<td><code>hvx_dequant_i32_to_f32</code>, <code>hvx_dequant_acc_tile_to_f32</code>, <code>hvx_dequant_acc_tiles_to_f32</code>, <code>hvx_dequant_swiglu_acc_tiles_to_f32</code>, job structs <code>hvx_dq_tiles_job</code> / <code>hvx_dq_swiglu_job</code></td>
+<td>The §3 formula in four shapes: from a DDR staging matrix (fallback), from one tile in place, from a staged batch of tiles split over the pool, and fused with SwiGLU on gate/up tile pairs, so the gate and up halves are never stored. All four do the same operations in the same order, so their outputs are bitwise identical</td>
+</tr>
+<tr>
+<td><code>hvx_swiglu_f32.c</code>, <code>hvx_swiglu_det.h</code></td>
+<td><code>hvx_swiglu_inplace_f32</code>, <code>hvx_swiglu_det_sf</code></td>
+<td>Deterministic SwiGLU (below)</td>
+</tr>
+<tr>
+<td><code>hvx_worker_pool.c</code></td>
+<td><code>hvx_worker_pool_run</code>, <code>_submit</code> / <code>_wait</code>, <code>_submit_bg</code> / <code>_wait_bg</code></td>
+<td>QuRT threads, one per HVX context minus the caller's (6 contexts on v79, so 5 workers). Three lanes: <code>run</code> (fork-join, the caller takes a slice); <code>submit</code> (workers only, while the caller issues HMX tiles); a background queue of up to 128 jobs claimed unit by unit, where a job's units start only after every earlier job completes</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Deterministic SwiGLU.</strong> SwiGLU is computed on the DSP (MoE kernel), on the
+ARM for the ARM-side reference, and in the offline tools. Its output is then
+requantized to u8. Two implementations that are each accurate, but round
+differently, will eventually put one element on opposite sides of a
+quantization step. The down matmul then spreads that step across all 2048
+outputs. It was measured: 1 element of 1792 flipped on 5 of 32 expert calls,
+and 22 layers of that give a different token stream (PR author's device).</p>
+<p>The fix is a specification, not more precision. <code>hvx_swiglu_det.h</code> defines
+SwiGLU as a fixed sequence of IEEE f32 operations: clamped <code>exp</code> with a
+degree-7 polynomial, a reciprocal from a magic-number seed plus three Newton
+steps, no fused multiply-add, no qf32, no divide. The ARM twin,
+<code>nntrainer/tensor/swiglu_det.h</code>, implements the same sequence in scalar and
+NEON code. Its NEON code pins every intermediate with an empty <code>asm</code>, because
+<code>-ffast-math</code> would otherwise contract multiply-add pairs into <code>fmla</code>. The
+gates are <code>HvxSwigluDet.MatchesScalarBitExact</code> (DSP vs scalar) and
+<code>SwigluDetNeon.MatchesScalar</code>. One known exception: v79 HVX keeps subnormals,
+and the subnormal row of the first gate fails for that reason.</p>
+<h2 id="8-measured-behaviour">8. Measured behaviour <a class="hd" aria-label="link to this section" href="#8-measured-behaviour">#</a></h2>
+<h3 id="81-the-dma-engine">8.1 The DMA engine <a class="hd" aria-label="link to this section" href="#81-the-dma-engine">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>measurement</th>
+<th style="text-align:right">rate</th>
+<th>source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Isolated probe, <code>DMA_PROBE</code>, one engine, contiguous</td>
+<td style="text-align:right">72–80 GB/s</td>
+<td>#77, 2026-09-21</td>
+</tr>
+<tr>
+<td>Isolated probe, strided 2D</td>
+<td style="text-align:right">108–117 GB/s (107 cool, 89 at ≈ 51 °C)</td>
+<td>#77; drift #94</td>
+</tr>
+<tr>
+<td>Weight DMA inside the FC bench</td>
+<td style="text-align:right">≈ 39–41 GB/s</td>
+<td>PR author's device, 2026-08-04</td>
+</tr>
+<tr>
+<td>HMX MoE layer call, in place (46-descriptor list at M = 1)</td>
+<td style="text-align:right">16.2–18.0 GB/s</td>
+<td>#77</td>
+</tr>
+<tr>
+<td>Tag-validated per-call copy, <code>c_star</code> (content checked)</td>
+<td style="text-align:right"><strong>26.3 GB/s</strong> = 0.36 × the same log's probe</td>
+<td>#100, 2026-09-23</td>
+</tr>
+<tr>
+<td>Every other validated cell: 8–46 descriptors, <code>dmstart</code> / linked / chained, linear or strided destination</td>
+<td style="text-align:right">30–31.7 GB/s</td>
+<td>#100</td>
+</tr>
+<tr>
+<td>Anchor cell <code>DMA_REPLAY workers=1</code>, unit <code>R3CY205ZMND</code></td>
+<td style="text-align:right">31.2–31.4 GB/s (40.2 once, #94)</td>
+<td>#100, #113</td>
+</tr>
+<tr>
+<td>Same anchor cell, unit <code>R3CY10WM83Y</code></td>
+<td style="text-align:right">37.1–37.3 GB/s</td>
+<td>#117, two sittings</td>
+</tr>
+<tr>
+<td>VTCM feed for the M = 1 GEMV, in place (22.02 MB per call; the decode default since PR #118)</td>
+<td style="text-align:right">32.6 GB/s (engine 32.3–34.4)</td>
+<td>#117</td>
+</tr>
+<tr>
+<td>For comparison: HVX reading the ION arena directly (no DMA)</td>
+<td style="text-align:right">21–27 GB/s</td>
+<td>#105, #113</td>
+</tr>
+</tbody>
+</table></div>
+<p>What these numbers mean:</p>
+<ul>
+<li><strong>The probe rate is not reachable per call.</strong> 107–117 GB/s is above the
+≈ 85 GB/s peak of a 64-bit LPDDR5X-10667 bus. That figure is spec
+arithmetic; the phone's DRAM grade is not recorded. Strided transfers also
+beat contiguous ones by ~40 %, which DRAM does not do. And the probe's
+content check cannot see a transfer dropped after its first pass. No
+per-call copy with checked content has come close: every validated cell
+sits at 26–37 GB/s. <strong>Read an absolute DMA rate against the same run's
+validated cell, never against a probe.</strong></li>
+<li><strong>The real single-queue rate is about 31–37 GB/s, and it depends on the
+unit.</strong> The two phones differ by 19 % on the untouched anchor cell. Their
+direct HVX reads of DDR match within 1 %, so the difference is in the DMA
+engine or its clock. One unit read 40.2 once and 31.2–31.4 in every
+sitting since, cool or hot, so a DMA-fed kernel's gain is unit-dependent.</li>
+<li><strong>HVX reading VTCM beside a running DMA is nearly free.</strong> HVX streaming
+VTCM while the DMA writes into it costs 0.1–0.3 % (699.8 → 700.5 µs per
+call and similar, #100). A VTCM feed costs the DMA rate and nothing more.
+In the #117 feed, the engine was busy for 640–682 µs of a 712 µs call, and
+the ≈ 240 µs of compute was fully hidden.</li>
+<li><strong>The in-call 16–18 GB/s on the HMX path comes from scheduling, not from
+the engine.</strong> Replaying the same 46-descriptor list paced to the call's own
+schedule reproduces 15.6–18.6 GB/s. Replayed back to back, the list runs
+faster than <code>c_star</code>. The rate is set by the gaps where nothing is queued.</li>
+<li><strong>More queues do not help.</strong> Replaying the list on 1, 2 or 4 workers,
+each with its own engine, read 40.2, 39.1 and 36.5 GB/s. The bus vote
+changes it by ≤ 4 %.</li>
+</ul>
+<h3 id="82-tried-and-dropped">8.2 Tried and dropped <a class="hd" aria-label="link to this section" href="#82-tried-and-dropped">#</a></h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>attempt</th>
+<th>result</th>
+<th>why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The vendor read-out (<code>copy_32b_to_submatrix</code>) per result tile</td>
+<td>52.8 µs per 8 KiB tile, 80–97 % of attention time (PR author's device)</td>
+<td>It is the reason for the ramp probe and the in-place dequant. Keep the fallback: a new SDK may change the tile layout</td>
+</tr>
+<tr>
+<td>Double-buffering whole expert weights in VTCM</td>
+<td>2 × 5.25 MiB does not fit in 8 MiB</td>
+<td>Explains the single region A, reused in time</td>
+</tr>
+<tr>
+<td>Waiting for a whole weight before its first tile</td>
+<td>gate_up: 110 µs exposed of a 136 µs transfer, per expert (PR author's device)</td>
+<td>Explains the column chunks and <code>ring_wait(idx)</code></td>
+</tr>
+<tr>
+<td>Queuing the activation block behind the weight chunks</td>
+<td>Its wait covered 5.25 MB: 795 µs at decode, booked as &quot;gather&quot; (PR author's device)</td>
+<td>The ring retires in order; push what you will wait for first</td>
+</tr>
+<tr>
+<td>Treating the probe as the ceiling (&quot;the call loses 4–7×&quot;, #77)</td>
+<td>Dissolved by <code>c_star</code> (#100): the real list is faster than the validated ceiling</td>
+<td>Someone will re-run a probe and see 100+ GB/s. It is not a target</td>
+</tr>
+<tr>
+<td>One call for the whole expert FFN (<code>hexkl_mm_u8i4_fused_run</code>)</td>
+<td>Passed synthetic-weight SNR gates at 138–141 dB, but gave wrong text on the real model; NaN ruled out; root cause not found</td>
+<td>Dormant in the tree. The split call (gate_up_swiglu + u8-in down) replaced it. Anyone reviving it must test with real weights (<code>NNTR_L2_DIFF</code>)</td>
+</tr>
+<tr>
+<td>SwiGLU with <code>hvx_exp_sf</code> and a qf32 reciprocal</td>
+<td>Accurate to ≈ 1e-6, yet 1 of 1792 elements flipped on 5 of 32 calls</td>
+<td>Reason for the bit-exact <code>swiglu_det</code> spec shared with the ARM side</td>
+</tr>
+<tr>
+<td>A pool job per 8 KiB tile in the dequant</td>
+<td>0.55 µs of work per tile against a fork/join of several µs</td>
+<td>Batches of 32 tiles with <code>submit</code> / <code>wait</code> instead</td>
+</tr>
+<tr>
+<td>HVX GEMV instead of HMX for <strong>FC</strong> at M = 1</td>
+<td>Rejected for FC: the padding tax was ~40 µs against ~326 µs of transport (PR author's device)</td>
+<td>Re-opened for the MoE at decode, where the padding was the main cost (§4)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="83-fc-against-qnn-and-sdkl">8.3 FC against QNN and SDKL <a class="hd" aria-label="link to this section" href="#83-fc-against-qnn-and-sdkl">#</a></h3>
+<p>All on the PR author's device. The shape is Qwen3-0.6B q_proj, K 1024 ×
+N 2048, u8i4 (2026-08-08).</p>
+<p><strong>Against QNN.</strong> QNN reported one FC op on a Galaxy <strong>S26</strong> Ultra. Its table
+gives no M, but the implied MAC rate only makes sense at M = 1. Our columns
+are M = 64: the accumulator is 64 rows either way, so the multiply, weight
+DMA and read-out are the same work.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>stage</th>
+<th style="text-align:right">QNN, µs</th>
+<th style="text-align:right">ours, µs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>input quantize / load</td>
+<td style="text-align:right">44.5</td>
+<td style="text-align:right">22</td>
+</tr>
+<tr>
+<td><strong>weight load + multiply</strong></td>
+<td style="text-align:right"><strong>69.9</strong></td>
+<td style="text-align:right"><strong>75</strong> (55 per matmul when three share a call)</td>
+</tr>
+<tr>
+<td>output format, i.e. read-out + dequant</td>
+<td style="text-align:right">151.1</td>
+<td style="text-align:right">59</td>
+</tr>
+<tr>
+<td>output writeback</td>
+<td style="text-align:right">72.9</td>
+<td style="text-align:right">0 (dequant writes the output directly)</td>
+</tr>
+<tr>
+<td>device total</td>
+<td style="text-align:right">347</td>
+<td style="text-align:right">156</td>
+</tr>
+<tr>
+<td>host + transport</td>
+<td style="text-align:right">166</td>
+<td style="text-align:right">326</td>
+</tr>
+<tr>
+<td>wall</td>
+<td style="text-align:right">513</td>
+<td style="text-align:right">516</td>
+</tr>
+<tr>
+<td>one-time init (weight bake)</td>
+<td style="text-align:right">5 097</td>
+<td style="text-align:right">12 213</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Multiply:</strong> parity alone (1.07×), 1.3× faster when three weights share a
+call.</li>
+<li><strong>Device total:</strong> 2.2× faster, almost all of it in getting the result out
+of the accumulator.</li>
+<li><strong>Wall:</strong> a tie, but not like for like. Ours moves f32 and QNN moves u8,
+and the two phones differ.</li>
+</ul>
+<p><strong>Against SDKL.</strong> The same micro-API loop with cross-matmul prefetch beat
+HexKL's own macro kernel running on the DSP by 1.7–2.0×: q_proj at M = 64,
+56.3 µs against 107.8 µs. Without prefetch the two tie (106.5 vs 107).</p>
+<p><strong>At prefill (M = 1024)</strong> the same call spent 2 229 µs on the DSP: quantize
+633, DMA wait 39, multiply 619, read-out 380, dequant 558. Quantize plus
+dequant is 53 %. That split is why the u8-in entry exists: the activation is
+quantized on the ARM (<code>htp_quant_pack_u8_ah</code>), sent as u8 through
+<code>hexkl_mm_opts.act_ah_prepacked</code>, and DMA'd into VTCM like a weight. It also
+cuts the FastRPC payload 4×.</p>
+<h2 id="9-tests">9. Tests <a class="hd" aria-label="link to this section" href="#9-tests">#</a></h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>what</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WH formula vs the DSP bake, byte for byte</td>
+<td><code>test/unittest/unittest_hvx_mm_u8i4.cpp</code>: <code>WhPackReferenceMatchesDspBake</code></td>
+</tr>
+<tr>
+<td>layer_run, split expert path, u8-in path vs host references</td>
+<td>same file: <code>HmxMmU8I4Layer.*</code>, including <code>GateUpSwigluPlusU8InMatchesTwoCallReference</code></td>
+</tr>
+<tr>
+<td>HMX MoE path vs HVX GEMV, bit-identical</td>
+<td>same file: <code>MoeLayerM1GemvMatchesHmx</code></td>
+</tr>
+<tr>
+<td>DMA probe, chunk-list replay, validated cells</td>
+<td><code>test/unittest/unittest_hvx_dma_probe.cpp</code>: <code>DmaProbeShapes</code>, <code>MoeChunkReplay</code>; host arithmetic <code>test/htp/host/{dma_probe,dma_replay,dma_trace,replay_cells}_host_check.c</code></td>
+</tr>
+<tr>
+<td>Worker pool</td>
+<td><code>test/htp/host/worker_pool_host_check.c</code></td>
+</tr>
+<tr>
+<td>Deterministic SwiGLU</td>
+<td><code>unittest_hvx_softmax.cpp</code>: <code>HvxSwigluDet.MatchesScalarBitExact</code>; NEON twin <code>SwigluDetNeon.MatchesScalar</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The host checks run with <code>test/htp/host/run_host_checks.sh</code> and need no DSP.
+The gtests need the device and the skel from <code>test/htp/build.sh</code>.</p>
+
+<div class="pager"><span>← <a href="foundation.html">Foundation</a></span><span><a href="weight-format.html">Weight format</a> →</span></div>
+<footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
+</main>
+</body></html>
