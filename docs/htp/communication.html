@@ -57,9 +57,10 @@ table.sync code{overflow-wrap:normal}
 nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 /*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
 </style>
+<!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
 
 </head><body>
-<nav class="top"><a href="index.html">Results</a><a href="communication.html" class="here">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html" class="here">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>How the CPU and the NPU talk</h1>
 <p>The NPU runs one thing in this backend: the MoE feed-forward block. Everything else stays on the ARM CPU. So every token crosses the CPU–NPU boundary 22 times, once per MoE layer. Each crossing carries a few kilobytes of activation; the ≈ 22 MB of expert weights per call never cross, the DSP reads them from shared memory. Terms are defined at the <a href="#terms">bottom of the page</a>.</p>
@@ -951,13 +952,13 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 
 <h2 id="further-reading">Further reading <a class="hd" aria-label="link to this section" href="#further-reading">#</a></h2>
 <ul>
-<li><a href="foundation.html">Foundation</a>: FastRPC, the session, memory and the build in detail.</li>
+<li><a href="build-test.html">Build &amp; test</a>: building and pushing both halves, and the host checks.</li>
 <li><a href="moe-ffn.html">MoE FFN</a>: both kernel paths stage by stage.</li>
 <li><a href="hmx-matmul.html">HMX matmul</a>: tiles and the prefill matmul.</li>
 <li><a href="weight-format.html">Weight format</a>: the tile layout the arena holds.</li>
 <li><a href="measurement.html">Measurement</a>: how <code>host</code>, <code>dsp</code> and <code>mm</code> are taken.</li>
 </ul>
-<div class="pager"><span>← <a href="index.html">Results</a></span><span><a href="software.html">Software</a> →</span></div>
+<div class="pager"><span>← <a href="index.html">Overview</a></span><span><a href="software.html">Software</a> →</span></div>
 <footer>docs/htp: nntrainer HTP backend technical docs.</footer>
 </main>
 <script>

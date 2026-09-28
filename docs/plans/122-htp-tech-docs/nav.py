@@ -6,17 +6,16 @@ from pathlib import Path
 
 D = Path(sys.argv[1])
 CORE = [
-    ("index", "Results"),
+    ("index", "Overview"),
     ("communication", "Communication"),
     ("software", "Software"),
     ("optimizations", "Optimizations"),
 ]
 REF = [
-    ("architecture", "Architecture"),
-    ("foundation", "Foundation"),
     ("weight-format", "Weight format"),
     ("hmx-matmul", "HMX matmul"),
     ("moe-ffn", "MoE FFN"),
+    ("build-test", "Build &amp; test"),
     ("measurement", "Measurement"),
     ("lessons", "Lessons"),
     ("roadmap", "Roadmap"),
@@ -30,6 +29,11 @@ TOC_CSS = ("/*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left
            "nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);"
            "overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}"
            "nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/")
+# The shared stylesheet (docs/htp/style.css) and its fonts, after the page's own <style>.
+CSS_LINK = ('<!--css--><link rel="preconnect" href="https://fonts.googleapis.com">'
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500'
+            '&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap">'
+            '<link rel="stylesheet" href="style.css"><!--/css-->')
 # Highlights the section in view; the list works without it.
 SPY = ('<script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],'
        'm=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));'
@@ -43,9 +47,9 @@ def nav(here):
     def link(key, label):
         cls = ' class="here"' if key == here else ""
         return f'<a href="{key}.html"{cls}>{label}</a>'
-    return ('<nav class="top">' + "".join(link(*c) for c in CORE)
-            + '<span class="sep">|</span>'
-            + "".join(link(*r) for r in REF) + "</nav>")
+    return ('<nav class="top"><a class="brand" href="index.html">HTP backend</a>'
+            + '<span class="grp">Story</span>' + "".join(link(*c) for c in CORE)
+            + '<span class="grp">Reference</span>' + "".join(link(*r) for r in REF) + "</nav>")
 
 
 def pager(i):
@@ -78,6 +82,8 @@ for i, (key, _) in enumerate(ORDER):
     t = t.replace("</style>", TOC_CSS + "\n</style>", 1)
     t = re.sub(r'<script id="tocspy">.*?</script>\n?', '', t, flags=re.S)
     t = t.replace("</body>", SPY + "\n</body>", 1)
+    t = re.sub(r'<!--css-->.*?<!--/css-->\n?', '', t, flags=re.S)
+    t = t.replace("</style>", "</style>\n" + CSS_LINK, 1)
     if NAV_CSS not in t:
         t = t.replace("</style>", NAV_CSS + "\n</style>", 1)
     p.write_text(t)

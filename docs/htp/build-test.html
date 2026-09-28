@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — build &amp; test</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+.sources{margin:1.5em 0;font-size:.88em;color:var(--ink2)}.sources summary{cursor:pointer;font-weight:600}
+/*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+<!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
+
+</head><body>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html" class="here">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+
+<h1>Build &amp; test</h1>
+<p>The HTP backend has two halves that ship separately: the app on the ARM side and the skel (<code>libnntr_hvx_skel.so</code>) on the DSP. This page builds both, puts them on the phone, and runs the checks that need no phone. How the halves talk is on <a href="communication.html">Communication</a>; the code layout is on <a href="software.html">Software</a>.</p>
+<nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-environment">1. Environment</a></li><li class="l2"><a href="#2-build-the-skel">2. Build the DSP skel</a></li><li class="l2"><a href="#3-build-the-app">3. Build the app</a></li><li class="l2"><a href="#4-put-it-on-the-phone">4. Put it on the phone</a></li><li class="l2"><a href="#5-app-and-skel-must-match">5. App and skel must match</a></li><li class="l2"><a href="#6-host-checks">6. Host checks: no phone needed</a></li><li class="l3"><a href="#61-kernel-checks">6.1 Kernel checks</a></li><li class="l3"><a href="#62-end-to-end">6.2 End to end, in process</a></li><li class="l2"><a href="#7-adding-a-method">7. Adding a DSP method</a></li><li class="l2"><a href="#8-the-rest-of-the-ladder">8. The rest of the ladder</a></li></ul></details></nav>
+<h2 id="1-environment">1. Environment <a class="hd" aria-label="link to this section" href="#1-environment">#</a></h2>
+<p>Every build below starts from one shell:</p>
+<pre><code>source tools/htp/env.sh</code></pre>
+<p>It sources the Hexagon SDK (6.4.0.1 is the verified version) and sets <code>HEXKL_ROOT</code>, the HexKL package that holds the DSP matmul library. Override <code>HEXAGON_SDK_ROOT</code>, <code>HEXKL_ROOT</code>, <code>HEXKL_SDK_VER</code> or <code>HEX_ARCH</code> (default <code>v79</code>) before sourcing it. <code>ANDROID_NDK</code> must be exported for the app build.</p>
+
+<h2 id="2-build-the-skel">2. Build the DSP skel <a class="hd" aria-label="link to this section" href="#2-build-the-skel">#</a></h2>
+<pre><code>HEXKL_SDK_VER=6.4.0.1 test/htp/build.sh
+# → test/htp/build/libnntr_hvx_skel.so
+# last line: UNDEFINED SYMBOLS OK (&lt;n&gt; runtime imports)</code></pre>
+<ul>
+<li>Runs <code>qaic</code> on <code>test/htp/nntr_hvx.idl</code>, then compiles the skel entry files and the <code>hmx/</code> and <code>hvx/</code> kernels (the <code>SRCS</code> list) with <code>hexagon-clang -mv79 -mhvx -mhvx-length=128B -O3</code> and links HexKL's <code>libhexkl_micro.a</code>.</li>
+<li>Pin <code>HEXKL_SDK_VER</code>. Left unset, the script takes the newest version under <code>$HEXKL_ROOT/lib</code>, which may not be the verified one.</li>
+<li><strong>Undefined-symbol check.</strong> A DSP shared object links even with unresolved symbols; the phone then refuses to load it with <code>0x80000406</code>. The script fails the build on any import the DSP image does not provide, so a forgotten source file is caught here instead of on the phone.</li>
+<li>Extra defines go in <code>HEX_EXTRA_CFLAGS</code>.</li>
+</ul>
+
+<h2 id="3-build-the-app">3. Build the app <a class="hd" aria-label="link to this section" href="#3-build-the-app">#</a></h2>
+<pre><code>Applications/CausalLM/build_android.sh --htp           # first build
+Applications/CausalLM/build_android.sh --htp --cache   # rebuilds</code></pre>
+<p><code>--htp</code> regenerates the ARM stub from the IDL, finds <code>libsdkl.so</code> in the HexKL package, and configures nntrainer with <code>-Denable-htp=true</code>. It does <strong>not</strong> build the skel.</p>
+
+<h2 id="4-put-it-on-the-phone">4. Put it on the phone <a class="hd" aria-label="link to this section" href="#4-put-it-on-the-phone">#</a></h2>
+<ul>
+<li>The skel goes into a directory on <code>ADSP_LIBRARY_PATH</code>; the app's libraries go on <code>LD_LIBRARY_PATH</code>.</li>
+<li>Use the phone's own <code>libcdsprpc.so</code>, never the SDK's link-time stub.</li>
+<li>Record the md5 of the skel and the app libraries you pushed; a measurement is tied to that pair.</li>
+</ul>
+
+<h2 id="5-app-and-skel-must-match">5. App and skel must match <a class="hd" aria-label="link to this section" href="#5-app-and-skel-must-match">#</a></h2>
+<p><strong>Any change to the IDL or to a DSP source means rebuilding the skel and pushing it.</strong> An IDL change also means regenerating the stub, which the app build does. A mismatch fails loudly; the message tells you which way:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>you see</th><th>it means</th></tr></thead>
+<tbody>
+<tr><td><code>0x80000406</code> when the session opens</td><td>the skel does not load, usually an undefined symbol (§2)</td></tr>
+<tr><td><code>… Is libnntr_hvx_skel.so on ADSP_LIBRARY_PATH?</code></td><td>skel not found; the backend falls back to the CPU</td></tr>
+<tr><td><code>AEE_EBADPARM</code> (<code>0x8000040E</code>) on a call with correct shapes</td><td>skel older than the app; the error says to rebuild it</td></tr>
+<tr><td><code>nntr_hvx_moe_set_opts failed … applied=…</code></td><td>the skel does not know an option bit the app sent</td></tr>
+<tr><td>configure error: the stub is older than <code>nntr_hvx.idl</code></td><td>IDL changed, stub not regenerated</td></tr>
+</tbody></table></div>
+
+<h2 id="6-host-checks">6. Host checks: no phone needed <a class="hd" aria-label="link to this section" href="#6-host-checks">#</a></h2>
+<p>Two scripts run DSP code on the workstation. Run both before any device work.</p>
+<h3 id="61-kernel-checks">6.1 Kernel checks <a class="hd" aria-label="link to this section" href="#61-kernel-checks">#</a></h3>
+<pre><code>test/htp/host/run_host_checks.sh</code></pre>
+<p>Compiles the DSP sources with the host <code>gcc</code> against stand-in headers (threads on pthreads, the DMA engine completing at once). Needs no SDK. The HMX and most HVX arithmetic are <strong>scalar stand-ins</strong>, so these checks do not verify the hardware's arithmetic; they verify everything around it:</p>
+<ul>
+<li>MoE routing, buffer reuse, scatter and the VTCM layout. A DMA into a buffer that is still being read shows up as a wrong result.</li>
+<li>The option word, the DMA plans, the worker pool, the FC and conv-block layers.</li>
+<li>The per-token entry's op table and forward loop.</li>
+<li>The single-token kernels (small ops and decode attention): their real HVX sources, compiled on an emulation of one IEEE op per lane, must match a scalar spec byte for byte.</li>
+<li>The decode GEMV kernel on the SDK's x86 HVX emulation, when that library is installed. Two deliberate mutations of the kernel must make it fail, or the check is blind.</li>
+</ul>
+<h3 id="62-end-to-end">6.2 End to end, in process <a class="hd" aria-label="link to this section" href="#62-end-to-end">#</a></h3>
+<pre><code>test/htp/host/run_inproc_e2e.sh      # prints INPROC E2E PASS</code></pre>
+<p>Builds nntrainer with <code>-Denable-htp=true -Dhtp-inproc=true</code> into <code>build_htp_host/</code>, with the DSP skel compiled for the workstation and linked into the process. Then it runs a tiny LFM2-MoE fixture (16-token prompt, 8 greedy tokens) through the real ARM-side HTP path. Needs the SDK's headers and <code>qaic</code>; no phone, no HexKL.</p>
+<ul>
+<li><strong>Proves:</strong> the session and option wiring, the call marshalling, and that every MoE call's input and output is bit-identical to a committed golden and between the two decode paths; the tokens match the CPU path.</li>
+<li><strong>Cannot prove:</strong> tok/s, transport, DMA, or the HVX/HMX arithmetic bits.</li>
+</ul>
+
+<h2 id="7-adding-a-method">7. Adding a DSP method <a class="hd" aria-label="link to this section" href="#7-adding-a-method">#</a></h2>
+<ol>
+<li><strong>Append</strong> it at the end of <code>nntr_hvx.idl</code>, so every existing method keeps its id.</li>
+<li>Implement <code>nntr_hvx_&lt;name&gt;</code> in the skel file of its group. Validate every length and handle and return <code>AEE_EBADPARM</code> on a mismatch: the ARM side is a trust boundary for the DSP.</li>
+<li>Add any new <code>.c</code> file to <code>SRCS</code> in <code>test/htp/build.sh</code>; the undefined-symbol check catches a forgotten one.</li>
+<li>For per-stage timing, add a <code>_timed</code> twin, not a flag.</li>
+<li>Rebuild and push <strong>both</strong> halves.</li>
+<li>If the app depends on the new method, make it fail loudly on an old skel. The option echo on the first MoE call is the model to copy.</li>
+</ol>
+
+<h2 id="8-the-rest-of-the-ladder">8. The rest of the ladder <a class="hd" aria-label="link to this section" href="#8-the-rest-of-the-ladder">#</a></h2>
+<p>After the host checks come the device steps: the on-device kernel test, then a full-model run on the phone. The order and what counts as a pass are in <a href="measurement.html#3-verification-ladder">Measurement §3</a>.</p>
+
+<div class="pager"><span>← <a href="moe-ffn.html">MoE FFN</a></span><span><a href="measurement.html">Measurement</a> →</span></div>
+<footer>docs/htp: nntrainer HTP backend technical docs.</footer>
+</main>
+<script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
+</body></html>

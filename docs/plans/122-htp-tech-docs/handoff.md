@@ -87,6 +87,11 @@ The branch is based on `9fb1a3bc`, an old `htp_moe`. It only adds files under `d
     - No summary box above the sections (user, 2026-09-28). Text uses the full column width, the same as the figures; do not cap `p`/`li` width.
     - Communication follows the same rule (2026-09-28): no snapshot line, the terms box is the last section ("Terms"), captions and tables cut to what the reader needs; code-level detail lives in Foundation / MoE FFN.
 
+22. **Pages and look (2026-09-28, user asked for the design pass):**
+    - `architecture.html` and `foundation.html` are gone; their content lives in Communication, Software and the new `build-test.html` (build, deploy, host checks, adding a method).
+    - Results became **Overview** (`index.html`): the system picture, where it stands, the time split, progress, what is next, accuracy, conditions, and a page guide.
+    - One shared `style.css` (IBM Plex Sans/Mono, cool paper palette, dark mode through tokens; figures stay on a light plate in both themes because the SVGs use light colors). `nav.py` injects the font and stylesheet links and a grouped top bar (Story · Reference).
+
 ## Phase 1: what was done
 
 - **Markdown → HTML.**
