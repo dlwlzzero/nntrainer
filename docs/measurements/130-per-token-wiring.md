@@ -328,7 +328,7 @@ the generated text of G = 64, run 1, in full.
 |---|---|---|---|
 | A | n/a (prefill-only) | …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | (reference) |
 | B | n/a (prefill-only) | …final answer should be the same as the original, but you must not stop until you are told to. The original description is the same as the original, but you must not stop until you are told to. The final answer should be the same as the original, but you must not stop until you are told to. | **n** (user, 2026-09-28: fail) |
-| C | n/a (prefill-only) | (byte-identical to A) …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | |
+| C | n/a (prefill-only) | (byte-identical to A) …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | **y** (user, 2026-09-28) |
 
 ## Notes from the run
 
