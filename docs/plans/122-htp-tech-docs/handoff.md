@@ -85,6 +85,7 @@ The branch is based on `9fb1a3bc`, an old `htp_moe`. It only adds files under `d
 20. **Every page gets an "On this page" list** built by `nav.py` from the `h2`/`h3` ids. On a wide screen (≥ 72em) it is a fixed rail on the right, with a small scroll-spy script. On a narrow screen it is an inline list. Never hand-edit it; rerun `nav.py`.
 21. **Results reads as one story, for management first:** four tiles → numbered sections (NPU vs CPU · time split · how we got here · accuracy · by gen · conditions). **No PR numbers, sitting ids or commit hashes in the body, the charts or the captions.** They live only in the collapsed "Sources and snapshot" box at the bottom. The goal-band chart was dropped; the split chart already shows the floor against 20 ms. Apply the same rule to the other story pages.
     - No summary box above the sections (user, 2026-09-28). Text uses the full column width, the same as the figures; do not cap `p`/`li` width.
+    - Communication follows the same rule (2026-09-28): no snapshot line, the terms box is the last section ("Terms"), captions and tables cut to what the reader needs; code-level detail lives in Foundation / MoE FFN.
 
 ## Phase 1: what was done
 
