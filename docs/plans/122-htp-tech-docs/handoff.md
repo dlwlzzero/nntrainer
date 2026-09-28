@@ -90,7 +90,7 @@ The branch is based on `9fb1a3bc`, an old `htp_moe`. It only adds files under `d
 22. **Pages and look (2026-09-28, user asked for the design pass):**
     - `architecture.html` and `foundation.html` are gone; their content lives in Communication, Software and the new `build-test.html` (build, deploy, host checks, adding a method).
     - Results became **Overview** (`index.html`): the system picture, where it stands, the time split, progress, what is next, accuracy, conditions, and a page guide.
-    - One shared `style.css` (IBM Plex Sans/Mono, cool paper palette, dark mode through tokens; figures stay on a light plate in both themes because the SVGs use light colors). `nav.py` injects the font and stylesheet links and a grouped top bar (Story · Reference).
+    - One shared `style.css` (IBM Plex Sans/Mono, cool paper palette, dark mode through tokens; figures stay on a light plate in both themes because the SVGs use light colors). `nav.py` injects the font and stylesheet links and a top bar with the four story pages only. Reference pages are hidden from the bar and the pager (user, 2026-09-28): they are reached from links in the story pages (Overview §8 lists them all) and their pager points back to Overview.
 
 ## Phase 1: what was done
 

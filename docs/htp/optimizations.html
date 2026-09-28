@@ -50,7 +50,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
 
 </head><body>
-<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html" class="here">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html" class="here">Optimizations</a></nav>
 <main>
 <h1>How decode got from 18 to 36 tok/s</h1>
 <p class="lede">The upstream port put the MoE layers on the NPU and made prefill fast; decode started at 18 tok/s. Five measured changes since then took decode to 36 tok/s with identical output; a sixth has landed but is not measured yet. This page walks through them in order, each as bottleneck → change → measured gain.</p>
@@ -413,7 +413,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </ul>
 </details>
 
-<div class="pager"><span>← <a href="software.html">Software</a></span><span><a href="weight-format.html">Weight format</a> →</span></div>
+<div class="pager"><span>← <a href="software.html">Software</a></span><span></span></div>
 <footer>docs/htp: nntrainer HTP backend technical docs.</footer>
 </main>
 <script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>

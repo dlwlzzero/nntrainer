@@ -48,13 +48,15 @@ def nav(here):
         cls = ' class="here"' if key == here else ""
         return f'<a href="{key}.html"{cls}>{label}</a>'
     return ('<nav class="top"><a class="brand" href="index.html">HTP backend</a>'
-            + '<span class="grp">Story</span>' + "".join(link(*c) for c in CORE)
-            + '<span class="grp">Reference</span>' + "".join(link(*r) for r in REF) + "</nav>")
+            + "".join(link(*c) for c in CORE) + "</nav>")
 
 
 def pager(i):
-    prev = ORDER[i - 1] if i > 0 else None
-    nxt = ORDER[i + 1] if i + 1 < len(ORDER) else None
+    # Reference pages are reached from links in the story pages, not from the bar or the pager.
+    if i >= len(CORE):
+        return '<div class="pager"><span>← <a href="index.html">Overview</a></span><span></span></div>'
+    prev = CORE[i - 1] if i > 0 else None
+    nxt = CORE[i + 1] if i + 1 < len(CORE) else None
     left = f'← <a href="{prev[0]}.html">{prev[1]}</a>' if prev else ""
     right = f'<a href="{nxt[0]}.html">{nxt[1]}</a> →' if nxt else ""
     return f'<div class="pager"><span>{left}</span><span>{right}</span></div>'
