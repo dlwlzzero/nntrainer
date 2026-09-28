@@ -19,7 +19,7 @@ h3{font-size:1.05em;margin:1.3em 0 .4em}
 h4{font-size:1em;margin:1.1em 0 .3em}
 h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
 h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
-p,li{max-width:70ch}
+
 a{color:var(--s1)}
 code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
 code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
@@ -50,7 +50,7 @@ footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid v
 .tile.npu{border-top:3px solid #2a78d6}.tile.cpu{border-top:3px solid #eb6834}.tile.goal{border-top:3px solid #52514e}
 .note{font-size:.88em;color:var(--ink2)}
 nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
-.story{background:var(--surface);border:1px solid var(--grid);border-left:4px solid var(--s1);border-radius:8px;padding:.3em 1em;margin:1em 0}.story ol{margin:.3em 0 .6em;padding-left:1.3em}.story li{margin:.25em 0}.sources{margin:1.5em 0;font-size:.88em;color:var(--ink2)}.sources summary{cursor:pointer;font-weight:600}
+.sources{margin:1.5em 0;font-size:.88em;color:var(--ink2)}.sources summary{cursor:pointer;font-weight:600}
 /*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
 </style>
 
@@ -68,15 +68,6 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <div class="tile goal"><div class="k">Ceiling of today's design</div><div class="v">42–47 <small>tok/s</small></div><div class="s">set by memory bandwidth</div></div>
 </div>
 
-<div class="story">
-<p><strong>The story in four steps</strong></p>
-<ol>
-<li><strong>Prefill is won:</strong> the NPU reads the prompt 1.56× faster than the CPU.</li>
-<li><strong>Decode is not yet:</strong> 36 tok/s, below the CPU's 49 and the 50 goal.</li>
-<li><strong>Why:</strong> a decode token is a memory read. Of its 27.8 ms, 15.7 ms is the NPU reading expert weights, and 10.3 ms is CPU work between the NPU calls.</li>
-<li><strong>What is next:</strong> with the CPU and the NPU reading one after the other, even perfect code stops at 42–47 tok/s. Reaching 50 needs them to read in parallel, or fewer bytes per token (<a href="roadmap.html">Roadmap</a>).</li>
-</ol>
-</div>
 
 <nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#npu-vs-cpu">1. NPU vs CPU</a></li><li class="l2"><a href="#split">2. Where a decode token's time goes</a></li><li class="l2"><a href="#progress">3. How we got here</a></li><li class="l2"><a href="#accuracy">4. Accuracy</a></li><li class="l2"><a href="#by-gen">5. By generation length</a></li><li class="l2"><a href="#conditions">6. Test conditions</a></li></ul></details></nav>
 
@@ -138,7 +129,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <p>One decode token takes <strong>27.8 ms</strong>. The 50 tok/s goal needs <strong>20 ms</strong>.</p>
 <ul>
 <li><strong>MoE on the NPU: 15.7 ms.</strong> Almost all of it is reading 484 MB of expert weights.</li>
-<li><strong>CPU↔NPU calls: 1.8 ms.</strong> 22 FastRPC calls per token (FastRPC is Qualcomm's mechanism for ARM code to call a function on the DSP).</li>
+<li><strong>CPU–NPU calls: 1.8 ms.</strong> 22 FastRPC calls per token (FastRPC is Qualcomm's mechanism for ARM code to call a function on the DSP).</li>
 <li><strong>CPU work between the calls: ≈ 10.3 ms.</strong> Attention, convolutions, norms, the router and the output layer.</li>
 </ul>
 <figure>
@@ -163,7 +154,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <text x="142.0" y="79.0" font-size="11" fill="#52514e" text-anchor="end">27.81 ms</text>
 <rect x="150.0" y="50" width="302.5" height="34" fill="#2a78d6"><title>MoE FFN on the NPU: 22 calls × 0.712 ms = 15.7 ms</title></rect>
 <text x="301.3" y="72.0" font-size="12" fill="#ffffff" text-anchor="middle" font-weight="600">MoE on the NPU 15.7</text>
-<rect x="454.5" y="50" width="32.8" height="34" fill="#a8a69c"><title>CPU↔NPU round trips (FastRPC transport): 22 × 0.082 ms = 1.8 ms</title></rect>
+<rect x="454.5" y="50" width="32.8" height="34" fill="#a8a69c"><title>CPU–NPU round trips (FastRPC transport): 22 × 0.082 ms = 1.8 ms</title></rect>
 <text x="470.9" y="72.0" font-size="11" fill="#0b0b0b" text-anchor="middle" font-weight="600">1.8</text>
 <text x="470.9" y="45.0" font-size="11" fill="#52514e" text-anchor="middle">round trips</text>
 <rect x="489.3" y="50" width="197.1" height="34" fill="#eb6834"><title>Everything outside the MoE call, on the CPU: ≈ 10.3 ms</title></rect>
@@ -189,7 +180,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <h2 id="progress">3. How we got here<a class="hd" href="#progress">#</a></h2>
 <p>Decode went from 18.3 to 36.0 tok/s in four merged changes:</p>
 <ol>
-<li><strong>Faster CPU↔NPU calls:</strong> shared ION buffers (Android memory mapped by both the CPU and the DSP) and a longer poll before the call sleeps.</li>
+<li><strong>Faster CPU–NPU calls:</strong> shared ION buffers (Android memory mapped by both the CPU and the DSP) and a longer poll before the call sleeps.</li>
 <li><strong>Vector-unit decode:</strong> a one-token path on HVX instead of the matrix unit.</li>
 <li><strong>Weight prefetch:</strong> the NPU starts pulling the next weights into cache earlier.</li>
 <li><strong>VTCM feed:</strong> the DMA engine copies each expert's weights into VTCM (about 8 MiB of fast on-chip NPU memory) one expert ahead, so compute never waits on DRAM. The biggest single step, +26 %.</li>
@@ -217,7 +208,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <path d="M223.0,250.0 V163.1 Q223.0,159.1 227.0,159.1 H295.0 Q299.0,159.1 299.0,163.1 V250.0 Z" fill="#8fb6e8"><title>Transport fix: 23.80 tok/s</title></path>
 <text x="261.0" y="152.1" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">23.80</text>
 <text x="261.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Transport fix</text>
-<text x="261.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">faster CPU↔NPU calls</text>
+<text x="261.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">faster CPU–NPU calls</text>
 <path d="M357.0,250.0 V150.6 Q357.0,146.6 361.0,146.6 H429.0 Q433.0,146.6 433.0,150.6 V250.0 Z" fill="#8fb6e8"><title>HVX GEMV: 27.09 tok/s</title></path>
 <text x="395.0" y="139.6" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.09</text>
 <text x="395.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX GEMV</text>
