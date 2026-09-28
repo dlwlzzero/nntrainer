@@ -59,7 +59,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Results</a><a href="communication.html" class="here">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html" class="here">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>How the CPU and the NPU talk</h1>
 <p>The NPU runs one thing in this backend: the MoE feed-forward block. Everything else stays on the ARM CPU. So every token crosses the CPU–NPU boundary 22 times, once per MoE layer. Each crossing carries a few kilobytes of activation; the ≈ 22 MB of expert weights per call never cross, the DSP reads them from shared memory. Terms are defined at the <a href="#terms">bottom of the page</a>.</p>
@@ -957,7 +957,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <li><a href="weight-format.html">Weight format</a>: the tile layout the arena holds.</li>
 <li><a href="measurement.html">Measurement</a>: how <code>host</code>, <code>dsp</code> and <code>mm</code> are taken.</li>
 </ul>
-<div class="pager"><span>← <a href="index.html">Results</a></span><span><a href="architecture.html">Architecture</a> →</span></div>
+<div class="pager"><span>← <a href="index.html">Results</a></span><span><a href="software.html">Software</a> →</span></div>
 <footer>docs/htp: nntrainer HTP backend technical docs.</footer>
 </main>
 <script>

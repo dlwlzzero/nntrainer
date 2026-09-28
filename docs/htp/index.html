@@ -55,7 +55,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html" class="here">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html" class="here">Results</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>LFM2.5-8B-A1B on the Hexagon NPU — results</h1>
 
@@ -178,7 +178,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <p><strong>What this means.</strong> The MoE part is already within ≈ 2.7 ms of its floor. The CPU side has ≈ 4 ms left. Even at both floors a token takes 21–24 ms, still above 20 ms, because the CPU and the NPU read memory one after the other. So the last step to 50 tok/s is a design change, not tuning (<a href="roadmap.html">Roadmap</a>).</p>
 
 <h2 id="progress">3. How we got here<a class="hd" href="#progress">#</a></h2>
-<p>Decode went from 18.3 to 36.0 tok/s in four merged changes:</p>
+<p>Decode went from 18.3 to 36.0 tok/s in four merged changes. Each one, with its bottleneck and same-day gain, is on the <a href="optimizations.html">Optimizations</a> page.</p>
 <ol>
 <li><strong>Faster CPU–NPU calls:</strong> shared ION buffers (Android memory mapped by both the CPU and the DSP) and a longer poll before the call sleeps.</li>
 <li><strong>Vector-unit decode:</strong> a one-token path on HVX instead of the matrix unit.</li>

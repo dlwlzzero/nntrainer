@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTP backend — software</title>
+<style>
+:root{--bg:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--s1:#2a78d6;--code:#f0efec}
+*{box-sizing:border-box}
+html{font-size:16px;-webkit-text-size-adjust:100%;scroll-padding-top:3em}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;line-height:1.55}
+main{max-width:52em;margin:0 auto;padding:0 1em 3em}
+nav.top{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--grid);padding:.5em 1em;font-size:.9em;overflow-x:auto;white-space:nowrap}
+nav.top a{margin-right:.9em;color:var(--s1);text-decoration:none}
+nav.top a.here{color:var(--ink);font-weight:600}
+h1{font-size:1.6em;line-height:1.2;margin:1em 0 .4em}
+h2{font-size:1.25em;margin:1.8em 0 .5em;border-bottom:1px solid var(--grid);padding-bottom:.2em}
+h3{font-size:1.05em;margin:1.3em 0 .4em}
+h4{font-size:1em;margin:1.1em 0 .3em}
+h2 a.hd,h3 a.hd,h4 a.hd{color:var(--muted);text-decoration:none;margin-left:.3em;opacity:0}
+h2:hover a.hd,h3:hover a.hd,h4:hover a.hd{opacity:1}
+
+a{color:var(--s1)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.88em}
+code{background:var(--code);padding:.05em .3em;border-radius:3px;overflow-wrap:anywhere}
+pre{background:var(--code);padding:.7em .9em;border-radius:6px;overflow-x:auto;line-height:1.4}
+pre code{background:none;padding:0;overflow-wrap:normal}
+blockquote{margin:1em 0;padding:.4em 1em;border-left:4px solid var(--s1);background:var(--surface);color:var(--ink2)}
+.tablewrap{overflow-x:auto;margin:.8em 0}
+table{border-collapse:collapse;font-size:.88em;min-width:100%}
+th,td{border-bottom:1px solid var(--grid);padding:.35em .5em;text-align:left;vertical-align:top}
+th{color:var(--ink2);font-weight:600;background:var(--surface)}
+td[style*=right],th[style*=right]{font-variant-numeric:tabular-nums;white-space:nowrap}
+figure{margin:1.2em 0;background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em;overflow-x:auto}
+figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+figcaption{font-size:.85em;color:var(--ink2);margin-top:.4em}
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}
+.toc ul{margin:.3em 0;padding-left:1.2em}
+.toc summary{cursor:pointer;color:var(--ink2);font-weight:600}
+.pager{display:flex;justify-content:space-between;gap:1em;margin-top:3em;font-size:.9em}
+footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid var(--grid);padding-top:.6em}
+@media (max-width:480px){html{font-size:15px}h1{font-size:1.4em}}
+.gloss{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:.6em 1em;margin:1em 0;font-size:.9em}.gloss dl{display:grid;grid-template-columns:max-content 1fr;gap:.25em .9em;margin:.4em 0}.gloss dt{font-weight:600}.gloss dd{margin:0}@media (max-width:480px){.gloss dl{grid-template-columns:1fr}.gloss dd{margin-bottom:.4em}}.sources{margin:1.5em 0;font-size:.88em;color:var(--ink2)}.sources summary{cursor:pointer;font-weight:600}.tag{display:inline-block;border:1px dashed #52514e;border-radius:4px;padding:0 .35em;font-size:.82em;color:var(--ink2)}
+/*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
+nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+</style>
+
+</head><body>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><a href="software.html" class="here">Software</a><a href="optimizations.html">Optimizations</a><span class="sep">|</span><a href="architecture.html">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<main>
+
+<h1>Software</h1>
+<p>This page is the code behind <a href="communication.html">Communication</a>: which classes exist on each side of the CPU–NPU boundary, how one MoE call travels through them, and where each piece lives in the tree. Terms are defined at the <a href="#terms">bottom of the page</a>.</p>
+<nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-the-big-picture">1. The big picture</a></li><li class="l2"><a href="#2-the-call-path">2. The call path of one MoE call</a></li><li class="l2"><a href="#3-the-idl">3. The IDL</a></li><li class="l2"><a href="#4-code-map">4. Code map</a></li><li class="l2"><a href="#5-switches">5. Switches</a></li><li class="l2"><a href="#6-landed-not-default">6. In the tree but not on the default path</a></li><li class="l2"><a href="#terms">Terms</a></li><li class="l2"><a href="#further-reading">Further reading</a></li></ul></details></nav>
+<h2 id="1-the-big-picture">1. The big picture <a class="hd" aria-label="link to this section" href="#1-the-big-picture">#</a></h2>
+<p>Three layers: C++ classes in the app, a generated interface in the middle, and C modules in the DSP library. The model never talks to the DSP directly; it calls a <code>ComputeOps</code> interface, and the HTP engine swaps in <code>HtpComputeOps</code>.</p>
+<figure>
+<svg viewBox="0 0 880 652" role="img" aria-label="Class diagram of the HTP backend. ARM C++ classes on the left: Lfm2MoeCausalLM creates Lfm2MoELayer, which calls ComputeOps; HtpComputeOps derives from CpuComputeOps and ComputeOps, is selected by HtpContext, owns the ION arena and staging buffers (HtpRpcBuffer), and uses the session of HtpBackend. In the middle, the qaic-generated stub and skel from nntr_hvx.idl. On the right, the DSP side: the session struct, the weight table, the MoE kernel, the worker pool, the DMA ring and, dashed, the per-token op table behind NNTR_HTP_FORWARD." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="sw1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker><marker id="sw1-inh" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" orient="auto"><path d="M1,1 L11,6 L1,11 z" fill="#fcfcfb" stroke="#52514e" stroke-width="1.2"/></marker><marker id="sw1-own" viewBox="0 0 14 10" refX="1" refY="5" markerWidth="12" markerHeight="9" orient="auto-start-reverse"><path d="M1,5 L7,1 L13,5 L7,9 z" fill="#52514e"/></marker></defs>
+<rect x="4" y="4" width="444" height="616" rx="10" fill="#fef8f4" stroke="#eb6834" stroke-width="1"/>
+<text x="14" y="22" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">ARM (C++, in the app process)</text>
+<rect x="456" y="4" width="138" height="616" rx="10" fill="#f6f5f1" stroke="#c3c2b7" stroke-width="1"/>
+<text x="525" y="22" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="700">FastRPC boundary</text>
+<rect x="602" y="4" width="274" height="616" rx="10" fill="#f5f9fe" stroke="#2a78d6" stroke-width="1"/>
+<text x="612" y="22" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="700">DSP (C, in our skel)</text>
+<rect x="14" y="40" width="180" height="60" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="104.0" y="56" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">Lfm2MoeCausalLM</text>
+<line x1="14" y1="62" x2="194" y2="62" stroke="#eb6834" stroke-width="1"/>
+<text x="22" y="76" font-size="11" fill="#52514e" text-anchor="start">reads moe_engine</text>
+<text x="22" y="91" font-size="11" fill="#52514e" text-anchor="start">createMoeLayer()</text>
+<rect x="14" y="120" width="180" height="60" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="104.0" y="136" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">Lfm2MoELayer</text>
+<line x1="14" y1="142" x2="194" y2="142" stroke="#eb6834" stroke-width="1"/>
+<text x="22" y="156" font-size="11" fill="#52514e" text-anchor="start">router: top-4 of 32 experts</text>
+<text x="22" y="171" font-size="11" fill="#52514e" text-anchor="start">hands the layer to ops</text>
+<line x1="104.0" y1="100" x2="104.0" y2="120" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="107.0" y="103.0" width="49.4" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="110.0" y="114.0" font-size="11" fill="#52514e" text-anchor="start">creates</text>
+<rect x="250" y="120" width="196" height="73" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="348.0" y="134" font-size="11" fill="#52514e" text-anchor="middle">«interface»</text>
+<text x="348.0" y="149" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">ComputeOps</text>
+<line x1="250" y1="155" x2="446" y2="155" stroke="#c3c2b7" stroke-width="1"/>
+<text x="258" y="169" font-size="11" fill="#52514e" text-anchor="start">gemm_qs4cx_moe_layer_fp32()</text>
+<text x="258" y="184" font-size="11" fill="#52514e" text-anchor="start">register_qs4cx_weight()</text>
+<line x1="194" y1="158" x2="250" y2="158" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="203.5" y="142" width="37.0" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="222.0" y="153" font-size="11" fill="#52514e" text-anchor="middle">calls</text>
+<rect x="250" y="215" width="196" height="26" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="348.0" y="231" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">CpuComputeOps</text>
+<line x1="348.0" y1="215" x2="348.0" y2="193" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-inh)"/>
+<line x1="348.0" y1="263" x2="348.0" y2="241" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-inh)"/>
+<rect x="250" y="263" width="196" height="246" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="348.0" y="279" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpComputeOps</text>
+<line x1="250" y1="285" x2="446" y2="285" stroke="#eb6834" stroke-width="1"/>
+<text x="258" y="299" font-size="11" fill="#52514e" text-anchor="start">invokeMoeLayer()</text>
+<text x="258" y="314" font-size="11" fill="#52514e" text-anchor="start">sendMoeOptsOnce()</text>
+<text x="258" y="329" font-size="11" fill="#52514e" text-anchor="start">get_or_register_wh()</text>
+<text x="258" y="344" font-size="11" fill="#52514e" text-anchor="start">invoke_mutex_, handle_cache_</text>
+<rect x="258" y="355" width="180" height="40" rx="5" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.1"/>
+<text x="348.0" y="370" font-size="11.5" fill="#0b0b0b" text-anchor="middle" font-weight="600">ArenaChunk · ArenaEntry</text>
+<text x="348.0" y="385" font-size="11" fill="#52514e" text-anchor="middle">the ION weight arena</text>
+<rect x="258" y="401" width="180" height="40" rx="5" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.1"/>
+<text x="348.0" y="416" font-size="11.5" fill="#0b0b0b" text-anchor="middle" font-weight="600">StagingPool × 2</text>
+<text x="348.0" y="431" font-size="11" fill="#52514e" text-anchor="middle">act_pool_, out_pool_</text>
+<rect x="258" y="447" width="180" height="54" rx="5" fill="#fcfcfb" stroke="#52514e" stroke-width="1.1" stroke-dasharray="5 3"/>
+<text x="348.0" y="462" font-size="11" fill="#52514e" text-anchor="middle" font-style="italic">behind NNTR_HTP_FORWARD</text>
+<text x="348.0" y="476" font-size="11.5" fill="#0b0b0b" text-anchor="middle" font-weight="600">graph_words_, moe_ops_</text>
+<text x="348.0" y="491" font-size="11" fill="#52514e" text-anchor="middle">invokeForward()</text>
+<rect x="14" y="263" width="180" height="60" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="104.0" y="279" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpContext</text>
+<line x1="14" y1="285" x2="194" y2="285" stroke="#eb6834" stroke-width="1"/>
+<text x="22" y="299" font-size="11" fill="#52514e" text-anchor="start">engine = &quot;htp&quot;</text>
+<text x="22" y="314" font-size="11" fill="#52514e" text-anchor="start">initialize(): picks the ops</text>
+<line x1="194" y1="293" x2="250" y2="293" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="197.3" y="277" width="49.4" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="222.0" y="288" font-size="11" fill="#52514e" text-anchor="middle">selects</text>
+<rect x="14" y="345" width="180" height="75" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="104.0" y="361" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpRpcBuffer</text>
+<line x1="14" y1="367" x2="194" y2="367" stroke="#8a7f5c" stroke-width="1"/>
+<text x="22" y="381" font-size="11" fill="#52514e" text-anchor="start">one ION buffer (rpcmem)</text>
+<text x="22" y="396" font-size="11" fill="#52514e" text-anchor="start">cached: staging</text>
+<text x="22" y="411" font-size="11" fill="#52514e" text-anchor="start">uncached: arena</text>
+<line x1="258" y1="375.0" x2="194" y2="375.0" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="208.6" y="359.0" width="30.8" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="224.0" y="370.0" font-size="11" fill="#52514e" text-anchor="middle">owns</text>
+<rect x="14" y="434" width="180" height="45" rx="6" fill="#f4efe1" stroke="#8a7f5c" stroke-width="1.2"/>
+<text x="104.0" y="450" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpRpcMemApi</text>
+<line x1="14" y1="456" x2="194" y2="456" stroke="#8a7f5c" stroke-width="1"/>
+<text x="22" y="470" font-size="11" fill="#52514e" text-anchor="start">rpcmem_* via dlsym</text>
+<line x1="104.0" y1="420" x2="104.0" y2="434" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="250" y="531" width="196" height="75" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="348.0" y="547" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpBackend</text>
+<line x1="250" y1="553" x2="446" y2="553" stroke="#eb6834" stroke-width="1"/>
+<text x="258" y="567" font-size="11" fill="#52514e" text-anchor="start">global(): one per process</text>
+<text x="258" y="582" font-size="11" fill="#52514e" text-anchor="start">handle_: the FastRPC session</text>
+<text x="258" y="597" font-size="11" fill="#52514e" text-anchor="start">poll-QoS reply wait</text>
+<line x1="348.0" y1="509" x2="348.0" y2="531" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="351.0" y="513.0" width="49.4" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="354.0" y="524.0" font-size="11" fill="#52514e" text-anchor="start">session</text>
+<rect x="14" y="531" width="180" height="60" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="104.0" y="547" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">HtpProfile</text>
+<line x1="14" y1="553" x2="194" y2="553" stroke="#eb6834" stroke-width="1"/>
+<text x="22" y="567" font-size="11" fill="#52514e" text-anchor="start">NNTR_HTP_PROFILE = 1..3</text>
+<text x="22" y="582" font-size="11" fill="#52514e" text-anchor="start">per-call timers</text>
+<rect x="464" y="120" width="56" height="486" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<rect x="530" y="120" width="56" height="486" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="525" y="42" font-size="11" fill="#52514e" text-anchor="middle">nntr_hvx.idl</text>
+<text x="525" y="57" font-size="11" fill="#52514e" text-anchor="middle">→ qaic</text>
+<text x="525" y="80" font-size="11" fill="#52514e" text-anchor="middle">52 methods,</text>
+<text x="525" y="95" font-size="11" fill="#52514e" text-anchor="middle">6 families (§3)</text>
+<text x="492" y="138" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="700">stub</text>
+<text x="558" y="138" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="700">skel</text>
+<text x="492" y="154" font-size="11" fill="#52514e" text-anchor="middle">ARM</text>
+<text x="558" y="154" font-size="11" fill="#52514e" text-anchor="middle">DSP</text>
+<line x1="446" y1="293" x2="464" y2="293" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="436.5" y="277" width="37.0" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="455.0" y="288" font-size="11" fill="#52514e" text-anchor="middle">calls</text>
+<line x1="446" y1="571" x2="464" y2="571" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="439.6" y="555" width="30.8" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="455.0" y="566" font-size="11" fill="#52514e" text-anchor="middle">open</text>
+<line x1="520" y1="363.0" x2="530" y2="363.0" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="612" y="40" width="240" height="90" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="732.0" y="56" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">nntr_hvx_session</text>
+<line x1="612" y1="62" x2="852" y2="62" stroke="#2a78d6" stroke-width="1"/>
+<text x="620" y="76" font-size="11" fill="#52514e" text-anchor="start">vtcm_base, vtcm_size: all of VTCM</text>
+<text x="620" y="91" font-size="11" fill="#52514e" text-anchor="start">weights_u8i4, arenas[32]</text>
+<text x="620" y="106" font-size="11" fill="#52514e" text-anchor="start">quant_pool, moe_scratch, moe_flags</text>
+<text x="620" y="121" font-size="11" fill="#52514e" text-anchor="start">graph, attn_m1 (off the default path)</text>
+<line x1="586" y1="70" x2="612" y2="70" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="583.6" y="54" width="30.8" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="599" y="65" font-size="11" fill="#52514e" text-anchor="middle">open</text>
+<rect x="612" y="150" width="240" height="60" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="732.0" y="166" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">hexkl_weight_u8i4 table</text>
+<line x1="612" y1="172" x2="852" y2="172" stroke="#2a78d6" stroke-width="1"/>
+<text x="620" y="186" font-size="11" fill="#52514e" text-anchor="start">2048 slots: K, N, w_scale, colsum_w</text>
+<text x="620" y="201" font-size="11" fill="#52514e" text-anchor="start">borrowed: points into the arena</text>
+<line x1="822" y1="130" x2="822" y2="150" stroke="#52514e" stroke-width="1.3" marker-start="url(#sw1-own)"/>
+<rect x="612" y="230" width="240" height="75" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="732.0" y="246" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">MoE kernel (hexkl_mm_u8i4_moe)</text>
+<line x1="612" y1="252" x2="852" y2="252" stroke="#2a78d6" stroke-width="1"/>
+<text x="620" y="266" font-size="11" fill="#52514e" text-anchor="start">hexkl_mm_u8i4_moe_layer_run()</text>
+<text x="620" y="281" font-size="11" fill="#52514e" text-anchor="start">prefill: HMX tiles · decode: HVX GEMV</text>
+<text x="620" y="296" font-size="11" fill="#52514e" text-anchor="start">decode default: VTCM feed, 2 slabs</text>
+<line x1="586" y1="260" x2="612" y2="260" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="583.6" y="244" width="30.8" height="14" rx="2" fill="#fcfcfb" opacity="0.92"/><text x="599" y="255" font-size="11" fill="#52514e" text-anchor="middle">call</text>
+<rect x="612" y="325" width="240" height="60" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="732.0" y="341" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">hvx_worker_pool</text>
+<line x1="612" y1="347" x2="852" y2="347" stroke="#2a78d6" stroke-width="1"/>
+<text x="620" y="361" font-size="11" fill="#52514e" text-anchor="start">run(): fork/join over 6 HVX lanes</text>
+<text x="620" y="376" font-size="11" fill="#52514e" text-anchor="start">submit_bg() / wait_bg()</text>
+<line x1="732.0" y1="305" x2="732.0" y2="325" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="612" y="399" width="240" height="60" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="732.0" y="415" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">hexkl_dma_ring</text>
+<line x1="612" y1="421" x2="852" y2="421" stroke="#2a78d6" stroke-width="1"/>
+<text x="620" y="435" font-size="11" fill="#52514e" text-anchor="start">push2d(), wait(idx), drain()</text>
+<text x="620" y="450" font-size="11" fill="#52514e" text-anchor="start">256 chained DMA descriptors</text>
+<line x1="852" y1="270" x2="866" y2="270" stroke="#52514e" stroke-width="1.3"/><line x1="866" y1="270" x2="866" y2="429" stroke="#52514e" stroke-width="1.3"/><line x1="866" y1="429" x2="852" y2="429" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/>
+<rect x="612" y="473" width="240" height="74" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="732.0" y="488" font-size="11" fill="#52514e" text-anchor="middle" font-style="italic">behind NNTR_HTP_FORWARD</text>
+<text x="732.0" y="503" font-size="12.5" fill="#0b0b0b" text-anchor="middle" font-weight="700">hexkl_graph</text>
+<line x1="612" y1="509" x2="852" y2="509" stroke="#c3c2b7" stroke-width="1"/>
+<text x="620" y="523" font-size="11" fill="#52514e" text-anchor="start">per-token op table: only MOE is wired</text>
+<text x="620" y="538" font-size="11" fill="#52514e" text-anchor="start">M=1 kernels: landed, not wired</text>
+<line x1="14" y1="636" x2="40" y2="636" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-inh)"/><text x="46" y="640" font-size="11" fill="#52514e" text-anchor="start">inherits</text>
+<line x1="112" y1="636" x2="140" y2="636" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw1-arrow)"/><text x="146" y="640" font-size="11" fill="#52514e" text-anchor="start">calls / uses / owns</text>
+<line x1="262" y1="636" x2="290" y2="636" stroke="#52514e" stroke-width="1.3" marker-start="url(#sw1-own)"/><text x="296" y="640" font-size="11" fill="#52514e" text-anchor="start">contains</text>
+<rect x="366" y="628" width="26" height="14" rx="3" fill="#fcfcfb" stroke="#52514e" stroke-dasharray="4 2"/><text x="398" y="640" font-size="11" fill="#52514e" text-anchor="start">off the default path</text>
+<text x="876" y="640" font-size="11" fill="#52514e" text-anchor="end">orange: ARM · blue: DSP · tan: memory</text>
+</svg>
+<figcaption>Only the members that matter for the MoE path are shown. <code>HtpComputeOps</code> owns every ION buffer; <code>HtpBackend</code> owns the one FastRPC session. The dashed boxes are code that is in the tree but not on the default path (§6).</figcaption>
+</figure>
+<ul>
+<li><strong>ARM:</strong> the model picks the <code>"htp"</code> engine per MoE layer. <code>HtpContext</code> hands that layer <code>HtpComputeOps</code>, or the plain CPU ops if the DSP cannot be opened.</li>
+<li><strong>Boundary:</strong> one IDL file; <code>qaic</code> turns it into a stub linked into the app and a skel linked into the DSP library. They must be built from the same IDL.</li>
+<li><strong>DSP:</strong> one session struct holds everything that lives across calls: VTCM, the weight table, the worker threads. The MoE kernel is a single entry, <code>hexkl_mm_u8i4_moe_layer_run</code>, that picks the prefill or decode path by the number of rows.</li>
+</ul>
+
+<h2 id="2-the-call-path">2. The call path of one MoE call <a class="hd" aria-label="link to this section" href="#2-the-call-path">#</a></h2>
+<figure>
+<svg viewBox="0 0 880 468" role="img" aria-label="Sequence of one MoE call: Lfm2MoELayer calls HtpComputeOps, which locks, stages the activation and calls the generated stub; FastRPC carries it to the skel on the DSP, which calls the MoE kernel; the kernel runs its stages on the worker pool, then the output returns the same way." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<defs><marker id="sw2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker><marker id="sw2-inh" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" orient="auto"><path d="M1,1 L11,6 L1,11 z" fill="#fcfcfb" stroke="#52514e" stroke-width="1.2"/></marker><marker id="sw2-own" viewBox="0 0 14 10" refX="1" refY="5" markerWidth="12" markerHeight="9" orient="auto-start-reverse"><path d="M1,5 L7,1 L13,5 L7,9 z" fill="#52514e"/></marker></defs>
+<rect x="17.599999999999994" y="8" width="104.80000000000001" height="28" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="70" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Lfm2MoELayer</text>
+<line x1="70" y1="36" x2="70" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<rect x="168.9" y="8" width="112.2" height="28" rx="6" fill="#fdeee6" stroke="#eb6834" stroke-width="1.2"/>
+<text x="225" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">HtpComputeOps</text>
+<line x1="225" y1="36" x2="225" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<rect x="323.9" y="8" width="112.2" height="28" rx="6" fill="#fcfcfb" stroke="#c3c2b7" stroke-width="1.2"/>
+<text x="380" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">stub + driver</text>
+<line x1="380" y1="36" x2="380" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<rect x="477.0" y="8" width="96" height="28" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="525" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">skel</text>
+<line x1="525" y1="36" x2="525" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<rect x="617.0" y="8" width="96" height="28" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="665" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">MoE kernel</text>
+<line x1="665" y1="36" x2="665" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<rect x="761.3" y="8" width="97.4" height="28" rx="6" fill="#e9f1fb" stroke="#2a78d6" stroke-width="1.2"/>
+<text x="810" y="27" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">worker pool</text>
+<line x1="810" y1="36" x2="810" y2="460" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="3 3"/>
+<line x1="74" y1="78" x2="221" y2="78" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="59.8" y="61" width="175.4" height="14" fill="#fcfcfb"/><text x="147.5" y="72" font-size="11" fill="#52514e" text-anchor="middle">gemm_qs4cx_moe_layer_fp32()</text>
+<path d="M225,106 h26 v12 h-24" fill="none" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="257" y="101" width="280.8" height="15" fill="#fcfcfb"/><text x="261" y="113" font-size="11" fill="#52514e" text-anchor="start">invokeMoeLayer(): lock, stage the activation</text>
+<line x1="229" y1="146" x2="376" y2="146" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="211.7" y="129" width="181.6" height="14" fill="#fcfcfb"/><text x="302.5" y="140" font-size="11" fill="#52514e" text-anchor="middle">nntr_hvx_mm_u8i4_moe_layer()</text>
+<line x1="384" y1="180" x2="521" y2="180" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="426.8" y="163" width="51.4" height="14" fill="#fcfcfb"/><text x="452.5" y="174" font-size="11" fill="#52514e" text-anchor="middle">FastRPC</text>
+<line x1="529" y1="214" x2="661" y2="214" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="501.1" y="197" width="187.8" height="14" fill="#fcfcfb"/><text x="595.0" y="208" font-size="11" fill="#52514e" text-anchor="middle">hexkl_mm_u8i4_moe_layer_run()</text>
+<line x1="669" y1="248" x2="806" y2="248" stroke="#52514e" stroke-width="1.3" marker-end="url(#sw2-arrow)"/>
+<rect x="631.2" y="231" width="212.6" height="14" fill="#fcfcfb"/><text x="737.5" y="242" font-size="11" fill="#52514e" text-anchor="middle">hvx_worker_pool_run(), per expert</text>
+<line x1="806" y1="282" x2="669" y2="282" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sw2-arrow)"/>
+<rect x="721.1" y="265" width="32.8" height="14" fill="#fcfcfb"/><text x="737.5" y="276" font-size="11" fill="#52514e" text-anchor="middle">join</text>
+<line x1="661" y1="316" x2="529" y2="316" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sw2-arrow)"/>
+<rect x="572.4" y="299" width="45.2" height="14" fill="#fcfcfb"/><text x="595.0" y="310" font-size="11" fill="#52514e" text-anchor="middle">output</text>
+<line x1="521" y1="350" x2="384" y2="350" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sw2-arrow)"/>
+<rect x="429.9" y="333" width="45.2" height="14" fill="#fcfcfb"/><text x="452.5" y="344" font-size="11" fill="#52514e" text-anchor="middle">return</text>
+<line x1="376" y1="384" x2="229" y2="384" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sw2-arrow)"/>
+<rect x="230.3" y="367" width="144.4" height="14" fill="#fcfcfb"/><text x="302.5" y="378" font-size="11" fill="#52514e" text-anchor="middle">reply, seen by polling</text>
+<line x1="221" y1="418" x2="74" y2="418" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sw2-arrow)"/>
+<rect x="103.19999999999999" y="401" width="88.60000000000001" height="14" fill="#fcfcfb"/><text x="147.5" y="412" font-size="11" fill="#52514e" text-anchor="middle">output tensor</text>
+</svg>
+<figcaption>Solid arrows are calls, dashed arrows returns. The step-by-step version with timings is in <a href="communication.html#3-life-of-one-moe-call">Communication §3</a>.</figcaption>
+</figure>
+
+<h2 id="3-the-idl">3. The IDL <a class="hd" aria-label="link to this section" href="#3-the-idl">#</a></h2>
+<p><code>test/htp/nntr_hvx.idl</code> declares 52 methods. They fall into six families:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>family</th><th>what it does</th><th>example</th><th>methods</th></tr></thead>
+<tbody>
+<tr><td><strong>Weights and arena</strong></td><td>map ION arena chunks into the DSP; register a weight matrix and get a handle back</td><td><code>weight_register_u8i4_arena</code></td><td>8</td></tr>
+<tr><td><strong>Matmul (FC)</strong></td><td>one quantized linear layer, fused gate/up + SwiGLU, the conv block</td><td><code>mm_u8i4_layer</code></td><td>13</td></tr>
+<tr><td><strong>MoE</strong></td><td>one whole MoE layer per call, and the option word sent once</td><td><code>mm_u8i4_moe_layer</code></td><td>3</td></tr>
+<tr><td><strong>Attention and small ops</strong></td><td>the prefill-era attention and element-wise kernels</td><td><code>attn_forward</code></td><td>10</td></tr>
+<tr><td><strong>Per-token entry</strong> <span class="tag">off by default</span></td><td>send the op table once, then one call per token; the M=1 kernels it will wire in</td><td><code>forward</code></td><td>11</td></tr>
+<tr><td><strong>Probes and debug</strong></td><td>DMA bandwidth probes, trace readout, memory probes</td><td><code>dma_probe</code></td><td>7</td></tr>
+</tbody></table></div>
+<p>Most matmul and attention methods come in pairs: <code>x</code> and <code>x_timed</code>. The <code>_timed</code> twin also returns the DSP's own stage timers; it is what <code>NNTR_HTP_PROFILE=2</code> calls. <code>open</code> and <code>close</code> come from <code>remote_handle64</code> and are not counted.</p>
+
+<h2 id="4-code-map">4. Code map <a class="hd" aria-label="link to this section" href="#4-code-map">#</a></h2>
+<div class="tablewrap"><table>
+<thead><tr><th>where</th><th>what lives there</th></tr></thead>
+<tbody>
+<tr><td colspan="2"><strong>ARM</strong></td></tr>
+<tr><td><code>Applications/CausalLM/models/lfm2_moe/</code></td><td><code>Lfm2MoeCausalLM</code> (reads <code>moe_engine</code>, creates the layers) and <code>Lfm2MoELayer</code> (router, hand-off)</td></tr>
+<tr><td><code>Applications/CausalLM/models/transformer.cpp</code></td><td>load time: registers every MoE weight, runs the warm-up call</td></tr>
+<tr><td><code>nntrainer/htp_context.h/.cpp</code></td><td><code>HtpContext</code>: the <code>"htp"</code> engine, picks the HTP or the CPU ops</td></tr>
+<tr><td><code>nntrainer/tensor/cpu_backend/compute_ops.h</code></td><td><code>ComputeOps</code>: the interface a layer calls</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/htp_compute_ops.cpp</code></td><td><code>HtpComputeOps</code>, <code>HtpProfile</code>: arena, staging, handles, every call</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/htp_backend.h/.cpp</code></td><td><code>HtpBackend</code>: opens and owns the session</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/htp_rpcmem.h</code></td><td><code>HtpRpcMemApi</code>, <code>HtpRpcBuffer</code>: ION buffers</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/htp_moe_opts.h</code>, <code>htp_graph_desc.h</code></td><td>C headers shared by both sides: the MoE option bits, the per-token op table format</td></tr>
+<tr><td><code>nntrainer/tensor/htp_wh_layout.h</code> and neighbours</td><td>the NPU weight tile layout, Q4_0 conversion, activation quantization</td></tr>
+<tr><td colspan="2"><strong>Boundary</strong></td></tr>
+<tr><td><code>test/htp/nntr_hvx.idl</code></td><td>the interface: every method both sides agree on</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/generate_stub.sh</code> → <code>generated/</code></td><td>the ARM stub, generated by <code>qaic</code></td></tr>
+<tr><td><code>test/htp/build.sh</code></td><td>builds the skel, <code>libnntr_hvx_skel.so</code></td></tr>
+<tr><td colspan="2"><strong>DSP</strong></td></tr>
+<tr><td><code>test/htp/hvx_add_f32.c</code>, <code>nntr_hvx_session.h</code></td><td>open / close and the session struct</td></tr>
+<tr><td><code>test/htp/nntr_hvx_mm_u8i4.c</code></td><td>skel entries for weights, arena, matmul and MoE</td></tr>
+<tr><td><code>test/htp/nntr_hvx_graph.c</code>, <code>nntr_hvx_small_ops.c</code>, <code>nntr_hvx_attn_m1.c</code></td><td>entries for the per-token path and its M=1 kernels</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/hmx/</code></td><td>HMX-side kernels: the MoE kernel, the FC path and weight table, the DMA ring, the op table</td></tr>
+<tr><td><code>nntrainer/tensor/htp_backend/hvx/</code></td><td>HVX kernels: the decode GEMV, the worker pool, the M=1 ops</td></tr>
+<tr><td colspan="2"><strong>Tests</strong></td></tr>
+<tr><td><code>test/htp/host/</code></td><td>host checks that run the DSP code on x86 without a phone; the in-process end-to-end run</td></tr>
+<tr><td><code>test/unittest/unittest_hvx_mm_u8i4.cpp</code></td><td>the on-device test: kernels against each other and a reference</td></tr>
+</tbody></table></div>
+
+<h2 id="5-switches">5. Switches <a class="hd" aria-label="link to this section" href="#5-switches">#</a></h2>
+<p>The ones a reader needs; the rest are debug knobs.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>switch</th><th>default</th><th>what it does</th></tr></thead>
+<tbody>
+<tr><td><code>moe_engine</code> (model config)</td><td><code>cpu</code></td><td><code>htp</code> puts the MoE layers on the NPU</td></tr>
+<tr><td><code>moe_htp_layers</code> (model config)</td><td>all</td><td>which MoE layers go to the NPU</td></tr>
+<tr><td><code>NNTR_HTP_PROFILE</code></td><td>off</td><td>1–3: per-call timing, then the DSP's own stage timers</td></tr>
+<tr><td><code>NNTR_MOE_HTP_GEMV_FEED</code></td><td>1</td><td>0 falls back to the arena read for decode</td></tr>
+<tr><td><code>NNTR_MOE_HTP_M1_GEMV</code></td><td>1</td><td>0 sends decode through the prefill (HMX) path</td></tr>
+<tr><td><code>NNTR_HTP_POLL_US</code></td><td>5000</td><td>how long the ARM thread polls for a reply</td></tr>
+<tr><td><code>NNTR_HTP_FORWARD</code></td><td>off</td><td>1 routes decode through the per-token entry (§6)</td></tr>
+</tbody></table></div>
+<p>With nothing set, the startup banner prints the applied option word, <code>applied=0x303e1 … feed=vtcm</code>. If the DSP echoes back a different word, the app stops and says to rebuild the skel.</p>
+
+<h2 id="6-landed-not-default">6. In the tree but not on the default path <a class="hd" aria-label="link to this section" href="#6-landed-not-default">#</a></h2>
+<ul>
+<li><strong>The per-token entry</strong> <span class="tag">behind NNTR_HTP_FORWARD</span>. Instead of 22 calls per token, the app sends a table describing the whole decode step once (<code>graph_init</code>), then makes one <code>forward</code> call per token. Today only the MoE op is filled in the DSP's kernel table, so it still makes one call per MoE layer. Off by default.</li>
+<li><strong>M=1 kernels</strong> <span class="tag">landed, not wired</span>. HVX versions of RMSNorm, RoPE, the conv gate and single-token attention with its KV cache are in the DSP library and pass their host checks, but the op table does not call them yet. Wiring them in is the next step toward one call per token (<a href="roadmap.html">Roadmap</a>).</li>
+</ul>
+
+<h2 id="terms">Terms <a class="hd" aria-label="link to this section" href="#terms">#</a></h2>
+<div class="gloss">
+<dl>
+<dt>NPU / DSP / HTP</dt><dd>The same Hexagon processor. The code says <code>htp</code>.</dd>
+<dt>HVX</dt><dd>Hexagon Vector eXtensions: the DSP's wide SIMD units; the backend uses 6 lanes.</dd>
+<dt>HMX</dt><dd>Hexagon Matrix eXtensions: the matrix-multiply unit. It reads only VTCM.</dd>
+<dt>VTCM</dt><dd>About 8 MiB of fast on-chip memory next to HVX and HMX.</dd>
+<dt>FastRPC</dt><dd>Qualcomm's remote procedure call from an ARM process to the DSP.</dd>
+<dt>IDL, stub, skel</dt><dd>The interface file, and the two halves <code>qaic</code> generates from it: the ARM-side stub packs arguments, the DSP-side skel unpacks them and calls our code.</dd>
+<dt>ION</dt><dd>Android's shareable memory. Both the ARM and the DSP can map the same ION buffer.</dd>
+<dt>M=1</dt><dd>One row of activation: one token, i.e. decode.</dd>
+<dt>GEMV</dt><dd>Matrix × vector: the decode-time matmul.</dd>
+</dl>
+</div>
+
+<h2 id="further-reading">Further reading <a class="hd" aria-label="link to this section" href="#further-reading">#</a></h2>
+<ul>
+<li><a href="communication.html">Communication</a>: what happens at run time, with timings.</li>
+<li><a href="foundation.html">Foundation</a>: FastRPC, the session, memory and the build in detail.</li>
+<li><a href="moe-ffn.html">MoE FFN</a>: the MoE kernel stage by stage.</li>
+<li><a href="weight-format.html">Weight format</a>: the tile layout the arena holds.</li>
+</ul>
+
+<details class="sources"><summary>Sources and snapshot</summary>
+<ul>
+<li>Code read at <code>htp_moe</code> @ <code>9f074a5e</code> (the code is unchanged at <code>1856ae08</code>).</li>
+<li>Per-token entry: issue #85, PR #119. M=1 kernels: #82 (RMSNorm, RoPE, conv gate) and #81 (attention + KV cache); wiring tracked in #130.</li>
+<li>The conv block methods came with the upstream PR #4327 sync (PR #121).</li>
+</ul>
+</details>
+
+<div class="pager"><span>← <a href="communication.html">Communication</a></span><span><a href="optimizations.html">Optimizations</a> →</span></div>
+<footer>docs/htp: nntrainer HTP backend technical docs.</footer>
+</main>
+<script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
+</body></html>

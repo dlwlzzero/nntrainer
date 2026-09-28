@@ -45,7 +45,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 </style>
 
 </head><body>
-<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><span class="sep">|</span><a href="architecture.html" class="here">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a href="index.html">Results</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="sep">|</span><a href="architecture.html" class="here">Architecture</a><a href="foundation.html">Foundation</a><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
 <main>
 <h1>Architecture</h1>
 <nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-the-hardware">1. The hardware</a></li><li class="l2"><a href="#2-the-model-and-who-runs-what">2. The model and who runs what</a></li><li class="l2"><a href="#3-one-token-end-to-end">3. One token, end to end</a></li><li class="l2"><a href="#4-one-moe-call-step-by-step">4. One MoE call, step by step</a></li><li class="l3"><a href="#41-on-the-arm">4.1 On the ARM</a></li><li class="l3"><a href="#42-on-the-dsp-which-path">4.2 On the DSP: which path</a></li><li class="l3"><a href="#43-the-decode-path-hvx-gemv">4.3 The decode path (HVX GEMV)</a></li><li class="l3"><a href="#44-the-prefill-path-hmx">4.4 The prefill path (HMX)</a></li><li class="l2"><a href="#5-the-weight-format">5. The weight format</a></li><li class="l2"><a href="#6-runtime-switches">6. Runtime switches</a></li><li class="l2"><a href="#7-code-map">7. Code map</a></li><li class="l2"><a href="#8-where-the-design-goes-next">8. Where the design goes next</a></li></ul></details></nav>
@@ -669,7 +669,7 @@ and every layer op runs on the DSP.</p>
 between two MoE layers is resident.
 Plans and budget: <a href="roadmap.html">roadmap.html</a>.</p>
 
-<div class="pager"><span>← <a href="communication.html">Communication</a></span><span><a href="foundation.html">Foundation</a> →</span></div>
+<div class="pager"><span>← <a href="optimizations.html">Optimizations</a></span><span><a href="foundation.html">Foundation</a> →</span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 <script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
