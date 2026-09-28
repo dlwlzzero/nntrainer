@@ -25,6 +25,7 @@
 #include "hvx_softmax_blocked_f32.h"
 #include "hvx_softmax_f32.h"
 #include "hvx_swiglu_det.h"
+#include "hvx_swiglu_f32.h"
 
 /** @brief HVX vector width in bytes (128B mode). */
 #define VLEN 128u
@@ -104,6 +105,39 @@ int nntr_hvx_swiglu_det_f32(remote_handle64 handle, const float *gate,
     vr[i] = hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
     vo[i] = hvx_swiglu_det_sf(g, vu[i]);
   }
+  return AEE_SUCCESS;
+}
+
+int nntr_hvx_geglu_det_f32(remote_handle64 handle, const float *gate,
+                           int gateLen, const float *up, int upLen, float *res,
+                           int resLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s) {
+    return AEE_EBADPARM;
+  }
+  if (gateLen <= 0 || gateLen != upLen || gateLen != resLen) {
+    FARF(ERROR, "geglu_det_f32: bad lengths (%d %d %d)", gateLen, upLen,
+         resLen);
+    return AEE_EBADPARM;
+  }
+  memcpy(res, gate, (size_t)gateLen * sizeof(float));
+  hvx_geglu_inplace_f32(res, up, 1u, (uint32_t)gateLen, NULL);
+  return AEE_SUCCESS;
+}
+
+int nntr_hvx_tanh_det_f32(remote_handle64 handle, const float *x, int xLen,
+                          float in_scale, float out_scale, float *res,
+                          int resLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s) {
+    return AEE_EBADPARM;
+  }
+  if (xLen <= 0 || xLen != resLen) {
+    FARF(ERROR, "tanh_det_f32: bad lengths (%d %d)", xLen, resLen);
+    return AEE_EBADPARM;
+  }
+  memcpy(res, x, (size_t)xLen * sizeof(float));
+  hvx_tanh_inplace_f32(res, (uint32_t)xLen, in_scale, out_scale);
   return AEE_SUCCESS;
 }
 

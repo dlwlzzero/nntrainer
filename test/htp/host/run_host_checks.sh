@@ -225,3 +225,30 @@ fi
   "$BACKEND/hvx/hvx_worker_pool.c" -lm
 
 "$OUT/attn_m1_host_check"
+
+# Gemma4's GeGLU and tanh / softcap: the REAL hvx_swiglu_f32.c on hvx_emu/
+# memcmp'd against swiglu_det.h's geglu_det_one / tanh_det_one, plus each
+# spec's error against double. Then two mutants of the kernel file, each of
+# which must fail, or the bit compare is not looking at that function.
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/geglu_tanh_host_check" \
+  "$HERE/geglu_tanh_host_check.c" "$BACKEND/hvx/hvx_swiglu_f32.c" -lm
+
+"$OUT/geglu_tanh_host_check"
+
+for mut in 's/hvx_geglu_det_sf(g, u)/hvx_swiglu_det_sf(g, u)/' \
+  's/hvx_tanh_det_sf(\*p, vin, vout)/hvx_tanh_det_sf(*p, vout, vin)/'; do
+  sed "$mut" "$BACKEND/hvx/hvx_swiglu_f32.c" > "$OUT/geglu_mutant.c"
+  if cmp -s "$OUT/geglu_mutant.c" "$BACKEND/hvx/hvx_swiglu_f32.c"; then
+    echo "GEGLU/TANH MUTATION DID NOT APPLY: $mut"; exit 1
+  fi
+  "$cc" -std=c99 -O2 -w -ffp-contract=off \
+    -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+    -o "$OUT/geglu_mutant" "$HERE/geglu_tanh_host_check.c" \
+    "$OUT/geglu_mutant.c" -lm
+  if "$OUT/geglu_mutant" > "$OUT/geglu_mutant.log"; then
+    echo "GEGLU/TANH MUTANT PASSED (the check is blind): $mut"; exit 1
+  fi
+  echo "GEGLU/TANH MUTANT CAUGHT: $mut"
+done

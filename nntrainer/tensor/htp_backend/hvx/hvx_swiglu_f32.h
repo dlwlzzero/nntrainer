@@ -4,7 +4,7 @@
  *
  * @file   hvx_swiglu_f32.h
  * @date   08 Sep 2026
- * @brief  In-place SwiGLU over f32 rows for the fused MoE FFN path
+ * @brief  In-place SwiGLU / GeGLU / tanh over f32 rows (hvx_swiglu_det.h)
  * @see    https://github.com/nntrainer/nntrainer
  * @author SeungHui Lee <shsh1004.lee@samsung.com>
  * @bug    No known bugs except for NYI items
@@ -35,5 +35,26 @@
  */
 void hvx_swiglu_inplace_f32(float *gate, const float *up, uint32_t m_valid,
                             uint32_t n_out, hvx_worker_pool *pool);
+
+/**
+ * @brief gate[r][j] = gelu_tanh(gate[r][j]) * up[r][j] -- Gemma4's GeGLU --
+ *        with hvx_swiglu_inplace_f32's shape, pool and aliasing contract.
+ *
+ * Bit-identical to swiglu_det.h's geglu_det_one (hvx_swiglu_det.h has the
+ * spec), for the same reason SwiGLU is: the result feeds a requantization.
+ * |gate| <= 1e12 (hvx_geglu_det_sf's domain).
+ */
+void hvx_geglu_inplace_f32(float *gate, const float *up, uint32_t m_valid,
+                           uint32_t n_out, hvx_worker_pool *pool);
+
+/**
+ * @brief x[i] = out_scale * tanh(x[i] * in_scale), in place, on the calling
+ *        thread. (1, 1) is tanh; (1/cap, cap) is Gemma's logit softcap.
+ *
+ * Bit-identical to swiglu_det.h's tanh_det_one. Any n; the tail runs the
+ * scalar spec.
+ */
+void hvx_tanh_inplace_f32(float *x, uint32_t n, float in_scale,
+                          float out_scale);
 
 #endif /* __NNTRAINER_HVX_SWIGLU_F32_H__ */

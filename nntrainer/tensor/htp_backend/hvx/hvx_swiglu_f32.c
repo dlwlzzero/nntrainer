@@ -4,7 +4,7 @@
  *
  * @file   hvx_swiglu_f32.c
  * @date   08 Sep 2026
- * @brief  In-place SwiGLU over f32 rows for the fused MoE FFN path
+ * @brief  In-place SwiGLU / GeGLU / tanh over f32 rows (hvx_swiglu_det.h)
  * @see    https://github.com/nntrainer/nntrainer
  * @author SeungHui Lee <shsh1004.lee@samsung.com>
  * @bug    No known bugs except for NYI items
@@ -68,6 +68,19 @@ static void hvx_swiglu_row_f32(float *gate, const float *up, uint32_t n_out) {
   }
 }
 
+/** @brief GeGLU of one row in place, the same shape as the SwiGLU row. */
+static void hvx_geglu_row_f32(float *gate, const float *up, uint32_t n_out) {
+  uint32_t j = 0;
+  for (; j + LANES <= n_out; j += LANES) {
+    const HVX_Vector g = ((const HVX_UVector *)(gate + j))[0];
+    const HVX_Vector u = ((const HVX_UVector *)(up + j))[0];
+    ((HVX_UVector *)(gate + j))[0] = hvx_geglu_det_sf(g, u);
+  }
+  for (; j < n_out; ++j) {
+    gate[j] = geglu_det_one(gate[j], up[j]);
+  }
+}
+
 /** @brief hvx_worker_pool_func body: rows are independent, so the pool
  *         splits by row range -- the same contiguous lo/hi split the bake
  *         and quant workers use. */
@@ -76,6 +89,7 @@ typedef struct {
   const float *up;
   uint32_t rows; /**< m_valid, == the n_units the pool run was given */
   uint32_t n_out;
+  void (*row)(float *, const float *, uint32_t); /**< SwiGLU or GeGLU */
 } hvx_swiglu_ctx;
 
 static void hvx_swiglu_worker(uint32_t n_threads, uint32_t i, void *vctx) {
@@ -83,8 +97,8 @@ static void hvx_swiglu_worker(uint32_t n_threads, uint32_t i, void *vctx) {
   const uint32_t lo = (uint32_t)((uint64_t)c->rows * i / n_threads);
   const uint32_t hi = (uint32_t)((uint64_t)c->rows * (i + 1) / n_threads);
   for (uint32_t r = lo; r < hi; ++r) {
-    hvx_swiglu_row_f32(c->gate + (size_t)r * c->n_out,
-                       c->up + (size_t)r * c->n_out, c->n_out);
+    c->row(c->gate + (size_t)r * c->n_out, c->up + (size_t)r * c->n_out,
+           c->n_out);
   }
 }
 
@@ -93,6 +107,34 @@ void hvx_swiglu_inplace_f32(float *gate, const float *up, uint32_t m_valid,
   if (!gate || !up || m_valid == 0 || n_out == 0) {
     return;
   }
-  hvx_swiglu_ctx c = {gate, up, m_valid, n_out};
+  hvx_swiglu_ctx c = {gate, up, m_valid, n_out, hvx_swiglu_row_f32};
   hvx_worker_pool_run(pool, hvx_swiglu_worker, &c, m_valid);
+}
+
+void hvx_geglu_inplace_f32(float *gate, const float *up, uint32_t m_valid,
+                           uint32_t n_out, hvx_worker_pool *pool) {
+  if (!gate || !up || m_valid == 0 || n_out == 0) {
+    return;
+  }
+  hvx_swiglu_ctx c = {gate, up, m_valid, n_out, hvx_geglu_row_f32};
+  hvx_worker_pool_run(pool, hvx_swiglu_worker, &c, m_valid);
+}
+
+/* ponytail: one thread. The softcap row is 262144 floats once per token;
+   split it over the pool only if a device profile shows it matters. */
+void hvx_tanh_inplace_f32(float *x, uint32_t n, float in_scale,
+                          float out_scale) {
+  if (!x) {
+    return;
+  }
+  const HVX_Vector vin = hvx_splat_sf(in_scale);
+  const HVX_Vector vout = hvx_splat_sf(out_scale);
+  uint32_t j = 0;
+  for (; j + LANES <= n; j += LANES) {
+    HVX_UVector *p = (HVX_UVector *)(x + j);
+    *p = hvx_tanh_det_sf(*p, vin, vout);
+  }
+  for (; j < n; ++j) {
+    x[j] = tanh_det_one(x[j], in_scale, out_scale);
+  }
 }

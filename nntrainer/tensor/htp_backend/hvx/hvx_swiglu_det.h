@@ -52,6 +52,9 @@
  *
  *   swiglu_det(g, u) = (g * recip_det(1 + exp_det(-g))) * u
  *
+ *   geglu_det and tanh_det (Gemma4) are built from the same two parts;
+ *   their specs sit next to their functions at the end of this file.
+ *
  * ACCURACY, for the record -- this is not a precision compromise:
  *   |r| <= ln2/2, so the degree-7 truncation is r^8/8! <= 5.2e-9 relative,
  *   well under f32's 1.2e-7 epsilon. Three Newton-Raphson steps take the
@@ -187,6 +190,61 @@ static inline HVX_Vector hvx_swiglu_det_sf(HVX_Vector g, HVX_Vector u) {
   const HVX_Vector d = Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e);
   const HVX_Vector s = hvx_recip_det_sf(d);
   return Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(g, s), u);
+}
+
+/**
+ * @brief gelu_tanh(g)*u for every f32 lane -- Gemma's GeGLU gate.
+ *
+ * gelu_tanh(g) = 0.5*g*(1 + tanh(z)) = g / (1 + exp(-2z)), with
+ * z = sqrt(2/pi)*(g + 0.044715*g^3). So it is SwiGLU with a different exp
+ * argument, and it reuses exp_det and recip_det unchanged:
+ *
+ *   geglu_det(g, u):
+ *     a = g + ((g*g)*g) * C3
+ *     s = recip_det(1 + exp_det(a * K))        K = -2*sqrt(2/pi)
+ *     y = (g * s) * u
+ *
+ * DOMAIN: |g| <= 1e12, so g^3 stays finite (it overflows past 6.98e12, and
+ * Vsf infinities are not something this spec pins down). Inside it the
+ * exp clamp does the rest: a*K > 85 means gelu(g) is below 1e-35.
+ */
+static inline HVX_Vector hvx_geglu_det_sf(HVX_Vector g, HVX_Vector u) {
+  const HVX_Vector g3 = Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(g, g), g);
+  const HVX_Vector a =
+    Q6_Vsf_vadd_VsfVsf(g, Q6_Vsf_vmpy_VsfVsf(g3, hvx_splat_sf(0.044715f)));
+  const HVX_Vector e =
+    hvx_exp_det_sf(Q6_Vsf_vmpy_VsfVsf(a, hvx_splat_sf(-1.5957691216f)));
+  const HVX_Vector s =
+    hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
+  return Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(g, s), u);
+}
+
+/**
+ * @brief out_scale * tanh(x * in_scale) for every f32 lane.
+ *
+ *   tanh_det(x, in, out):
+ *     z = x * in
+ *     s = recip_det(1 + exp_det(z * -2))
+ *     y = ((s * 2) - 1) * out
+ *
+ * (1, 1) is plain tanh; (1/cap, cap) is Gemma's final logit softcap.
+ *
+ * ACCURACY, as a property of the spec: 2s - 1 cancels near z = 0, so the
+ * error there is absolute (a few 1e-8), not relative -- tanh(1e-6) comes
+ * out with no correct digits. For a softcap that is 30 * 6e-8 = 2e-6 on a
+ * logit, which cannot move a sample. The top end saturates at 1 - 2^-23
+ * rather than 1, because recip_det(1) is one ulp below 1 (swiglu_det.h).
+ */
+static inline HVX_Vector hvx_tanh_det_sf(HVX_Vector x, HVX_Vector in_scale,
+                                         HVX_Vector out_scale) {
+  const HVX_Vector z = Q6_Vsf_vmpy_VsfVsf(x, in_scale);
+  const HVX_Vector e =
+    hvx_exp_det_sf(Q6_Vsf_vmpy_VsfVsf(z, hvx_splat_sf(-2.0f)));
+  const HVX_Vector s =
+    hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
+  const HVX_Vector t = Q6_Vsf_vsub_VsfVsf(
+    Q6_Vsf_vmpy_VsfVsf(s, hvx_splat_sf(2.0f)), hvx_splat_sf(1.0f));
+  return Q6_Vsf_vmpy_VsfVsf(t, out_scale);
 }
 
 #endif /* __NNTRAINER_HVX_SWIGLU_DET_H__ */

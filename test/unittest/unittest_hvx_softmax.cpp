@@ -289,6 +289,98 @@ TEST(SwigluDetNeon, MatchesScalar) {
 #endif
 }
 
+class HvxGegluTanhDet : public HtpSession {};
+
+namespace {
+
+/** @brief HvxSwigluDet's spread (both exp clamps, then a dense band) plus
+ *         near-zero powers of two; any length, so the DSP's scalar tail
+ *         runs too. */
+std::vector<float> det_spread(int n, float band, uint32_t seed) {
+  std::vector<float> v(n);
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<float> d(-band, band);
+  for (int i = 0; i < n; ++i) {
+    const int k = i % 8192;
+    if (k < 64) {
+      v[i] = -200.0f + 3.0f * static_cast<float>(k);
+    } else if (k < 128) {
+      v[i] = 100.0f - 3.0f * static_cast<float>(k - 64);
+    } else if (k < 160) {
+      v[i] = std::ldexp((k & 1) ? -1.0f : 1.0f, -(k - 128));
+    } else {
+      v[i] = d(rng);
+    }
+  }
+  return v;
+}
+
+} // namespace
+
+/**
+ * @brief Gemma4's GeGLU on the DSP is bit-identical to swiglu_det.h's
+ *        geglu_det_one -- the property a requantized FFN needs (see
+ *        HvxSwigluDet.MatchesScalarBitExact). 8195 = 256 vectors + a
+ *        3-element tail. test/htp/host/geglu_tanh_host_check.c checks the
+ *        same source on an emulation; this checks the silicon.
+ */
+TEST_F(HvxGegluTanhDet, GegluMatchesScalarBitExact) {
+  const int n = 8195;
+  std::vector<float> g = det_spread(n, 8.0f, 0x6e6d0001u);
+  std::vector<float> u = det_spread(n, 8.0f, 0x6e6d0002u);
+  std::vector<float> o(n, 0.0f);
+  int err =
+    nntr_hvx_geglu_det_f32(handle_, g.data(), n, u.data(), n, o.data(), n);
+  ASSERT_EQ(err, AEE_SUCCESS) << "geglu_det_f32 failed: " << hex(err);
+  int bad = 0;
+  for (int i = 0; i < n; ++i) {
+    const float ref = geglu_det_one(g[i], u[i]);
+    if (bits_of(o[i]) != bits_of(ref)) {
+      if (bad == 0) {
+        std::cout << "GEGLU_DET first mismatch i=" << i << " g=" << g[i]
+                  << " u=" << u[i] << " dsp=" << std::hexfloat << o[i]
+                  << " ref=" << ref << std::defaultfloat << std::endl;
+      }
+      ++bad;
+    }
+  }
+  std::cout << "GEGLU_DET_FIELD bad=" << bad << " of " << n << std::endl;
+  EXPECT_EQ(bad, 0);
+}
+
+/** @brief The same for tanh: plain (1, 1) and Gemma's softcap (1/30, 30)
+ *         over the 262144-entry vocab row. */
+TEST_F(HvxGegluTanhDet, TanhMatchesScalarBitExact) {
+  const struct {
+    int n;
+    float in, out, band;
+  } cases[] = {{8195, 1.0f, 1.0f, 8.0f}, {262144, 1.0f / 30.0f, 30.0f, 100.0f}};
+  for (const auto &c : cases) {
+    std::vector<float> x = det_spread(c.n, c.band, 0x6e6d0003u);
+    std::vector<float> o(c.n, 0.0f);
+    int err =
+      nntr_hvx_tanh_det_f32(handle_, x.data(), c.n, c.in, c.out, o.data(), c.n);
+    ASSERT_EQ(err, AEE_SUCCESS) << "tanh_det_f32 failed: " << hex(err);
+    int bad = 0;
+    for (int i = 0; i < c.n; ++i) {
+      bad += bits_of(o[i]) != bits_of(tanh_det_one(x[i], c.in, c.out)) ? 1 : 0;
+    }
+    std::cout << "TANH_DET_FIELD n=" << c.n << " out=" << c.out
+              << " bad=" << bad << std::endl;
+    EXPECT_EQ(bad, 0) << "n=" << c.n;
+  }
+}
+
+TEST_F(HvxGegluTanhDet, RejectsLengthMismatch) {
+  std::vector<float> a(64, 1.0f), b(64);
+  EXPECT_EQ(
+    nntr_hvx_geglu_det_f32(handle_, a.data(), 64, a.data(), 32, b.data(), 64),
+    AEE_EBADPARM + kDspOffset);
+  EXPECT_EQ(
+    nntr_hvx_tanh_det_f32(handle_, a.data(), 64, 1.0f, 1.0f, b.data(), 32),
+    AEE_EBADPARM + kDspOffset);
+}
+
 class HvxM1Ops : public HtpSession {};
 
 namespace {

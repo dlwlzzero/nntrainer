@@ -182,6 +182,42 @@ static inline float swiglu_det_one(float g, float u) {
   return swiglu_det_mul(swiglu_det_mul(g, s), u);
 }
 
+/** @brief 0.044715, the cubic coefficient of the tanh GELU approximation. */
+#define GELU_DET_C3 0.044715f
+/** @brief -2*sqrt(2/pi): gelu_tanh(g) = g / (1 + exp(GELU_DET_K * (g +
+ *         C3*g^3))), since 0.5*(1 + tanh(z)) = 1/(1 + exp(-2z)). The same
+ *         constant neon_impl.cpp's tanh_gelu uses. */
+#define GELU_DET_K (-1.5957691216f)
+
+/** @brief gelu_tanh(g)*u, one element. hvx_geglu_det_sf is the normative
+ *         form; the ops and their order are part of the contract. */
+static inline float geglu_det_one(float g, float u) {
+  const float g3 = swiglu_det_mul(swiglu_det_mul(g, g), g);
+  const float a = swiglu_det_add(g, swiglu_det_mul(g3, GELU_DET_C3));
+  const float e = swiglu_det_exp(swiglu_det_mul(a, GELU_DET_K));
+  const float s = swiglu_det_recip(swiglu_det_add(1.0f, e));
+  return swiglu_det_mul(swiglu_det_mul(g, s), u);
+}
+
+/** @brief out_scale * tanh(x * in_scale), one element, with
+ *         tanh(z) = 2/(1 + exp(-2z)) - 1. hvx_tanh_det_sf is the normative
+ *         form. (1, 1) is plain tanh -- multiplying by 1 is exact; (1/cap,
+ *         cap) is Gemma's logit softcap, the order LogitSoftCappingLayer
+ *         uses. */
+static inline float tanh_det_one(float x, float in_scale, float out_scale) {
+  const float z = swiglu_det_mul(x, in_scale);
+  const float e = swiglu_det_exp(swiglu_det_mul(z, -2.0f));
+  const float s = swiglu_det_recip(swiglu_det_add(1.0f, e));
+  const float t = swiglu_det_sub(swiglu_det_mul(s, 2.0f), 1.0f);
+  return swiglu_det_mul(t, out_scale);
+}
+
+/* ponytail: GeGLU and tanh have no NEON form yet -- nothing on the CPU
+   calls them, since no Gemma4 MoE model runs in this tree. Add
+   geglu_det_neon / tanh_det_neon (and a SwigluDetNeon-style test) when a
+   model path needs the CPU side at speed; the scalar form above is the
+   spec either way. */
+
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #define SWIGLU_DET_HAS_NEON 1

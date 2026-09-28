@@ -229,6 +229,15 @@ interface nntr_hvx : remote_handle64 {
                             rout sequence<float> exp_out,
                             rout sequence<float> recip_out);
 
+   // Gemma4's GeGLU and tanh / softcap (hvx_swiglu_f32.c, spec in
+   // hvx_swiglu_det.h), for the bit-exact gtests against swiglu_det.h. Test
+   // entries: no model path calls them. Any length -- a tail that is not a
+   // multiple of 32 runs the scalar spec on the DSP, and is tested too.
+   AEEResult geglu_det_f32(in sequence<float> gate, in sequence<float> up,
+                           rout sequence<float> res);
+   AEEResult tanh_det_f32(in sequence<float> x, in float in_scale,
+                          in float out_scale, rout sequence<float> res);
+
    AEEResult softmax_f32(in uint32 M, in uint32 K, in uint32 m_first,
                          in float scale, in sequence<float> x,
                          rout sequence<float> y);
