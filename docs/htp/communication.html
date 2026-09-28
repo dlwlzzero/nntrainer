@@ -55,6 +55,7 @@ ol.steps.js-steps li.on{background:#e9f1fb}
 table.sync td:nth-child(2){min-width:13em}
 table.sync code{overflow-wrap:normal}
 nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+/*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
 </style>
 
 </head><body>
@@ -76,14 +77,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <dt>ION / rpcmem</dt><dd>ION is Android's shareable DMA-buffer memory. <code>rpcmem_alloc</code> allocates it, and an fd names it, so both the ARM and the DSP can map the same pages.</dd>
 <dt>l2fetch</dt><dd>A DSP instruction that asks the L2 cache to prefetch a 2D box of memory in the background.</dd>
 </dl></div>
-<nav class="toc"><details open><summary>On this page</summary><ul>
-<li><a href="#1-the-actors">1. The actors, on one picture</a></li>
-<li><a href="#2-life-of-a-session">2. Life of a session</a></li>
-<li><a href="#3-life-of-one-moe-call">3. Life of one MoE call (decode)</a></li>
-<li><a href="#4-three-ways-weights-reach-the-compute-units">4. Three ways weights reach the compute units</a></li>
-<li><a href="#5-synchronization-rules">5. Synchronization rules</a></li>
-<li><a href="#further-reading">Further reading</a></li>
-</ul></details></nav>
+<nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-the-actors">1. The actors, on one picture</a></li><li class="l2"><a href="#2-life-of-a-session">2. Life of a session</a></li><li class="l2"><a href="#3-life-of-one-moe-call">3. Life of one MoE call (decode)</a></li><li class="l3"><a href="#31-where-the-time-goes">3.1 Where the time goes</a></li><li class="l2"><a href="#4-three-ways-weights-reach-the-compute-units">4. Three ways weights reach the compute units</a></li><li class="l3"><a href="#4a-prefill-dma-ring-vtcm-hmx">4a. Prefill: the DMA ring into VTCM, HMX tiles</a></li><li class="l3"><a href="#4b-decode-default-the-vtcm-feed">4b. Decode default: the VTCM feed</a></li><li class="l3"><a href="#4c-the-arena-read-with-an-l2fetch-lead">4c. The arena read with an l2fetch lead (FEED=0)</a></li><li class="l2"><a href="#5-synchronization-rules">5. Synchronization rules</a></li><li class="l2"><a href="#further-reading">Further reading</a></li></ul></details></nav>
 <h2 id="1-the-actors">1. The actors, on one picture <a class="hd" aria-label="link to this section" href="#1-the-actors">#</a></h2>
 <p>Three places run code and three memories hold data. The ARM process and the DSP never share a thread. They share <em>memory</em>: two kinds of ION buffers in DDR that both sides map. The FastRPC driver in the kernel routes each call between them.</p>
 <figure>
@@ -1003,4 +997,5 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
   show(0);
 })();
 </script>
+<script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
 </body></html>

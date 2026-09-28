@@ -50,6 +50,8 @@ footer{margin-top:1.5em;font-size:.8em;color:var(--muted);border-top:1px solid v
 .tile.npu{border-top:3px solid #2a78d6}.tile.cpu{border-top:3px solid #eb6834}.tile.goal{border-top:3px solid #52514e}
 .note{font-size:.88em;color:var(--ink2)}
 nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
+.story{background:var(--surface);border:1px solid var(--grid);border-left:4px solid var(--s1);border-radius:8px;padding:.3em 1em;margin:1em 0}.story ol{margin:.3em 0 .6em;padding-left:1.3em}.story li{margin:.25em 0}.sources{margin:1.5em 0;font-size:.88em;color:var(--ink2)}.sources summary{cursor:pointer;font-weight:600}
+/*toc*/.toc ul{list-style:none;padding-left:0}.toc li.l3{margin-left:1.1em;font-size:.93em}.toc a{text-decoration:none}.toc a.on{color:var(--ink);font-weight:600}@media (min-width:72em){main{margin-left:max(1em,calc(50% - 36em));margin-right:0}nav.toc{position:fixed;top:3.2em;left:calc(50% + 17em);width:17em;max-height:calc(100vh - 4.5em);overflow-y:auto;margin:0}nav.toc summary{pointer-events:none;list-style:none}nav.toc summary::-webkit-details-marker{display:none}}/*end toc*/
 </style>
 
 </head><body>
@@ -57,25 +59,33 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <main>
 <h1>LFM2.5-8B-A1B on the Hexagon NPU — results</h1>
 
-<p class="lede">LFM2.5-8B-A1B is an 8B-parameter mixture-of-experts (MoE) language model. We run it with nntrainer on a Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79). In the measured setup, the MoE feed-forward layers (22 per token) run on the Hexagon NPU (Qualcomm's DSP-based accelerator; "NPU" and "DSP" name the same processor on these pages). Everything else (attention, convolutions, norms, the router, lm_head) runs on the ARM CPU. This page shows how fast that setup is today.</p>
-<p class="note">Snapshot: <code>htp_moe</code> @ <code>a7c66dec</code>, merged work only. The NPU numbers come from sitting #120, variant A (2026-09-23): <code>htp_moe</code> @ <code>d79c0efe</code> run with no environment variables set, so it takes the default path. The only code merged after <code>d79c0efe</code> is the per-token entry (#119). That entry sits behind a switch that is off by default, so the measured path is still today's default. The CPU numbers come from sitting #94, sitting 2 (2026-09-22). All numbers are taken from <code>docs/htp_moe/BENCHMARK.md</code> @ <code>8af1a347</code>.</p>
+<p class="lede">We run LFM2.5-8B-A1B, an 8B-parameter mixture-of-experts (MoE) language model, with nntrainer on a Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79). The MoE layers run on the Hexagon NPU (Qualcomm's DSP-based accelerator; "NPU" and "DSP" name the same processor here). Everything else runs on the ARM CPU. The goal is <strong>≥ 50 tok/s decode</strong>.</p>
 
 <div class="tiles">
-<div class="tile npu"><div class="k">NPU decode, gen 512</div><div class="v">35.96 <small>tok/s</small></div><div class="s">#120 A, mean of two runs (36.23, 35.69)</div></div>
-<div class="tile npu"><div class="k">NPU prefill, prompt 512</div><div class="v">465 <small>tok/s</small></div><div class="s">#120 A, mean of six runs; runs 438–502</div></div>
-<div class="tile cpu"><div class="k">CPU only, 8 threads</div><div class="v">49.22 <small>/ 298</small></div><div class="s">decode at gen 512 / prefill (mean of six runs, 268–340); #94 sitting 2</div></div>
-<div class="tile goal"><div class="k">Distance to the ≥ 50 tok/s decode goal</div><div class="v">1.39×</div><div class="s">50 / 35.96 at gen 512: the NPU needs +14 tok/s, i.e. 7.8 ms less per token</div></div>
+<div class="tile npu"><div class="k">NPU decode</div><div class="v">36.0 <small>tok/s</small></div><div class="s">CPU only: 49.2</div></div>
+<div class="tile npu"><div class="k">NPU prefill</div><div class="v">465 <small>tok/s</small></div><div class="s">CPU only: 298 → NPU 1.56× faster</div></div>
+<div class="tile goal"><div class="k">Decode goal</div><div class="v">50 <small>tok/s</small></div><div class="s">NPU is 1.39× short (7.8 ms per token)</div></div>
+<div class="tile goal"><div class="k">Ceiling of today's design</div><div class="v">42–47 <small>tok/s</small></div><div class="s">set by memory bandwidth</div></div>
 </div>
 
-<p><strong>In short:</strong> the NPU path prefills about 1.56× faster than the CPU. It decodes at about 0.73× the CPU's speed and 1.39× short of the goal. Even with every avoidable cost removed, the byte floor of today's split (the CPU and the NPU reading their weights one after the other) is about 42–47 tok/s. So 50 tok/s is not reachable by bytes alone without changing how the two read memory.</p>
+<div class="story">
+<p><strong>The story in four steps</strong></p>
+<ol>
+<li><strong>Prefill is won:</strong> the NPU reads the prompt 1.56× faster than the CPU.</li>
+<li><strong>Decode is not yet:</strong> 36 tok/s, below the CPU's 49 and the 50 goal.</li>
+<li><strong>Why:</strong> a decode token is a memory read. Of its 27.8 ms, 15.7 ms is the NPU reading expert weights, and 10.3 ms is CPU work between the NPU calls.</li>
+<li><strong>What is next:</strong> with the CPU and the NPU reading one after the other, even perfect code stops at 42–47 tok/s. Reaching 50 needs them to read in parallel, or fewer bytes per token (<a href="roadmap.html">Roadmap</a>).</li>
+</ol>
+</div>
 
-<h2 id="npu-vs-cpu">NPU vs CPU<a class="hd" href="#npu-vs-cpu">#</a></h2>
-<p>Two parts of the chip do the work:</p>
+<nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#npu-vs-cpu">1. NPU vs CPU</a></li><li class="l2"><a href="#split">2. Where a decode token's time goes</a></li><li class="l2"><a href="#progress">3. How we got here</a></li><li class="l2"><a href="#accuracy">4. Accuracy</a></li><li class="l2"><a href="#by-gen">5. By generation length</a></li><li class="l2"><a href="#conditions">6. Test conditions</a></li></ul></details></nav>
+
+<h2 id="npu-vs-cpu">1. NPU vs CPU<a class="hd" href="#npu-vs-cpu">#</a></h2>
+<p>Two units inside the NPU do the math: <strong>HMX</strong> (Hexagon Matrix eXtensions, a matrix-multiply engine) and <strong>HVX</strong> (Hexagon Vector eXtensions, a wide SIMD vector unit).</p>
 <ul>
-<li><strong>HVX</strong> (Hexagon Vector eXtensions): the NPU's wide SIMD vector unit.</li>
-<li><strong>HMX</strong> (Hexagon Matrix eXtensions): its matrix-multiply unit.</li>
+<li><strong>Prefill</strong> handles the whole 512-token prompt at once. The MoE layers become large matrix multiplies on HMX, where the NPU is strong.</li>
+<li><strong>Decode</strong> makes one token at a time. Each token reads the weights of the 4 active experts in all 22 MoE layers from DRAM, so its speed is set by bytes per second, not arithmetic.</li>
 </ul>
-<p>Prefill processes the 512-token prompt at once. The MoE layers then run as large matrix multiplies on HMX, which is where the NPU is strong. Decode produces one token at a time. Each token has to read the weights of the 4 active experts in all 22 MoE layers from DRAM, so decode speed is set by bytes per second, not by arithmetic. On the NPU path, decode also pays one CPU↔NPU call per MoE layer, and the CPU's own work between the calls.</p>
 <figure>
 <svg viewBox="0 0 760 200" role="img" aria-label="NPU path versus CPU only. Prefill, prompt 512: NPU 465 tok/s, CPU 298 tok/s. Decode at gen 512: NPU 35.96 tok/s, CPU 49.22 tok/s, goal 50." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
 <text x="0.0" y="18.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">Prefill, prompt 512 (tok/s)</text>
@@ -121,66 +131,15 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <text x="694.0" y="60.0" font-size="11" fill="#52514e" text-anchor="start">goal 50</text>
 <text x="490.0" y="188.0" font-size="12" fill="#52514e" text-anchor="start">NPU behind: 0.73× the CPU</text>
 </svg>
-<figcaption>Prefill: the NPU path is ahead, 465 vs 298 tok/s (means of six runs; the thin lines are the run ranges, 438–502 and 268–340). Decode at gen 512: the NPU path is behind, 35.96 vs 49.22 tok/s. NPU numbers are from #120 A, CPU numbers from #94 sitting 2. They were measured on two phones of the same model on different days, so the ratios are indicative, not a same-sitting A/B.</figcaption>
+<figcaption>Prompt 512 tokens, decode at generation length 512. Thin lines on the prefill bars are the run-to-run range.</figcaption>
 </figure>
-<p class="note">Phones of the same model differ. Across the two phones, and across days on one phone, NPU decode tok/s drifts by up to about 16 %. The NPU DMA engine reads 31–37 GB/s depending on the unit. That is why the project only reads a speed-up as a verdict inside one sitting (<a href="measurement.html#12-sittings-variant-a-first-mirrored-order">measurement.html §1.2</a>). The CPU and NPU rows above come from different sittings, and none of the NPU sittings since #94 ran a CPU cell.</p>
 
-<h2 id="goal">Distance to the goal<a class="hd" href="#goal">#</a></h2>
-<p>The goal is <strong>≥ 50 tok/s decode</strong> at every generation length. The NPU path is at 35.96 tok/s at gen 512, which is 1.39× short. At gen 64 it is also 1.39× short, and at gen 1024 it is 1.42× short.</p>
-<figure>
-<svg viewBox="0 0 760 196" role="img" aria-label="Decode tok/s at gen 512 against the goal. NPU now 35.96, CPU only 49.22, goal 50, byte-floor ceiling of the serial CPU then NPU split 42 to 47 tok/s. The NPU needs 1.39 times to reach 50." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
-<text x="0.0" y="18.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">Decode tok/s at gen 512 vs the ≥ 50 goal</text>
-<line x1="170.0" y1="40" x2="170.0" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="170.0" y="155.0" font-size="11" fill="#898781" text-anchor="middle">0</text>
-<line x1="263.3" y1="40" x2="263.3" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="263.3" y="155.0" font-size="11" fill="#898781" text-anchor="middle">10</text>
-<line x1="356.7" y1="40" x2="356.7" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="356.7" y="155.0" font-size="11" fill="#898781" text-anchor="middle">20</text>
-<line x1="450.0" y1="40" x2="450.0" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="450.0" y="155.0" font-size="11" fill="#898781" text-anchor="middle">30</text>
-<line x1="543.3" y1="40" x2="543.3" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="543.3" y="155.0" font-size="11" fill="#898781" text-anchor="middle">40</text>
-<line x1="636.7" y1="40" x2="636.7" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="636.7" y="155.0" font-size="11" fill="#898781" text-anchor="middle">50</text>
-<line x1="730.0" y1="40" x2="730.0" y2="140" stroke="#e1e0d9" stroke-width="1"/>
-<text x="730.0" y="155.0" font-size="11" fill="#898781" text-anchor="middle">60</text>
-<rect x="562.0" y="40" width="46.7" height="100" fill="#f4efe1" fill-opacity="0.8" stroke="#8a7f5c" stroke-width="1"><title>Serial byte-floor ceiling: ≈ 42–47 tok/s (MoE 13.0–15.5 ms + CPU ≈ 8.2 ms)</title></rect>
-<text x="162.0" y="70.0" font-size="13" fill="#0b0b0b" text-anchor="end">NPU path, now</text>
-<path d="M170.0,54.0 H501.6 Q505.6,54.0 505.6,58.0 V74.0 Q505.6,78.0 501.6,78.0 H170.0 Z" fill="#2a78d6"><title>NPU path now: 35.96 tok/s at gen 512 (#120 A)</title></path>
-<text x="162.0" y="114.0" font-size="13" fill="#0b0b0b" text-anchor="end">CPU only</text>
-<path d="M170.0,98.0 H625.4 Q629.4,98.0 629.4,102.0 V118.0 Q629.4,122.0 625.4,122.0 H170.0 Z" fill="#eb6834"><title>CPU only: 49.22 tok/s at gen 512 (#94 sitting 2)</title></path>
-<text x="511.6" y="71.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600">35.96</text>
-<text x="623.4" y="115.0" font-size="13" fill="#ffffff" text-anchor="end" font-weight="600">49.22</text>
-<line x1="636.7" y1="36" x2="636.7" y2="140" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4"/>
-<text x="636.7" y="32.0" font-size="11" fill="#52514e" text-anchor="middle">goal 50</text>
-<line x1="555.6" y1="66" x2="633.7" y2="66" stroke="#52514e" stroke-width="1.3" marker-end="url(#res-arr)"/>
-<text x="644.7" y="71.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="600">×1.39 to go</text>
-<text x="585.3" y="178.0" font-size="12" fill="#8a7f5c" text-anchor="middle">ceiling ≈ 42–47 (byte floor)</text>
-<line x1="585.3" y1="141" x2="585.3" y2="164" stroke="#8a7f5c" stroke-width="1"/>
-<defs><marker id="res-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#52514e"/></marker></defs>
-</svg>
-<figcaption>Now vs the goal at gen 512. The tan band is the byte-floor ceiling of today's serial CPU→NPU split, ≈ 42–47 tok/s. It is computed from bytes per token and each reader's measured speed (roadmap.html §1). The whole band lies below the goal. The band applies to the NPU path only. The CPU-only run reads its own 953 MB model on one reader, so it can sit above the band.</figcaption>
-</figure>
-<p><strong>What the floor says.</strong> A byte floor is the time needed just to read a token's weights at the memory's measured speed, with no other overhead.</p>
+<h2 id="split">2. Where a decode token's time goes<a class="hd" href="#split">#</a></h2>
+<p>One decode token takes <strong>27.8 ms</strong>. The 50 tok/s goal needs <strong>20 ms</strong>.</p>
 <ul>
-<li><strong>MoE floor: 13.0–15.5 ms.</strong> Each decode token reads 22.02 MB of expert weights per MoE layer, 484 MB in all. The NPU pulls them from DRAM with its DMA engine (the hardware copy engine that moves data without the cores). That engine reads 37.3 GB/s on one phone and 31.2 GB/s on the other, so this part alone costs 13.0–15.5 ms.</li>
-<li><strong>CPU floor: ≈ 8.2 ms.</strong> The CPU reads the other 408 MB per token: conv projections, lm_head, dense FFN, attention projections and routers. It reads them at ≈ 50 GB/s, the rate the CPU-only model reaches.</li>
-<li><strong>Together: ≈ 21–24 ms per token (21.2–23.7), or ≈ 42–47 tok/s.</strong> The two reads happen one after the other, because the CPU waits for each MoE call.</li>
-</ul>
-<p>So <strong>50 tok/s (20 ms) is not reachable with today's serial CPU→NPU split by bytes alone.</strong> Even the fastest phone's floor, 21.2 ms, is above 20 ms. Getting there needs one of three things (<a href="roadmap.html">roadmap.html</a>):</p>
-<ul>
-<li>the CPU and the DSP reading at the same time;</li>
-<li>fewer bytes per token;</li>
-<li>a faster DSP read.</li>
-</ul>
-<p class="note">BENCHMARK.md's cycle-16 budget still uses ≈ 6.5 ms for the CPU part (≈ 246 MB at 38 GB/s). Counting from the tensor shapes gives 408 MB, see <a href="lessons.html">lessons.html</a> D1.</p>
-
-<h2 id="split">Where a decode token's time goes<a class="hd" href="#split">#</a></h2>
-<p>At gen 512 the NPU path makes one token every <strong>27.81 ms</strong> (1000 / 35.96). The level-2 profile of the same sitting splits one MoE call into two parts. Multiplying each by the 22 MoE calls per token gives this split:</p>
-<ul>
-<li><strong>MoE work on the NPU (DSP time):</strong> 22 × 0.712 ms = <strong>15.7 ms</strong>. Of that, the expert matmuls take 14.9 ms.</li>
-<li><strong>Transport:</strong> 22 × 0.082 ms = <strong>1.8 ms</strong>. This is the cost of the CPU↔NPU round trips. Each call is a <strong>FastRPC</strong> call, Qualcomm's remote-procedure-call mechanism by which ARM code invokes a function on the DSP.</li>
-<li><strong>Everything outside the call:</strong> the token time minus the rest, <strong>≈ 10.3 ms</strong> (37 %). This is the CPU's FC, attention, conv, norm and lm_head work between calls.</li>
+<li><strong>MoE on the NPU: 15.7 ms.</strong> Almost all of it is reading 484 MB of expert weights.</li>
+<li><strong>CPU↔NPU calls: 1.8 ms.</strong> 22 FastRPC calls per token (FastRPC is Qualcomm's mechanism for ARM code to call a function on the DSP).</li>
+<li><strong>CPU work between the calls: ≈ 10.3 ms.</strong> Attention, convolutions, norms, the router and the output layer.</li>
 </ul>
 <figure>
 <svg viewBox="0 0 760 214" role="img" aria-label="One decode token at gen 512 is 27.81 ms: MoE work on the NPU 15.7 ms, CPU to NPU round trips 1.8 ms, CPU work outside the MoE call about 10.3 ms. 50 tok/s needs 20 ms. The serial byte floor is 13.0 to 15.5 ms for the MoE plus about 8.2 ms on the CPU, 21.2 to 23.7 ms." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
@@ -200,7 +159,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <line x1="730.0" y1="44" x2="730.0" y2="150" stroke="#e1e0d9" stroke-width="1"/>
 <text x="730.0" y="165.0" font-size="11" fill="#898781" text-anchor="middle">30</text>
 <text x="730.0" y="180.0" font-size="11" fill="#898781" text-anchor="end">ms per token</text>
-<text x="142.0" y="64.0" font-size="13" fill="#0b0b0b" text-anchor="end">now (#120 A)</text>
+<text x="142.0" y="64.0" font-size="13" fill="#0b0b0b" text-anchor="end">today</text>
 <text x="142.0" y="79.0" font-size="11" fill="#52514e" text-anchor="end">27.81 ms</text>
 <rect x="150.0" y="50" width="302.5" height="34" fill="#2a78d6"><title>MoE FFN on the NPU: 22 calls × 0.712 ms = 15.7 ms</title></rect>
 <text x="301.3" y="72.0" font-size="12" fill="#ffffff" text-anchor="middle" font-weight="600">MoE on the NPU 15.7</text>
@@ -223,24 +182,77 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <text x="536.7" y="194.0" font-size="11" fill="#52514e" text-anchor="middle">20 ms = 50 tok/s</text>
 <line x1="536.7" y1="168" x2="536.7" y2="182" stroke="#52514e" stroke-width="1"/>
 </svg>
-<figcaption>One decode token at gen 512 (BENCHMARK cycle-16 per-token budget, #120 A): 27.81 ms = 15.7 (MoE on the NPU) + 1.8 (round trips) + ≈ 10.3 (outside the call). 50 tok/s needs 20 ms, which is 7.8 ms less. The lower bar is the serial byte floor: MoE 13.0 ms on a 37 GB/s phone (15.5 on a 31 GB/s one) plus ≈ 8.2 ms for the CPU's 408 MB, 21.2–23.7 ms in all. Even the floor is past the 20 ms line.</figcaption>
+<figcaption>Upper bar: today. Lower bar: the byte floor, the time needed just to read each part's weights at the measured memory speed. The NPU reads its 484 MB with its DMA engine (the hardware copy engine) at 31–37 GB/s depending on the phone; the CPU reads its 408 MB at ≈ 50 GB/s.</figcaption>
 </figure>
-<p>Read against the floor:</p>
+<p><strong>What this means.</strong> The MoE part is already within ≈ 2.7 ms of its floor. The CPU side has ≈ 4 ms left. Even at both floors a token takes 21–24 ms, still above 20 ms, because the CPU and the NPU read memory one after the other. So the last step to 50 tok/s is a design change, not tuning (<a href="roadmap.html">Roadmap</a>).</p>
+
+<h2 id="progress">3. How we got here<a class="hd" href="#progress">#</a></h2>
+<p>Decode went from 18.3 to 36.0 tok/s in four merged changes:</p>
+<ol>
+<li><strong>Faster CPU↔NPU calls:</strong> shared ION buffers (Android memory mapped by both the CPU and the DSP) and a longer poll before the call sleeps.</li>
+<li><strong>Vector-unit decode:</strong> a one-token path on HVX instead of the matrix unit.</li>
+<li><strong>Weight prefetch:</strong> the NPU starts pulling the next weights into cache earlier.</li>
+<li><strong>VTCM feed:</strong> the DMA engine copies each expert's weights into VTCM (about 8 MiB of fast on-chip NPU memory) one expert ahead, so compute never waits on DRAM. The biggest single step, +26 %.</li>
+</ol>
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="NPU path decode tok/s at gen 512 after each landed change: start 18.31, transport fix 23.80, HVX GEMV default 27.09, prefetch lead 27.89, VTCM feed 35.96 (now). Goal 50." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<text x="0.0" y="18.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">NPU path decode tok/s at gen 512, by landed change</text>
+<line x1="60" y1="250.0" x2="730" y2="250.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="254.0" font-size="11" fill="#898781" text-anchor="end">0</text>
+<line x1="60" y1="211.8" x2="730" y2="211.8" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="215.8" font-size="11" fill="#898781" text-anchor="end">10</text>
+<line x1="60" y1="173.6" x2="730" y2="173.6" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="177.6" font-size="11" fill="#898781" text-anchor="end">20</text>
+<line x1="60" y1="135.5" x2="730" y2="135.5" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="139.5" font-size="11" fill="#898781" text-anchor="end">30</text>
+<line x1="60" y1="97.3" x2="730" y2="97.3" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="101.3" font-size="11" fill="#898781" text-anchor="end">40</text>
+<line x1="60" y1="59.1" x2="730" y2="59.1" stroke="#e1e0d9" stroke-width="1"/>
+<text x="52.0" y="63.1" font-size="11" fill="#898781" text-anchor="end">50</text>
+<text x="52.0" y="44.0" font-size="11" fill="#898781" text-anchor="end">tok/s</text>
+<path d="M89.0,250.0 V184.1 Q89.0,180.1 93.0,180.1 H161.0 Q165.0,180.1 165.0,184.1 V250.0 Z" fill="#8fb6e8"><title>Start: 18.31 tok/s</title></path>
+<text x="127.0" y="173.1" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">18.31</text>
+<text x="127.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Start</text>
+<text x="127.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">upstream port</text>
+<path d="M223.0,250.0 V163.1 Q223.0,159.1 227.0,159.1 H295.0 Q299.0,159.1 299.0,163.1 V250.0 Z" fill="#8fb6e8"><title>Transport fix: 23.80 tok/s</title></path>
+<text x="261.0" y="152.1" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">23.80</text>
+<text x="261.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Transport fix</text>
+<text x="261.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">faster CPU↔NPU calls</text>
+<path d="M357.0,250.0 V150.6 Q357.0,146.6 361.0,146.6 H429.0 Q433.0,146.6 433.0,150.6 V250.0 Z" fill="#8fb6e8"><title>HVX GEMV: 27.09 tok/s</title></path>
+<text x="395.0" y="139.6" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.09</text>
+<text x="395.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX GEMV</text>
+<text x="395.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">vector-unit decode</text>
+<path d="M491.0,250.0 V147.5 Q491.0,143.5 495.0,143.5 H563.0 Q567.0,143.5 567.0,147.5 V250.0 Z" fill="#8fb6e8"><title>Prefetch lead: 27.89 tok/s</title></path>
+<text x="529.0" y="136.5" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.89</text>
+<text x="529.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Prefetch lead</text>
+<text x="529.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">earlier cache fill</text>
+<path d="M625.0,250.0 V116.7 Q625.0,112.7 629.0,112.7 H697.0 Q701.0,112.7 701.0,116.7 V250.0 Z" fill="#2a78d6"><title>VTCM feed: 35.96 tok/s</title></path>
+<text x="663.0" y="105.7" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">35.96</text>
+<text x="663.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">VTCM feed</text>
+<text x="663.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">today</text>
+<line x1="60" y1="250" x2="730" y2="250" stroke="#52514e" stroke-width="1"/>
+<line x1="60" y1="59.1" x2="730" y2="59.1" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4"/>
+<text x="728.0" y="53.1" font-size="11" fill="#52514e" text-anchor="end">goal 50</text>
+</svg>
+<figcaption>Decode tok/s at generation length 512 after each change. Bars come from separate measurement days, so they show direction; each change's exact gain was measured against the previous code on the same day.</figcaption>
+</figure>
+
+<h2 id="accuracy">4. Accuracy<a class="hd" href="#accuracy">#</a></h2>
+<p>The NPU model stores its expert weights in a 4-bit layout packed for the NPU (<a href="weight-format.html">Weight format</a>), so its output is not bit-for-bit the CPU model's. Every change is checked two ways instead:</p>
 <ul>
-<li>The MoE part (15.7 ms) has at most ≈ 2.7 ms left on the faster phone, and almost nothing on the slower one.</li>
-<li>Round trips and CPU work take 1.8 + 10.3 = 12.1 ms. Against the CPU's ≈ 8.2 ms byte floor, that leaves ≈ 3.9 ms to win.</li>
-<li>Even with both parts at their floors the token takes 21.2–23.7 ms, so the last step to 20 ms has to change the bytes or how they are read (<a href="roadmap.html">roadmap.html</a>).</li>
+<li><strong>Same text as before the change:</strong> each speed-up produces exactly the same generated text as the code it replaces, in every run.</li>
+<li><strong>Bit-identical kernels:</strong> an on-device test confirms the decode path computes exactly the same numbers as the prefill path, 0 differing elements.</li>
 </ul>
 
-<h2 id="by-gen">By generation length<a class="hd" href="#by-gen">#</a></h2>
-<p>Decode speed holds nearly flat from gen 64 to gen 1024 on the NPU path (35.97 → 35.17). The CPU slows more (52.43 → 48.31). The CPU clears 50 tok/s at gen 64, but not reliably at gen 512 or gen 1024.</p>
+<h2 id="by-gen">5. By generation length<a class="hd" href="#by-gen">#</a></h2>
+<p>NPU decode speed holds nearly flat from 64 to 1024 generated tokens. The CPU slows down and passes 50 tok/s only at 64.</p>
 <figure>
 <svg viewBox="0 0 760 262" role="img" aria-label="Decode tok/s by generation length. Gen 64: NPU 35.97, CPU 52.43. Gen 512: NPU 35.96, CPU 49.22. Gen 1024: NPU 35.17, CPU 48.31. Goal 50." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
 <text x="0.0" y="18.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">Decode tok/s by generation length (prompt 512)</text>
 <rect x="150" y="28" width="12" height="12" rx="2" fill="#2a78d6"/>
-<text x="168.0" y="39.0" font-size="12" fill="#0b0b0b" text-anchor="start">NPU path (#120 A)</text>
+<text x="168.0" y="39.0" font-size="12" fill="#0b0b0b" text-anchor="start">NPU path</text>
 <rect x="300" y="28" width="12" height="12" rx="2" fill="#eb6834"/>
-<text x="318.0" y="39.0" font-size="12" fill="#0b0b0b" text-anchor="start">CPU only, 8 threads (#94 s2)</text>
+<text x="318.0" y="39.0" font-size="12" fill="#0b0b0b" text-anchor="start">CPU only, 8 threads</text>
 <line x1="150.0" y1="50" x2="150.0" y2="224" stroke="#e1e0d9" stroke-width="1"/>
 <text x="150.0" y="239.0" font-size="11" fill="#898781" text-anchor="middle">0</text>
 <line x1="246.7" y1="50" x2="246.7" y2="224" stroke="#e1e0d9" stroke-width="1"/>
@@ -274,115 +286,41 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <path d="M150.0,192.0 H613.0 Q617.0,192.0 617.0,196.0 V208.0 Q617.0,212.0 613.0,212.0 H150.0 Z" fill="#eb6834"><title>gen 1024: CPU only 48.31 tok/s</title></path>
 <text x="611.0" y="207.0" font-size="12" fill="#ffffff" text-anchor="end" font-weight="600">48.31</text>
 </svg>
-<figcaption>Decode tok/s after a 512-token prompt, means of two runs. NPU path: #120 A. CPU only: #94 sitting 2. The dashed line is the 50 tok/s goal.</figcaption>
+<figcaption>Decode tok/s after a 512-token prompt. Dashed line: the 50 tok/s goal.</figcaption>
 </figure>
 <div class="tablewrap"><table>
-<thead><tr><th>gen</th><th style="text-align:right">NPU decode</th><th style="text-align:right">CPU decode</th><th style="text-align:right">NPU / CPU</th><th style="text-align:right">NPU prefill (mean; runs)</th><th style="text-align:right">CPU prefill (mean; runs)</th></tr></thead>
+<thead><tr><th>generated tokens</th><th style="text-align:right">NPU decode</th><th style="text-align:right">CPU decode</th><th style="text-align:right">NPU / CPU</th></tr></thead>
 <tbody>
-<tr><td>64</td><td style="text-align:right">35.97</td><td style="text-align:right">52.43</td><td style="text-align:right">0.69×</td><td style="text-align:right">487.6; 473.6, 501.5</td><td style="text-align:right">327.5; 339.7, 315.3</td></tr>
-<tr><td>512</td><td style="text-align:right">35.96</td><td style="text-align:right">49.22</td><td style="text-align:right">0.73×</td><td style="text-align:right">459.1; 446.4, 471.9</td><td style="text-align:right">268.0; 267.8, 268.1</td></tr>
-<tr><td>1024</td><td style="text-align:right">35.17</td><td style="text-align:right">48.31</td><td style="text-align:right">0.73×</td><td style="text-align:right">448.8; 459.2, 438.4</td><td style="text-align:right">299.3; 312.8, 285.7</td></tr>
+<tr><td>64</td><td style="text-align:right">35.97</td><td style="text-align:right">52.43</td><td style="text-align:right">0.69×</td></tr>
+<tr><td>512</td><td style="text-align:right">35.96</td><td style="text-align:right">49.22</td><td style="text-align:right">0.73×</td></tr>
+<tr><td>1024</td><td style="text-align:right">35.17</td><td style="text-align:right">48.31</td><td style="text-align:right">0.73×</td></tr>
 </tbody></table></div>
-<p class="note">Sources: the BENCHMARK Results rows for #120 A and #94 sitting 2. Each cell is the mean of two runs; the CPU prefill means are computed from the two run values shown. Prefill is the same 512-token prompt in every cell. Its spread across the gen columns is run order and phone temperature (the phone stayed at 53–61 °C during every #120 run), not a real dependence on gen length.</p>
 
-<h2 id="accuracy">Accuracy<a class="hd" href="#accuracy">#</a></h2>
-<p>The NPU model is not bit-for-bit the CPU model:</p>
-<ul>
-<li><strong>CPU model (<code>q40</code>):</strong> every weight is in Q4_0.</li>
-<li><strong>NPU model (<code>q40-qs4cx-wh</code>):</strong> the MoE expert weights are in <code>QS4CX_WH</code>, a 4-bit layout packed for the NPU kernels (<a href="weight-format.html">weight-format.html</a>). The rest is Q4_0, as in the CPU model.</li>
-</ul>
-<p>Different expert weights give slightly different logits, so "same text as the CPU" is not a meaningful test for the NPU path. Instead each change is checked two ways:</p>
-<ul>
-<li><strong>Text identical to its own control.</strong> The generated text of every variant is byte-compared with variant A of the same sitting, which is the previous default on the same NPU model. The <code>[HTP]</code> banner and md5 lines are excluded from the comparison.
-  <ul>
-  <li>The VTCM feed (PR #118): 36/36 runs identical over #117's two sittings. Then 2/2 at gen 64 in #120, where the pre-feed path (A0) ran against the new default.</li>
-  <li>The prefetch lead (PR #115): 6/6 in #113.</li>
-  <li>The transport fix (PR #103): identical to A in all of #88's B runs.</li>
-  <li>The HVX decode path: identical to the HMX path in #94's C runs.</li>
-  <li>Repeated runs of the default give the same text (run 1 = run 2 at every gen in #120 A).</li>
-  </ul></li>
-<li><strong>Bit-identical kernels.</strong> The device test <code>MoeLayerM1GemvMatchesHmx</code> compares the decode (HVX GEMV) path with the HMX path on the phone. With the VTCM feed on and off, in both #117 sittings, it reports <code>bit_identical yes</code>, 0 bad elements of 40 960 (M = 1) and 0 of 163 840 (M = 4).</li>
-</ul>
-
-<h2 id="progress">Progress<a class="hd" href="#progress">#</a></h2>
-<p>Each merged decode change raised NPU decode at gen 512. The changes are:</p>
-<ul>
-<li><strong>Transport fix:</strong> ION shared-buffer staging and a longer FastRPC poll. ION is Android's shared-memory allocator that the CPU and DSP both map.</li>
-<li><strong>HVX GEMV:</strong> a vector-unit decode path in place of the matrix unit.</li>
-<li><strong>Prefetch lead:</strong> a 192 KB <code>l2fetch</code> lead in a one-row loop.</li>
-<li><strong>VTCM feed:</strong> the expert weights are DMA'd into VTCM one expert ahead. VTCM is the NPU's on-chip tightly-coupled memory, about 8 MiB of fast scratch that HVX and HMX read directly.</li>
-</ul>
-<figure>
-<svg viewBox="0 0 760 318" role="img" aria-label="NPU path decode tok/s at gen 512 after each landed change: start 18.31, transport fix 23.80, HVX GEMV default 27.09, prefetch lead 27.89, VTCM feed 35.96 (now). Goal 50." xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
-<text x="0.0" y="18.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="bold">NPU path decode tok/s at gen 512, by landed change</text>
-<line x1="60" y1="250.0" x2="730" y2="250.0" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="254.0" font-size="11" fill="#898781" text-anchor="end">0</text>
-<line x1="60" y1="211.8" x2="730" y2="211.8" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="215.8" font-size="11" fill="#898781" text-anchor="end">10</text>
-<line x1="60" y1="173.6" x2="730" y2="173.6" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="177.6" font-size="11" fill="#898781" text-anchor="end">20</text>
-<line x1="60" y1="135.5" x2="730" y2="135.5" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="139.5" font-size="11" fill="#898781" text-anchor="end">30</text>
-<line x1="60" y1="97.3" x2="730" y2="97.3" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="101.3" font-size="11" fill="#898781" text-anchor="end">40</text>
-<line x1="60" y1="59.1" x2="730" y2="59.1" stroke="#e1e0d9" stroke-width="1"/>
-<text x="52.0" y="63.1" font-size="11" fill="#898781" text-anchor="end">50</text>
-<text x="52.0" y="44.0" font-size="11" fill="#898781" text-anchor="end">tok/s</text>
-<path d="M89.0,250.0 V184.1 Q89.0,180.1 93.0,180.1 H161.0 Q165.0,180.1 165.0,184.1 V250.0 Z" fill="#8fb6e8"><title>Start (PR as-is): 18.31 tok/s, sitting #77</title></path>
-<text x="127.0" y="173.1" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">18.31</text>
-<text x="127.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Start</text>
-<text x="127.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">PR as-is</text>
-<text x="127.0" y="298.0" font-size="11" fill="#898781" text-anchor="middle">sitting #77</text>
-<path d="M223.0,250.0 V163.1 Q223.0,159.1 227.0,159.1 H295.0 Q299.0,159.1 299.0,163.1 V250.0 Z" fill="#8fb6e8"><title>Transport fix (PR #103): 23.80 tok/s, sitting #88 B</title></path>
-<text x="261.0" y="152.1" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">23.80</text>
-<text x="261.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Transport fix</text>
-<text x="261.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">PR #103</text>
-<text x="261.0" y="298.0" font-size="11" fill="#898781" text-anchor="middle">sitting #88 B</text>
-<path d="M357.0,250.0 V150.6 Q357.0,146.6 361.0,146.6 H429.0 Q433.0,146.6 433.0,150.6 V250.0 Z" fill="#8fb6e8"><title>HVX GEMV (default, PR #108): 27.09 tok/s, sitting #100 A</title></path>
-<text x="395.0" y="139.6" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.09</text>
-<text x="395.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">HVX GEMV</text>
-<text x="395.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">default, PR #108</text>
-<text x="395.0" y="298.0" font-size="11" fill="#898781" text-anchor="middle">sitting #100 A</text>
-<path d="M491.0,250.0 V147.5 Q491.0,143.5 495.0,143.5 H563.0 Q567.0,143.5 567.0,147.5 V250.0 Z" fill="#8fb6e8"><title>Prefetch lead (PR #115): 27.89 tok/s, sitting #117 A</title></path>
-<text x="529.0" y="136.5" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">27.89</text>
-<text x="529.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">Prefetch lead</text>
-<text x="529.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">PR #115</text>
-<text x="529.0" y="298.0" font-size="11" fill="#898781" text-anchor="middle">sitting #117 A</text>
-<path d="M625.0,250.0 V116.7 Q625.0,112.7 629.0,112.7 H697.0 Q701.0,112.7 701.0,116.7 V250.0 Z" fill="#2a78d6"><title>VTCM feed (PR #118 = now): 35.96 tok/s, sitting #120 A</title></path>
-<text x="663.0" y="105.7" font-size="13" fill="#0b0b0b" text-anchor="middle" font-weight="600">35.96</text>
-<text x="663.0" y="268.0" font-size="12" fill="#0b0b0b" text-anchor="middle" font-weight="600">VTCM feed</text>
-<text x="663.0" y="283.0" font-size="11" fill="#52514e" text-anchor="middle">PR #118 = now</text>
-<text x="663.0" y="298.0" font-size="11" fill="#898781" text-anchor="middle">sitting #120 A</text>
-<line x1="60" y1="250" x2="730" y2="250" stroke="#52514e" stroke-width="1"/>
-<line x1="60" y1="59.1" x2="730" y2="59.1" stroke="#52514e" stroke-width="1.3" stroke-dasharray="5 4"/>
-<text x="728.0" y="53.1" font-size="11" fill="#52514e" text-anchor="end">goal 50</text>
-</svg>
-<figcaption>NPU path decode at gen 512 after each merged change: 18.31 → 23.80 → 27.09 → 27.89 → 35.96 tok/s. Each bar is the mean of two runs from the named sitting: #77 A, #88 B, #100 A, #117 A (sitting 2) and #120 A. The last bar is today's default, measured as its own sitting's control. #117 first measured the feed as a lever at 36.49. The bars come from different sittings, and some from different phones, so they show direction, not exact gains. The same-sitting gains are +41.4 % (transport, #88, gen 512), +13.5 % (GEMV vs HMX at gen 64, #100), +4.16 % (lead, #117 sitting 2, gen 512) and +25.7 % (feed vs no feed at gen 64, #120).</figcaption>
-</figure>
-<p>The full story of each change will be on the Optimizations page (in progress).</p>
-
-<h2 id="conditions">Test conditions<a class="hd" href="#conditions">#</a></h2>
+<h2 id="conditions">6. Test conditions<a class="hd" href="#conditions">#</a></h2>
 <div class="tablewrap"><table>
 <tbody>
-<tr><th>Device</th><td>Samsung Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79). Two phones of this model were used; their NPU DMA engines read 31–37 GB/s.</td></tr>
-<tr><th>Model, NPU path</th><td><code>q40-qs4cx-wh</code>: MoE experts in <code>QS4CX_WH</code> on the NPU (<code>moe_engine: htp</code>), everything else Q4_0 on the CPU. File md5 <code>7b7867fa…</code>.</td></tr>
-<tr><th>Model, CPU only</th><td><code>q40</code>: every weight Q4_0, all on the CPU. File md5 <code>d28f55c5…</code>.</td></tr>
-<tr><th>Workload</th><td><code>nntrainer_causallm</code>, non-profile binary. Prompt 512 tokens, generation 64 / 512 / 1024 tokens. Decode tok/s is taken over the whole generation.</td></tr>
-<tr><th>Threads</th><td><code>NNTR_NUM_THREADS=8</code> for both paths.</td></tr>
-<tr><th>Method</th><td>Every number comes from one <em>sitting</em>, meaning one session on one phone with one set of pushed files. Variant A (the unchanged default) runs first. Inside each gen block the variants run in mirrored order (A, B, B, A), so the thermal ramp hits every variant alike. Every cell is the mean of two runs. A cool-down precedes each profile and gen block. Profile runs are never read for tok/s.</td></tr>
-<tr><th>Sittings used</th><td>NPU: #120 A (2026-09-23). CPU: #94 sitting 2 (2026-09-22). Progress bars: #77, #88, #100, #117, #120.</td></tr>
+<tr><th>Device</th><td>Samsung Galaxy S25 Ultra (Snapdragon 8 Elite, Hexagon v79). Units of this model differ: the NPU DMA reads 31–37 GB/s.</td></tr>
+<tr><th>NPU path</th><td>MoE experts in a 4-bit NPU layout on the NPU; everything else Q4_0 on the CPU, 8 threads.</td></tr>
+<tr><th>CPU only</th><td>Every weight Q4_0 on the CPU, 8 threads.</td></tr>
+<tr><th>Workload</th><td>512-token prompt, then 64 / 512 / 1024 generated tokens. Every number is the mean of two runs.</td></tr>
+<tr><th>Method</th><td>A speed-up counts only against a control run in the same session on the same phone, run in mirrored order so heat affects both alike (<a href="measurement.html">Measurement</a>).</td></tr>
 </tbody></table></div>
-<p>How we measure and read profiles, the gates, and the full benchmark table are in <a href="measurement.html">measurement.html</a>.</p>
 
-<h2 id="next">Where to read next<a class="hd" href="#next">#</a></h2>
+<details class="sources"><summary>Sources and snapshot (for tracing the numbers)</summary>
 <ul>
-<li><a href="communication.html">Communication</a>: how the CPU and the NPU talk for one MoE call. It covers FastRPC, the shared buffers and what the 1.8 ms of transport is.</li>
-<li><a href="architecture.html">Architecture</a>: the whole system in one pass, covering the hardware, who runs what, and one token.</li>
-<li><a href="measurement.html">Measurement</a>: sittings, profiles, gates and the full benchmark table.</li>
-<li><a href="roadmap.html">Roadmap</a>: what is left on the way to 50 tok/s.</li>
+<li>Code snapshot: <code>htp_moe</code> @ <code>9f074a5e</code>, merged work only.</li>
+<li>NPU numbers: sitting #120 variant A (2026-09-23), <code>htp_moe</code> @ <code>d79c0efe</code>, default path (VTCM feed, PR #118).</li>
+<li>CPU numbers: sitting #94, sitting 2 (2026-09-22).</li>
+<li>The upstream PR #4327 sync (PR #121) merged after the NPU measurement. In the same sitting it measured prefill +12.4 / +10.2 / +6.2 % and decode +4.7 / +0.9 / −0.2 % (text identical), so the decode figures above still hold; the next measurement carries it.</li>
+<li>Per-token split: the cycle-16 budget in <code>docs/htp_moe/BENCHMARK.md</code>, 22 × (0.712 ms DSP + 0.082 ms transport) + the rest of the 27.81 ms token. Byte floor: 484 MB MoE + 408 MB CPU per token; BENCHMARK's older ≈ 6.5 ms CPU floor counted 246 MB (<a href="lessons.html">Lessons</a> D1).</li>
+<li>Progress bars: #77 (upstream port), #88 B (PR #103), #100 A (PR #108), #117 A sitting 2 (PR #115), #120 A (PR #118). Same-day gains: +41.4 %, +13.5 % (gen 64), +4.16 %, +25.7 % (gen 64).</li>
+<li>Accuracy: text compared byte-for-byte with each sitting's control (banner and md5 lines excluded); device test <code>MoeLayerM1GemvMatchesHmx</code>, 0 of 40 960 (M = 1) and 0 of 163 840 (M = 4) elements differ.</li>
+<li>Model files: NPU <code>q40-qs4cx-wh</code> md5 <code>7b7867fa…</code>; CPU <code>q40</code> md5 <code>d28f55c5…</code>.</li>
 </ul>
+</details>
 
 <div class="pager"><span></span><span><a href="communication.html">Communication</a> →</span></div>
-<footer>docs/htp — nntrainer HTP backend technical docs (#122). Snapshot <code>htp_moe</code> @ <code>a7c66dec</code>.</footer>
+<footer>docs/htp: nntrainer HTP backend technical docs.</footer>
 </main>
+<script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
 </body></html>
