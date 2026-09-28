@@ -1,6 +1,6 @@
 # #122 handoff: the docs/htp HTML doc set
 
-State as of **2026-09-27**. Phase 1 is done and published. Phase 2 is next.
+State as of **2026-09-28**. Phase 1 is done and published; the Results rework and the page TOC (decisions 20–21) are in. Phase 2 is next.
 
 ## Where things are
 
@@ -77,6 +77,14 @@ The branch is based on `9fb1a3bc`, an old `htp_moe`. It only adds files under `d
     - Serial floor ≈ 21–24 ms ≈ 42–47 tok/s, so 50 tok/s is not reachable by bytes with today's serial split.
     - BENCHMARK's cycle-16 budget still says ≈ 6.5 ms (246 MB). Results carries a one-line note on the difference (lessons.html D1).
 
+19. **Phase-2 proposals accepted (2026-09-28):**
+    - Snapshot = latest `htp_moe` (`9f074a5e` at the time).
+    - The Results headline stays #120 A until a new sitting.
+    - PR #121's #120 B A/B goes into Optimizations.
+    - #81/#82 go into Software, dashed, "landed, unwired, #130".
+20. **Every page gets an "On this page" list** built by `nav.py` from the `h2`/`h3` ids. On a wide screen (≥ 72em) it is a fixed rail on the right, with a small scroll-spy script. On a narrow screen it is an inline list. Never hand-edit it; rerun `nav.py`.
+21. **Results reads as one story, for management first:** four tiles → "the story in four steps" box → numbered sections (NPU vs CPU · time split · how we got here · accuracy · by gen · conditions). **No PR numbers, sitting ids or commit hashes in the body, the charts or the captions.** They live only in the collapsed "Sources and snapshot" box at the bottom. The goal-band chart was dropped; the split chart already shows the floor against 20 ms. Apply the same rule to the other story pages.
+
 ## Phase 1: what was done
 
 - **Markdown → HTML.**
@@ -100,7 +108,7 @@ The branch is based on `9fb1a3bc`, an old `htp_moe`. It only adds files under `d
 Questions the user has not answered yet:
 
 1. **Review of phase 1:** ask for feedback on the two published pages.
-2. **`htp_moe` moved** after phase 1 was written. It is at `dbaf24b5` as of 2026-09-27. Merged: PR #121 (the upstream sync, `b7d46b57`), #124, #125 (#82 M=1 small ops, kernels unwired), #126 (#81 M=1 attention + KV cache, unwired), #127 (#84 in-process host E2E build, `-Dhtp-inproc`), #128 (#89 generation(last 64) tok/s), and #129. #130 (wiring #82/#81 into the per-token table) is filed. Proposed answers, which need the user's OK:
+2. *(Answered 2026-09-28, decision 19.)* **`htp_moe` moved** after phase 1 was written. It is at `dbaf24b5` as of 2026-09-27. Merged: PR #121 (the upstream sync, `b7d46b57`), #124, #125 (#82 M=1 small ops, kernels unwired), #126 (#81 M=1 attention + KV cache, unwired), #127 (#84 in-process host E2E build, `-Dhtp-inproc`), #128 (#89 generation(last 64) tok/s), and #129. #130 (wiring #82/#81 into the per-token table) is filed. Proposed answers, which need the user's OK:
    - Snapshot → the latest `htp_moe`.
    - The Results headline stays #120 A until a new sitting. BENCHMARK's rule is that the next A carries the sync and is read against #120 A.
    - PR #121's #120 B A/B goes into Optimizations. B vs A: prefill +12.4 / +10.2 / +6.2 %; decode +4.7 / +0.9 / −0.2 %; text identical; M>1 dsp 16 986 → 14 808 µs.
