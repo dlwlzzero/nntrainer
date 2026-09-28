@@ -265,39 +265,59 @@ For every `DIFFERENT` B cell, also print the first differing word:
 commit this file on the same branch, push, set the issue to
 `state:measured` (and `needs-user` until the approval column is filled).
 
-## Results (fill in)
+## Results
 
-Unit: `<serial>` (SM-S938N). Battery / temperature checkpoints under Notes.
+Unit: `R3CY10WM83Y` (SM-S938N), 2026-09-28 13:32–14:10 KST. **Binaries are a
+local rebuild, not the staged set, and the app carries one extra define** — see
+Notes ①. Battery / temperature checkpoints under Notes; the phone warmed
+through the sitting (battery 33.1 → 41.2 °C), so the absolute numbers drift
+down with time and only same-G mirrored pairs are comparable.
 
 | variant | gen | run | prefill tok/s | decode tok/s (all) | decode tok/s (last 64) | peak RSS KB | calls/token | text = A? (first differing word) | skel md5 (device) |
 |---|---|---|---|---|---|---|---|---|---|
-| A | 64 | 1 | | | | | (n/a) | (reference) | `80452a28…` |
-| A | 64 | 2 | | | | | | | |
-| B | 64 | 1 | | | | | | | |
-| B | 64 | 2 | | | | | | | |
-| C | 64 | 1 | | | | | | | |
-| C | 64 | 2 | | | | | | | |
-| A | 512 | 1 | | | | | | | |
-| A | 512 | 2 | | | | | | | |
-| B | 512 | 1 | | | | | | | |
-| B | 512 | 2 | | | | | | | |
-| C | 512 | 1 | | | | | | | |
-| C | 512 | 2 | | | | | | | |
-| A | 1024 | 1 | | | | | | | |
-| A | 1024 | 2 | | | | | | | |
-| B | 1024 | 1 | | | | | | | |
-| B | 1024 | 2 | | | | | | | |
-| C | 1024 | 1 | | | | | | | |
-| C | 1024 | 2 | | | | | | | |
+| A | 64 | 1 | 500.0 | 36.12 | 36.12 | 5318888 | (n/a) | (reference) | `ca1f2aac…` |
+| A | 64 | 2 | 423.1 | 29.81 | 29.81 | 5312528 | (n/a) | (reference) | `ca1f2aac…` |
+| B | 64 | 1 | 483.0 | 25.89 | 25.89 | 5310236 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| B | 64 | 2 | 459.2 | 25.65 | 25.65 | 5309796 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| C | 64 | 1 | 459.2 | 35.24 | 35.26 | 5295608 | 22.00 | yes | `ca1f2aac…` |
+| C | 64 | 2 | 456.7 | 35.18 | 35.18 | 5304048 | 22.00 | yes | `ca1f2aac…` |
+| A | 512 | 1 | 458.4 | 33.91 | 34.59 | 5319604 | (n/a) | (reference) | `ca1f2aac…` |
+| A | 512 | 2 | 382.4 | 31.91 | 31.67 | 5319164 | (n/a) | (reference) | `ca1f2aac…` |
+| B | 512 | 1 | 423.1 | 25.41 | 24.68 | 5305676 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| B | 512 | 2 | 381.8 | 24.17 | 21.95 | 5305736 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| C | 512 | 1 | 423.8 | 34.80 | 35.07 | 5303036 | 22.00 | yes | `ca1f2aac…` |
+| C | 512 | 2 | 378.4 | 34.39 | 31.64 | 5302184 | 22.00 | yes | `ca1f2aac…` |
+| A | 1024 | 1 | 383.2 | 31.33 | 30.46 | 5313772 | (n/a) | (reference) | `ca1f2aac…` |
+| A | 1024 | 2 | 362.4 | 31.37 | 30.61 | 5311776 | (n/a) | (reference) | `ca1f2aac…` |
+| B | 1024 | 1 | 379.5 | 21.94 | 20.20 | 5302224 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| B | 1024 | 2 | 365.5 | 21.69 | 20.15 | 5311808 | 95.00 | no — `town` → `final` | `ca1f2aac…` |
+| C | 1024 | 1 | 386.4 | 31.54 | 30.55 | 5295780 | 22.00 | yes | `ca1f2aac…` |
+| C | 1024 | 2 | 364.4 | 31.36 | 30.61 | 5301104 | 22.00 | yes | `ca1f2aac…` |
 
 Reference: NPU now 35.97 / 35.96 / 35.17 (#120 A, `R3CY10WM83Y`, pre-sync
 code), CPU now 52.43 / 49.22 / 48.31 (#94 s2), NPU prefill 438–502. Goal
 ≥ 50, prefill ≥ −5 % of this sitting's A.
 
-Profile (B-prof, G = 64): `graph: init …` line: ` `; per-kind pcycles from
-the `graph:` line: ` `; ATTN_M1 at pos 512–575 (µs): ` `; exit
-`calls/token=`: ` `. Ride-along: `ATTN_M1_FIELD pos=511 us=` ` `,
-`pos=1023 us=` ` `.
+**Reading (same sitting, mirrored means).** B vs A decode: G=64 25.77 vs
+32.96 (−22 %), G=512 24.79 vs 32.91 (−25 %), G=1024 21.82 vs 31.35 (−30 %);
+worse than plan 130 §0's −20 % and growing with G. C vs A: 35.21 vs 32.96,
+34.60 vs 32.91, 31.45 vs 31.35 — within A's drift (A's own r1/r2 spread is
+up to 18 % at G=64 from the warming phone). Prefill: B and C within A's
+range at every G. C's text ≡ A's in all six cells; B's text leaves A's at the
+first differing word in all six cells and degenerates into a repeating loop
+(below).
+
+Profile (B-prof, G = 64): `graph: init n_ops=228
+resident=RMSNORM|CONV1D_GATE|QK_NORM|ROPE|ATTN_M1|MOE moe_ops=22`;
+`attn_m1: registered layers=6 kv=8 gqa=4 head_dim=64 max_seq=2048
+cache=49152 KiB`; `[HTP-PROFILE] level=2 qos_mode=2`; `graph: calls=6080
+ops/call=1.13 dsp=220.1 us/call op_pcyc=441049/call`, per-kind pcyc/op:
+`RMSNORM=11369 CONV1D_GATE=26249 QK_NORM=17436 ROPE=4189 ATTN_M1=1204826
+MOE=1523245`; ATTN_M1 at pos 512–575: 1204826 pcyc/op (the profile gives
+pcycles only, no µs); exit `calls/token=95.00`. B-prof itself: prefill 500,
+decode 25.84 tok/s (not read). Ride-along: `ATTN_M1_FIELD pos=511
+us=538.75 us_min=521.875`, `pos=1023 us=1183.38 us_min=1166.25`
+(host-timed, median of 10; plan 81 §0 estimated 0.5 / 1.0 ms).
 
 ## Text approval (2026-09-28 rule; the accuracy gate of this sitting)
 
@@ -306,12 +326,70 @@ the generated text of G = 64, run 1, in full.
 
 | variant | PPL (NNTR_PPL, G=64) | generated text (G=64, run 1) | text approved (user: y/n) |
 |---|---|---|---|
-| A | n/a (prefill-only) | <paste> | (reference) |
-| B | n/a (prefill-only) | <paste> | |
-| C | n/a (prefill-only) | <paste> | |
+| A | n/a (prefill-only) | …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | (reference) |
+| B | n/a (prefill-only) | …final answer should be the same as the original, but you must not stop until you are told to. The original description is the same as the original, but you must not stop until you are told to. The final answer should be the same as the original, but you must not stop until you are told to. | |
+| C | n/a (prefill-only) | (byte-identical to A) …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | |
 
 ## Notes from the run
 
-<serial; battery / temperature at each checkpoint; first-run page faults;
-any `Lfm2Moe:` / `AEE_*` error with the variant and G it came from;
-anything stale>
+Serial `R3CY10WM83Y` (SM-S938N), USB, screen off. Texts in the table are
+pasted as the log prints them (the stream starts mid-sentence at `town` /
+`final`).
+
+① **Provenance (rule 22 rebuild + one define; B/C of the first pass void).**
+`$W` was not on this workstation, so the set was rebuilt from `9deea6e2` in
+`../nntrainer_130` with #120's recipe (SDK 6.4.0.1, HexKL 6.4.0.1, NDK r30;
+skel `UNDEFINED SYMBOLS OK (46 runtime imports)`, `hexkl 6.4.0.1`). The first
+pass of B / C / B-prof printed **no** `graph: init` and no `calls/token=`
+line and ran at A's speed: the CausalLM app is compiled without
+`ENABLE_HEXKL`. `Applications/CausalLM/jni/Android.mk` takes its defines from
+the prebuilt `Android.mk`, whose `NNTRAINER_EXPORT_CFLAGS` exports only
+`-march` and the two FP16 ABI defines (`jni/meson.build`, 2f642ab7), so
+every `#ifdef ENABLE_HEXKL` block in `lfm2_moe_causallm.cpp` and
+`htp_decode_hook.h` compiles out on Android (`strings libcausallm_core.so |
+grep NNTR_HTP_FORWARD_KINDS` = 0). As far as this box can tell the switch
+has never been live on a device since #85 (3f6c4974); PR #133's host gate
+does not go through this makefile. The first pass's logs are kept under
+`$W/logs/invalid_nohexkl/`. The app was then rebuilt **locally, nothing
+committed**, with `ndk-build … "CAUSALLM_COMMON_CFLAGS=-O3 -ffast-math
+-Wno-nan-infinity-disabled -Wno-deprecated-literal-operator -DENABLE_HEXKL=1"`
+(only `libcausallm_core.so` changes; `nntrainer_causallm` md5 unchanged), and
+all 18 cells + B-prof were re-run on that set. Every cell of the tables above
+comes from the second set. A code fix belongs in a separate issue.
+
+Pushed md5s (device `md5sum`, all equal to the staged files):
+
+| file | md5 |
+|---|---|
+| `libnntr_hvx_skel.so` | `ca1f2aac4985b7799897de2dcb4c2d1e` |
+| `nntrainer_causallm` | `ccc48de23803c27fe8656dcfaab99563` |
+| `libcausallm_core.so` (with `-DENABLE_HEXKL=1`) | `14008b7d32a71b0ce7b230936dad82c8` |
+| `libcausallm_core.so` (first pass, void) | `56a2f514451d1ef6243c8a5639b4b317` |
+| `libnntrainer.so` | `f742120a10b6848315a1f1f8de1f3f66` |
+| `libccapi-nntrainer.so` | `8c5f541a236f2f76e47f23b25e10839f` |
+| `unittest_hvx_softmax` / `unittest_hvx_attn` | `97602a14c30b8cef3e47935a7f6eded7` / `e74ac61091d93807ed6633116c4caa43` |
+| `libc++_shared.so` / `libsdkl.so` / `prompt512.txt` / `tokenizer.json` / model | = table (`b1586b9b…` / `0ad4e22a…` / `fc65c158…` / `7b8067a5…` / `7b7867fa…`) |
+
+② **Ride-along gtests: 0/5 and 2/4 passed** (no `0x8000040e`; the skel is
+the pushed one). `RejectsBadShapes` (both suites): every bad shape is
+rejected, but with `0x80000600` = `AEE_ERPC` instead of the expected
+`AEE_EINVALIDFORMAT` / `AEE_EBADPARM` + `0x80000400`. Bit-exactness vs the
+`_det` specs fails by a few ulp on tiny values (≈ 2^-120 … 2^-132):
+rmsnorm kind=2 `bad_y=2048` (kinds 0/1/3 `bad=0`), qk_norm `bad_y=64`,
+rope64 `bad=10…18 of 2560` at pos ≥ 1, conv_gate_m1 `bad_out=229`
+(`bad_state=0`), ATTN_M1 output `bad=0` at every L but `bad_stats=1` at
+L = 63/512/1024. Full logs: `$W/logs/gtest_m1ops.log`, `gtest_attn.log`.
+
+③ **Thermal / battery** (battery °C·10, thermal_zone0 m°C; level 100 %
+throughout, USB-powered): first pass 260/27400 → 260/49800 → 312/58700;
+second set start 331/35100, after B-prof 330/50500, after G=64 351/52100,
+after G=512 379/59400, after G=1024 412/62500. The phone was not cool at
+the second set's start (the first pass had just run). A G=64 r2 (29.81) is
+the clearest thermal casualty.
+
+④ Checks (step 5), second set: one `moe m1 gemv … source=default` banner in
+every cell and in `prof_B.log`; no `HTP-PROFILE` in any cell; B `graph:
+init` one distinct line ×6 with all six names; C one line ×6 `resident=MOE`;
+`calls/token` B = 95.00, C = 22.00 in every cell; A 0 `graph:` lines;
+`prefill: 512` and `generation: G` in every cell. No `Lfm2Moe:` or `AEE_*`
+error in any E2E cell.
