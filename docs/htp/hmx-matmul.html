@@ -46,7 +46,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
 
 </head><body>
-<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html" class="here">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a></nav>
 <main>
 <h1>The HMX integer matmul layer</h1>
 <nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-where-this-layer-sits">1. Where this layer sits</a></li><li class="l2"><a href="#2-hexkl">2. HexKL</a></li><li class="l2"><a href="#3-data-types-and-the-math">3. Data types and the math</a></li><li class="l2"><a href="#4-tiles-and-layouts">4. Tiles and layouts</a></li><li class="l2"><a href="#5-the-entry-points-what-is-live">5. The entry points: what is live</a></li><li class="l2"><a href="#6-the-dma-ring">6. The DMA ring</a></li><li class="l2"><a href="#7-hvx-helpers-around-the-hmx">7. HVX helpers around the HMX</a></li><li class="l2"><a href="#8-measured-behaviour">8. Measured behaviour</a></li><li class="l3"><a href="#81-the-dma-engine">8.1 The DMA engine</a></li><li class="l3"><a href="#82-tried-and-dropped">8.2 Tried and dropped</a></li><li class="l3"><a href="#83-fc-against-qnn-and-sdkl">8.3 FC against QNN and SDKL</a></li><li class="l2"><a href="#9-tests">9. Tests</a></li></ul></details></nav>
@@ -1032,7 +1032,7 @@ cuts the FastRPC payload 4×.</p>
 <p>The host checks run with <code>test/htp/host/run_host_checks.sh</code> and need no DSP.
 The gtests need the device and the skel from <code>test/htp/build.sh</code>.</p>
 
-<div class="pager"><span>← <a href="weight-format.html">Weight format</a></span><span><a href="moe-ffn.html">MoE FFN</a> →</span></div>
+<div class="pager"><span>← <a href="index.html">Overview</a></span><span></span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 <script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>

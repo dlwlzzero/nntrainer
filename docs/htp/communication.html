@@ -60,7 +60,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
 
 </head><body>
-<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html" class="here">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html">Roadmap</a></nav>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><a href="index.html">Overview</a><a href="communication.html" class="here">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a></nav>
 <main>
 <h1>How the CPU and the NPU talk</h1>
 <p>The NPU runs one thing in this backend: the MoE feed-forward block. Everything else stays on the ARM CPU. So every token crosses the CPU–NPU boundary 22 times, once per MoE layer. Each crossing carries a few kilobytes of activation; the ≈ 22 MB of expert weights per call never cross, the DSP reads them from shared memory. Terms are defined at the <a href="#terms">bottom of the page</a>.</p>

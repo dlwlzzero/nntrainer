@@ -46,7 +46,7 @@ nav.top .sep{color:var(--muted);margin:0 .9em 0 0}
 <!--css--><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap"><link rel="stylesheet" href="style.css"><!--/css-->
 
 </head><body>
-<nav class="top"><a class="brand" href="index.html">HTP backend</a><span class="grp">Story</span><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a><span class="grp">Reference</span><a href="weight-format.html">Weight format</a><a href="hmx-matmul.html">HMX matmul</a><a href="moe-ffn.html">MoE FFN</a><a href="build-test.html">Build &amp; test</a><a href="measurement.html">Measurement</a><a href="lessons.html">Lessons</a><a href="roadmap.html" class="here">Roadmap</a></nav>
+<nav class="top"><a class="brand" href="index.html">HTP backend</a><a href="index.html">Overview</a><a href="communication.html">Communication</a><a href="software.html">Software</a><a href="optimizations.html">Optimizations</a></nav>
 <main>
 <h1>Roadmap</h1>
 <nav class="toc"><details open><summary>On this page</summary><ul><li class="l2"><a href="#1-where-the-time-goes-and-what-is-left">1. Where the time goes and what is left</a></li><li class="l2"><a href="#2-near-term-the-vtcm-feed-then-the-engine-gap">2. Near term: the VTCM feed, then the engine gap</a></li><li class="l3"><a href="#21-the-vtcm-feed-117-pr-118">2.1 The VTCM feed (#117, PR #118)</a></li><li class="l3"><a href="#22-open-item-㉓-the-in-situ-engine-runs-below-the-anchor">2.2 Open item ㉓: the in-situ engine runs below the anchor</a></li><li class="l2"><a href="#3-one-call-per-token">3. One call per token</a></li><li class="l3"><a href="#31-why">3.1 Why</a></li><li class="l3"><a href="#32-what-sits-between-two-moe-calls">3.2 What sits between two MoE calls</a></li><li class="l3"><a href="#33-order-and-dependencies">3.3 Order and dependencies</a></li><li class="l3"><a href="#34-tried-and-dropped-design-alternatives">3.4 Tried and dropped (design alternatives)</a></li><li class="l2"><a href="#4-upstream-sync-120">4. Upstream sync (#120)</a></li><li class="l2"><a href="#5-accuracy-track">5. Accuracy track</a></li><li class="l2"><a href="#6-prior-work-hvx_impl">6. Prior work: hvx_impl</a></li><li class="l2"><a href="#7-longer-term">7. Longer term</a></li></ul></details></nav>
@@ -800,7 +800,7 @@ studied or filed yet. Both change accuracy and need the perplexity column
 of §3.3.</li>
 </ul>
 
-<div class="pager"><span>← <a href="lessons.html">Lessons</a></span><span></span></div>
+<div class="pager"><span>← <a href="index.html">Overview</a></span><span></span></div>
 <footer>docs/htp — nntrainer HTP backend technical docs (#122). Converted from Markdown at <code>7d14d9fa</code>.</footer>
 </main>
 <script id="tocspy">(()=>{const a=[...document.querySelectorAll("nav.toc a")],m=new Map(a.map(x=>[decodeURIComponent(x.hash.slice(1)),x]));const o=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){a.forEach(x=>x.classList.remove("on"));m.get(e.target.id)?.classList.add("on")}},{rootMargin:"0px 0px -70% 0px"});m.forEach((_,id)=>{const h=document.getElementById(id);h&&o.observe(h)})})()</script>
