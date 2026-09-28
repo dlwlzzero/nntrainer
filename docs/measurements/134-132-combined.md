@@ -149,11 +149,20 @@ O4 do ((scores + pv) / 8192 = 495 pcycles > 250); O2 not needed
 
 | variant | decode PPL (G=512, forced on A) | generated text (G=64, run 1) | text approved (user: y/n) |
 |---|---|---|---|
-| A | 1.24161 | …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | (reference) |
+| A | 1.24161 | …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | **y** (user, 2026-09-28; reference) |
 | C | 1.24161 | (byte-identical to A) | |
 | B | 1.24052 (−0.088 %) | …final answer should be the same as the original, but you must not stop until you are told to. The original description is the same as the original, but you must not stop until you are told to. The final answer should be the same as the original, but you must not stop until you are told to. | **n** (user, 2026-09-28) |
-| D | 1.23886 (−0.222 %) | …final answer should be the description of Ardley in the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction | |
+| D | 1.23886 (−0.222 %) | …final answer should be the description of Ardley in the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction | **n** (user, 2026-09-28) |
 
 ## Notes from the run
 
 Thermal (battery °C·10 / zone0 m°C): 269 / 28500 at start, 314 / 59000 after G=64, 336 / 61000 after G=512, 340 / 58300 after the PPL cells; zone0 40900 before the dspqueue bench, 39000 before the attention gtest. Logs: `/local/mnt/workspace/htp_moe/134-132/logs/`, `/local/mnt/workspace/htp_moe/146/logs/`.
+
+**Approval (user, 2026-09-28): A `y`, B `n`, D `n`.** Why the texts part at
+the first word: at decode step 1 A gives `town` (id 4386) only p = 0.134
+(nll 2.010); in B and D `town` is at nll 2.103 / 2.113 and another token
+(id 2023, `final`) is the argmax. The prompt's first step is a near-tie
+between two ~13 % tokens, so any last-bit perturbation (rule 39) picks
+either; after `final` the greedy path runs into a one-sentence loop. The
+decode PPL (teacher-forced on A's path) cannot see how bad the free-running
+continuation after a flip is — which is what the approval caught.
