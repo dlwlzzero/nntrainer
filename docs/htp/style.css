@@ -1,0 +1,88 @@
+/* Shared look for docs/htp. Loaded after each page's inline <style>, so it wins on equal selectors.
+   Palette: cool paper and ink; blue = NPU/DSP, orange = CPU, tan = memory (the figures use the same). */
+:root{
+  --bg:#f4f6f9;--surface:#ffffff;--ink:#14171c;--ink2:#454c59;--muted:#737b8a;--grid:#dde2ea;
+  --s1:#1f6fd1;--code:#eceff4;--cpu:#e2622c;--mem:#b89a62;--plate:#ffffff;--hl:#e8f0fc;
+  --sans:"IBM Plex Sans",-apple-system,"Segoe UI",Roboto,"Noto Sans",Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;--bg:#0e1116;--surface:#151a21;--ink:#e4e8ee;--ink2:#b1b9c6;--muted:#8891a0;--grid:#29303b;
+  --s1:#6ea8ff;--code:#1c222b;--hl:#1b2a40;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;--bg:#0e1116;--surface:#151a21;--ink:#e4e8ee;--ink2:#b1b9c6;--muted:#8891a0;--grid:#29303b;
+  --s1:#6ea8ff;--code:#1c222b;--hl:#1b2a40;
+}
+
+html{font-size:16.5px}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.65;font-feature-settings:"kern"}
+main{max-width:50em;padding:0 16px 4em}
+code,pre{font-family:var(--mono);font-size:.86em}
+code{background:var(--code);border-radius:4px;padding:.08em .32em}
+pre{background:var(--code);border:1px solid var(--grid);border-radius:6px}
+a{color:var(--s1);text-underline-offset:.18em;text-decoration-thickness:1px}
+a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--s1);outline-offset:2px;border-radius:3px}
+
+/* Headings: one scale, numbers carry the order */
+h1{font-size:2.05em;font-weight:600;letter-spacing:-.015em;line-height:1.15;margin:1.3em 0 .5em;text-wrap:balance}
+h2{font-size:1.4em;font-weight:600;letter-spacing:-.01em;line-height:1.25;margin:2.6em 0 .7em;padding:0;border:0;text-wrap:balance}
+h3{font-size:1.12em;font-weight:600;margin:1.9em 0 .5em;text-wrap:balance}
+h4{font-size:.8em;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--ink2);margin:1.6em 0 .4em}
+h2 a.hd,h3 a.hd,h4 a.hd{font-weight:400}
+p,li{margin:.6em 0}
+ul,ol{padding-left:1.35em}
+li::marker{color:var(--muted)}
+strong{font-weight:600}
+.lede{font-size:1.12em;color:var(--ink2);line-height:1.6}
+.note,.src{font-size:.9em;color:var(--ink2)}
+
+/* Top bar: brand, story pages, reference pages */
+nav.top{top:0;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--grid);padding:.55em 16px;font-size:.88em;display:flex;align-items:baseline;gap:.2em}
+nav.top a{color:var(--ink2);margin:0;padding:.2em .55em;border-radius:5px}
+nav.top a:hover{color:var(--ink);background:var(--code)}
+nav.top a.here{color:var(--ink);font-weight:600;background:var(--code)}
+nav.top .brand{font-weight:600;color:var(--ink);padding-right:.9em;margin-right:.3em;border-right:1px solid var(--grid)}
+nav.top .grp{font-size:.72em;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 .25em 0 .8em}
+nav.top .sep{display:none}
+
+/* Tables */
+.tablewrap{margin:1.1em 0}
+table{font-size:.9em}
+th,td{border-bottom:1px solid var(--grid);padding:.5em .65em}
+thead th{background:transparent;color:var(--muted);font-size:.78em;text-transform:uppercase;letter-spacing:.06em;border-bottom:1.5px solid var(--ink2)}
+tbody th{background:transparent;color:var(--ink2);white-space:nowrap}
+td{font-variant-numeric:tabular-nums}
+
+/* Figures sit on a light plate in both themes: the SVGs are drawn with light-theme colors */
+figure{--ink:#14171c;--ink2:#454c59;--muted:#737b8a;--code:#eceff4;--s1:#1f6fd1;--grid:#dde2ea;
+  background:var(--plate);color:var(--ink);border:1px solid var(--grid);border-radius:8px;padding:1em 1em .8em;margin:1.6em 0;box-shadow:0 1px 2px rgba(20,23,28,.04)}
+figcaption{font-size:.86em;line-height:1.5;margin-top:.7em;padding-top:.6em;border-top:1px solid var(--grid)}
+
+/* Blocks */
+blockquote{border-left:3px solid var(--s1);background:var(--surface);border-radius:0 6px 6px 0}
+.tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:640px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tile{background:var(--surface);border:1px solid var(--grid);border-radius:8px}
+.tile .k{text-transform:uppercase;letter-spacing:.06em;font-size:.72em;color:var(--muted)}
+.tile .v{font-weight:600;letter-spacing:-.02em}
+.gloss{background:var(--surface);border:1px solid var(--grid);border-radius:8px}
+.sources{border-top:1px solid var(--grid);padding-top:.8em}
+ol.steps.js-steps li.on{background:var(--hl)}
+
+/* "On this page": inline on narrow screens, a quiet rail on wide ones */
+.toc{background:var(--surface);border:1px solid var(--grid);border-radius:8px;font-size:.86em}
+.toc summary{font-size:.78em;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.toc a{color:var(--ink2)}
+.toc a:hover{color:var(--s1)}
+.toc a.on{color:var(--s1);font-weight:600}
+.toc li{margin:.28em 0;line-height:1.35}
+@media (min-width:72em){nav.toc{background:transparent;border:0;border-left:1px solid var(--grid);border-radius:0;padding:.2em 0 .2em 1em;top:4.2em}}
+
+.pager{border-top:1px solid var(--grid);padding-top:1em}
+.pager a{font-weight:600;text-decoration:none}
+footer{color:var(--muted)}
+
+@media (max-width:480px){html{font-size:15.5px}h1{font-size:1.6em}h2{font-size:1.25em}nav.top .grp,nav.top .brand{display:none}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
