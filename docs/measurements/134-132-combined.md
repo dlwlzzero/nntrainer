@@ -151,7 +151,7 @@ O4 do ((scores + pv) / 8192 = 495 pcycles > 250); O2 not needed
 |---|---|---|---|
 | A | 1.24161 | …town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station | (reference) |
 | C | 1.24161 | (byte-identical to A) | |
-| B | 1.24052 (−0.088 %) | …final answer should be the same as the original, but you must not stop until you are told to. The original description is the same as the original, but you must not stop until you are told to. The final answer should be the same as the original, but you must not stop until you are told to. | |
+| B | 1.24052 (−0.088 %) | …final answer should be the same as the original, but you must not stop until you are told to. The original description is the same as the original, but you must not stop until you are told to. The final answer should be the same as the original, but you must not stop until you are told to. | **n** (user, 2026-09-28) |
 | D | 1.23886 (−0.222 %) | …final answer should be the description of Ardley in the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction. The user wants to know about the town, and the description should be the same style, with the final instruction | |
 
 ## Notes from the run
