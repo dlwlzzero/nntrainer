@@ -1,6 +1,6 @@
 # #122 handoff: the docs/htp HTML doc set
 
-State as of **2026-09-28**. Phase 1 is done and published; the Results rework and the page TOC (decisions 20–21) are in. Phase 2 is next.
+State as of **2026-09-28**. Phase 1 and phase 2 are published: Results, Communication, Software, Optimizations (decisions 19–21 applied). Next: user review of Software and Optimizations, then phase 3 (fold the reference chapters).
 
 ## Where things are
 

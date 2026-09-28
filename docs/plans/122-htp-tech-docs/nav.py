@@ -8,6 +8,8 @@ D = Path(sys.argv[1])
 CORE = [
     ("index", "Results"),
     ("communication", "Communication"),
+    ("software", "Software"),
+    ("optimizations", "Optimizations"),
 ]
 REF = [
     ("architecture", "Architecture"),
