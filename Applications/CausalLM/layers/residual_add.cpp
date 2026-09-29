@@ -16,6 +16,8 @@
 #include <nntrainer_error.h>
 
 #include "htp_decode_hook.h"
+#include <cstring>
+#include <vector>
 
 namespace causallm {
 
@@ -65,6 +67,17 @@ void ResidualAddLayer::incremental_forwarding(
       continue;
     out_step.copy(in0_step);
     out_step.add_i(in1_step);
+    if (to - from == 1 && out.batch() == 1 &&
+        out.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+        fcShadowOn()) { // dev/fc-shadow only: the DSP's add of the same rows
+      const unsigned W = static_cast<unsigned>(out_step_dim.width());
+      std::vector<float> in(2u * W), dsp(W);
+      std::memcpy(in.data(), in0_step.getData<float>(), W * sizeof(float));
+      std::memcpy(in.data() + W, in1_step.getData<float>(), W * sizeof(float));
+      if (htpDevAdd(in.data(), in.data() + W, dsp.data(), W))
+        fcShadowRecord(4u, in.data(), 2u * W, out_step.getData<float>(),
+                       dsp.data(), W);
+    }
   }
 }
 

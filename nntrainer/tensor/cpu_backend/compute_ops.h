@@ -45,6 +45,12 @@ namespace nntrainer {
  * @class ComputeOps
  * @brief Abstract dispatch interface for tensor compute kernels.
  */
+/** dev/fc-shadow only (#132 PR 2, never merged): called by the ARM
+ *  backend's gemm_q4_0<float> after every M = 1 call with its input,
+ *  q4_0x4 weight and output; NULL unless HtpComputeOps installs it. */
+extern void (*g_q4_0_m1_shadow)(unsigned N, unsigned K, const float *A,
+                                const void *B, const float *C);
+
 class ComputeOps {
 public:
   virtual ~ComputeOps() = default;
@@ -399,6 +405,42 @@ public:
     (void)n;
     (void)chunk;
     (void)eps;
+    return 0;
+  }
+  // dev/fc-shadow only (#132 PR 2, never merged): the shadow's record
+  // writer (NNTR_FC_SHADOW) and the DSP's add_f32 / router_topk_det_f32
+  // test entries on the live session. 0 / false without an accelerator.
+  virtual bool dev_shadow_on() { return false; }
+  virtual void dev_shadow_record(unsigned tag, const float *in, unsigned n_in,
+                                 const float *cpu, const float *dsp,
+                                 unsigned n_out) {
+    (void)tag;
+    (void)in;
+    (void)n_in;
+    (void)cpu;
+    (void)dsp;
+    (void)n_out;
+  }
+  virtual int dev_add_f32(const float *a, const float *b, float *c,
+                          unsigned n) {
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)n;
+    return 0;
+  }
+  virtual int dev_router_topk(const float *x, const float *w, const float *bias,
+                              unsigned K, unsigned E, unsigned top_k,
+                              float *logits, unsigned *sel, float *weight) {
+    (void)x;
+    (void)w;
+    (void)bias;
+    (void)K;
+    (void)E;
+    (void)top_k;
+    (void)logits;
+    (void)sel;
+    (void)weight;
     return 0;
   }
   virtual bool decode_kv_seed_fp32(unsigned n_rows, const float *k_rows,

@@ -111,9 +111,34 @@ inline int htpDevRmsNorm(const float *x, const float *gamma, float *y,
   return nntrainer::get_htp_ops()->dev_rmsnorm_det_fp32(x, gamma, y, n, chunk,
                                                         eps);
 }
+/** @brief dev/fc-shadow only (#132 PR 2): compute_ops.h's dev_* hooks. */
+inline bool fcShadowOn() { return nntrainer::get_htp_ops()->dev_shadow_on(); }
+inline void fcShadowRecord(unsigned tag, const float *in, unsigned n_in,
+                           const float *cpu, const float *dsp, unsigned n_out) {
+  nntrainer::get_htp_ops()->dev_shadow_record(tag, in, n_in, cpu, dsp, n_out);
+}
+inline int htpDevAdd(const float *a, const float *b, float *c, unsigned n) {
+  return nntrainer::get_htp_ops()->dev_add_f32(a, b, c, n);
+}
+inline int htpDevRouter(const float *x, const float *w, const float *bias,
+                        unsigned K, unsigned E, unsigned top_k, float *logits,
+                        unsigned *sel, float *weight) {
+  return nntrainer::get_htp_ops()->dev_router_topk(x, w, bias, K, E, top_k,
+                                                   logits, sel, weight);
+}
 #else
 inline int htpDevRmsNorm(const float *, const float *, float *, unsigned,
                          unsigned, float) {
+  return 0;
+}
+inline bool fcShadowOn() { return false; }
+inline void fcShadowRecord(unsigned, const float *, unsigned, const float *,
+                           const float *, unsigned) {}
+inline int htpDevAdd(const float *, const float *, float *, unsigned) {
+  return 0;
+}
+inline int htpDevRouter(const float *, const float *, const float *, unsigned,
+                        unsigned, unsigned, float *, unsigned *, float *) {
   return 0;
 }
 inline int htpDecodeOp(unsigned, unsigned, const float *, unsigned, float *,

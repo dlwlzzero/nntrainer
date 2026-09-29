@@ -835,6 +835,37 @@ void Lfm2MoELayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       for (const auto &assignments : expert_assignments)
         max_assigned_tokens = std::max(max_assigned_tokens, assignments.size());
     }
+    if (total_tokens == 1 && fcShadowOn() &&
+        gate_weights.getDataType() == ml::train::TensorDim::DataType::FP32) {
+      // dev/fc-shadow only: the DSP's router on the same row, as logits |
+      // selected expert ids ascending | their weights
+      const unsigned E = num_experts, n_out = E + 2u * topk;
+      std::vector<float> cpu(n_out, 0.0f), dsp(n_out, 0.0f), lg(E), wt(topk);
+      std::vector<unsigned> sel(topk);
+      std::memcpy(cpu.data(), router_logits.getData<float>(), E * 4u);
+      unsigned r = 0;
+      for (unsigned e = 0; e < E && r < topk; ++e)
+        if (!expert_assignments[e].empty()) {
+          std::memcpy(&cpu[E + r], &e, 4u);
+          cpu[E + topk + r] = expert_assignments[e][0].second;
+          ++r;
+        }
+      if (htpDevRouter(input.getData<float>(), gate_weights.getData<float>(),
+                       expert_bias.getData<float>(), hidden_size, E, topk,
+                       lg.data(), sel.data(), wt.data())) {
+        std::vector<std::pair<unsigned, float>> p;
+        for (unsigned k = 0; k < topk; ++k)
+          p.emplace_back(sel[k], wt[k]);
+        std::sort(p.begin(), p.end());
+        std::memcpy(dsp.data(), lg.data(), E * 4u);
+        for (unsigned k = 0; k < topk; ++k) {
+          std::memcpy(&dsp[E + k], &p[k].first, 4u);
+          dsp[E + topk + k] = p[k].second;
+        }
+        fcShadowRecord(5u, input.getData<float>(), hidden_size, cpu.data(),
+                       dsp.data(), n_out);
+      }
+    }
 
     // Decode's single token routes to num_experts_per_tok distinct experts,
     // all sharing that one token as gate_up's activation -- group them (see

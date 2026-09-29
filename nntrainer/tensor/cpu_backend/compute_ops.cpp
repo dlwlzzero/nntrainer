@@ -38,6 +38,9 @@
 
 namespace nntrainer {
 
+void (*g_q4_0_m1_shadow)(unsigned, unsigned, const float *, const void *,
+                         const float *) = nullptr;
+
 ComputeOps *g_compute_ops = nullptr;
 
 namespace {

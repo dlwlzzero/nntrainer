@@ -274,8 +274,10 @@ void Lfm2Transformer::setupLfm2Parameters(json &cfg, json &generation_cfg,
                                           json &nntr_cfg,
                                           bool require_layer_types) {
   (void)generation_cfg;
-  // [#132] the residual adds carry the HTP ADD hook under the switch
-  if (htpForwardSwitch())
+  // [#132] the residual adds carry the HTP ADD hook under the switch;
+  // dev/fc-shadow: and under NNTR_FC_SHADOW, whose tag-4 records live in
+  // residual_add (copy(in0), add_i(in1): the addition layer's bits)
+  if (htpForwardSwitch() || std::getenv("NNTR_FC_SHADOW") != nullptr)
     RESIDUAL_ADD_TYPE = "residual_add";
 
   try {

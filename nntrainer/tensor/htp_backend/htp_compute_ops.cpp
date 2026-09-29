@@ -956,8 +956,142 @@ inline void stagedMemcpy(void *dst, const void *src, size_t bytes) {
 
 } // namespace
 
+/* ---- dev/fc-shadow only (#132 PR 2, never merged) ----------------------
+ * NNTR_FC_SHADOW=<file>: every M = 1 Q4_0 FC / lm_head call the CPU makes
+ * is run again on the DSP (fc_q4m1_f32, the exact kernel, 6 lanes, heap
+ * weights) on the same input, and a record is appended: u32 tag, step,
+ * n_in, n_out, then f32 in[n_in], cpu[n_out], dsp[n_out]. Tag 3 FC (the
+ * lm_head in 16384-column slices), 4 ADD and 5 router (written by the app
+ * through dev_shadow_record). The weight is reordered to Q4M1 once per
+ * weight on the ARM (cached) and registered / released per call, so the
+ * DSP heap holds at most one slice (18 MiB). Nothing the CPU computes is
+ * replaced: the text and nll must equal A's. step counts M = 1 lm_head
+ * calls; NNTR_FC_SHADOW_STEPS (default 8, 0 = all) stops the shadow after
+ * that many. NNTR_HEAP_PROBE=1 (G4): at the first M = 1 lm_head call, the
+ * DSP heap left to this loaded app, in 1 MiB chunks. */
+namespace {
+struct DevShadow {
+  std::FILE *f = nullptr;
+  unsigned step = 0, limit = 8;
+  bool heap_probe = false;
+  std::unordered_map<const void *, std::vector<uint8_t>> m1;
+  bool on() const { return f != nullptr && (limit == 0 || step < limit); }
+  void write(unsigned tag, const float *in, unsigned n_in, const float *cpu,
+             const float *dsp, unsigned n_out) {
+    if (!on())
+      return;
+    const unsigned h[4] = {tag, step, n_in, n_out};
+    std::fwrite(h, sizeof(unsigned), 4, f);
+    std::fwrite(in, sizeof(float), n_in, f);
+    std::fwrite(cpu, sizeof(float), n_out, f);
+    std::fwrite(dsp, sizeof(float), n_out, f);
+    std::fflush(f);
+  }
+};
+
+DevShadow &devShadow() {
+  static DevShadow d = [] {
+    DevShadow s;
+    if (const char *p = std::getenv("NNTR_FC_SHADOW"))
+      s.f = std::fopen(p, "wb");
+    if (const char *l = std::getenv("NNTR_FC_SHADOW_STEPS"))
+      s.limit = static_cast<unsigned>(std::atoi(l));
+    s.heap_probe = std::getenv("NNTR_HEAP_PROBE") != nullptr;
+    return s;
+  }();
+  return d;
+}
+
+void devShadowCheck(int err, const char *what) {
+  if (err != AEE_SUCCESS)
+    throw std::runtime_error(std::string("dev/fc-shadow: ") + what + " 0x" +
+                             std::to_string(static_cast<unsigned>(err)));
+}
+
+void devFcShadow(unsigned N, unsigned K, const float *A, const void *B,
+                 const float *C) {
+  DevShadow &d = devShadow();
+  const bool lm = N >= 65536u;
+  const remote_handle64 h =
+    static_cast<remote_handle64>(HtpBackend::global().handle());
+  if (lm && d.heap_probe) {
+    d.heap_probe = false;
+    uint32_t ok = 0;
+    uint64 sum = 0; /* the IDL's type (unsigned long long) */
+    devShadowCheck(nntr_hvx_mem_probe_dsp_heap(h, 1u, 4096u, &ok, 1, &sum, 1),
+                   "mem_probe_dsp_heap");
+    std::printf("[HTP] heap probe: %u MiB allocatable in 1 MiB chunks "
+                "(loaded app, first decode lm_head)\n",
+                ok);
+  }
+  if (!d.on())
+    return;
+  if (K % 64u != 0u || N % 32u != 0u) {
+    std::fprintf(stderr, "[FC-SHADOW] skipped K=%u N=%u (not Q4M1)\n", K, N);
+    return;
+  }
+  std::vector<uint8_t> &m1 = d.m1[B];
+  if (m1.empty()) {
+    std::vector<uint8_t> canon(static_cast<size_t>(N) * (K / 32u) * 18u);
+    q4_0_from_q4_0x4(static_cast<const uint8_t *>(B), K, N, canon.data());
+    m1.resize(q4m1_bytes(K, N));
+    q4m1_from_q4_0(canon.data(), K, N, m1.data());
+  }
+  const unsigned slice = 16384u;
+  for (unsigned n0 = 0; n0 < N; n0 += slice) {
+    const unsigned ns = std::min(slice, N - n0);
+    const uint8_t *src = m1.data() + q4m1_bytes(K, n0);
+    uint32_t wh = 0;
+    devShadowCheck(nntr_hvx_q4m1_register(
+                     h, K, ns, src, static_cast<int>(q4m1_bytes(K, ns)), &wh),
+                   "q4m1_register");
+    std::vector<float> y(ns);
+    std::vector<uint32_t> st(8);
+    const int err =
+      nntr_hvx_fc_q4m1_f32(h, wh, 0u, 6u, 1u, A, static_cast<int>(K), y.data(),
+                           static_cast<int>(ns), st.data(), 8);
+    devShadowCheck(nntr_hvx_q4m1_release(h, wh), "q4m1_release");
+    devShadowCheck(err, "fc_q4m1_f32");
+    d.write(3u, A, K, C + n0, y.data(), ns);
+  }
+  if (lm)
+    ++d.step;
+}
+} // namespace
+
 class HtpComputeOps : public CpuComputeOps {
 public:
+  /** dev/fc-shadow only: compute_ops.h's dev_* methods. */
+  bool dev_shadow_on() override { return devShadow().on(); }
+  void dev_shadow_record(unsigned tag, const float *in, unsigned n_in,
+                         const float *cpu, const float *dsp,
+                         unsigned n_out) override {
+    devShadow().write(tag, in, n_in, cpu, dsp, n_out);
+  }
+  int dev_add_f32(const float *a, const float *b, float *c,
+                  unsigned n) override {
+    const remote_handle64 h =
+      static_cast<remote_handle64>(HtpBackend::global().handle());
+    devShadowCheck(nntr_hvx_add_f32(h, a, static_cast<int>(n), b,
+                                    static_cast<int>(n), c,
+                                    static_cast<int>(n)),
+                   "add_f32");
+    return 1;
+  }
+  int dev_router_topk(const float *x, const float *w, const float *bias,
+                      unsigned K, unsigned E, unsigned top_k, float *logits,
+                      unsigned *sel, float *weight) override {
+    const remote_handle64 h =
+      static_cast<remote_handle64>(HtpBackend::global().handle());
+    devShadowCheck(nntr_hvx_router_topk_det_f32(
+                     h, top_k, x, static_cast<int>(K), w,
+                     static_cast<int>(K * E), bias, static_cast<int>(E), logits,
+                     static_cast<int>(E), sel, static_cast<int>(top_k), weight,
+                     static_cast<int>(top_k)),
+                   "router_topk_det_f32");
+    return 1;
+  }
+
   /** [#130] The per-token entry's call count at close, the one line the
    *  host E2E harness reads (plan 130 section 3.5): tokens are the calls
    *  that started at the list's first resident op. No RPC here: the
@@ -4989,6 +5123,13 @@ private:
 
 ComputeOps *get_htp_ops() {
   static HtpComputeOps instance;
+  static const bool shadow = [] { // dev/fc-shadow only
+    const DevShadow &d = devShadow();
+    if (d.f != nullptr || d.heap_probe)
+      g_q4_0_m1_shadow = devFcShadow;
+    return true;
+  }();
+  (void)shadow;
   return &instance;
 }
 
