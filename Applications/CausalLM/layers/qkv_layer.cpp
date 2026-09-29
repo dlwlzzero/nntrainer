@@ -302,8 +302,20 @@ void QKVLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                         have ? dsp.data() : nullptr, wq + wk);
       }
       if (htpDecodeQkNorm(from, row.data(), wq + wk + wv, gammas.data(),
-                          2 * feature_size, epsilon))
+                          2 * feature_size, epsilon)) {
+        if (attnShadowFile() != nullptr) {
+          // dev/attn-shadow-170: the stretch leaves Q / K unwritten; the
+          // attention shadow's CPU pass reads them, so write the CPU norm
+          // (bit-identical to the DSP's, #164 G2). The DSP does not read it.
+          headNorm(Qhidden_, context.getOutput(QKVParams::Q),
+                   context.getWeight(weight_idx[WQ_GAMMA]), to - from,
+                   feature_size, epsilon);
+          headNorm(Khidden_, context.getOutput(QKVParams::K),
+                   context.getWeight(weight_idx[WK_GAMMA]), to - from,
+                   feature_size, epsilon);
+        }
         return;
+      }
     }
     headNorm(Qhidden_, context.getOutput(QKVParams::Q),
              context.getWeight(weight_idx[WQ_GAMMA]), to - from, feature_size,
