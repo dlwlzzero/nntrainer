@@ -27,7 +27,38 @@
 #include <htp_graph_desc.h>
 #endif
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace causallm {
+
+/** @brief Measurement only (dev/attn-shadow-170, never merged):
+ *  NNTR_ATTN_SHADOW=<file> makes every decode attention the HTP runs also
+ *  run the CPU's fp16 attention on the same row (its own cache kept
+ *  current) and append one record per call: u32 tag 3, pos, the layer's
+ *  ordinal, n_row, n_out, then f32 row[n_row] (q | k | v before RoPE),
+ *  cpu[n_out], htp[n_out]. */
+inline std::FILE *attnShadowFile() {
+  static std::FILE *f = [] {
+    const char *p = std::getenv("NNTR_ATTN_SHADOW");
+    return p ? std::fopen(p, "wb") : nullptr;
+  }();
+  return f;
+}
+
+inline void attnShadowWrite(unsigned pos, unsigned ordinal, const float *row,
+                            unsigned n_row, const float *cpu, const float *htp,
+                            unsigned n_out) {
+  std::FILE *f = attnShadowFile();
+  if (!f)
+    return;
+  const unsigned h[5] = {3u, pos, ordinal, n_row, n_out};
+  std::fwrite(h, sizeof(unsigned), 5, f);
+  std::fwrite(row, sizeof(float), n_row, f);
+  std::fwrite(cpu, sizeof(float), n_out, f);
+  std::fwrite(htp, sizeof(float), n_out, f);
+  std::fflush(f);
+}
 
 #ifdef ENABLE_HEXKL
 inline int htpDecodeOp(unsigned kind, unsigned pos, const float *in,
