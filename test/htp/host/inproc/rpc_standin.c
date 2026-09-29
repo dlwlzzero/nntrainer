@@ -177,6 +177,11 @@ EXPORT int HAP_power_set(void *context, HAP_power_request_t *request) {
   (void)context, (void)request;
   return AEE_SUCCESS;
 }
+/* [#187] nntr_hvx_open reads the HMX clock around its vote; there is none */
+EXPORT int HAP_power_get(void *context, HAP_power_response_t *response) {
+  (void)context, (void)response;
+  return AEE_EUNSUPPORTED;
+}
 
 /* ---- HAP_debug.h: FARF's sink. Errors always reach stderr; the rest
    only with NNTR_HTP_FARF set, so a gate's output stays readable. ---- */
