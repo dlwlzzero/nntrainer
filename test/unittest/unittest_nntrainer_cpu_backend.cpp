@@ -17,6 +17,7 @@
 #include <cpu_backend.h>
 #include <fallback_internal.h>
 #include <fp16.h>
+#include <ggml_interface.h>
 #include <gtest/gtest.h>
 #include <nntr_ggml_impl.h>
 #include <numeric>
@@ -314,6 +315,46 @@ TEST(nntrainer_cpu_backend_standalone,
     }
   }
 #endif
+}
+
+/**
+ * @brief [#187] The M > 1 q4_0x4 GEMM driver gives the same bits for every
+ * schedule (row chunk, column chunk, task order): each output element is one
+ * per-block fma chain in block order, whoever computes it. On x86 this runs
+ * the AVX kernel and checks the driver's index arithmetic.
+ */
+TEST(nntrainer_cpu_backend_standalone, q4_0_gemm_sched) {
+  nntrainer::init_backend();
+  const unsigned int K = 256, N = 192;
+  std::mt19937 rng(1870);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  std::vector<float> W(static_cast<size_t>(N) * K);
+  for (auto &v : W)
+    v = dist(rng);
+  const size_t q4_size = static_cast<size_t>(N) * K / 32 * 18;
+  std::vector<char> Q4(q4_size), B(q4_size);
+  nntr_quantize_q4_0(W.data(), Q4.data(), N, K, nullptr);
+  nntr_repack_q4_0_to_q4_0_4_bl(B.data(), 8, Q4.data(), q4_size, N, K);
+  for (unsigned int M : {16u, 36u, 512u}) {
+    std::vector<float> A(static_cast<size_t>(M) * K);
+    for (auto &v : A)
+      v = dist(rng);
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.0f);
+    nntrainer::__ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A.data(), K, B.data(),
+                                                N, ref.data(), N);
+    for (unsigned int rc : {16u, 32u, 64u})
+      for (unsigned int cc : {0u, 32u, 64u, 128u})
+        for (bool cm : {false, true}) {
+          std::vector<float> out(ref.size(), 0.0f);
+          nntrainer::__ggml_q4_0_4x8_q8_0_GEMM_sched(
+            M, N, K, A.data(), K, B.data(), N, out.data(), N,
+            nntrainer::q4_0_sched{rc, cc, cm});
+          EXPECT_EQ(
+            0, std::memcmp(ref.data(), out.data(), ref.size() * sizeof(float)))
+            << "M=" << M << " row_chunk=" << rc << " col_chunk=" << cc
+            << " col_major=" << cm;
+        }
+  }
 }
 
 TEST(nntrainer_cpu_backend_standalone,

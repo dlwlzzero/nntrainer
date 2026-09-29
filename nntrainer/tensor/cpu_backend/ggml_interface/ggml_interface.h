@@ -163,6 +163,28 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
                                const unsigned int ldc);
 
 /**
+ * @brief [#187] How the M > 1 q4_0x4 GEMM cuts rows and columns into tasks.
+ * The defaults are the production schedule; any value gives the same bits.
+ */
+struct q4_0_sched {
+  unsigned int row_chunk = 16; /**< rows per task, a multiple of 4 */
+  unsigned int col_chunk = 0;  /**< columns per task (multiple of 4), 0: auto */
+  bool col_major = false;      /**< task order: column chunk outer */
+};
+
+/**
+ * @brief __ggml_q4_0_4x8_q8_0_GEMM (float, one weight) with an explicit
+ * schedule. Only the omp thread backend implements it (the benchmark and the
+ * schedule check call it).
+ */
+void __ggml_q4_0_4x8_q8_0_GEMM_sched(const unsigned int M, const unsigned int N,
+                                     const unsigned int K, const float *A,
+                                     const unsigned int lda, const void *B,
+                                     const unsigned int ldb, float *C,
+                                     const unsigned int ldc,
+                                     const q4_0_sched &sched);
+
+/**
  * @brief A(M, K) * W.T(N, K) = (M, N)
  *
  * @param M as descripted above

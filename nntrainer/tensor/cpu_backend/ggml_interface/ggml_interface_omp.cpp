@@ -30,6 +30,19 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
                                const unsigned int lda, const void *B,
                                const unsigned int ldb, float *C,
                                const unsigned int ldc) {
+  // [#187] the production schedule; a measured one replaces the defaults
+  // only if it passes plan 187's gate F (unittest_nntrainer_ggml_arm
+  // gemm_q4_0_4x8_sched_benchmark on the device)
+  __ggml_q4_0_4x8_q8_0_GEMM_sched(M, N, K, A, lda, B, ldb, C, ldc,
+                                  q4_0_sched{});
+}
+
+void __ggml_q4_0_4x8_q8_0_GEMM_sched(const unsigned int M, const unsigned int N,
+                                     const unsigned int K, const float *A,
+                                     const unsigned int lda, const void *B,
+                                     const unsigned int ldb, float *C,
+                                     const unsigned int ldc,
+                                     const q4_0_sched &sched) {
   auto &tm = ThreadManager::Global();
 
   if (M == 1) { // GEMV
@@ -91,22 +104,28 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
     }
 
     // Compute 4-divisible-M row portion with multithreaded GEMM
-    // Row chunk is fixed at 16 (L1-friendly for K=1k-8k range).
-    // Column chunk scales to maintain ~64 tasks per thread for balanced
-    // work-stealing across asymmetric cores.
-    unsigned int row_chunk_size = 16;
+    // Row chunk defaults to 16 (L1-friendly for K=1k-8k range).
+    // Column chunk (col_chunk == 0) scales to maintain ~64 tasks per thread
+    // for balanced work-stealing across asymmetric cores. [#187] Each output
+    // element is the same per-block fma chain whatever the cut and the task
+    // order, so every schedule is bit-identical (unittest q4_0_gemm_sched).
+    unsigned int row_chunk_size = sched.row_chunk;
     size_t row_loop = (M4 * 4 + row_chunk_size - 1) / row_chunk_size;
-    size_t col_chunk_size = (unsigned int)std::clamp<size_t>(
-      (size_t)N * row_loop / ((size_t)64 * tm.getComputeThreadCount()) / 4 * 4,
-      16, 64);
+    size_t col_chunk_size =
+      sched.col_chunk ? sched.col_chunk
+                      : (unsigned int)std::clamp<size_t>(
+                          (size_t)N * row_loop /
+                            ((size_t)64 * tm.getComputeThreadCount()) / 4 * 4,
+                          16, 64);
     unsigned int A_step = sizeof(block_q8_0) * (K / QK8_0);
 
     size_t col_loop = (N + col_chunk_size - 1) / col_chunk_size;
     unsigned int B_step = sizeof(block_q4_0) * (K / QK4_0);
 
+    const bool col_major = sched.col_major;
     tm.parallel_for(0, col_loop * row_loop, [=](size_t i) {
-      unsigned int r = i / col_loop;
-      unsigned int c = i % col_loop;
+      unsigned int r = col_major ? i % row_loop : i / col_loop;
+      unsigned int c = col_major ? i / row_loop : i % col_loop;
 
       unsigned int r_start = r * row_chunk_size;
       unsigned int r_end = std::min((unsigned int)(row_chunk_size * (r + 1)),

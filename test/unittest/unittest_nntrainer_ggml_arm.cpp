@@ -684,6 +684,128 @@ TEST(nntrainer_ggml_arm, DISABLED_gemm_q4_0_4x8_benchmark) {
             << " GFLOPS (median)" << std::endl;
 }
 
+/**
+ * @brief [#187] The M = 512 prefill GEMM on the LFM2-8B-A1B shapes over a
+ * schedule grid (row chunk x column chunk x task order). Every cell is
+ * memcmp'd against the production entry, then timed with a cold RHS. The
+ * last lines weight each shape by its count in the model and print gate F
+ * of plan 187 (>= 10 % on the weighted time, no shape > 2 % slower).
+ */
+TEST(nntrainer_ggml_arm, DISABLED_gemm_q4_0_4x8_sched_benchmark) {
+  nntr_ggml_init();
+  struct shape {
+    unsigned int K, N, count;
+    const char *name;
+  };
+  const shape shapes[] = {{2048, 6144, 18, "in_proj"},
+                          {2048, 2048, 30, "out_proj+q+attn_out"},
+                          {2048, 512, 12, "k+v"},
+                          {2048, 7168, 4, "up+gate"},
+                          {7168, 2048, 2, "down"}};
+  const unsigned int M = 512;
+  const int warmup_iters = 3, iters = 9;
+  std::vector<nntrainer::q4_0_sched> grid;
+  for (unsigned int rc : {16u, 32u, 64u})
+    for (unsigned int cc : {0u, 32u, 64u, 128u})
+      for (bool cm : {false, true})
+        grid.push_back({rc, cc, cm});
+
+  auto &tm = nntrainer::ThreadManager::Global();
+  std::cout << "[SCHED] threads=" << tm.getComputeThreadCount() << std::endl;
+  auto wake_workers = [&]() {
+    tm.parallel_for(0, tm.getComputeThreadCount(), [](size_t) {});
+  };
+
+  // weighted[g] = sum over shapes of count * median_ns
+  std::vector<double> weighted(grid.size(), 0.0), worst(grid.size(), 0.0);
+  for (const shape &s : shapes) {
+    auto A = generate_activations(s.K, 33, M);
+    auto W = generate_activations(s.K, 44, s.N);
+    const size_t q4_size = (size_t)s.N * s.K / 32 * sizeof(block_q4_0_testonly);
+    std::vector<char> Q4(q4_size), B(q4_size);
+    nntr_quantize_q4_0(W.data(), Q4.data(), s.N, s.K, nullptr);
+    nntr_repack_q4_0_to_q4_0_4_bl(B.data(), 8, Q4.data(), q4_size, s.N, s.K);
+    std::vector<float> ref((size_t)M * s.N), C((size_t)M * s.N);
+    nntrainer::__ggml_q4_0_4x8_q8_0_GEMM<float>(M, s.N, s.K, A.data(), s.K,
+                                                B.data(), s.N, ref.data(), s.N);
+    double base_ns = 0.0;
+    for (size_t g = 0; g < grid.size(); ++g) {
+      const nntrainer::q4_0_sched &sc = grid[g];
+      auto run = [&]() {
+        nntrainer::__ggml_q4_0_4x8_q8_0_GEMM_sched(
+          M, s.N, s.K, A.data(), s.K, B.data(), s.N, C.data(), s.N, sc);
+      };
+      std::fill(C.begin(), C.end(), 0.0f);
+      run();
+      const int cmp = std::memcmp(ref.data(), C.data(), C.size() * 4);
+      EXPECT_EQ(0, cmp);
+      for (int i = 0; i < warmup_iters; ++i) {
+        evict_from_caches(B.data(), q4_size);
+        run();
+      }
+      std::vector<int64_t> samples;
+      for (int i = 0; i < iters; ++i) {
+        evict_from_caches(B.data(), q4_size);
+        wake_workers();
+        auto t0 = high_resolution_clock::now();
+        run();
+        auto t1 = high_resolution_clock::now();
+        samples.push_back(duration_cast<nanoseconds>(t1 - t0).count());
+      }
+      const double med = (double)compute_latency_stats(samples).median_ns;
+      if (g == 0)
+        base_ns = med;
+      weighted[g] += s.count * med;
+      worst[g] = std::max(worst[g], med / base_ns - 1.0);
+      std::cout << "[SCHED] shape=" << s.name << " K=" << s.K << " N=" << s.N
+                << " row=" << sc.row_chunk << " col=" << sc.col_chunk
+                << " colmajor=" << sc.col_major << " median_us=" << med / 1e3
+                << " gmacs=" << (double)M * s.N * s.K / med << " memcmp=" << cmp
+                << std::endl;
+    }
+  }
+  size_t best = 0;
+  for (size_t g = 0; g < grid.size(); ++g) {
+    std::cout << "[SCHED] weighted row=" << grid[g].row_chunk
+              << " col=" << grid[g].col_chunk
+              << " colmajor=" << grid[g].col_major
+              << " ms=" << weighted[g] / 1e6
+              << " vs_default=" << 100.0 * (1.0 - weighted[g] / weighted[0])
+              << "% worst_shape=" << 100.0 * worst[g] << "%" << std::endl;
+    if (weighted[g] < weighted[best])
+      best = g;
+  }
+  const double gain = 1.0 - weighted[best] / weighted[0];
+  std::cout << "[SCHED] GATE_F best row=" << grid[best].row_chunk
+            << " col=" << grid[best].col_chunk
+            << " colmajor=" << grid[best].col_major << " gain=" << 100.0 * gain
+            << "% worst_shape=" << 100.0 * worst[best]
+            << "% pass=" << (gain >= 0.10 && worst[best] <= 0.02) << std::endl;
+
+  // the activation quantization the driver does per call (qkv pays it 3x)
+  {
+    const unsigned int K = 2048, M4 = M / 4, chunk = 8;
+    auto A = generate_activations(K, 33, M);
+    std::vector<char> QA((size_t)M4 * (K / 32) * sizeof(block_q8_0x4_testonly));
+    const size_t qa4 = (K / 32) * sizeof(block_q8_0x4_testonly);
+    std::vector<int64_t> samples;
+    for (int i = 0; i < warmup_iters + iters; ++i) {
+      wake_workers();
+      auto t0 = high_resolution_clock::now();
+      tm.parallel_for(0, M4 / chunk, [&](size_t t) {
+        for (unsigned int r = chunk * t; r < chunk * (t + 1); ++r)
+          nntr_quantize_mat_q8_0_4x8(A.data() + 4 * r * K, QA.data() + r * qa4,
+                                     K);
+      });
+      auto t1 = high_resolution_clock::now();
+      if (i >= warmup_iters)
+        samples.push_back(duration_cast<nanoseconds>(t1 - t0).count());
+    }
+    std::cout << "[SCHED] quant M=512 K=2048 median_us="
+              << compute_latency_stats(samples).median_ns / 1e3 << std::endl;
+  }
+}
+
 int main(int argc, char **argv) {
   int result = -1;
 
