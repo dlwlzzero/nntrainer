@@ -77,6 +77,11 @@
 #   E2E dspq on-lines tiny/lfm25/hmx calls=<n> ok      (on once, close
 #                              calls=N served=N bad=0, N = M==1 MoE calls)
 #   E2E dspq off-path banner=1 bit_identical=1         (NNTR_INPROC_NO_DSPQ=1)
+# and, since #162, the prefetch overlap (NNTR_MOE_PREFETCH_MIB=4: the CPU
+# reads the next layer's FC weights inside each dspq MoE call's wait):
+#   E2E eval dspq-lfm25-prefetch ... bit_identical=1   (vs dspq-lfm25)
+#   E2E prefetch lfm25 layers=3 window_jobs=<n> ok     (3 of 4 MoE layers
+#                              have a next FC; n = 3/4 of the M==1 calls)
 # and, since #150, the decode timer NNTR_OP_TIME=1 on the run() path, after
 # its op_time_report.py table (plan 150-cpu-decode.md step 1a):
 #   E2E eval op-time ... bit_identical=1               (vs the unset self run)
@@ -215,6 +220,8 @@ echo "== [#141] htp, NNTR_HTP_DSPQ=1 (tiny / lfm25 SPIN_US=0 / HMX loop / no dsp
 NNTR_HTP_DSPQ=1 run_e2e dspq-tiny "$OUT/htp" htp "$OUT/dump_dspq" "$OUT/dspq.log"
 PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_DSPQ_SPIN_US=0 \
   run_e2e dspq-lfm25 "$OUT/htp25" htp "$OUT/dump_25dspq" "$OUT/25dspq.log" --max-seq 2048
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_DSPQ_SPIN_US=0 NNTR_MOE_PREFETCH_MIB=4 \
+  run_e2e dspq-lfm25-prefetch "$OUT/htp25" htp "$OUT/dump_25pf" "$OUT/25pf.log" --max-seq 2048
 NNTR_HTP_DSPQ=1 NNTR_MOE_HTP_M1_GEMV=0 \
   run_e2e dspq-hmx "$OUT/htp" htp "$OUT/dump_dspqhmx" "$OUT/dspqhmx.log"
 NNTR_INPROC_NO_DSPQ=1 NNTR_HTP_DSPQ=1 \
@@ -366,6 +373,20 @@ for d in "tiny dspq dump_htp dump_dspq" "lfm25 25dspq dump_25off dump_25dspq" \
     fail=1
   fi
 done
+# [#162] the touch changes no byte: every MoE call and logit equal the
+# dspq run's; the banner once and one window job per M==1 call of the
+# three MoE layers (2, 3, 4) that have a next layer
+$EVAL --label dspq-lfm25-prefetch "$OUT/dump_25dspq" "$OUT/dump_25pf" | tail -1 || fail=1
+n="$(m1_calls "$OUT/dump_25pf")"
+if [ "$(grep -c '^\[CausalLM\] moe prefetch: on mib=4 layers=3$' "$OUT/25pf.log")" = 1 ] &&
+  grep -q "^\[HTP\] dspq: close calls=$n served=$n bad=0 .* window_jobs=$((n / 4 * 3))$" "$OUT/25pf.log" &&
+  { [ "${NNTR_MOE_PREFETCH_MIB:-0}" != 0 ] || grep -q ' window_jobs=0$' "$OUT/25dspq.log"; }; then
+  echo "E2E prefetch lfm25 layers=3 window_jobs=$((n / 4 * 3)) ok"
+else
+  echo "E2E FAIL prefetch lfm25: banner / window_jobs (M==1 calls=$n)"
+  grep -E '^\[(HTP\] dspq|CausalLM\] moe prefetch)' "$OUT/25pf.log" || true
+  fail=1
+fi
 grep -q 'dsp_spin_us=0 ' "$OUT/25dspq.log" ||
   { echo "E2E FAIL dspq lfm25: NNTR_HTP_DSPQ_SPIN_US=0 not applied"; fail=1; }
 off_line="$($EVAL --label dspq-off "$OUT/dump_htp" "$OUT/dump_dspqoff" | tail -1 || true)"
