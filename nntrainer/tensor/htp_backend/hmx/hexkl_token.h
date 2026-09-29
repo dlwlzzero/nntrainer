@@ -125,6 +125,15 @@ int hexkl_token_main(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
                      uint32_t spin_us, hexkl_token_stats *st, uint32_t *id);
 
 /**
+ * @brief dev/e2e-shadow-132 only (never merged): while set, the next
+ *        hexkl_token_main copies, in round order, the row it posts at each
+ *        hop (the MoE layer's input) and the row it takes back (the MoE
+ *        layer's output) to @a trace, at most @a cap floats; @a n_out gets
+ *        the count. NULL clears it.
+ */
+void hexkl_token_set_trace(float *trace, uint32_t cap, uint32_t *n_out);
+
+/**
  * @brief S1's side of token @a tok: hexkl_token_rounds(g) rounds of wait,
  *        forward over the stretch S2 names, post.
  * @return 0; AEE_EEXPIRED; HEXKL_TOKEN_E_STALE; S2's code from its header;

@@ -37,6 +37,10 @@
 /** @brief OP_TOKEN: S2 writes the logits into buffer 1 (NNTR_PPL_DECODE,
  *  the shadows); without it only the id travels. */
 #define HTP_DSPQ_TOKEN_LOGITS 1u
+/** @brief dev/e2e-shadow-132 only: with LOGITS, buffer 1 is the logits
+ *  (vocab f32) then the token's hop rows (hexkl_token_set_trace), 2 x
+ *  rounds x hidden f32. */
+#define HTP_DSPQ_TOKEN_TRACE 2u
 /** @brief mm_u8i4_moe_layer_timed's slot count; both sides check theirs. */
 #define HTP_DSPQ_STAGES 31u
 #define HTP_DSPQ_MAX_MSG 4096u

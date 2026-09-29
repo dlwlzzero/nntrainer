@@ -140,8 +140,10 @@ static int dspq_token(struct nntr_hvx_dspq *d, const dspq_msg *m, uint32_t len,
   uint32_t i;
   const int logits = len == sizeof(*q) && (q->flags & HTP_DSPQ_TOKEN_LOGITS);
   const int valid =
-    len == sizeof(*q) && (q->flags & ~HTP_DSPQ_TOKEN_LOGITS) == 0u &&
-    nb <= 2u && (nb == 2u) == (logits != 0) &&
+    len == sizeof(*q) &&
+    (q->flags & ~(HTP_DSPQ_TOKEN_LOGITS | HTP_DSPQ_TOKEN_TRACE)) == 0u &&
+    ((q->flags & HTP_DSPQ_TOKEN_TRACE) == 0u || logits) && nb <= 2u &&
+    (nb == 2u) == (logits != 0) &&
     (nb < 1u || (bufs[0].ptr != NULL && bufs[0].size % 4u == 0u)) &&
     (nb < 2u || (bufs[1].ptr != NULL && bufs[1].size % 4u == 0u));
   memset(&resp, 0, sizeof(resp));
@@ -151,7 +153,8 @@ static int dspq_token(struct nntr_hvx_dspq *d, const dspq_msg *m, uint32_t len,
       d->s, q->seq, q->pos, nb >= 1u ? (const float *)bufs[0].ptr : NULL,
       nb >= 1u ? (uint32_t)(bufs[0].size / 4u) : 0u,
       nb == 2u ? (float *)bufs[1].ptr : NULL,
-      nb == 2u ? (uint32_t)(bufs[1].size / 4u) : 0u, &resp);
+      nb == 2u ? (uint32_t)(bufs[1].size / 4u) : 0u,
+      (q->flags & HTP_DSPQ_TOKEN_TRACE) != 0u, &resp);
   } else {
     resp.rc = AEE_EBADPARM;
     ++d->bad;

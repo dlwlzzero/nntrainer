@@ -124,7 +124,8 @@ void nntr_hvx_token_shutdown(nntr_hvx_session *s) {
 
 int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
                        const float *act, uint32_t act_len, float *logits,
-                       uint32_t logits_len, struct htp_dspq_token_resp_s *r) {
+                       uint32_t logits_len, int trace,
+                       struct htp_dspq_token_resp_s *r) {
   struct nntr_hvx_token *t = s ? s->token : NULL;
   hexkl_graph_env env;
   uint32_t id = 0, k;
@@ -140,8 +141,18 @@ int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
     if (act == NULL) {
       return AEE_EINVALIDFORMAT;
     }
+    uint32_t n_trace = 0;
+    if (trace) { /* dev/e2e-shadow-132 */
+      const uint32_t vocab = s->graph->ops[s->graph->n_ops - 1u].N;
+      if (logits == NULL || logits_len <= vocab) {
+        return AEE_EINVALIDFORMAT;
+      }
+      hexkl_token_set_trace(logits + vocab, logits_len - vocab, &n_trace);
+      logits_len = vocab;
+    }
     rc = hexkl_token_main(s->graph, &env, t->page, tok, pos, act, act_len,
                           logits, logits_len, t->spin_us, &t->st, &id);
+    hexkl_token_set_trace(NULL, 0u, NULL);
   } else {
     rc =
       hexkl_token_serve(s->graph, &env, t->page, tok, pos, t->spin_us, &t->st);

@@ -972,6 +972,24 @@ void Lfm2MoELayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     // reshape output: [B*S,1,1,H] -> [B,1,S,H]
     output.reshape({batch_size, 1, seq_len, hidden_size});
 
+    // dev/e2e-shadow-132: NNTR_MOE_ROW_TRACE=<file> -- one decode row's
+    // MoE input and output (the rows the E2E token hops, in layer order):
+    // u32 pos, n, then the n f32 of input then output
+    static std::FILE *row_trace = [] {
+      const char *p = std::getenv("NNTR_MOE_ROW_TRACE");
+      return p ? std::fopen(p, "wb") : nullptr;
+    }();
+    if (row_trace != nullptr && total_tokens == 1 &&
+        input.getDataType() == ml::train::TensorDim::DataType::FP32) {
+      const unsigned h[2] = {from, hidden_size};
+      std::fwrite(h, sizeof(unsigned), 2, row_trace);
+      std::fwrite(input.getData<float>(), sizeof(float), hidden_size,
+                  row_trace);
+      std::fwrite(output.getData<float>(), sizeof(float), hidden_size,
+                  row_trace);
+      std::fflush(row_trace);
+    }
+
     if (m0_profile && total_tokens > 1) {
       const auto m0_us = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(

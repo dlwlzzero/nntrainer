@@ -139,7 +139,10 @@ void nntr_hvx_graph_env(const nntr_hvx_session *s, hexkl_graph_env *env);
 struct htp_dspq_token_resp_s;
 int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
                        const float *act, uint32_t act_len, float *logits,
-                       uint32_t logits_len, struct htp_dspq_token_resp_s *r);
+                       uint32_t logits_len, int trace,
+                       struct htp_dspq_token_resp_s *r);
+/* dev/e2e-shadow-132: trace 1 = the logits buffer holds the vocab's logits
+   and then the token's hop rows (HTP_DSPQ_TOKEN_TRACE) */
 
 /** @brief [#132 Part B E2] Stops the token driver, if any (close()).
  *  Lives in nntr_hvx_token.c. */

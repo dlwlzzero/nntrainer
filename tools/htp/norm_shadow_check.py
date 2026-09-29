@@ -45,7 +45,10 @@ for d in sys.argv[2:]:
     n = [0, 0, 0]
     ok = [0, 0, 0]
     zero1 = 0
+    first = None
     for tag, pos, x, c, o in records(os.path.join(d, "norm.bin")):
+        if first is None and not np.array_equal(c, o):
+            first = f"tag{tag}/pos{pos}"
         if tag == 1:
             zero1 += int(not o.any())
             for h in range(len(c) // 64):
@@ -63,6 +66,7 @@ for d in sys.argv[2:]:
                    for i in range(steps))
     print(f"NORM SHADOW {os.path.basename(d.rstrip('/'))} tag0={ok[0]}/{n[0]} "
           f"tag1_heads={ok[1]}/{n[1]} tag1_zero_records={zero1} "
-          f"tag2={ok[2]}/{n[2]} logits_equal_steps={same}/{steps}")
+          f"tag2={ok[2]}/{n[2]} logits_equal_steps={same}/{steps} "
+          f"first_diff={first or '-'}")
     bad += (ok != n) or zero1 or same != steps
 sys.exit(1 if bad else 0)

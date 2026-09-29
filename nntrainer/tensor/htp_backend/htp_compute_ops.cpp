@@ -3424,9 +3424,10 @@ private:
                                "packets ride it");
     }
     const size_t logits_bytes = static_cast<size_t>(graph_words_[5]) * 4u;
-    e.q2 =
-      dspqMake(e.h2, e.dom2, "dspq[S2]",
-               std::max<size_t>(HTP_DSPQ_BUF_BYTES, logits_bytes), e2eSpinUs());
+    e.q2 = dspqMake(
+      e.h2, e.dom2, "dspq[S2]",
+      std::max<size_t>(HTP_DSPQ_BUF_BYTES, logits_bytes + devTraceBytes()),
+      e2eSpinUs());
     if (e.q2->state != DspqMoe::ON) {
       throw std::runtime_error("NNTR_HTP_E2E=1: S2's dspqueue is off (see "
                                "the dspq[S2] line)");
@@ -3616,8 +3617,9 @@ private:
     // when they change; more than the DSP holds, or none after some (an
     // empty sequence may reach the skel as NULL, the stale-skel code) ->
     // the logits come back and the CPU picks
+    const bool trace = devTraceFile() != nullptr; // dev/e2e-shadow-132
     const bool logits = want_logits_ || ban_.size() > HTP_GRAPH_MAX_BAN ||
-                        (ban_.empty() && !ban_sent_.empty());
+                        (ban_.empty() && !ban_sent_.empty()) || trace;
     if (!logits && ban_sent_ != ban_) {
       std::vector<float> words(ban_.size());
       std::memcpy(words.data(), ban_.data(), ban_.size() * sizeof(uint32_t));
@@ -3631,7 +3633,9 @@ private:
     const uint32_t tok = e.tok++;
     const htp_dspq_token_req r1 = {HTP_DSPQ_OP_TOKEN, tok, 0u, pos};
     const htp_dspq_token_req r2 = {HTP_DSPQ_OP_TOKEN, tok,
-                                   logits ? HTP_DSPQ_TOKEN_LOGITS : 0u, pos};
+                                   (logits ? HTP_DSPQ_TOKEN_LOGITS : 0u) |
+                                     (trace ? HTP_DSPQ_TOKEN_TRACE : 0u),
+                                   pos};
     struct dspqueue_buffer b[2] = {};
     b[0].fd = static_cast<uint32_t>(q2.act->fd());
     b[0].size = static_cast<uint32_t>(act_bytes);
@@ -3639,7 +3643,8 @@ private:
                  DSPQUEUE_BUFFER_FLAG_INVALIDATE_RECIPIENT;
     b[0].ptr = q2.act->data();
     b[1].fd = static_cast<uint32_t>(q2.out->fd());
-    b[1].size = static_cast<uint32_t>(out_bytes);
+    b[1].size =
+      static_cast<uint32_t>(out_bytes + (trace ? devTraceBytes() : 0u));
     b[1].flags = DSPQUEUE_BUFFER_FLAG_REF;
     b[1].ptr = q2.out->data();
     const uint32_t nb2 = logits ? 2u : 1u;
@@ -3688,6 +3693,15 @@ private:
         " (AEE_EEXPIRED: a hop timed out; the FARF names "
         "the side)");
     }
+    if (trace) { // dev/e2e-shadow-132: u32 step, pos, n, then n f32
+      const float *rows =
+        reinterpret_cast<const float *>(q2.out->data() + out_bytes);
+      const uint32_t h[3] = {tok, pos,
+                             static_cast<uint32_t>(devTraceBytes() / 4u)};
+      std::fwrite(h, sizeof(uint32_t), 3, devTraceFile());
+      std::fwrite(rows, 1, devTraceBytes(), devTraceFile());
+      std::fflush(devTraceFile());
+    }
     if (logits) {
       std::memcpy(out, q2.out->data(), out_bytes);
       // S2's argmax against the logits it returned, the ids LM_BAN held at
@@ -3732,6 +3746,22 @@ private:
     if (profile.level())
       profile.addInvokeForward(static_cast<unsigned>(stretch_start_.size()), 0,
                                uint64_t(s1r.pcycles) + s2r.pcycles);
+  }
+
+  /** dev/e2e-shadow-132: NNTR_E2E_TRACE=<file> -- every E2E token's hop
+   *  rows (the MoE layers' inputs and outputs, round order) from S2. */
+  static std::FILE *devTraceFile() {
+    static std::FILE *f = [] {
+      const char *p = std::getenv("NNTR_E2E_TRACE");
+      return p ? std::fopen(p, "wb") : nullptr;
+    }();
+    return f;
+  }
+  size_t devTraceBytes() const {
+    if (devTraceFile() == nullptr || kind_ops_[HTP_OP_MOE].empty())
+      return 0u;
+    return 2u * kind_ops_[HTP_OP_MOE].size() *
+           graphOp(kind_ops_[HTP_OP_MOE][0])->K * sizeof(float);
   }
 
   /** [#132 Part B E3] compute_ops.h: whether the next decode tokens must

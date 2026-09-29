@@ -175,6 +175,27 @@ static uint32_t tk_stretch_end(const hexkl_graph *g, uint32_t s) {
   return s;
 }
 
+/* dev/e2e-shadow-132: the hop rows of one token (hexkl_token_set_trace) */
+static float *g_trace;
+static uint32_t g_trace_cap;
+static uint32_t *g_trace_n;
+
+void hexkl_token_set_trace(float *trace, uint32_t cap, uint32_t *n_out) {
+  g_trace = trace;
+  g_trace_cap = cap;
+  g_trace_n = n_out;
+  if (n_out != NULL) {
+    *n_out = 0u;
+  }
+}
+
+static void tk_trace(const float *row, uint32_t n) {
+  if (g_trace != NULL && *g_trace_n + n <= g_trace_cap) {
+    memcpy(g_trace + *g_trace_n, row, (size_t)n * sizeof(float));
+    *g_trace_n += n;
+  }
+}
+
 uint32_t hexkl_token_rounds(const hexkl_graph *g) {
   uint32_t i, n = 0;
   for (i = 0; i < g->n_ops; ++i) {
@@ -233,6 +254,9 @@ int hexkl_token_main(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
       rc = hexkl_graph_forward(g, env, start, end - start, pos, NULL, in,
                                in_len, tk_row(mine), n_out, &resume);
     }
+    if (rc == AEE_SUCCESS) {
+      tk_trace(tk_row(mine), n_out); /* dev/e2e-shadow-132 */
+    }
     hvx_worker_pool_park(env->pool); /* S1 computes next */
     /* posted either way: a failure ends S1's token at once */
     tk_post(mine, ping, seq, end, n_out, rc);
@@ -255,6 +279,7 @@ int hexkl_token_main(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
     start = h.op;
     in = tk_row(theirs);
     in_len = h.n;
+    tk_trace(in, in_len); /* dev/e2e-shadow-132 */
     ++round;
   }
 }

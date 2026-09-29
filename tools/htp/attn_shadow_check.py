@@ -46,12 +46,15 @@ bad = 0
 for d in sys.argv[2:]:
     n = ok = zero = recs = 0
     ords, poss = set(), set()
+    first = None
     p = os.path.join(d, "attn.bin")
     for tag, pos, ordinal, c, o in (records(p) if os.path.exists(p) else []):
         recs += 1
         ords.add(ordinal)
         poss.add(pos)
         zero += int(not o.any())
+        if first is None and not np.array_equal(c, o):
+            first = f"pos{pos}/layer{ordinal}"
         for h in range(len(c) // HD):
             n += 1
             ok += int(np.array_equal(c[HD * h:HD * h + HD], o[HD * h:HD * h + HD]))
@@ -64,6 +67,7 @@ for d in sys.argv[2:]:
                    for i in range(steps))
     print(f"ATTN SHADOW {os.path.basename(d.rstrip('/'))} tag3_heads={ok}/{n} "
           f"records={recs} layers={len(ords)} positions={len(poss)} "
-          f"zero_records={zero} logits_equal_steps={same}/{steps}")
+          f"zero_records={zero} logits_equal_steps={same}/{steps} "
+          f"first_diff={first or '-'}")
     bad += (ok != n) or zero or same != steps
 sys.exit(1 if bad else 0)
