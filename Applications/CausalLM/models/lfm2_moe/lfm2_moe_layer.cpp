@@ -474,6 +474,36 @@ void Lfm2MoELayer::forwarding(nntrainer::RunLayerContext &context,
 }
 
 /**
+ * @brief [#162] Reads @a spans once on every compute thread (thread j reads
+ *        the j-th share of each span, one 8-byte load per 64-byte line), so
+ *        the next layer's weights sit in the cache when its GEMV runs.
+ *        Nothing is written but a sink; the arithmetic of every layer is
+ *        unchanged.
+ * ponytail: CPU-side prefetch, deleted when decode runs resident on the
+ * NPU; there the same idea is the next op's weight DMA under the current
+ * op (plan 162 section 3.4).
+ */
+static void
+touchWindowSpans(const std::vector<std::pair<const char *, size_t>> &spans) {
+  static std::atomic<uint64_t> sink{0};
+  auto &tm = nntrainer::ThreadManager::Global();
+  const size_t n = tm.getComputeThreadCount();
+  tm.parallel_for(0, n, [&spans, n](size_t j) {
+    uint64_t x = 0;
+    for (const auto &sp : spans) {
+      const size_t lines = sp.second / 64;
+      const size_t end = lines * (j + 1) / n;
+      for (size_t l = lines * j / n; l < end; ++l) {
+        uint64_t v;
+        std::memcpy(&v, sp.first + 64 * l, sizeof(v));
+        x ^= v;
+      }
+    }
+    sink.fetch_xor(x, std::memory_order_relaxed);
+  });
+}
+
+/**
  * @brief [doc 46] The whole MoE FFN layer in one accelerator call.
  *
  * Flattens the per-expert assignment lists into the three arrays the call
@@ -492,7 +522,8 @@ static bool tryMoeLayerOnAccelerator(
   nntrainer::RunLayerContext &context,
   const std::vector<unsigned int> &gate_up_indices,
   const std::vector<unsigned int> &down_indices, unsigned int total_tokens,
-  unsigned int hidden_size, unsigned int intermediate_size) {
+  unsigned int hidden_size, unsigned int intermediate_size,
+  const std::vector<std::pair<const char *, size_t>> &window_spans) {
 
   auto *ops = input.getOps();
   if (ops == nullptr || !ops->supports_gemm_qs4cx_moe_layer_fp32()) {
@@ -570,6 +601,11 @@ static bool tryMoeLayerOnAccelerator(
     }
   }
 
+  // [#162] decode only: prefill's call is long and its next layer's FC
+  // reads the weight once per 512 rows, so the touch buys nothing there.
+  if (total_tokens == 1 && !window_spans.empty())
+    ops->set_moe_window_work(
+      [&window_spans] { touchWindowSpans(window_spans); });
   ops->gemm_qs4cx_moe_layer_fp32(
     gu_data, gu_scale, dn_data, dn_scale, row_index, row_count, row_weight,
     input.getData<float>(), output.getData<float>(), total_tokens, hidden_size,
@@ -866,7 +902,7 @@ void Lfm2MoELayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       moe_layer_done = tryMoeLayerOnAccelerator(
         input, output, expert_assignments, context, expert_gate_up_proj_indices,
         expert_down_proj_indices, total_tokens, hidden_size,
-        std::get<nntrainer::props::Unit>(moe_props).get());
+        std::get<nntrainer::props::Unit>(moe_props).get(), window_spans);
     }
 
     // The ARM path's own preparation, after the accelerator has had its

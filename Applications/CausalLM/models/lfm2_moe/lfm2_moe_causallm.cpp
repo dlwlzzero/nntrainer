@@ -12,9 +12,15 @@
 #include <lfm2_moe_causallm.h>
 #include <lfm2_moe_layer.h>
 
+#include <algorithm>
 #include <app_context.h>
+#include <cstdio>
+#include <cstdlib>
 #include <engine.h>
+#include <functional>
+#include <layer_node.h>
 #include <llm_util.hpp>
+#include <map>
 #include <model.h>
 
 #ifdef ENABLE_HEXKL
@@ -39,7 +45,8 @@ void Lfm2MoeCausalLM::setupParameters(json &cfg, json &generation_cfg,
       "Lfm2Moe: num_experts, num_experts_per_tok and moe_intermediate_size "
       "must be specified in the config file");
   }
-  // Layers [0, num_dense_layers) keep the dense SwiGLU FFN. Optional (default 0).
+  // Layers [0, num_dense_layers) keep the dense SwiGLU FFN. Optional (default
+  // 0).
   NUM_DENSE_LAYERS = cfg.value("num_dense_layers", 0);
 
   // MoE expert FFN weight dtype. Defaults to FC_LAYER_DTYPE (set by
@@ -141,6 +148,69 @@ Tensor Lfm2MoeCausalLM::createMlp(const int layer_id, int dim, int hidden_dim,
   return createMoeLayer(layer_id, input);
 }
 
+void Lfm2MoeCausalLM::load_weight(const std::string &weight_path) {
+  Lfm2CausalLM::load_weight(weight_path);
+
+  // [#162] The prefetch overlap (plan 162 section 2, lever (b)): layer
+  // N's MoE decode call is a CPU wait, and layer N + 1 opens with an FC
+  // GEMV on the CPU (conv in_proj, conv_block or qkv). Each MoE layer gets
+  // the first S MiB of those weights to read during its call. Unset or 0
+  // is off; the last layer has no next FC and gets nothing. Off under FSU:
+  // the swap can unmap a weight between the load and the touch.
+  const char *env = std::getenv("NNTR_MOE_PREFETCH_MIB");
+  const size_t cap = env != nullptr ? std::strtoul(env, nullptr, 10) << 20 : 0;
+  if (cap == 0 || MEMORY_SWAP)
+    return;
+  std::map<int, Lfm2MoELayer *> moe;
+  std::map<int, std::vector<std::pair<const char *, size_t>>> fc;
+  std::function<void(ml::train::Layer &, nntrainer::RunLayerContext &, void *)>
+    fn = [&moe, &fc](ml::train::Layer &l, nntrainer::RunLayerContext &context,
+                     void *) {
+      const std::string name = l.getName(), type = l.getType();
+      int id = -1;
+      if (std::sscanf(name.c_str(), "layer%d_", &id) != 1)
+        return;
+      if (type == Lfm2MoELayer::type) {
+        auto *m = dynamic_cast<Lfm2MoELayer *>(
+          static_cast<nntrainer::LayerNode &>(l).getLayer());
+        if (m != nullptr)
+          moe[id] = m;
+        return;
+      }
+      if (fc.count(id) || (type != "fully_connected" && type != "conv_block" &&
+                           type != "qkv_layer"))
+        return;
+      // the layer's Q4_0 weights in file order: the bytes the decode GEMV
+      // streams (a QS4CX weight is read from its packed copy instead;
+      // FP32 norms and the conv kernel are small)
+      auto &spans = fc[id];
+      for (auto *w : context.getWeights()) {
+        auto &t = w->getVariableRef();
+        if (t.getDataType() == ml::train::TensorDim::DataType::Q4_0)
+          spans.emplace_back(t.getData<char>(), t.getMemoryBytes());
+      }
+    };
+  model->forEachLayer(fn, nullptr);
+  unsigned wired = 0;
+  for (auto &[id, m] : moe) {
+    auto it = fc.find(id + 1);
+    if (it == fc.end() || it->second.empty())
+      continue;
+    std::vector<std::pair<const char *, size_t>> spans;
+    size_t left = cap;
+    for (const auto &sp : it->second) {
+      if (left == 0)
+        break;
+      spans.emplace_back(sp.first, std::min(sp.second, left));
+      left -= spans.back().second;
+    }
+    m->setWindowPrefetch(std::move(spans));
+    ++wired;
+  }
+  std::fprintf(stderr, "[CausalLM] moe prefetch: on mib=%zu layers=%u\n",
+               cap >> 20, wired);
+}
+
 void Lfm2MoeCausalLM::registerCustomLayers() {
 
   Lfm2CausalLM::registerCustomLayers();
@@ -149,7 +219,8 @@ void Lfm2MoeCausalLM::registerCustomLayers() {
     static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
 
   try {
-    app_context->registerFactory(nntrainer::createLayer<causallm::Lfm2MoELayer>);
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::Lfm2MoELayer>);
   } catch (std::invalid_argument &e) {
     std::cerr << "failed to register Lfm2MoELayer factory, reason: " << e.what()
               << std::endl;

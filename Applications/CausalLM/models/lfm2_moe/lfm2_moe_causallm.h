@@ -44,6 +44,14 @@ public:
 
   void registerCustomLayers() override;
 
+  /**
+   * @brief Loads the weights, then (NNTR_MOE_PREFETCH_MIB > 0, #162) hands
+   *        each MoE layer the first MiB of the next layer's first FC
+   *        weights to touch during its decode accelerator call.
+   * @param weight_path the model file
+   */
+  void load_weight(const std::string &weight_path) override;
+
 protected:
   unsigned int NUM_EXPERTS = 0;
   unsigned int NUM_EXPERTS_PER_TOK = 0;

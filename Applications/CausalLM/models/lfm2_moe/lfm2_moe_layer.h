@@ -133,6 +133,16 @@ public:
 
   static constexpr const char *type = "lfm2_moe"; /**< type of the layer */
 
+  /**
+   * @brief [#162] Byte ranges (the next layer's first FC weights) the CPU
+   *        reads into its cache while this layer's decode call runs on the
+   *        accelerator. Empty (the default) touches nothing.
+   * @param spans (pointer, bytes) pairs, read in order
+   */
+  void setWindowPrefetch(std::vector<std::pair<const char *, size_t>> spans) {
+    window_spans = std::move(spans);
+  }
+
 private:
   unsigned int num_experts;      /**< number of experts */
   unsigned int topk;             /**< number of experts per token, i.e., topk */
@@ -152,6 +162,8 @@ private:
   unsigned int decode_expert_output_idx;
   unsigned int decode_gate_up_output_idx;
   unsigned int decode_activation_output_idx;
+
+  std::vector<std::pair<const char *, size_t>> window_spans; /**< [#162] */
 
   /** Reusable backing tensors shared by all active experts in one pass. */
   struct ExpertWorkspace {
