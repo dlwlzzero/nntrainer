@@ -329,4 +329,31 @@ static inline HVX_VectorPair Q6_Ww_vunpack_Vh(HVX_Vector a) {
 static inline HVX_Vector Q6_V_lo_W(HVX_VectorPair p) { return p.v[0]; }
 static inline HVX_Vector Q6_V_hi_W(HVX_VectorPair p) { return p.v[1]; }
 
+/* [#132 PR 2] the quantizer's byte pack: vpacke(u, v) keeps the even (low)
+   half of each element, v's into the low half of the result, u's into the
+   high half (checked against the SDK's libnative). */
+static inline HVX_Vector Q6_Vh_vpacke_VwVw(HVX_Vector u, HVX_Vector v) {
+  HVX_Vector r;
+  uint16_t h[2 * HVX_EMU_LANES];
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    h[i] = (uint16_t)v.w[i];
+    h[HVX_EMU_LANES + i] = (uint16_t)u.w[i];
+  }
+  memcpy(r.w, h, sizeof(h));
+  return r;
+}
+static inline HVX_Vector Q6_Vb_vpacke_VhVh(HVX_Vector u, HVX_Vector v) {
+  HVX_Vector r;
+  uint16_t hu[2 * HVX_EMU_LANES], hv[2 * HVX_EMU_LANES];
+  uint8_t b[4 * HVX_EMU_LANES];
+  memcpy(hu, u.w, sizeof(hu));
+  memcpy(hv, v.w, sizeof(hv));
+  for (int i = 0; i < 2 * HVX_EMU_LANES; ++i) {
+    b[i] = (uint8_t)hv[i];
+    b[2 * HVX_EMU_LANES + i] = (uint8_t)hu[i];
+  }
+  memcpy(r.w, b, sizeof(b));
+  return r;
+}
+
 #endif /* __NNTRAINER_HVX_EMU_HVX_HEXAGON_PROTOS_H__ */
