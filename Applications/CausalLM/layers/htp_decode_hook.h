@@ -27,7 +27,44 @@
 #include <htp_graph_desc.h>
 #endif
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace causallm {
+
+/** @brief Measurement only (dev/norm-shadow): NNTR_NORM_SHADOW=<file> makes
+ *  the decode norms also run the CPU path and append one record per call:
+ *  u32 tag (0 RMSNORM on HTP, 1 QK_NORM on HTP, 2 RMSNORM on CPU), pos,
+ *  n_in, n_out, then f32 in[n_in], cpu[n_out], other[n_out] (the HTP output
+ *  for tag 0, the layer's real output for tag 2, zeros for tag 1). */
+inline std::FILE *normShadowFile() {
+  static std::FILE *f = [] {
+    const char *p = std::getenv("NNTR_NORM_SHADOW");
+    return p ? std::fopen(p, "wb") : nullptr;
+  }();
+  return f;
+}
+
+inline void normShadowWrite(unsigned tag, unsigned pos, const float *in,
+                            unsigned n_in, const float *cpu,
+                            const float *other, unsigned n_out) {
+  std::FILE *f = normShadowFile();
+  if (!f)
+    return;
+  const unsigned h[4] = {tag, pos, n_in, n_out};
+  std::fwrite(h, sizeof(unsigned), 4, f);
+  std::fwrite(in, sizeof(float), n_in, f);
+  std::fwrite(cpu, sizeof(float), n_out, f);
+  if (other) {
+    std::fwrite(other, sizeof(float), n_out, f);
+  } else {
+    for (unsigned i = 0; i < n_out; ++i) {
+      const float z = 0.0f;
+      std::fwrite(&z, sizeof(float), 1, f);
+    }
+  }
+  std::fflush(f);
+}
 
 #ifdef ENABLE_HEXKL
 inline int htpDecodeOp(unsigned kind, unsigned pos, const float *in,

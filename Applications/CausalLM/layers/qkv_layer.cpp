@@ -279,6 +279,20 @@ void QKVLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       std::memcpy(gammas.data() + feature_size,
                   context.getWeight(weight_idx[WK_GAMMA]).getData<float>(),
                   feature_size * sizeof(float));
+      if (normShadowFile() != nullptr) {
+        // CPU q | k norm of the same row into scratch, as headNorm does it
+        nntrainer::Tensor qc(ml::train::TensorDim(1, 1, 1, wq));
+        nntrainer::Tensor kc(ml::train::TensorDim(1, 1, 1, wk));
+        headNorm(Qhidden_step, qc, context.getWeight(weight_idx[WQ_GAMMA]), 1,
+                 feature_size, epsilon);
+        headNorm(Khidden_step, kc, context.getWeight(weight_idx[WK_GAMMA]), 1,
+                 feature_size, epsilon);
+        std::vector<float> cpu(wq + wk);
+        std::memcpy(cpu.data(), qc.getData<float>(), wq * sizeof(float));
+        std::memcpy(cpu.data() + wq, kc.getData<float>(), wk * sizeof(float));
+        normShadowWrite(1, from, row.data(), wq + wk + wv, cpu.data(), nullptr,
+                        wq + wk);
+      }
       if (htpDecodeQkNorm(from, row.data(), wq + wk + wv, gammas.data(),
                           2 * feature_size, epsilon))
         return;

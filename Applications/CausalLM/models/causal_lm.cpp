@@ -759,6 +759,14 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
       ppl_dec_top1 += top1 == target;
       std::fprintf(stderr, "[PPL] decode step=%u target=%u nll=%.17g top1=%u\n",
                    ppl_dec_n, target, nll, top1);
+      static std::FILE *logit_f = [] {
+        const char *p = std::getenv("NNTR_LOGIT_SHADOW");
+        return p ? std::fopen(p, "wb") : nullptr;
+      }();
+      if (logit_f) {
+        std::fwrite(output_interval[0], sizeof(float), NUM_VOCAB, logit_f);
+        std::fflush(logit_f);
+      }
       if (ppl_forced)
         ids_list[0] = target;
       else
