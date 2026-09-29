@@ -23,6 +23,7 @@
 
 #include <array>
 #include <tuple>
+#include <vector>
 
 #include <common_properties.h>
 #include <layer_impl.h>
@@ -76,6 +77,10 @@ private:
   std::tuple<nntrainer::props::Unit> conv_props;
   std::array<unsigned int, 3> weight_idx; /**< in_proj, conv, out_proj */
   std::array<unsigned int, 4> tensor_idx; /**< proj, gated, conv_out, state */
+  /** dev/e2e-shadow-132: the CPU's own copy of the conv state while the
+   *  HTP holds the real one (the conv shadow's tag-8 records) */
+  std::vector<float> shadow_state_;
+  unsigned int shadow_next_pos_ = 0xFFFFFFFFu;
   bool htp_owns_state_ = false; /**< [#130] a decode hook returned 1: the
                                      DSP advances the conv state now */
 };

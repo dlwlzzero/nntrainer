@@ -260,6 +260,22 @@ void ConvBlockLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     // this layer's copy stays what the prefill left (plan 130 section 3.3)
     if (htpDecodeConvGate(from, p, y, C, w_ptr, state)) {
       htp_owns_state_ = true;
+      if (fcShadowOn()) {
+        // dev/e2e-shadow-132: tag 8, the CPU's decode conv + gate on the
+        // same row, from its own copy of the state (taken from the layer's
+        // at a jump, as the HTP re-seeds), against the HTP's output
+        if (shadow_next_pos_ != from || shadow_state_.size() != 2u * C)
+          shadow_state_.assign(state, state + 2u * C);
+        std::vector<float> gc(C), yc(C);
+        for (unsigned int j = 0; j < C; ++j)
+          gc[j] = p[j] * p[2 * C + j];
+        nntrainer::causal_depthwise_conv1d_k3_decode(
+          gc.data(), w_ptr, shadow_state_.data(), yc.data(), C);
+        for (unsigned int j = 0; j < C; ++j)
+          yc[j] = p[C + j] * yc[j];
+        fcShadowRecord(8u, p, 3u * C, yc.data(), y, C);
+        shadow_next_pos_ = from + 1u;
+      }
     } else {
       gate_pre(0);
       nntrainer::causal_depthwise_conv1d_k3_decode(g, w_ptr, state, y, C);

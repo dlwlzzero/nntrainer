@@ -14,7 +14,9 @@ residual ADD (the DSP's add_f32 of the same two rows), tag 5: one router
 (logits | expert ids sorted | their weights; the DSP's router_topk_det_f32);
 dev/e2e-shadow-132: tag 6 one dense-FFN SwiGLU (in = gate | up; the DSP's
 swiglu_cpu_f32, DENSE_FFN's), tag 7 one greedy pick (in = the logits; the
-CPU's first maximum against the DSP's argmax_f32, LM_HEAD's). Every record
+CPU's first maximum against the DSP's argmax_f32, LM_HEAD's), tag 8 one
+decode conv + gate (in = a | b | c; the CPU's NEON decode from its own copy
+of the state against the resident CONV1D_GATE's output). Every record
 must be bit-equal; fc, add, router and argmax must each have one. Prints per tag equal / total, the step
 range, per-step counts, and the first differing records.
 """
@@ -24,8 +26,8 @@ import sys
 
 import numpy as np
 
-NAMES = {3: "fc", 4: "add", 5: "router", 6: "swiglu", 7: "argmax"}
-TAGS = (3, 4, 5, 6, 7)
+NAMES = {3: "fc", 4: "add", 5: "router", 6: "swiglu", 7: "argmax", 8: "conv"}
+TAGS = (3, 4, 5, 6, 7, 8)
 REQUIRED = (3, 4, 5, 7)
 
 
@@ -50,6 +52,7 @@ for path in sys.argv[1:]:
     shapes = collections.Counter()
     first_bad = []
     steps = set()
+    first_step = {}
     for tag, step, n_in, n_out, x, c, o in records(path):
         n[tag] += 1
         eq = np.array_equal(c, o)
@@ -58,6 +61,8 @@ for path in sys.argv[1:]:
         steps.add(step)
         if tag == 3:
             shapes[(n_in, n_out)] += 1
+        if not eq and first_step.get(tag) is None:
+            first_step[tag] = step
         if not eq and len(first_bad) < 8:
             i = int(np.nonzero(c != o)[0][0])
             first_bad.append(f"  tag={tag} step={step} n_in={n_in} n_out={n_out} "
@@ -71,6 +76,8 @@ for path in sys.argv[1:]:
             f"{NAMES[t]}={per_step[(t, s)]}" for t in TAGS))
     print("  fc shapes (K, N): " + " ".join(
         f"{k}x{v}" for k, v in sorted(shapes.items())))
+    print("  first differing step per tag: " + (" ".join(
+        f"{NAMES[t]}@{first_step[t]}" for t in sorted(first_step)) or "-"))
     for line in first_bad:
         print(line)
     bad += any(ok[t] != n[t] for t in n) or any(n[t] == 0 for t in REQUIRED)
