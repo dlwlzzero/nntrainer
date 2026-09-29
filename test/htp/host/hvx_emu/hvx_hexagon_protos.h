@@ -4,8 +4,9 @@
  *
  * @file   hvx_hexagon_protos.h
  * @date   27 Sep 2026
- * @brief  Host emulation of the HVX intrinsics the M=1 small-op and
- *         decode-attention kernels use, one IEEE f32 operation per lane
+ * @brief  Host emulation of the HVX intrinsics the M=1 small-op,
+ *         decode-attention and M=1 MoE expert kernels use, one IEEE f32
+ *         operation per lane
  * @see    https://github.com/nntrainer/nntrainer
  * @author dlwlzzero <dlwlzzero@gmail.com>
  * @bug    No known bugs except for NYI items
@@ -191,6 +192,101 @@ static inline int32_t Q6_R_vextract_VR(HVX_Vector a, int32_t byte_off) {
   memcpy(&w, (const uint8_t *)a.w + (byte_off & (4 * HVX_EMU_LANES - 1)),
          sizeof(w));
   return w;
+}
+
+/* [#157] The integer ops of the M=1 MoE path's quantizer and GEMV
+   (hvx_quant_u8.c, hvx_gemm_u8i4_wh.c), so moe_m1_split_host_check.c runs
+   those sources whole. Byte / halfword lanes are the vector's memory
+   order, little-endian as on the DSP. */
+static inline HVX_Vector Q6_Vw_vmax_VwVw(HVX_Vector a, HVX_Vector b) {
+  HVX_Vector r;
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    r.w[i] = a.w[i] > b.w[i] ? a.w[i] : b.w[i];
+  }
+  return r;
+}
+static inline HVX_Vector Q6_Vw_vmin_VwVw(HVX_Vector a, HVX_Vector b) {
+  HVX_Vector r;
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    r.w[i] = a.w[i] < b.w[i] ? a.w[i] : b.w[i];
+  }
+  return r;
+}
+
+/* vpack(Vu, Vv):sat -- Vv's narrowed lanes in the low half, Vu's in the
+   high half, in order (V79 HVX PRM "Pack"; hvx_quant_u8.c relies on it). */
+static inline HVX_Vector Q6_Vh_vpack_VwVw_sat(HVX_Vector u, HVX_Vector v) {
+  int16_t h[2 * HVX_EMU_LANES];
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    const int32_t lo = v.w[i], hi = u.w[i];
+    h[i] = (int16_t)(lo > 32767 ? 32767 : lo < -32768 ? -32768 : lo);
+    h[i + HVX_EMU_LANES] = (int16_t)(hi > 32767    ? 32767
+                                     : hi < -32768 ? -32768
+                                                   : hi);
+  }
+  HVX_Vector r;
+  memcpy(r.w, h, sizeof(h));
+  return r;
+}
+static inline HVX_Vector Q6_Vub_vpack_VhVh_sat(HVX_Vector u, HVX_Vector v) {
+  int16_t hu[2 * HVX_EMU_LANES], hv[2 * HVX_EMU_LANES];
+  uint8_t b[4 * HVX_EMU_LANES];
+  memcpy(hu, u.w, sizeof(hu));
+  memcpy(hv, v.w, sizeof(hv));
+  for (int i = 0; i < 2 * HVX_EMU_LANES; ++i) {
+    b[i] = (uint8_t)(hv[i] > 255 ? 255 : hv[i] < 0 ? 0 : hv[i]);
+    b[i + 2 * HVX_EMU_LANES] = (uint8_t)(hu[i] > 255 ? 255
+                                         : hu[i] < 0 ? 0
+                                                     : hu[i]);
+  }
+  HVX_Vector r;
+  memcpy(r.w, b, sizeof(b));
+  return r;
+}
+
+static inline HVX_Vector Q6_V_vand_VV(HVX_Vector a, HVX_Vector b) {
+  HVX_Vector r;
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    r.w[i] = a.w[i] & b.w[i];
+  }
+  return r;
+}
+
+/* Halfword lanes shifted left, bits crossing the byte boundary inside a
+   halfword as on the DSP. */
+static inline HVX_Vector Q6_Vh_vasl_VhR(HVX_Vector a, int32_t n) {
+  uint16_t h[2 * HVX_EMU_LANES];
+  memcpy(h, a.w, sizeof(h));
+  for (int i = 0; i < 2 * HVX_EMU_LANES; ++i) {
+    h[i] = (uint16_t)(h[i] << (n & 15));
+  }
+  HVX_Vector r;
+  memcpy(r.w, h, sizeof(h));
+  return r;
+}
+
+static inline HVX_Vector Q6_Vw_vasr_VwR(HVX_Vector a, int32_t n) {
+  HVX_Vector r;
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    r.w[i] = a.w[i] >> (n & 31);
+  }
+  return r;
+}
+
+/* Vx.w[i] += sum_j Vu.ub[4i + j] * Vv.b[4i + j], wrapping. */
+static inline HVX_Vector Q6_Vw_vrmpyacc_VwVubVb(HVX_Vector x, HVX_Vector u,
+                                                HVX_Vector v) {
+  HVX_Vector r;
+  const uint8_t *pu = (const uint8_t *)u.w;
+  const int8_t *pv = (const int8_t *)v.w;
+  for (int i = 0; i < HVX_EMU_LANES; ++i) {
+    int32_t s = 0;
+    for (int j = 0; j < 4; ++j) {
+      s += (int32_t)pu[4 * i + j] * (int32_t)pv[4 * i + j];
+    }
+    r.w[i] = (int32_t)((uint32_t)x.w[i] + (uint32_t)s);
+  }
+  return r;
 }
 
 #endif /* __NNTRAINER_HVX_EMU_HVX_HEXAGON_PROTOS_H__ */

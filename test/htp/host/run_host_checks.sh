@@ -175,6 +175,43 @@ else
     "source tools/htp/env.sh)"
 fi
 
+# The M=1 MoE call split between the DSP and the CPU (#157): the REAL
+# use_m1 path (hexkl_mm_u8i4_moe.c with the real hvx_quant_u8.c,
+# hvx_dequant_i32.c, hvx_gemm_u8i4_wh.c, hvx_scale_add_f32.c on hvx_emu/)
+# with the first k experts, continued by nntrainer/tensor/moe_m1_det.h
+# (what the app's CPU experts run), memcmp'd against the DSP call with all
+# four, k = 0..4, plus each stage alone on tie-heavy inputs. Then three
+# mutants of the spec -- the dequant reassociated, the quantizer dividing
+# instead of multiplying by 1/s, the merge fused -- must each fail.
+moe_split() { # moe_split <spec dir> <exe>
+  "$cc" -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter \
+    -fno-strict-aliasing -ffp-contract=off -include malloc.h \
+    -I "$1" -I "$HERE/hvx_emu" -I "$HERE/stub" -I "$BACKEND/.." \
+    -I "$BACKEND" -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+    -o "$2" "$HERE/moe_m1_split_host_check.c" \
+    "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" "$BACKEND/hmx/hexkl_dma_trace.c" \
+    "$BACKEND/hvx/hvx_quant_u8.c" "$BACKEND/hvx/hvx_dequant_i32.c" \
+    "$BACKEND/hvx/hvx_gemm_u8i4_wh.c" "$BACKEND/hvx/hvx_scale_add_f32.c" -lm
+}
+moe_split "$BACKEND/.." "$OUT/moe_m1_split_host_check"
+"$OUT/moe_m1_split_host_check"
+mkdir "$OUT/spec"
+cp "$BACKEND/../swiglu_det.h" "$OUT/spec/"
+for mut in \
+  's/swiglu_det_mul(swiglu_det_mul(cf, s), ws\[c\])/swiglu_det_mul(cf, swiglu_det_mul(s, ws[c]))/' \
+  's/moe_m1_rne(swiglu_det_mul(x\[i\], inv))/moe_m1_rne(moe_m1_div(x[i], s))/' \
+  's/swiglu_det_add(dst\[i\], swiglu_det_mul(src\[i\], weight))/fmaf(src[i], weight, dst[i])/'; do
+  sed "$mut" "$BACKEND/../moe_m1_det.h" > "$OUT/spec/moe_m1_det.h"
+  if cmp -s "$OUT/spec/moe_m1_det.h" "$BACKEND/../moe_m1_det.h"; then
+    echo "MOE SPLIT MUTATION DID NOT APPLY: $mut"; exit 1
+  fi
+  moe_split "$OUT/spec" "$OUT/moe_split_mutant" 2> /dev/null
+  if "$OUT/moe_split_mutant" > "$OUT/mutant.log"; then
+    echo "MOE SPLIT MUTANT PASSED (the check is blind): $mut"; exit 1
+  fi
+  echo "MOE SPLIT MUTANT CAUGHT: $mut"
+done
+
 # The per-token entry (#85): htp_graph_desc.h's validator and LFM2
 # builder (the LFM2.5 list validates, each mutation fails with its own
 # code, never AEE_EBADPARM) and hexkl_graph.c's forward loop on the tiny
