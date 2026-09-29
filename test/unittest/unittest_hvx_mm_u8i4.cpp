@@ -34,6 +34,7 @@
 #include <remote.h>
 
 #include <htp_wh_layout.h>
+#include <moe_m1_det.h>
 
 #include "nntr_hvx.h"
 
@@ -551,6 +552,14 @@ TEST_F(HmxMmU8I4, Shape4_MultipleRowBlocks) {
 class HmxMmU8I4Layer : public HmxMmU8I4 {
 protected:
   /** @brief One weight plus everything needed to check its output. */
+  /** @brief [#157] NNTR_HTP_ARENA_CACHED=1: the arena tests map their
+   *  buffer cached (and publish the CPU's writes with whPublish), the
+   *  attribute the split's arena has. Unset: uncached, as production. */
+  static bool ArenaCached() {
+    const char *e = std::getenv("NNTR_HTP_ARENA_CACHED");
+    return e != nullptr && std::atoi(e) != 0;
+  }
+
   struct Weight {
     uint32_t handle;
     uint32_t N;
@@ -2152,11 +2161,15 @@ TEST_F(HmxMmU8I4Layer, ArenaUncachedWriteAfterMap) {
   const uint32_t kBytes = 3670016u;
   const uint32_t kDma = 1048576u;
   // RPCMEM_FLAG_UNCACHED. The flag, not the heap, is what decides whether
-  // the CPU's writes need a flush before the DSP can see them.
-  void *buf = alloc(25 /*RPCMEM_HEAP_ID_SYSTEM*/, 0 /*UNCACHED*/, (int)kBytes);
+  // the CPU's writes need a flush before the DSP can see them. [#157]
+  // NNTR_HTP_ARENA_CACHED=1 runs the cached arena instead, whose writes
+  // are made visible by whPublish -- the split's arena.
+  const bool cached = ArenaCached();
+  field("cached", cached ? "y" : "n");
+  void *buf = alloc(25 /*RPCMEM_HEAP_ID_SYSTEM*/, cached ? 1 : 0, (int)kBytes);
   field("alloc", buf ? "ok" : "failed");
   if (buf == nullptr) {
-    GTEST_SKIP() << "uncached rpcmem_alloc failed";
+    GTEST_SKIP() << "rpcmem_alloc failed (cached=" << cached << ")";
   }
   const int fd = to_fd(buf);
   field("fd", std::to_string(fd));
@@ -2172,6 +2185,8 @@ TEST_F(HmxMmU8I4Layer, ArenaUncachedWriteAfterMap) {
   for (uint32_t i = 0; i < kBytes; ++i) {
     p[i] = static_cast<uint8_t>(i * 31u + 7u);
   }
+  if (cached)
+    nntrainer::whPublish(p, kBytes);
   for (uint32_t i = 0; i < kDma; i += 64u) {
     want += p[i];
   }
@@ -2236,8 +2251,11 @@ TEST_F(HmxMmU8I4Layer, MoeLayerFromArenaMatchesHeap) {
   const uint32_t stride_dn = (dn_len + 4095u) & ~4095u;
   const uint32_t arena_bytes = NE * (stride_gu + stride_dn);
 
-  void *buf = alloc(25, 0 /*UNCACHED*/, (int)arena_bytes);
-  ASSERT_NE(buf, nullptr) << "uncached rpcmem_alloc failed";
+  // [#157] NNTR_HTP_ARENA_CACHED=1: the cached arena the split maps.
+  std::cout << "U8I4_FIELD path=arena_moe field=cached value="
+            << (ArenaCached() ? "y" : "n") << std::endl;
+  void *buf = alloc(25, ArenaCached() ? 1 : 0, (int)arena_bytes);
+  ASSERT_NE(buf, nullptr) << "rpcmem_alloc failed";
   const int fd = to_fd(buf);
   ASSERT_GE(fd, 0);
   ASSERT_EQ(fmmap(CDSP_DOMAIN_ID, fd, buf, 0, arena_bytes,
@@ -2470,6 +2488,166 @@ TEST_F(HmxMmU8I4Layer, MoeLayerM1GemvMatchesHmx) {
   std::cout << "U8I4_FIELD path=moe_m1_gemv field=bit_identical value="
             << (bad_total == 0 ? "yes" : "no") << std::endl;
   ReleaseMoeExperts(x);
+}
+
+/* [#157] The decode MoE call split between the DSP and the CPU, on
+   silicon: the DSP call with the first k of four active experts (ascending
+   id), continued on this CPU by moe_m1_det.h (NEON, the sdot GEMV, the
+   barriered f32 steps) in the same order, must equal the DSP call with all
+   four byte for byte, k = 0..4 -- plan 157 gate (b). The arena is the
+   split's: mapped cached, filled by the CPU with the WH bytes (whPack, as
+   the app memcpy's the model's) and published with whPublish, then read
+   by both units. Also each expert alone (DSP routing of one expert against
+   the CPU's p_e), which names the expert a mismatch comes from. The rows:
+   amplitudes 0.3 / 3 / 30, an all-positive row, an all-zero row, and one
+   large enough to drive gate values past the exp clamp. */
+TEST_F(HmxMmU8I4Layer, MoeM1CpuSplitMatchesDsp) {
+  const uint32_t K = 2048, I = 1792, N = 2048, NE = 4;
+  auto alloc =
+    (void *(*)(int, uint32_t, int))dlsym(RTLD_DEFAULT, "rpcmem_alloc");
+  auto rfree = (void (*)(void *))dlsym(RTLD_DEFAULT, "rpcmem_free");
+  auto to_fd = (int (*)(void *))dlsym(RTLD_DEFAULT, "rpcmem_to_fd");
+  using FastrpcMmap = int (*)(int, int, void *, int, size_t, int);
+  auto fmmap = (FastrpcMmap)dlsym(RTLD_DEFAULT, "fastrpc_mmap");
+  if (!alloc || !rfree || !to_fd || !fmmap) {
+    GTEST_SKIP() << "rpcmem/fastrpc_mmap not available";
+  }
+#ifdef MOE_M1_DET_HAS_SDOT
+  const char *cpu_path = "neon_sdot";
+#else
+  const char *cpu_path = "scalar";
+#endif
+  std::cout << "U8I4_FIELD path=moe_m1_split field=cpu_path value=" << cpu_path
+            << std::endl;
+
+  const uint32_t gu_len = static_cast<uint32_t>(nntrainer::whBytes(K, 2 * I));
+  const uint32_t dn_len = static_cast<uint32_t>(nntrainer::whBytes(I, N));
+  const uint32_t stride_gu = (gu_len + 4095u) & ~4095u;
+  const uint32_t stride_dn = (dn_len + 4095u) & ~4095u;
+  const uint32_t arena_bytes = NE * (stride_gu + stride_dn);
+  void *buf = alloc(25, 1 /*cached*/, (int)arena_bytes);
+  ASSERT_NE(buf, nullptr) << "cached rpcmem_alloc failed";
+  const int fd = to_fd(buf);
+  ASSERT_GE(fd, 0);
+  ASSERT_EQ(fmmap(CDSP_DOMAIN_ID, fd, buf, 0, arena_bytes,
+                  static_cast<int>(FASTRPC_MAP_FD)),
+            0);
+  uint32_t arena = 0xFFFFFFFFu;
+  ASSERT_EQ(nntr_hvx_arena_attach(handle_, fd, arena_bytes, &arena),
+            AEE_SUCCESS);
+
+  // The weights as the app places them: quantized on the host, packed to
+  // WH, written into the mapped arena by the CPU, cleaned, registered.
+  auto *base = static_cast<uint8_t *>(buf);
+  std::vector<Weight> gu(NE), dn(NE);
+  std::vector<uint32_t> h_gu(NE), h_dn(NE);
+  std::vector<moe_m1_weights> cw(NE);
+  uint32_t off = 0;
+  auto place = [&](uint32_t k, uint32_t n, uint32_t seed, Weight &w,
+                   uint32_t &h) {
+    w.N = n;
+    w.w_f32.resize(static_cast<size_t>(k) * n);
+    fill_deterministic(w.w_f32, seed);
+    quantize_weights_qs4cx(w.w_f32, k, n, w.q_w, w.d, w.colsum);
+    w.bias.resize(n);
+    fill_deterministic(w.bias, seed ^ 0xA5A5A5A5u);
+    const uint32_t len = static_cast<uint32_t>(nntrainer::whBytes(k, n));
+    nntrainer::whPack(w.q_w.data(), k, n, base + off);
+    nntrainer::whPublish(base + off, len);
+    ASSERT_EQ(nntr_hvx_weight_register_u8i4_arena(
+                handle_, k, n, arena, off, w.d.data(), (int)n, w.colsum.data(),
+                (int)n, w.bias.data(), (int)n, &h),
+              AEE_SUCCESS);
+  };
+  for (uint32_t e = 0; e < NE; ++e) {
+    const uint32_t off_gu = off;
+    ASSERT_NO_FATAL_FAILURE(place(K, 2 * I, 0xA9000000u + e, gu[e], h_gu[e]));
+    off += stride_gu;
+    const uint32_t off_dn = off;
+    ASSERT_NO_FATAL_FAILURE(place(I, N, 0xC9000000u + e, dn[e], h_dn[e]));
+    off += stride_dn;
+    cw[e] = {base + off_gu,       gu[e].d.data(),   gu[e].colsum.data(),
+             gu[e].bias.data(),   base + off_dn,    dn[e].d.data(),
+             dn[e].colsum.data(), dn[e].bias.data()};
+  }
+
+  uint32_t applied = 0xFFFFFFFFu;
+  const uint32_t opts = MoeGemvOpts(192u, true, true); // the app's 0x303e1
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, opts, &applied), AEE_SUCCESS);
+  ASSERT_EQ(applied, opts);
+
+  const float amps[] = {0.3f, 3.0f, 30.0f, 3.0f, 0.0f, 400.0f};
+  std::vector<float> act(K), full(N), part(N), gate(I);
+  std::vector<std::vector<float>> res(NE, std::vector<float>(N));
+  std::vector<uint8_t> q(K), mid(I);
+  std::vector<int8_t> qs(K), mid_s(I);
+  const std::vector<float> weight = {0.31f, 0.27f, 0.23f, 0.19f};
+  // The DSP with experts [e0, e1) routed, row 0 each.
+  auto dsp = [&](uint32_t e0, uint32_t e1, std::vector<float> &out) {
+    std::vector<uint32_t> count(NE, 0u), index;
+    std::vector<float> w;
+    for (uint32_t e = e0; e < e1; ++e) {
+      count[e] = 1u;
+      index.push_back(0u);
+      w.push_back(weight[e]);
+    }
+    out.assign(N, 1.0f);
+    return nntr_hvx_mm_u8i4_moe_layer(
+      handle_, 1u, K, I, N, h_gu.data(), (int)NE, h_dn.data(), (int)NE,
+      index.data(), (int)index.size(), count.data(), (int)NE, w.data(),
+      (int)w.size(), act.data(), (int)K, out.data(), (int)N);
+  };
+  size_t bad_k[NE + 1] = {0}, bad_e[NE] = {0}, bad_total = 0;
+  for (size_t t = 0; t < sizeof(amps) / sizeof(amps[0]); ++t) {
+    fill_deterministic(act, 0x5EED0157u + static_cast<uint32_t>(t));
+    for (float &v : act)
+      v = (t == 3u && v < 0.0f ? -v : v) * amps[t];
+    for (uint32_t e = 0; e < NE; ++e) {
+      moe_m1_expert(&cw[e], act.data(), K, I, N, q.data(), qs.data(),
+                    gate.data(), mid.data(), mid_s.data(), res[e].data());
+      // p_e alone: +0 + (res * w) on the CPU, one expert on the DSP
+      ASSERT_EQ(dsp(e, e + 1u, full), AEE_SUCCESS);
+      std::fill(part.begin(), part.end(), 0.0f);
+      moe_m1_scale_add(part.data(), res[e].data(), weight[e], N);
+      for (uint32_t c = 0; c < N; ++c)
+        bad_e[e] += std::memcmp(&part[c], &full[c], sizeof(float)) != 0;
+    }
+    ASSERT_EQ(dsp(0u, NE, full), AEE_SUCCESS);
+    for (uint32_t k = 0; k <= NE; ++k) {
+      if (k == 0u) {
+        std::fill(part.begin(), part.end(), 0.0f);
+      } else {
+        ASSERT_EQ(dsp(0u, k, part), AEE_SUCCESS);
+      }
+      for (uint32_t e = k; e < NE; ++e)
+        moe_m1_scale_add(part.data(), res[e].data(), weight[e], N);
+      for (uint32_t c = 0; c < N; ++c)
+        bad_k[k] += std::memcmp(&part[c], &full[c], sizeof(float)) != 0;
+    }
+  }
+  for (uint32_t k = 0; k <= NE; ++k) {
+    std::cout << "U8I4_FIELD path=moe_m1_split field=bad_elems_k" << k
+              << " value=" << bad_k[k] << std::endl;
+    bad_total += bad_k[k];
+  }
+  for (uint32_t e = 0; e < NE; ++e) {
+    std::cout << "U8I4_FIELD path=moe_m1_split field=bad_elems_expert" << e
+              << " value=" << bad_e[e] << std::endl;
+    bad_total += bad_e[e];
+  }
+  std::cout << "U8I4_FIELD path=moe_m1_split field=bad_elems value="
+            << bad_total << std::endl;
+  EXPECT_EQ(bad_total, 0u)
+    << "the CPU's experts (moe_m1_det.h, " << cpu_path
+    << ") continued the DSP's partial sum and did not reproduce it";
+
+  ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, 0u, &applied), AEE_SUCCESS);
+  for (uint32_t e = 0; e < NE; ++e) {
+    EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_gu[e]), AEE_SUCCESS);
+    EXPECT_EQ(nntr_hvx_weight_release_u8i4(handle_, h_dn[e]), AEE_SUCCESS);
+  }
+  EXPECT_EQ(nntr_hvx_arena_detach(handle_, arena), AEE_SUCCESS);
+  rfree(buf);
 }
 
 /* [#105] Where the M=1 GEMV's time goes: three cells through the same

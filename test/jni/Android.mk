@@ -928,7 +928,12 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := unittest_hvx_mm_u8i4
-LOCAL_CFLAGS := -Igoogletest/include -pthread -fexceptions -O3 -DNDK_BUILD=1
+# -march: MoeM1CpuSplitMatchesDsp runs moe_m1_det.h's sdot GEMV and NEON
+# epilogue, the code libnntrainer.so (armv8.2-a+dotprod) compiles for the
+# split (#157). The app's own threaded driver (htp_moe_cpu.cpp) is checked
+# end to end by the handoff's MoE dumps, not here.
+LOCAL_CFLAGS := -Igoogletest/include -pthread -fexceptions -O3 -DNDK_BUILD=1 \
+	 -march=armv8.2-a+dotprod
 LOCAL_CXXFLAGS += -std=c++17 -frtti -fexceptions
 LOCAL_LDLIBS := -llog -landroid
 
