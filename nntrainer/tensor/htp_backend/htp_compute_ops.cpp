@@ -1047,15 +1047,28 @@ void devFcShadow(unsigned N, unsigned K, const float *A, const void *B,
                    "q4m1_register");
     std::vector<float> y(ns);
     std::vector<uint32_t> st(8);
+    // dev/e2e-shadow-132: the feed and lanes S2's graph FC runs on the
+    // E2E path (no VTCM there: the L2 feed, FC_Q4_GRAPH_LANES_L2 = 3)
     const int err =
-      nntr_hvx_fc_q4m1_f32(h, wh, 0u, 6u, 1u, A, static_cast<int>(K), y.data(),
-                           static_cast<int>(ns), st.data(), 8);
+      nntr_hvx_fc_q4m1_f32(h, wh, 1u << 17, 3u, 1u, A, static_cast<int>(K),
+                           y.data(), static_cast<int>(ns), st.data(), 8);
     devShadowCheck(nntr_hvx_q4m1_release(h, wh), "q4m1_release");
     devShadowCheck(err, "fc_q4m1_f32");
     d.write(3u, A, K, C + n0, y.data(), ns);
   }
-  if (lm)
+  if (lm) {
+    // dev/e2e-shadow-132: tag 7, the greedy pick of the same logits --
+    // the CPU's first maximum against the DSP's argmax_f32 (LM_HEAD's)
+    uint32_t idx = 0;
+    devShadowCheck(nntr_hvx_argmax_f32(h, C, static_cast<int>(N), &idx),
+                   "argmax_f32");
+    const uint32_t cpu_idx = m1_argmax_first(C, N);
+    float cpu_f, dsp_f;
+    std::memcpy(&cpu_f, &cpu_idx, 4u);
+    std::memcpy(&dsp_f, &idx, 4u);
+    d.write(7u, C, N, &cpu_f, &dsp_f, 1u);
     ++d.step;
+  }
 }
 } // namespace
 
@@ -1067,6 +1080,18 @@ public:
                          const float *cpu, const float *dsp,
                          unsigned n_out) override {
     devShadow().write(tag, in, n_in, cpu, dsp, n_out);
+  }
+  /** dev/e2e-shadow-132: DENSE_FFN's SwiGLU (swiglu_cpu_f32) of one row,
+   *  y the gate, z the up projection. */
+  int dev_swiglu_f32(const float *y, const float *z, float *o,
+                     unsigned n) override {
+    const remote_handle64 h =
+      static_cast<remote_handle64>(HtpBackend::global().handle());
+    devShadowCheck(nntr_hvx_swiglu_cpu_f32(h, y, static_cast<int>(n), z,
+                                           static_cast<int>(n), o,
+                                           static_cast<int>(n)),
+                   "swiglu_cpu_f32");
+    return 1;
   }
   int dev_add_f32(const float *a, const float *b, float *c,
                   unsigned n) override {

@@ -421,6 +421,15 @@ public:
     (void)dsp;
     (void)n_out;
   }
+  // dev/e2e-shadow-132: the DSP's swiglu_cpu_f32 (DENSE_FFN's SwiGLU)
+  virtual int dev_swiglu_f32(const float *y, const float *z, float *o,
+                             unsigned n) {
+    (void)y;
+    (void)z;
+    (void)o;
+    (void)n;
+    return 0;
+  }
   virtual int dev_add_f32(const float *a, const float *b, float *c,
                           unsigned n) {
     (void)a;

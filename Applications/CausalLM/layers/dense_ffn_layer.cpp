@@ -10,6 +10,7 @@
  */
 
 #include <dense_ffn_layer.h>
+#include <htp_decode_hook.h>
 
 #include <compute_ops.h>
 #include <layer_context.h>
@@ -18,7 +19,9 @@
 #include <swiglu_det.h>
 #include <thread_manager.h>
 
+#include <cstring>
 #include <limits>
+#include <vector>
 
 namespace causallm {
 
@@ -177,6 +180,13 @@ void DenseFfnLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   };
   if (rows == 1) {
     one_row(0);
+    if (fcShadowOn()) { // dev/e2e-shadow-132: tag 6, the DSP's SwiGLU
+      std::vector<float> yz(2u * inter), dsp(inter);
+      std::memcpy(yz.data(), gate_p, inter * sizeof(float));
+      std::memcpy(yz.data() + inter, up_p, inter * sizeof(float));
+      if (htpDevSwiglu(yz.data(), yz.data() + inter, dsp.data(), inter))
+        fcShadowRecord(6u, yz.data(), 2u * inter, act_p, dsp.data(), inter);
+    }
   } else {
     nntrainer::ThreadManager::Global().parallel_for(
       0, static_cast<size_t>(rows), one_row);

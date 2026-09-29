@@ -15,6 +15,10 @@
 
 #include "swiglu.h"
 
+#include "htp_decode_hook.h"
+#include <cstring>
+#include <vector>
+
 namespace causallm {
 
 static constexpr size_t OUT_IDX = 0;
@@ -61,6 +65,21 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                             out.getData<float>() + out.getIndex(b, c, h, 0),
                             in1.getData<float>() + in1.getIndex(b, c, h, 0),
                             in2.getData<float>() + in2.getIndex(b, c, h, 0));
+          if (iter == 1 && in1.batch() == 1 && fcShadowOn()) {
+            // dev/e2e-shadow-132: tag 6, the DSP's SwiGLU of the same row
+            const unsigned W = in1.width();
+            std::vector<float> yz(2u * W), dsp(W);
+            std::memcpy(yz.data(),
+                        in1.getData<float>() + in1.getIndex(b, c, h, 0),
+                        W * sizeof(float));
+            std::memcpy(yz.data() + W,
+                        in2.getData<float>() + in2.getIndex(b, c, h, 0),
+                        W * sizeof(float));
+            if (htpDevSwiglu(yz.data(), yz.data() + W, dsp.data(), W))
+              fcShadowRecord(6u, yz.data(), 2u * W,
+                             out.getData<float>() + out.getIndex(b, c, h, 0),
+                             dsp.data(), W);
+          }
         }
       }
     }

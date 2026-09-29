@@ -48,8 +48,8 @@ inline std::FILE *normShadowFile() {
 }
 
 inline void normShadowWrite(unsigned tag, unsigned pos, const float *in,
-                            unsigned n_in, const float *cpu,
-                            const float *other, unsigned n_out) {
+                            unsigned n_in, const float *cpu, const float *other,
+                            unsigned n_out) {
   std::FILE *f = normShadowFile();
   if (!f)
     return;
@@ -120,6 +120,10 @@ inline void fcShadowRecord(unsigned tag, const float *in, unsigned n_in,
 inline int htpDevAdd(const float *a, const float *b, float *c, unsigned n) {
   return nntrainer::get_htp_ops()->dev_add_f32(a, b, c, n);
 }
+/** @brief dev/e2e-shadow-132: the DSP's SwiGLU of one row (y gate, z up). */
+inline int htpDevSwiglu(const float *y, const float *z, float *o, unsigned n) {
+  return nntrainer::get_htp_ops()->dev_swiglu_f32(y, z, o, n);
+}
 inline int htpDevRouter(const float *x, const float *w, const float *bias,
                         unsigned K, unsigned E, unsigned top_k, float *logits,
                         unsigned *sel, float *weight) {
@@ -135,6 +139,9 @@ inline bool fcShadowOn() { return false; }
 inline void fcShadowRecord(unsigned, const float *, unsigned, const float *,
                            const float *, unsigned) {}
 inline int htpDevAdd(const float *, const float *, float *, unsigned) {
+  return 0;
+}
+inline int htpDevSwiglu(const float *, const float *, float *, unsigned) {
   return 0;
 }
 inline int htpDevRouter(const float *, const float *, const float *, unsigned,
