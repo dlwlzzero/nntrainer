@@ -137,6 +137,17 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
   }
 }
 
+// [#187] this thread backend has its own schedule; the argument is ignored so
+// the schedule check and benchmark still link (they measure the omp driver)
+void __ggml_q4_0_4x8_q8_0_GEMM_sched(const unsigned int M, const unsigned int N,
+                                     const unsigned int K, const float *A,
+                                     const unsigned int lda, const void *B,
+                                     const unsigned int ldb, float *C,
+                                     const unsigned int ldc,
+                                     const q4_0_sched &) {
+  __ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A, lda, B, ldb, C, ldc);
+}
+
 template <>
 void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M,
                                std::vector<unsigned int> Ns,
