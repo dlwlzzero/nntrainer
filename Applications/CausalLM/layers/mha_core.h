@@ -464,6 +464,8 @@ private:
   std::vector<float> htp_rope_table_; /**< [max_timestep][cos 32 | sin 32] */
   bool htp_owns_cache_ = false;       /**< a hook returned 1: rows past the
                                            prompt are the DSP's, not this cache's */
+  bool attn_shadow_running_ = false;  /**< dev/attn-shadow-170: the CPU pass */
+  int attn_shadow_ordinal_ = -1;      /**< dev/attn-shadow-170: layer order */
 
   /**
    * @brief _compute frequency parameters for default ROPE
