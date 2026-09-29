@@ -101,6 +101,17 @@ SRCS="$SRCS $BACKEND/hvx/hvx_softmax_f32.c $BACKEND/hvx/hvx_softmax_blocked_f32.
 SRCS="$SRCS $BACKEND/hvx/hvx_worker_pool.c $BACKEND/hvx/hvx_gemm_u8i4_wh.c"
 SRCS="$SRCS nntr_hvx_fc_q4.c build/hvx_q4_gemv_f32.o nntr_hvx_mailbox.c"
 
+# [#132 Part B T1] NNTR_VTCM_CAP_KB=<n> builds the capped probe variant:
+# HexKL's VTCM query and request go through nntr_hvx_vtcm_cap.c, so S1
+# opens with n KiB and a second PD can acquire the rest. Unset (the
+# default), neither the file nor the wraps are in the link.
+CAP_LDFLAGS=""
+if [ -n "${NNTR_VTCM_CAP_KB:-}" ]; then
+    SRCS="$SRCS nntr_hvx_vtcm_cap.c"
+    HEX_EXTRA_CFLAGS="${HEX_EXTRA_CFLAGS:-} -DNNTR_VTCM_CAP_KB=$NNTR_VTCM_CAP_KB"
+    CAP_LDFLAGS="-Wl,--wrap=compute_resource_query_VTCM -Wl,--wrap=compute_resource_attr_set_vtcm_param_v2"
+fi
+
 "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
     -m"$HEX_ARCH" -mhvx -mhvx-length=128B -G0 -O3 -fPIC -shared \
     -Wall -Werror \
@@ -117,7 +128,7 @@ SRCS="$SRCS nntr_hvx_fc_q4.c build/hvx_q4_gemv_f32.o nntr_hvx_mailbox.c"
     -isystem "$HEXAGON_SDK_ROOT/incs/stddef" \
     -isystem "$HEXAGON_SDK_ROOT/ipc/fastrpc/incs" \
     $SRCS \
-    "$HEXKL_LIB" \
+    "$HEXKL_LIB" $CAP_LDFLAGS \
     -o build/libnntr_hvx_skel.so
 
 READELF="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-readelf"
@@ -153,6 +164,16 @@ if [ -n "$STRONG_DSPQ" ]; then
     exit 1
 fi
 echo "UNDEFINED SYMBOLS OK ($(echo "$UND" | wc -l) runtime imports)"
+# [#132 Part B T1] the cap is in the skel exactly when it was asked for.
+N_WRAP=$("$READELF" --dyn-syms build/libnntr_hvx_skel.so | grep -c '__wrap_compute_resource' || true)
+if [ -n "${NNTR_VTCM_CAP_KB:-}" ] && [ "$N_WRAP" -ne 2 ]; then
+    echo "Error: NNTR_VTCM_CAP_KB=$NNTR_VTCM_CAP_KB but $N_WRAP of 2 __wrap_ symbols linked" >&2
+    exit 1
+elif [ -z "${NNTR_VTCM_CAP_KB:-}" ] && [ "$N_WRAP" -ne 0 ]; then
+    echo "Error: default skel carries $N_WRAP __wrap_ symbols" >&2
+    exit 1
+fi
+echo "VTCM CAP ${NNTR_VTCM_CAP_KB:-none} ($N_WRAP wraps)"
 
 echo "built: $SCRIPT_DIR/build/libnntr_hvx_skel.so ($HEX_ARCH, hexkl $HEXKL_SDK_VER)"
 echo "NOTE: this is the DSP skel only. If nntr_hvx.idl changed, the ARM client"
