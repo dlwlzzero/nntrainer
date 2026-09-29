@@ -6,7 +6,9 @@
  * @date   29 Sep 2026
  * @brief  [#178] Device probe: a second cDSP session (its own PD) beside the
  *         loaded app's -- address space, hop cost, DDR and VTCM sharing,
- *         teardown (plan docs/plans/178-second-dsp-session.md section 4)
+ *         teardown (plan docs/plans/178-second-dsp-session.md section 4);
+ * [#192] MapWindow.*: the single-session alternative, the cost of mapping the
+ * next layer's FC weights into a rotating window per token
  * @see    https://github.com/nntrainer/nntrainer
  * @author dlwlzzero <dlwlzzero@gmail.com>
  * @bug    No known bugs except for NYI items
@@ -47,6 +49,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 #include <iomanip>
 #include <iostream>
 #include <sched.h>
@@ -939,6 +942,695 @@ TEST_F(TwoSessions, Q5_Teardown) {
   EXPECT_EQ(info[0], 1u) << "S1 lost the HMX lock";
   EXPECT_EQ(info[1], g.s1_info[1]) << "S1's VTCM changed";
   EXPECT_TRUE(same) << "S1's HMX call after S2 differs from before";
+}
+
+/* ---- [#192] MapWindow: the single-session alternative ------------------
+ * One session (S1, opened as the app opens it) holds the app's 3696 MiB
+ * arena as a mapping ladder (14 x 256 + 112 MiB, attached) for the whole
+ * suite, and measures what it costs to bring one layer's FC weights
+ * (~11 MiB) into reach per layer, 22 times per token:
+ *   W1 (a)+(b): fastrpc_mmap / fastrpc_munmap of 1/4/11/12/24 MiB ION
+ *      buffers with each fastrpc_map_flags value of SDK 6.4.0.1's remote.h
+ *      (STATIC 0, FD 2, FD_DELAYED 3, FD_NOMAP 16, FD_EXTENDED 17,
+ *      FD_DELAYED_EXTENDED 18) and fastrpc_mem_request's FD map with
+ *      FASTRPC_MAP_ATTR_RETAIN_IOVA, each followed by the DSP step that
+ *      flag needs (FD: HAP_mmap_get/put; DELAYED, NOMAP: HAP_mmap /
+ *      HAP_munmap; FD_EXTENDED: get/put without touching the VA; STATIC:
+ *      none, it is not tagged with the fd), plus a
+ *      DSP-only HAP_mmap of an fd the ARM never mapped. 1 cold + 50
+ *      repeated pairs per cell.
+ *   W2 (c): a preallocated 24 MiB window (mapped and attached once): per
+ *      layer, the ARM copies 11 MiB into one half and a Q4M1 handle is
+ *      re-pointed at it (q4m1_register_arena, DSP cache invalidate), no
+ *      new mapping; uncached and cached ION. Also the headroom with the
+ *      window in: HAP_mem_get_stats and an 8 MiB mapping ladder capped at
+ *      512 MiB (W2), a heap probe capped at 64 MiB (W4's last cell: never
+ *      to the end).
+ *   W3 (d): the exact FC (hvx_intrin, L2 feed, 3 lanes, K=7168 N=2048)
+ *      from a just-mapped buffer vs a long-mapped one vs the DSP heap.
+ *   W4: ms/token for 22 pairs, the stop rule (> 1.0 not viable, <= 0.3
+ *      viable) and the lm_head (140 MiB) case.
+ * Prints W_FIELD / W_STOP lines; gates only the transport and bit-exact
+ * FC outputs. Everything mapped is unmapped before close; a failed
+ * munmap is a W_STOP rule=leak line (reboot before the next app run).
+ */
+
+constexpr uint32_t kFcK = 7168u, kFcN = 2048u, kLayers = 22u;
+constexpr size_t kMiB = size_t(1) << 20;
+constexpr size_t kLayerBytes = 11 * kMiB, kHalf = 12 * kMiB;
+constexpr int kMemAttrRetainIova = 1024; /**< FASTRPC_MAP_ATTR_RETAIN_IOVA */
+
+/** @brief One ION buffer (not yet mapped). */
+struct Ion {
+  void *buf = nullptr;
+  int fd = -1;
+  size_t bytes = 0;
+};
+
+bool ion_alloc(size_t bytes, uint32_t flags, Ion *b) {
+  const HtpRpcMemApi &api = HtpRpcMemApi::get();
+  b->buf = api.alloc ? api.alloc(nntrainer::HTP_RPC_HEAP_ID_SYSTEM, flags,
+                                 static_cast<int>(bytes))
+                     : nullptr;
+  b->fd = b->buf && api.to_fd ? api.to_fd(b->buf) : -1;
+  b->bytes = bytes;
+  return b->buf && b->fd >= 0;
+}
+
+void ion_free(Ion *b) {
+  if (b->buf) {
+    HtpRpcMemApi::get().free_(b->buf);
+  }
+  *b = Ion();
+}
+
+/** @brief fastrpc_mem_request, resolved at run time (a device runtime
+ *  without it answers "missing", the binary still loads). */
+using MemRequestFn = int (*)(fastrpc_mem_req_payload *);
+MemRequestFn mem_request() {
+  static MemRequestFn f =
+    reinterpret_cast<MemRequestFn>(dlsym(RTLD_DEFAULT, "fastrpc_mem_request"));
+  return f;
+}
+
+/** @brief One way of bringing an fd into the DSP's reach, W1's rows. */
+struct MapWay {
+  const char *name;
+  int flag;        /**< fastrpc_map_flags; -1: no ARM map */
+  bool mem_req;    /**< through fastrpc_mem_request + RETAIN_IOVA */
+  uint32_t dsp_op; /**< map_window_probe op after the ARM map (3: get/put
+                        without the touch, the extended VA may not be one
+                        this PD loads from); 9: none */
+};
+
+const MapWay kWays[] = {
+  {"static", FASTRPC_MAP_STATIC, false, 9u},
+  {"fd", FASTRPC_MAP_FD, false, 0u},
+  {"fd_delayed", FASTRPC_MAP_FD_DELAYED, false, 1u},
+  {"fd_nomap", FASTRPC_MAP_FD_NOMAP, false, 1u},
+  {"fd_extended", FASTRPC_MAP_FD_EXTENDED, false, 3u},
+  {"fd_delayed_extended", FASTRPC_MAP_FD_DELAYED_EXTENDED, false, 1u},
+  {"memreq_fd_retain_iova", FASTRPC_MAP_FD, true, 0u},
+  {"dsp_only_hap_mmap", -1, false, 1u},
+};
+
+int arm_map(const MapWay &w, const Ion &b) {
+  if (w.flag < 0) {
+    return 0;
+  }
+  if (w.mem_req) {
+    if (!mem_request()) {
+      return AEE_EUNSUPPORTED;
+    }
+    fastrpc_mem_req_payload p;
+    std::memset(&p, 0, sizeof(p));
+    p.request_id = FASTRPC_MEM_MAP;
+    p.mmap.effec_domain_id = CDSP_DOMAIN_ID;
+    p.mmap.fd = b.fd;
+    p.mmap.length = b.bytes;
+    p.mmap.flags = static_cast<fastrpc_map_flags>(w.flag);
+    p.mmap.attrs = static_cast<fastrpc_map_attrs>(kMemAttrRetainIova);
+    return mem_request()(&p);
+  }
+  return HtpRpcMemApi::get().mmap(CDSP_DOMAIN_ID, b.fd, b.buf, 0, b.bytes,
+                                  w.flag);
+}
+
+int arm_unmap(const MapWay &w, const Ion &b) {
+  if (w.flag < 0) {
+    return 0;
+  }
+  if (w.mem_req) {
+    fastrpc_mem_req_payload p;
+    std::memset(&p, 0, sizeof(p));
+    p.request_id = FASTRPC_MEM_UNMAP;
+    p.munmap.effec_domain_id = CDSP_DOMAIN_ID;
+    p.munmap.fd = b.fd;
+    p.munmap.attrs = static_cast<fastrpc_map_attrs>(kMemAttrRetainIova);
+    return mem_request()(&p);
+  }
+  return HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, b.fd, b.buf, b.bytes);
+}
+
+double median(std::vector<double> v) {
+  if (v.empty()) {
+    return 0;
+  }
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2];
+}
+
+double p90(std::vector<double> v) {
+  if (v.empty()) {
+    return 0;
+  }
+  std::sort(v.begin(), v.end());
+  return v[v.size() * 9 / 10];
+}
+
+/** @brief W1's result for one (way, size): medians of the 50 repeats. */
+struct PairCost {
+  bool ok = false;
+  double arm_map = 0, arm_unmap = 0, dsp_map = 0, dsp_unmap = 0, touch = 0;
+  double pair() const { return arm_map + arm_unmap + dsp_map + dsp_unmap; }
+};
+
+/** @brief State the MapWindow tests share, in test order. */
+struct MwShared {
+  remote_handle64 h = 0;
+  std::vector<Mapped> ladder;
+  size_t ladder_mib = 0;
+  bool leaked = false;
+  PairCost cost[sizeof(kWays) / sizeof(kWays[0])][5];
+  double copy_us = 0, attach_wall_us = 0, attach_dsp_us = 0;
+  double fc_long_us = 0, fc_fresh_first_us = 0;
+  size_t va_headroom_mib = 0;
+} mw;
+
+const uint32_t kSizesMib[5] = {1u, 4u, 11u, 12u, 24u};
+
+void leak(const char *where, int rc) {
+  std::cout << "W_STOP rule=leak where=" << where << " rc=" << hex(rc)
+            << " (a mapping could not be removed: reboot before the next "
+               "app run)"
+            << std::endl;
+  mw.leaked = true;
+}
+
+/** @brief map_window_probe; @return rc, res in @a r. */
+int dsp_probe(int fd, size_t bytes, uint32_t op, uint32_t reps, uint32_t r[8]) {
+  std::memset(r, 0, 8 * sizeof(uint32_t));
+  return nntr_hvx_map_window_probe(mw.h, fd, static_cast<uint32_t>(bytes), op,
+                                   reps, r, 8);
+}
+
+void heap_stats(const char *who) {
+  uint32_t r[8];
+  const int rc = dsp_probe(-1, 0, 2u, 0u, r);
+  std::cout << "W_FIELD heap_stats who=" << who << " rc=" << hex(rc) << "/"
+            << hex(static_cast<int>(r[0])) << " free_kib=" << r[2]
+            << " used_kib=" << r[3] << " seg_free=" << r[4]
+            << " seg_used=" << r[5] << " min_grow_kib=" << r[6] << std::endl;
+}
+
+class MapWindow : public ::testing::Test {
+protected:
+  static void SetUpTestSuite() {
+    remote_rpc_control_unsigned_module unsigned_pd = {CDSP_DOMAIN_ID, 1};
+    int err = remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE,
+                                     &unsigned_pd, sizeof(unsigned_pd));
+    std::cout << "W_FIELD unsigned_rc=" << hex(err) << std::endl;
+    const std::string uri = std::string(nntr_hvx_URI) + "&_dom=cdsp";
+    err = nntr_hvx_open(uri.c_str(), &mw.h);
+    std::cout << "W_FIELD open_rc=" << hex(err) << std::endl;
+    if (err != AEE_SUCCESS) {
+      mw.h = 0;
+      return;
+    }
+    // The app's arena: 14 x 256 MiB + 112 MiB, attached, held to the end.
+    for (int i = 0; i < 15; ++i) {
+      Mapped m;
+      const size_t bytes = i < 14 ? kStep : 112 * kMiB;
+      const int rc = map_chunk(mw.h, CDSP_DOMAIN_ID, bytes, true, &m);
+      if (rc != 0) {
+        std::cout << "W_FIELD ladder_stopped_by=" << hex(rc) << std::endl;
+        break;
+      }
+      mw.ladder.push_back(m);
+      mw.ladder_mib += bytes >> 20;
+    }
+    std::cout << "W_FIELD ladder_mib=" << mw.ladder_mib << std::endl;
+    if (mw.ladder_mib < 3696) {
+      std::cout << "W_STOP rule=arena_short ladder_mib=" << mw.ladder_mib
+                << " (below the app's 3696: an earlier run leaked; reboot)"
+                << std::endl;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    for (Mapped &m : mw.ladder) {
+      unmap_chunk(mw.h, &m);
+    }
+    mw.ladder.clear();
+    if (mw.h) {
+      heap_stats("close");
+      std::cout << "W_FIELD close_rc=" << hex(nntr_hvx_close(mw.h))
+                << std::endl;
+      mw.h = 0;
+    }
+  }
+
+  void SetUp() override {
+    ASSERT_NE(mw.h, 0u) << "S1 did not open -- is libnntr_hvx_skel.so on "
+                           "ADSP_LIBRARY_PATH?";
+    ASSERT_GE(mw.ladder_mib, 3696u) << "the arena ladder is short (reboot)";
+    ASSERT_FALSE(mw.leaked) << "an earlier cell leaked a mapping";
+  }
+};
+
+/** @brief W1, cells (a) and (b): per way and size, 1 cold + 50 repeated
+ *  map / DSP step / unmap pairs of one uncached ION buffer. */
+TEST_F(MapWindow, W1_MapUnmap) {
+  std::cout << "W_FIELD mem_request="
+            << (mem_request() ? "resolved" : "missing") << std::endl;
+  for (size_t wi = 0; wi < sizeof(kWays) / sizeof(kWays[0]); ++wi) {
+    const MapWay &w = kWays[wi];
+    for (int si = 0; si < 5; ++si) {
+      Ion b;
+      ASSERT_TRUE(
+        ion_alloc(kSizesMib[si] * kMiB, nntrainer::HTP_RPC_FLAGS_UNCACHED, &b));
+      std::vector<double> am, au, dm, du, tc;
+      double cold[4] = {};
+      int rc = 0, dsp_rc = 0;
+      const char *fail = "";
+      for (int it = 0; it < 51 && !mw.leaked; ++it) {
+        auto t0 = Clock::now();
+        rc = arm_map(w, b);
+        const double m_us = us_since(t0);
+        if (rc != 0) {
+          fail = "arm_map";
+          break;
+        }
+        uint32_t r[8] = {};
+        if (w.dsp_op != 9u) {
+          dsp_rc = dsp_probe(b.fd, b.bytes, w.dsp_op, 1u, r);
+          if (dsp_rc == AEE_SUCCESS && r[0] != 0u) {
+            dsp_rc = static_cast<int>(r[0]);
+          }
+        }
+        t0 = Clock::now();
+        const int urc = arm_unmap(w, b);
+        const double u_us = us_since(t0);
+        if (urc != 0) {
+          leak(w.name, urc);
+          break;
+        }
+        if (dsp_rc != AEE_SUCCESS) {
+          fail = "dsp_step";
+          if (r[6] != 0u) { // mapped, then HAP_munmap / put refused
+            leak("dsp_unmap", dsp_rc);
+          }
+          break;
+        }
+        if (it == 0) {
+          cold[0] = m_us;
+          cold[1] = u_us;
+          cold[2] = r[2];
+          cold[3] = r[4];
+          continue;
+        }
+        am.push_back(m_us);
+        au.push_back(u_us);
+        dm.push_back(r[2]);
+        du.push_back(r[3]);
+        tc.push_back(r[4]);
+      }
+      ion_free(&b);
+      PairCost &c = mw.cost[wi][si];
+      c.ok = am.size() == 50u;
+      c.arm_map = median(am);
+      c.arm_unmap = median(au);
+      c.dsp_map = median(dm);
+      c.dsp_unmap = median(du);
+      c.touch = median(tc);
+      std::cout << std::fixed << std::setprecision(1)
+                << "W_FIELD map way=" << w.name << " mib=" << kSizesMib[si]
+                << " n=" << am.size() << " cold_arm_map_us=" << cold[0]
+                << " cold_arm_unmap_us=" << cold[1]
+                << " cold_dsp_map_us=" << cold[2]
+                << " cold_touch_us=" << cold[3] << " arm_map_us=" << c.arm_map
+                << "/p90=" << p90(am) << " arm_unmap_us=" << c.arm_unmap
+                << "/p90=" << p90(au) << " dsp_map_us=" << c.dsp_map
+                << " dsp_unmap_us=" << c.dsp_unmap << " touch_us=" << c.touch
+                << " pair_us=" << (c.ok ? c.pair() : 0.0) << " rc=" << hex(rc)
+                << " dsp_rc=" << hex(dsp_rc)
+                << " fail=" << (*fail ? fail : "none") << std::defaultfloat
+                << std::endl;
+      ASSERT_FALSE(mw.leaked);
+    }
+  }
+}
+
+/** @brief W2, cell (c) and the headroom: a 24 MiB window mapped and
+ *  attached once; per layer the ARM copies 11 MiB into one half and a
+ *  Q4M1 handle is re-pointed at it. */
+TEST_F(MapWindow, W2_WindowReattach) {
+  heap_stats("before_window");
+  FcWeight fc;
+  fc.K = kFcK;
+  fc.N = kFcN;
+  fc.canon.resize(static_cast<size_t>(kFcN) * (kFcK / 32u) * 18u);
+  make_weights(fc.canon.data(), kFcK, kFcN);
+  std::vector<uint8_t> layer(kLayerBytes, 0x5Au); // the layer's FC bytes
+  q4m1_from_q4_0(fc.canon.data(), kFcK, kFcN, layer.data());
+  std::vector<float> x(kFcK), y;
+  make_row(x.data(), kFcK, 0, 1);
+
+  for (int cached = 0; cached < 2; ++cached) {
+    uint32_t warena = ~0u;
+    Ion b;
+    ASSERT_TRUE(ion_alloc(2 * kHalf,
+                          cached ? nntrainer::HTP_RPC_FLAGS_DEFAULT
+                                 : nntrainer::HTP_RPC_FLAGS_UNCACHED,
+                          &b));
+    int rc = HtpRpcMemApi::get().mmap(CDSP_DOMAIN_ID, b.fd, b.buf, 0, b.bytes,
+                                      FASTRPC_MAP_FD);
+    ASSERT_EQ(rc, 0) << "window fastrpc_mmap " << hex(rc);
+    rc = nntr_hvx_arena_attach(mw.h, b.fd, static_cast<uint32_t>(b.bytes),
+                               &warena);
+    if (rc != AEE_SUCCESS) {
+      HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, b.fd, b.buf, b.bytes);
+      ion_free(&b);
+      FAIL() << "window arena_attach " << hex(rc);
+    }
+
+    if (!cached) {
+      // Headroom with the window in: stats, the VA left (8 MiB mappings up
+      // to 512 MiB, removed at once), the heap (capped at 64 MiB).
+      heap_stats("window_mapped");
+      std::vector<Ion> steps;
+      while (steps.size() < 64u && !mw.leaked) {
+        Ion s;
+        if (!ion_alloc(8 * kMiB, nntrainer::HTP_RPC_FLAGS_UNCACHED, &s)) {
+          break;
+        }
+        if (HtpRpcMemApi::get().mmap(CDSP_DOMAIN_ID, s.fd, s.buf, 0, s.bytes,
+                                     FASTRPC_MAP_FD) != 0) {
+          ion_free(&s);
+          break;
+        }
+        steps.push_back(s);
+      }
+      mw.va_headroom_mib = steps.size() * 8u;
+      for (Ion &s : steps) {
+        const int urc =
+          HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, s.fd, s.buf, s.bytes);
+        if (urc != 0) {
+          leak("va_headroom", urc);
+        }
+        ion_free(&s);
+      }
+      std::cout << "W_FIELD va_headroom_with_window_mib="
+                << (mw.va_headroom_mib >= 512
+                      ? std::string(">=512 (cap)")
+                      : std::to_string(mw.va_headroom_mib))
+                << std::endl;
+    }
+
+    std::vector<double> copy, wall, inval, entry, fcus;
+    int bad = 0, reg_rc = AEE_SUCCESS, fc_rc = AEE_SUCCESS;
+    fc.h = ~0u;
+    for (int it = 0; it < 21; ++it) {
+      const size_t off = (it & 1) ? kHalf : 0;
+      auto t0 = Clock::now();
+      std::memcpy(static_cast<uint8_t *>(b.buf) + off, layer.data(),
+                  kLayerBytes);
+      const double c_us = us_since(t0);
+      t0 = Clock::now();
+      if (fc.h != ~0u) {
+        nntr_hvx_q4m1_release(mw.h, fc.h);
+        fc.h = ~0u;
+      }
+      uint32_t res[2] = {};
+      reg_rc = nntr_hvx_q4m1_register_arena(mw.h, kFcK, kFcN, warena,
+                                            static_cast<uint32_t>(off), 1u,
+                                            &fc.h, res, 2);
+      const double w_us = us_since(t0);
+      if (reg_rc != AEE_SUCCESS) {
+        break;
+      }
+      double us = 0;
+      fc_rc = fc_call(mw.h, fc, FC_INTRIN | FC_FEED_L2, 3u, 1u, x, &y, &us);
+      if (fc_rc != AEE_SUCCESS) {
+        break;
+      }
+      bad += fc_bad(fc, x, y);
+      if (it == 0) {
+        continue;
+      }
+      copy.push_back(c_us);
+      wall.push_back(w_us);
+      inval.push_back(res[0]);
+      entry.push_back(res[1]);
+      fcus.push_back(us);
+    }
+    if (fc.h != ~0u) {
+      nntr_hvx_q4m1_release(mw.h, fc.h);
+      fc.h = ~0u;
+    }
+    const int drc = nntr_hvx_arena_detach(mw.h, warena);
+    const int urc =
+      HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, b.fd, b.buf, b.bytes);
+    if (drc != AEE_SUCCESS || urc != 0) {
+      leak("window", drc != AEE_SUCCESS ? drc : urc);
+    }
+    ion_free(&b);
+    const double cp = median(copy);
+    std::cout << std::fixed << std::setprecision(1)
+              << "W_FIELD reattach ion=" << (cached ? "cached" : "uncached")
+              << " n=" << copy.size() << " copy_11mib_us=" << cp
+              << "/p90=" << p90(copy)
+              << " copy_gbs=" << (cp > 0 ? kLayerBytes / cp / 1e3 : 0)
+              << " repoint_wall_us=" << median(wall)
+              << " dsp_inval_us=" << median(inval)
+              << " dsp_entry_us=" << median(entry) << " fc_us=" << median(fcus)
+              << " bad=" << bad << " rc=" << hex(reg_rc) << "/" << hex(fc_rc)
+              << std::defaultfloat << std::endl;
+    EXPECT_EQ(reg_rc, AEE_SUCCESS) << "q4m1_register_arena";
+    EXPECT_EQ(fc_rc, AEE_SUCCESS) << "fc_q4m1_f32 from the window";
+    EXPECT_EQ(bad, 0) << "FC from the re-pointed window != spec";
+    EXPECT_EQ(copy.size(), 20u);
+    if (!cached) {
+      mw.copy_us = cp;
+      mw.attach_wall_us = median(wall);
+      mw.attach_dsp_us = median(entry);
+    }
+  }
+}
+
+/** @brief W3, cell (d): the exact FC from a buffer mapped just before the
+ *  call vs one mapped long ago vs the DSP heap (10 cycles each). */
+TEST_F(MapWindow, W3_FcFreshVsLong) {
+  FcWeight fc;
+  fc.K = kFcK;
+  fc.N = kFcN;
+  fc.canon.resize(static_cast<size_t>(kFcN) * (kFcK / 32u) * 18u);
+  make_weights(fc.canon.data(), kFcK, kFcN);
+  const size_t wbytes = q4m1_bytes(kFcK, kFcN);
+  std::vector<uint8_t> m1(wbytes);
+  q4m1_from_q4_0(fc.canon.data(), kFcK, kFcN, m1.data());
+  std::vector<float> x(kFcK), y;
+  make_row(x.data(), kFcK, 0, 1);
+  const uint32_t v = FC_INTRIN | FC_FEED_L2;
+  int bad = 0;
+  auto gbs = [&](double us) { return us > 0 ? fc_bytes(fc) / us / 1e3 : 0; };
+
+  // The DSP heap (q4m1_register), the reference.
+  std::vector<double> heap;
+  ASSERT_EQ(nntr_hvx_q4m1_register(mw.h, kFcK, kFcN, m1.data(),
+                                   static_cast<int>(wbytes), &fc.h),
+            AEE_SUCCESS);
+  for (int i = 0; i < 11; ++i) {
+    double us = 0;
+    ASSERT_EQ(fc_call(mw.h, fc, v, 3u, 1u, x, &y, &us), AEE_SUCCESS);
+    bad += fc_bad(fc, x, y);
+    if (i) {
+      heap.push_back(us);
+    }
+  }
+  nntr_hvx_q4m1_release(mw.h, fc.h);
+
+  // Two ION buffers with the weight: L stays mapped, F is mapped per cycle.
+  Ion L, F;
+  ASSERT_TRUE(ion_alloc(kHalf, nntrainer::HTP_RPC_FLAGS_UNCACHED, &L));
+  ASSERT_TRUE(ion_alloc(kHalf, nntrainer::HTP_RPC_FLAGS_UNCACHED, &F));
+  std::memcpy(L.buf, m1.data(), wbytes);
+  std::memcpy(F.buf, m1.data(), wbytes);
+  const HtpRpcMemApi &api = HtpRpcMemApi::get();
+  uint32_t la = ~0u;
+  ASSERT_EQ(api.mmap(CDSP_DOMAIN_ID, L.fd, L.buf, 0, L.bytes, FASTRPC_MAP_FD),
+            0);
+  ASSERT_EQ(
+    nntr_hvx_arena_attach(mw.h, L.fd, static_cast<uint32_t>(L.bytes), &la),
+    AEE_SUCCESS);
+  uint32_t res[2];
+  std::vector<double> lng, first, second;
+  ASSERT_EQ(
+    nntr_hvx_q4m1_register_arena(mw.h, kFcK, kFcN, la, 0u, 0u, &fc.h, res, 2),
+    AEE_SUCCESS);
+  const uint32_t lh = fc.h;
+  for (int i = 0; i < 11; ++i) { // warm, then 10 long-mapped samples
+    double us = 0;
+    ASSERT_EQ(fc_call(mw.h, fc, v, 3u, 1u, x, &y, &us), AEE_SUCCESS);
+    bad += fc_bad(fc, x, y);
+    if (i) {
+      lng.push_back(us);
+    }
+  }
+  int rc = AEE_SUCCESS;
+  for (int c = 0; c < 10 && rc == AEE_SUCCESS && !mw.leaked; ++c) {
+    uint32_t fa = ~0u, fh = ~0u;
+    rc = api.mmap(CDSP_DOMAIN_ID, F.fd, F.buf, 0, F.bytes, FASTRPC_MAP_FD);
+    if (rc != 0) {
+      break;
+    }
+    rc = nntr_hvx_arena_attach(mw.h, F.fd, static_cast<uint32_t>(F.bytes), &fa);
+    if (rc == AEE_SUCCESS) {
+      rc =
+        nntr_hvx_q4m1_register_arena(mw.h, kFcK, kFcN, fa, 0u, 0u, &fh, res, 2);
+    }
+    FcWeight f2 = fc;
+    f2.h = fh;
+    for (int k = 0; k < 2 && rc == AEE_SUCCESS; ++k) {
+      double us = 0;
+      rc = fc_call(mw.h, f2, v, 3u, 1u, x, &y, &us);
+      bad += rc == AEE_SUCCESS ? fc_bad(f2, x, y) : 0;
+      (k ? second : first).push_back(us);
+    }
+    if (fh != ~0u) {
+      nntr_hvx_q4m1_release(mw.h, fh);
+    }
+    const int drc = fa != ~0u ? nntr_hvx_arena_detach(mw.h, fa) : AEE_SUCCESS;
+    const int urc = api.munmap(CDSP_DOMAIN_ID, F.fd, F.buf, F.bytes);
+    if (drc != AEE_SUCCESS || urc != 0) {
+      leak("fc_fresh", drc != AEE_SUCCESS ? drc : urc);
+    }
+  }
+  nntr_hvx_q4m1_release(mw.h, lh);
+  const int drc = nntr_hvx_arena_detach(mw.h, la);
+  const int urc = api.munmap(CDSP_DOMAIN_ID, L.fd, L.buf, L.bytes);
+  if (drc != AEE_SUCCESS || urc != 0) {
+    leak("fc_long", drc != AEE_SUCCESS ? drc : urc);
+  }
+  ion_free(&L);
+  ion_free(&F);
+  mw.fc_long_us = median(lng);
+  mw.fc_fresh_first_us = median(first);
+  std::cout << std::fixed << std::setprecision(1) << "W_FIELD fc K=" << kFcK
+            << " N=" << kFcN << " kernel=hvx_intrin feed=l2 lanes=3"
+            << " heap_us=" << median(heap) << " heap_gbs=" << gbs(median(heap))
+            << " long_mapped_us=" << mw.fc_long_us
+            << " long_mapped_gbs=" << gbs(mw.fc_long_us)
+            << " fresh_first_us=" << mw.fc_fresh_first_us
+            << " fresh_first_gbs=" << gbs(mw.fc_fresh_first_us)
+            << " fresh_second_us=" << median(second)
+            << " fresh_first_p90_us=" << p90(first)
+            << " cycles=" << first.size() << " bad=" << bad << " rc=" << hex(rc)
+            << std::defaultfloat << std::endl;
+  EXPECT_EQ(rc, AEE_SUCCESS);
+  EXPECT_EQ(first.size(), 10u);
+  EXPECT_EQ(bad, 0) << "FC from a mapped buffer != spec";
+}
+
+/** @brief W4: ms/token for 22 pairs per way (11 MiB, the layer's FC set),
+ *  the stop rule, the re-attach alternative and the lm_head case (one
+ *  140 MiB FD mapping tried beside the arena, removed at once). */
+TEST_F(MapWindow, W4_Projection) {
+  const double fresh_pen = std::max(0.0, mw.fc_fresh_first_us - mw.fc_long_us);
+  double best = 0;
+  const char *best_way = "none";
+  for (size_t wi = 0; wi < sizeof(kWays) / sizeof(kWays[0]); ++wi) {
+    const PairCost &c = mw.cost[wi][2]; // 11 MiB
+    if (!c.ok || kWays[wi].flag == FASTRPC_MAP_STATIC ||
+        kWays[wi].dsp_op == 3u) {
+      continue; // no VA for the fd (STATIC) or one never loaded from
+    }
+    const double ms = kLayers * (c.pair() + fresh_pen) / 1e3;
+    std::cout << std::fixed << std::setprecision(3)
+              << "W_FIELD project way=" << kWays[wi].name
+              << " pair_us=" << c.pair() << " fresh_fc_penalty_us=" << fresh_pen
+              << " ms_per_token=" << ms << std::defaultfloat << std::endl;
+    if (best == 0 || ms < best) {
+      best = ms;
+      best_way = kWays[wi].name;
+    }
+  }
+  const double reattach_ms = kLayers * (mw.copy_us + mw.attach_wall_us) / 1e3;
+  std::cout << std::fixed << std::setprecision(3)
+            << "W_FIELD project way=reattach_copy copy_us=" << mw.copy_us
+            << " repoint_wall_us=" << mw.attach_wall_us
+            << " ms_per_token=" << reattach_ms
+            << " (the copy serialises unless it overlaps the previous "
+               "layer)"
+            << std::defaultfloat << std::endl;
+  std::cout << std::fixed << std::setprecision(3)
+            << "W_FIELD project_best way=" << best_way
+            << " ms_per_token=" << best << std::defaultfloat << std::endl;
+  if (best == 0 || best > 1.0) {
+    std::cout << "W_STOP rule=not_viable ms_per_token=" << best
+              << " (> 1.0: the single-session window is not viable)"
+              << std::endl;
+  } else if (best <= 0.3) {
+    std::cout << "W_VERDICT viable ms_per_token=" << best
+              << " (<= 0.3: plan the window design)" << std::endl;
+  } else {
+    std::cout << "W_VERDICT between ms_per_token=" << best
+              << " (0.3 < x <= 1.0: neither stop rule; decide on E2E)"
+              << std::endl;
+  }
+
+  // lm_head: 140 MiB. The pair cost per MiB from the FD row's 12 and 24
+  // MiB cells, then one real 140 MiB FD mapping beside the arena.
+  const PairCost &c12 = mw.cost[1][3], &c24 = mw.cost[1][4];
+  const double per_mib =
+    c12.ok && c24.ok ? (c24.pair() - c12.pair()) / 12.0 : 0;
+  const double fixed = c12.ok ? c12.pair() - 12.0 * per_mib : 0;
+  Ion lm;
+  int rc = -1, urc = 0;
+  double map_us = 0, unmap_us = 0;
+  if (ion_alloc(140 * kMiB, nntrainer::HTP_RPC_FLAGS_UNCACHED, &lm)) {
+    auto t0 = Clock::now();
+    rc = HtpRpcMemApi::get().mmap(CDSP_DOMAIN_ID, lm.fd, lm.buf, 0, lm.bytes,
+                                  FASTRPC_MAP_FD);
+    map_us = us_since(t0);
+    if (rc == 0) {
+      uint32_t r[8];
+      dsp_probe(lm.fd, lm.bytes, 0u, 1u, r);
+      t0 = Clock::now();
+      urc = HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, lm.fd, lm.buf, lm.bytes);
+      unmap_us = us_since(t0);
+      if (urc != 0) {
+        leak("lm_head_140", urc);
+      }
+    }
+    ion_free(&lm);
+  }
+  std::cout << std::fixed << std::setprecision(1)
+            << "W_FIELD lm_head_140 map_rc=" << hex(rc)
+            << " arm_map_us=" << map_us << " arm_unmap_us=" << unmap_us
+            << " fd_pair_fit_us=" << fixed + 140.0 * per_mib
+            << " fd_pair_us_per_mib=" << per_mib
+            << " slices_12mib=12 slices_pair_us=" << 12.0 * c12.pair()
+            << " va_headroom_with_window_mib=" << mw.va_headroom_mib
+            << " (the 140 MiB whole needs 140 MiB of VA beside the arena; "
+               "else 12 slices through the 12 MiB half or the CPU)"
+            << std::defaultfloat << std::endl;
+  // Last cell: the heap beside the arena and a mapped 24 MiB window,
+  // capped at 64 MiB (a heap grown to the end once took a PD down, #178);
+  // last because the grown heap keeps its segments until close.
+  Ion win;
+  uint32_t warena = ~0u;
+  ASSERT_TRUE(ion_alloc(2 * kHalf, nntrainer::HTP_RPC_FLAGS_UNCACHED, &win));
+  rc = HtpRpcMemApi::get().mmap(CDSP_DOMAIN_ID, win.fd, win.buf, 0, win.bytes,
+                                FASTRPC_MAP_FD);
+  if (rc == 0) {
+    rc = nntr_hvx_arena_attach(mw.h, win.fd, static_cast<uint32_t>(win.bytes),
+                               &warena);
+    const uint32_t heap = rc == AEE_SUCCESS ? heap_mib(mw.h, 64) : 0u;
+    std::cout << "W_FIELD heap_with_window_mib="
+              << (heap >= 64 ? std::string(">=64 (cap)") : std::to_string(heap))
+              << " attach_rc=" << hex(rc) << std::endl;
+    heap_stats("after_heap_probe");
+    const int drc =
+      warena != ~0u ? nntr_hvx_arena_detach(mw.h, warena) : AEE_SUCCESS;
+    urc =
+      HtpRpcMemApi::get().munmap(CDSP_DOMAIN_ID, win.fd, win.buf, win.bytes);
+    if (drc != AEE_SUCCESS || urc != 0) {
+      leak("heap_window", drc != AEE_SUCCESS ? drc : urc);
+    }
+  }
+  ion_free(&win);
+  EXPECT_FALSE(mw.leaked);
 }
 
 } // namespace
