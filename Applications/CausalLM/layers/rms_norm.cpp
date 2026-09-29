@@ -80,12 +80,29 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
       const auto &dim = in_step.getDim();
       // [#130] one decode row: the HTP runs it when RMSNORM is resident
+      const bool shadow = normShadowFile() != nullptr && to - from == 1 &&
+                          b_size == 1 &&
+                          gamma.getDataType() ==
+                            ml::train::TensorDim::DataType::FP32;
+      nntrainer::Tensor shadow_cpu;
+      if (shadow) {
+        shadow_cpu = nntrainer::Tensor(out_step.getDim());
+        nntrainer::rms_norm_wrt_width_fp32_intrinsic(
+          in_step.getData<float>(), shadow_cpu.getData<float>(), dim.height(),
+          dim.width(), epsilon);
+        shadow_cpu.multiply_i(gamma);
+      }
       if (to - from == 1 && b_size == 1 &&
           gamma.getDataType() == ml::train::TensorDim::DataType::FP32 &&
           htpDecodeRmsNorm(from, in_step.getData<float>(),
                            out_step.getData<float>(), gamma.getData<float>(),
-                           dim.width(), epsilon))
+                           dim.width(), epsilon)) {
+        if (shadow)
+          normShadowWrite(0, from, in_step.getData<float>(), dim.width(),
+                          shadow_cpu.getData<float>(),
+                          out_step.getData<float>(), dim.width());
         continue;
+      }
 #ifdef ENABLE_FP16
       nntrainer::rms_norm_wrt_width_fp32_intrinsic(
         in_step.getData<float>(), out_step.getData<float>(), dim.height(),
@@ -122,6 +139,19 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       out_step.multiply_i(gamma_cast);
     } else {
       out_step.multiply_i(gamma);
+    }
+    if (normShadowFile() != nullptr && to - from == 1 && b_size == 1 &&
+        in_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+        gamma.getDataType() == ml::train::TensorDim::DataType::FP32) {
+      // the real CPU output next to a fresh CPU recompute: must be equal
+      nntrainer::Tensor again(out_step.getDim());
+      nntrainer::rms_norm_wrt_width_fp32_intrinsic(
+        in_step.getData<float>(), again.getData<float>(), 1,
+        in_step.getDim().width(), epsilon);
+      again.multiply_i(gamma);
+      normShadowWrite(2, from, in_step.getData<float>(),
+                      in_step.getDim().width(), again.getData<float>(),
+                      out_step.getData<float>(), in_step.getDim().width());
     }
 #ifdef DEBUG
     std::cout << context.getName() << " \n input:" << in_step
