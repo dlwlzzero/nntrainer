@@ -387,6 +387,20 @@ public:
     (void)id;
     return false;
   }
+  // dev/norm-shadow only (#164, never merged): the DSP's rmsnorm_det_f32
+  // test entry on the live session -- the same hvx_rmsnorm_f32 with the
+  // arguments graph_op_qk_norm uses. 1 when y was written, 0 without an
+  // accelerator.
+  virtual int dev_rmsnorm_det_fp32(const float *x, const float *gamma, float *y,
+                                   unsigned n, unsigned chunk, float eps) {
+    (void)x;
+    (void)gamma;
+    (void)y;
+    (void)n;
+    (void)chunk;
+    (void)eps;
+    return 0;
+  }
   virtual bool decode_kv_seed_fp32(unsigned n_rows, const float *k_rows,
                                    const float *v_rows) {
     (void)n_rows;

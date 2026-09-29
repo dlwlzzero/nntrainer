@@ -290,8 +290,16 @@ void QKVLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         std::vector<float> cpu(wq + wk);
         std::memcpy(cpu.data(), qc.getData<float>(), wq * sizeof(float));
         std::memcpy(cpu.data() + wq, kc.getData<float>(), wk * sizeof(float));
-        normShadowWrite(1, from, row.data(), wq + wk + wv, cpu.data(), nullptr,
-                        wq + wk);
+        // [#164] the DSP's q | k norm of the same row: hvx_rmsnorm_f32 at
+        // chunk = head_dim, q gamma then k gamma, as graph_op_qk_norm runs it
+        std::vector<float> dsp(wq + wk, 0.0f);
+        const bool have =
+          htpDevRmsNorm(row.data(), gammas.data(), dsp.data(), wq, feature_size,
+                        epsilon) &&
+          htpDevRmsNorm(row.data() + wq, gammas.data() + feature_size,
+                        dsp.data() + wq, wk, feature_size, epsilon);
+        normShadowWrite(1, from, row.data(), wq + wk + wv, cpu.data(),
+                        have ? dsp.data() : nullptr, wq + wk);
       }
       if (htpDecodeQkNorm(from, row.data(), wq + wk + wv, gammas.data(),
                           2 * feature_size, epsilon))

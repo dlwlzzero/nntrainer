@@ -1701,6 +1701,21 @@ public:
     }
   }
 
+  /** dev/norm-shadow only (#164): compute_ops.h's dev_rmsnorm_det_fp32. */
+  int dev_rmsnorm_det_fp32(const float *x, const float *gamma, float *y,
+                           unsigned n, unsigned chunk, float eps) override {
+    const remote_handle64 session =
+      static_cast<remote_handle64>(HtpBackend::global().handle());
+    std::vector<float> rs(n / chunk);
+    const int err = nntr_hvx_rmsnorm_det_f32(
+      session, chunk, eps, x, static_cast<int>(n), gamma,
+      static_cast<int>(chunk), y, static_cast<int>(n), rs.data(),
+      static_cast<int>(rs.size()));
+    if (err != AEE_SUCCESS)
+      throw std::runtime_error("dev rmsnorm_det_f32: " + graphErr(err));
+    return 1;
+  }
+
   /** [#130] The per-token hook (compute_ops.h): the counter of its kind
    *  names the op, the stretch tables say what to run. Hooks fire only at
    *  one row, from the model's thread, in list order within a token; the
