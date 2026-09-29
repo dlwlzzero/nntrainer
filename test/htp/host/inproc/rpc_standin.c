@@ -171,6 +171,11 @@ EXPORT int HAP_munmap(void *addr, int len) {
   (void)addr, (void)len;
   return AEE_EFAILED;
 }
+/* [#192] map_window_probe's heap read: no DSP heap here. */
+EXPORT int HAP_mem_get_stats(struct HAP_mem_stats *stats) {
+  (void)stats;
+  return AEE_EUNSUPPORTED;
+}
 
 /* ---- HAP_power.h: every vote is accepted and does nothing ---- */
 EXPORT int HAP_power_set(void *context, HAP_power_request_t *request) {

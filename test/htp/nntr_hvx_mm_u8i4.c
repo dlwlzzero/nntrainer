@@ -395,7 +395,8 @@ int nntr_hvx_arena_detach(remote_handle64 handle, uint32 arena) {
   if (!a) {
     return AEE_EBADPARM;
   }
-  if (hexkl_weight_u8i4_borrows(&s->weights_u8i4, a->va, a->bytes)) {
+  if (hexkl_weight_u8i4_borrows(&s->weights_u8i4, a->va, a->bytes) ||
+      nntr_hvx_q4m1_borrows(s, arena)) {
     return AEE_EBADSTATE;
   }
 #ifndef NNTR_HAVE_HAP_MMAP
@@ -406,6 +407,91 @@ int nntr_hvx_arena_detach(remote_handle64 handle, uint32 arena) {
     memset(a, 0, sizeof(*a));
     return rc == 0 ? AEE_SUCCESS : rc;
   }
+#endif
+}
+
+/* ---- [#192] the map-window probe --------------------------------------- */
+
+/** @brief One word per 4 KiB page of [va, va + bytes): the first-touch
+ *  (TLB fill) cost of a fresh mapping; @return the sum. */
+static uint32 map_window_touch(const uint8_t *va, uint32 bytes) {
+  uint32 sum = 0;
+  for (uint32 o = 0; o < bytes; o += 4096u) {
+    sum += *(const volatile uint32 *)(va + o);
+  }
+  return sum;
+}
+
+int nntr_hvx_map_window_probe(remote_handle64 handle, int32 fd, uint32 bytes,
+                              uint32 op, uint32 reps, uint32 *res, int resLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s) {
+    return AEE_EBADPARM;
+  }
+  if (!res || resLen != 8 || op > 3u || (op != 2u && (reps == 0u || !bytes))) {
+    return AEE_EINVALIDFORMAT;
+  }
+  memset(res, 0, 8u * sizeof(uint32));
+#ifndef NNTR_HAVE_HAP_MMAP
+  (void)fd;
+  (void)map_window_touch;
+  return AEE_EUNSUPPORTED;
+#else
+  if (op == 2u) {
+    struct HAP_mem_stats st;
+    memset(&st, 0, sizeof(st));
+    const int rc = HAP_mem_get_stats(&st);
+    res[0] = (uint32)rc;
+    res[1] = 1u;
+    res[2] = (uint32)(st.bytes_free >> 10);
+    res[3] = (uint32)(st.bytes_used >> 10);
+    res[4] = (uint32)st.seg_free;
+    res[5] = (uint32)st.seg_used;
+    res[6] = (uint32)(st.min_grow_bytes >> 10);
+    return AEE_SUCCESS;
+  }
+  uint64_t map_t = 0, unmap_t = 0;
+  for (uint32 r = 0; r < reps; ++r) {
+    void *va = NULL;
+    int rc = 0;
+    const uint64_t t0 = HAP_perf_get_qtimer_count();
+    if (op != 1u) {
+      uint64 pa = 0;
+      rc = HAP_mmap_get((int)fd, &va, &pa);
+    } else {
+      va = HAP_mmap(NULL, (int)bytes, HAP_PROT_READ | HAP_PROT_WRITE, 0,
+                    (int)fd, 0);
+      rc = (va == NULL || va == (void *)-1) ? AEE_ENOMEMORY : 0;
+    }
+    const uint64_t t1 = HAP_perf_get_qtimer_count();
+    if (rc != 0 || va == NULL || va == (void *)-1) {
+      res[0] = rc != 0 ? (uint32)rc : (uint32)AEE_ENOMEMORY;
+      FARF(ERROR, "map_window_probe: op %u map of fd %d failed rc=0x%08x",
+           (unsigned)op, (int)fd, (unsigned)res[0]);
+      break;
+    }
+    map_t += t1 - t0;
+    if (r == 0u && op != 3u) {
+      const uint64_t a0 = HAP_perf_get_qtimer_count();
+      res[5] = map_window_touch((const uint8_t *)va, bytes);
+      res[4] =
+        (uint32)HAP_perf_qtimer_count_to_us(HAP_perf_get_qtimer_count() - a0);
+    }
+    res[6] = (uint32)(uintptr_t)va;
+    const uint64_t u0 = HAP_perf_get_qtimer_count();
+    rc = op != 1u ? HAP_mmap_put((int)fd) : HAP_munmap(va, (int)bytes);
+    unmap_t += HAP_perf_get_qtimer_count() - u0;
+    if (rc != 0) {
+      res[0] = (uint32)rc;
+      FARF(ERROR, "map_window_probe: op %u unmap of fd %d failed rc=0x%08x",
+           (unsigned)op, (int)fd, (unsigned)rc);
+      break;
+    }
+    res[1] = r + 1u;
+  }
+  res[2] = (uint32)HAP_perf_qtimer_count_to_us(map_t);
+  res[3] = (uint32)HAP_perf_qtimer_count_to_us(unmap_t);
+  return AEE_SUCCESS;
 #endif
 }
 

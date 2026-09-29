@@ -89,9 +89,21 @@ static hexkl_dma_desc2d g_desc[FC_Q4_MAX_LANES][2]
 
 void nntr_hvx_q4m1_free_all(nntr_hvx_session *s) {
   for (uint32_t i = 0; i < NNTR_HVX_Q4M1_SLOTS; ++i) {
-    free(s->q4m1[i].w);
-    s->q4m1[i].w = NULL;
+    if (!s->q4m1[i].borrowed) {
+      free(s->q4m1[i].w);
+    }
+    memset(&s->q4m1[i], 0, sizeof(s->q4m1[i]));
   }
+}
+
+int nntr_hvx_q4m1_borrows(const nntr_hvx_session *s, uint32_t arena) {
+  for (uint32_t i = 0; i < NNTR_HVX_Q4M1_SLOTS; ++i) {
+    if (s->q4m1[i].w != NULL && s->q4m1[i].borrowed &&
+        s->q4m1[i].arena == arena) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 int nntr_hvx_q4m1_register(remote_handle64 handle, uint32 K, uint32 N,
@@ -138,9 +150,57 @@ int nntr_hvx_q4m1_release(remote_handle64 handle, uint32 h) {
   if (h >= NNTR_HVX_Q4M1_SLOTS || s->q4m1[h].w == NULL) {
     return AEE_EBADITEM;
   }
-  free(s->q4m1[h].w);
-  s->q4m1[h].w = NULL;
+  if (!s->q4m1[h].borrowed) {
+    free(s->q4m1[h].w);
+  }
+  memset(&s->q4m1[h], 0, sizeof(s->q4m1[h]));
   return AEE_SUCCESS;
+}
+
+int nntr_hvx_q4m1_register_arena(remote_handle64 handle, uint32 K, uint32 N,
+                                 uint32 arena, uint32 off, uint32 inval,
+                                 uint32 *h, uint32 *res, int resLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s) {
+    return AEE_EBADPARM;
+  }
+  const uint64_t t0 = HAP_perf_get_qtimer_count();
+  const nntr_hvx_arena *a =
+    arena < NNTR_HVX_MAX_ARENAS ? &s->arenas[arena] : NULL;
+  const size_t bytes = q4m1_bytes(K, N);
+  if (resLen != 2 || K == 0u || K % 64u != 0u || K > FC_Q4_MAX_K || N == 0u ||
+      N % Q4M1_GROUP != 0u || off % 128u != 0u || !a || a->va == NULL ||
+      (size_t)off + bytes > a->bytes) {
+    FARF(ERROR, "q4m1_register_arena: bad call (K=%u N=%u arena=%u off=%u)",
+         (unsigned)K, (unsigned)N, (unsigned)arena, (unsigned)off);
+    return AEE_EINVALIDFORMAT;
+  }
+  for (uint32_t i = 0; i < NNTR_HVX_Q4M1_SLOTS; ++i) {
+    if (s->q4m1[i].w == NULL) {
+      const uint64_t t1 = HAP_perf_get_qtimer_count();
+#if defined(__hexagon__)
+      /* the host rewrote the range since this PD last read it: drop any
+         line the previous weight left in the DSP caches */
+      if (inval) {
+        qurt_mem_cache_clean((qurt_addr_t)(a->va + off), (qurt_size_t)bytes,
+                             QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+      }
+#endif
+      const uint64_t t2 = HAP_perf_get_qtimer_count();
+      s->q4m1[i].w = a->va + off;
+      s->q4m1[i].K = K;
+      s->q4m1[i].N = N;
+      s->q4m1[i].borrowed = 1u;
+      s->q4m1[i].arena = arena;
+      *h = i;
+      res[0] = (uint32)HAP_perf_qtimer_count_to_us(t2 - t1);
+      res[1] =
+        (uint32)HAP_perf_qtimer_count_to_us(HAP_perf_get_qtimer_count() - t0);
+      return AEE_SUCCESS;
+    }
+  }
+  (void)inval;
+  return AEE_EBADITEM;
 }
 
 typedef struct {
