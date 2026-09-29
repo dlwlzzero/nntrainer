@@ -50,6 +50,13 @@ passed on the phone before every run (`run()` exits on a failure; no
 | libsdkl.so | `0ad4e22a70e4f135bce38ad8fd1e001b` | HexKL `armv8_android26` |
 | model `nntr_lfm2_8b_a1b_q40_arm.bin` | `7b7867fab51845664c0050c0a837073e` | `models/q40-qs4cx-wh`, read only |
 
+A skel's md5 does not reproduce across builds. The skel embeds the link
+command with random `/tmp/<src>-XXXXXX.o` names, and the PLT order moves
+with them. Three rebuilds from the same `b1a7c4cc` gave three md5s. Their
+per-function disassembly (addresses normalised, functions sorted by name)
+is identical to the device skel's (`9128951…` for all three). That is the
+check that ties `9b752543…` to `b1a7c4cc`.
+
 The v79 skel builds too (`HEX_ARCH=v79`: `Flags: 0x79`, `UNDEFINED SYMBOLS
 OK`, `002297dd…`). Not run.
 
