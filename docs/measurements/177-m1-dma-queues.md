@@ -190,6 +190,26 @@ Text comparison: #168's `strip`, plus dropping the two lines that echo the
 model path (`s177/model` here, `models/q40-qs4cx-wh` in #168). Those two
 lines were the only difference before the filter.
 
+## Post-review spot check (the lane-timeout commit)
+
+The code review found one low item: `hexkl_dma_lane_wait` fell through
+silently after its guard. The follow-up commit makes a timed-out lane wait
+fail the MoE call (`AEE_EFAILED`), with host case `M1 FEED QUEUES TIMEOUT
+OK`. It changes no instruction on the normal path's data. The v81 skel was
+rebuilt (`0200414e809fc7dfe851fbfb4dd60481`, the rest of the set unchanged)
+and checked on the phone the same evening, 23:42–23:46:
+
+| run | result |
+|---|---|
+| Q4t sanity, G=8 | `applied=0x1f03e1 … dma_q=4`, `calls=176 served=176 bad=0` |
+| Q4t dump, G=64, vs this sitting's A dump | `files=2862 bit_identical=1` |
+| G=512 mirrored A Q4t Q4t A, decode | 34.88* / **50.26** / **48.37** / 38.74 tok/s |
+| same runs, prefill | 388.8* / 517.2 / 484.4 / 485.8 tok/s |
+
+\* The first run after the phone sat idle, with low prefill and decode. It is
+not read as A's level; the sitting above is the A/B. Q4t lies in the
+sitting's Q4 range (48.47..50.88).
+
 ## Notes from the run
 
 * All three variants share one binary set. A is the new code with the knob
