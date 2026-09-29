@@ -228,6 +228,9 @@ int nntr_hvx_dspq_start(remote_handle64 handle, uint64 queue_id,
   if (s == NULL || s->dspq != NULL) {
     return AEE_EBADSTATE;
   }
+  if (!s->hmx_locked) {
+    return AEE_EUNSUPPORTED; /* [#178] the lite open has no HMX */
+  }
   if (nntr_hvx_moe_stage_count() != HTP_DSPQ_STAGES) {
     FARF(ERROR, "dspq: stage slots %u, wire header says %u",
          (unsigned)nntr_hvx_moe_stage_count(), (unsigned)HTP_DSPQ_STAGES);

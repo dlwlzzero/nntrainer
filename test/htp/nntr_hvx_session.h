@@ -33,6 +33,9 @@
  * arena and HMX lock. nntrainer opens exactly one HTP session per process,
  * so that is not a real constraint today; it would need addressing before
  * this skel served more than one client process at once.
+ * [#178] A reserved second session is a second PD with its own copy of this
+ * struct; when hw_init or the HMX lock is refused there, open() takes the
+ * lite path (open_path 1: no HMX, VTCM from HAP_compute_res, maybe none).
  */
 /** @brief How many host arenas one session can have mapped at once. The
  *  whole-model plan needs 3.9 GB in chunks of at most 1 GiB (rpcmem/ION
@@ -44,9 +47,10 @@
 #define NNTR_HVX_MAX_ARENAS 32
 
 /** @brief [#132 PR 2] How many Q4M1 weights (q4m1_register) one session
- *  holds at once: the shadow registers one FC or lm_head slice at a time,
- *  the rate test one shape at a time; eight leaves room for both. */
-#define NNTR_HVX_Q4M1_SLOTS 8
+ *  holds at once. [#178] 80: probe Q1 holds the whole FC set (66 weights)
+ *  plus the lm_head's 8 slices of 16384 rows in one session; the slots
+ *  are 12 bytes each, the weights themselves are on the heap. */
+#define NNTR_HVX_Q4M1_SLOTS 80
 
 /** @brief One Q4M1 weight on the DSP heap (memalign 128). w NULL = free. */
 typedef struct {
@@ -65,7 +69,13 @@ typedef struct {
   uint8_t *vtcm_base;
   uint32_t vtcm_size;
   uint32_t config_off; /**< session-constant: depends only on vtcm_size */
-  int hmx_locked;      /**< close() only unlocks/finalizes what open() set up */
+  int hmx_locked;      /**< close() only unlocks/finalizes what open() set up;
+                            0 after the lite open, where every HMX entry is
+                            AEE_EUNSUPPORTED */
+  uint32_t open_path;  /**< [#178] 0 the full open (hw_init + HMX lock), 1 the
+                            lite open (no HMX; VTCM from HAP_compute_res) */
+  uint32_t vtcm_ctx;   /**< [#178] the lite open's HAP_compute_res context
+                            (0 = none), released in close() */
   hexkl_weight_u8i4_table weights_u8i4;
   hexkl_weight_u8i8_table weights_u8i8;
   hvx_worker_pool *quant_pool; /**< sized from the HVX unit count in open() */
@@ -86,6 +96,8 @@ typedef struct {
                                  Stopped first in close() */
   nntr_hvx_q4m1_slot q4m1[NNTR_HVX_Q4M1_SLOTS]; /**< [#132 PR 2] test
                                  weights of fc_q4m1_f32, freed in close() */
+  uint8_t *fc_l2; /**< [#178] fc_q4m1_f32's L2 feed scratch (2 MiB of DSP
+                       heap, first use of the feed), freed in close() */
 } nntr_hvx_session;
 
 /** @brief [#85] mm_u8i4_moe_layer_timed's stage table, shared with

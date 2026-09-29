@@ -30,6 +30,9 @@ int nntr_hvx_graph_init(remote_handle64 handle, const uint32 *desc, int descLen,
   if (!s || !desc || descLen <= 0 || !n_ops) {
     return AEE_EBADPARM;
   }
+  if (!s->hmx_locked) {
+    return AEE_EUNSUPPORTED; /* [#178] the lite open has no HMX */
+  }
   if (s->graph != NULL) {
     FARF(ERROR, "graph_init: a graph is already live; release it first");
     return AEE_EBADSTATE;

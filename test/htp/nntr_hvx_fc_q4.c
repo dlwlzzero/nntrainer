@@ -65,8 +65,15 @@
 /** @brief Pool threads the static per-thread state serves. */
 #define FC_Q4_MAX_LANES 8u
 /** @brief fc_q4m1_f32's variant word: bits 0-7 HVX_Q4M1_*, 8-15 columns
- *  in flight for SFFMA, bit 16 the VTCM feed. */
+ *  in flight for SFFMA, bit 16 the VTCM feed, bit 17 [#178] the L2 feed. */
 #define FC_Q4_FEED_VTCM (1u << 16)
+/** @brief [#178] The VTCM feed's double buffer in a DDR heap scratch with
+ *  dst_bypass = 0 (the DMA writes through the L2, where the GEMV reads it):
+ *  what a session without VTCM (the lite open) runs. */
+#define FC_Q4_FEED_L2 (1u << 17)
+/** @brief The L2 feed's scratch: 2 x 129 KiB x 6 lanes at K = 7168 fits.
+ *  Address space: 2 MiB of DSP heap per session, first use, until close. */
+#define FC_Q4_L2_BYTES (2u << 20)
 /** @brief fc_q4m1_f32's stats words. */
 #define FC_Q4_STATS 8
 
@@ -143,21 +150,23 @@ typedef struct {
   const hvx_q4m1_act *a;
   float *y;
   uint32_t variant, cif, feed_vtcm;
+  uint32_t dst_bypass; /**< 1 VTCM feed, 0 L2 feed */
   uint8_t *vtcm;
   uint32_t vtcm_per_lane;
   uint32_t lanes_used;           /**< written by lane 0 */
   volatile uint32_t dma_expired; /**< any lane whose DMA never completed */
 } fc_ctx;
 
-/** @brief One 1-row DMA of @a bytes into VTCM on this thread's engine,
- *  around the DSP L2 (the registration cleaned the source). */
+/** @brief One 1-row DMA of @a bytes into VTCM (or the L2 scratch,
+ *  @a dst_bypass 0) on this thread's engine, reading around the DSP L2 (the
+ *  registration cleaned the source). */
 static void fc_dma_start(hexkl_dma_desc2d *d, void *dst, const void *src,
-                         uint32_t bytes) {
+                         uint32_t bytes, uint32_t dst_bypass) {
   memset(d, 0, sizeof(*d));
   d->desc_size = 1;
   d->desc_type = 9;
   d->src_bypass = 1;
-  d->dst_bypass = 1;
+  d->dst_bypass = dst_bypass;
   d->src = (void *)src;
   d->dst = dst;
   d->src_stride = bytes;
@@ -180,6 +189,22 @@ static int fc_dma_wait(hexkl_dma_desc2d *d) {
   return 1;
 }
 
+/** @brief The next group into @a dst. [#178] L2 feed: the DMA lands in
+ *  L2, where HVX loads read it, but the SFFMA kind's scalar loads go
+ *  through L1D, which may still hold the group this buffer had before --
+ *  that kind drops it first (the previous group is consumed, and the
+ *  scalar reads refill from L2). */
+static void fc_feed(const fc_ctx *c, hexkl_dma_desc2d *d, uint8_t *dst,
+                    const uint8_t *src) {
+#if defined(__hexagon__)
+  if (!c->dst_bypass && c->variant == HVX_Q4M1_SFFMA) {
+    qurt_mem_cache_clean((qurt_addr_t)dst, (qurt_size_t)c->gbytes,
+                         QURT_MEM_CACHE_INVALIDATE, QURT_MEM_DCACHE);
+  }
+#endif
+  fc_dma_start(d, dst, src, (uint32_t)c->gbytes, c->dst_bypass);
+}
+
 /** @brief Lane i: groups i, i + n, ...; with the VTCM feed, group g + n
  *  moves into the other half of this lane's slice while g computes. */
 static void fc_lane(uint32_t n, uint32_t i, void *v) {
@@ -200,8 +225,7 @@ static void fc_lane(uint32_t n, uint32_t i, void *v) {
                      c->vtcm + (size_t)i * c->vtcm_per_lane + c->gbytes};
   uint32_t cur = 0;
   if (i < c->G) {
-    fc_dma_start(&g_desc[i][0], buf[0], c->w + i * c->gbytes,
-                 (uint32_t)c->gbytes);
+    fc_feed(c, &g_desc[i][0], buf[0], c->w + i * c->gbytes);
   }
   for (uint32_t g = i; g < c->G; g += n) {
     if (!fc_dma_wait(&g_desc[i][cur])) {
@@ -209,8 +233,8 @@ static void fc_lane(uint32_t n, uint32_t i, void *v) {
       return;
     }
     if (g + n < c->G) {
-      fc_dma_start(&g_desc[i][cur ^ 1u], buf[cur ^ 1u],
-                   c->w + (g + n) * c->gbytes, (uint32_t)c->gbytes);
+      fc_feed(c, &g_desc[i][cur ^ 1u], buf[cur ^ 1u],
+              c->w + (g + n) * c->gbytes);
     }
     hvx_q4m1_gemv_groups(buf[cur], c->K, 1u, c->a,
                          c->y + (size_t)g * Q4M1_GROUP, c->variant, c->cif, fs);
@@ -231,10 +255,12 @@ int nntr_hvx_fc_q4m1_f32(remote_handle64 handle, uint32 h, uint32 variant,
   const nntr_hvx_q4m1_slot *w = &s->q4m1[h];
   const uint32_t kind = variant & 0xffu, cif = (variant >> 8) & 0xffu;
   const uint32_t feed = (variant & FC_Q4_FEED_VTCM) ? 1u : 0u;
+  const uint32_t feed_l2 = (variant & FC_Q4_FEED_L2) ? 1u : 0u;
   if ((uint32_t)xLen != w->K || (uint32_t)yLen != w->N ||
       statsLen != FC_Q4_STATS || kind > HVX_Q4M1_SFFMA ||
       (kind == HVX_Q4M1_SFFMA && cif != 8u && cif != 16u && cif != 32u) ||
-      lanes == 0u || lanes > FC_Q4_MAX_LANES || reps == 0u) {
+      lanes == 0u || lanes > FC_Q4_MAX_LANES || reps == 0u ||
+      (feed && feed_l2)) {
     FARF(ERROR, "fc_q4m1_f32: bad call (x=%d y=%d variant=0x%x lanes=%u)", xLen,
          yLen, (unsigned)variant, (unsigned)lanes);
     return AEE_EINVALIDFORMAT;
@@ -248,12 +274,24 @@ int nntr_hvx_fc_q4m1_f32(remote_handle64 handle, uint32 h, uint32 variant,
   c.y = y;
   c.variant = kind;
   c.cif = cif;
-  c.feed_vtcm = feed;
+  c.feed_vtcm = feed | feed_l2;
+  c.dst_bypass = feed;
   if (feed) {
     /* two groups per lane below the HMX config block; nothing of the
        session lives there between calls */
     c.vtcm = s->vtcm_base;
     c.vtcm_per_lane = (s->config_off / lanes) & ~127u;
+  } else if (feed_l2) {
+    if (!s->fc_l2) {
+      s->fc_l2 = (uint8_t *)memalign(128, FC_Q4_L2_BYTES);
+      if (!s->fc_l2) {
+        return AEE_ENOMEMORY;
+      }
+    }
+    c.vtcm = s->fc_l2;
+    c.vtcm_per_lane = (FC_Q4_L2_BYTES / lanes) & ~127u;
+  }
+  if (c.feed_vtcm) {
     if (c.vtcm_per_lane < 2u * c.gbytes) {
       FARF(ERROR, "fc_q4m1_f32: VTCM %u per lane < 2 x %u", c.vtcm_per_lane,
            (unsigned)c.gbytes);
