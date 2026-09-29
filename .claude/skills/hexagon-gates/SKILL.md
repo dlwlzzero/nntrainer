@@ -83,12 +83,16 @@ a device gtest second.
 
 ```
 ./test/htp/build.sh                       # v79; HEXKL_ROOT / HEXKL_SDK_VER from env.sh
+HEX_ARCH=v81 ./test/htp/build.sh          # v81 (S26 Ultra, htp_moe_v81); or export before sourcing env.sh
 md5sum test/htp/build/libnntr_hvx_skel.so
 ```
 Pass: `test/htp/build/libnntr_hvx_skel.so` exists, `-Wall -Werror` clean,
 and `build.sh` printed `UNDEFINED SYMBOLS OK (<n> runtime imports)` (a
 project symbol left out of `SRCS` links fine and fails on the device with
-`0x80000406`, #97; the guard prints the offending names and exits 1).
+`0x80000406`, #97; the guard prints the offending names and exits 1) and
+`ARCH OK (V79)` / `ARCH OK (V81)` (the ELF flags match `HEX_ARCH`; both
+arches write the same file name, #168). On `htp_moe_v81` a change to the
+DSP sources passes this rung for both arches.
 `build.sh` regenerates the FastRPC stub/skel from `test/htp/nntr_hvx.idl`;
 when the IDL changed, the host side must be rebuilt too (rung 1 and 3),
 or the device fails with `AEE_EBADPARM (0x8000040E)`. Variants:
@@ -154,7 +158,11 @@ A handoff's rebuild recipe lists these four lines.
 ## 4. Device (user only)
 
 Never run here. Write a handoff (`hexagon-handoff` skill), set
-`state:needs-measurement`, stop. Performance conclusions are drawn only
+`state:needs-measurement`, stop. One exception (contract decision log,
+2026-09-29): on `htp_moe_v81` an agent may run `adb -s R5KL20NFRCK` (the
+S26 Ultra) itself, never any other serial, writing only under the paths
+the issue's plan names; `docs/plans/168-s26-v81-bringup.md` §4 step 5 is
+the worked recipe, recorded in the handoff's shape. Performance conclusions are drawn only
 from filled handoff tables read as an A/B inside one sitting.
 
 ## Kernel review list (apply to any `test/htp/*.c`, `htp_backend/**` change)

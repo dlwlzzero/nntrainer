@@ -46,7 +46,7 @@ Branch `htp/<issue#>-<slug>` @ `<sha>` — estimated device time: <N> min
 ## Why
 <two sentences: the question and the decision that hangs on it>
 
-## Artifacts (built on the workstation, SDK 6.4.0.1, HexKL 6.4.0.1, NDK r30, v79)
+## Artifacts (built on the workstation, SDK 6.4.0.1, HexKL 6.4.0.1, NDK r30, v79 or v81)
 | file | md5 | built with |
 |---|---|---|
 | test/htp/build/libnntr_hvx_skel.<variant>.so | | `HEX_EXTRA_CFLAGS=...` |
