@@ -36,7 +36,9 @@ namespace causallm {
  *  the decode norms also run the CPU path and append one record per call:
  *  u32 tag (0 RMSNORM on HTP, 1 QK_NORM on HTP, 2 RMSNORM on CPU), pos,
  *  n_in, n_out, then f32 in[n_in], cpu[n_out], other[n_out] (the HTP output
- *  for tag 0, the layer's real output for tag 2, zeros for tag 1). */
+ *  for tag 0, the layer's real output for tag 2, and for tag 1 the DSP's
+ *  normed q | k from the rmsnorm_det_f32 entry, #164 -- zeros without an
+ *  accelerator). */
 inline std::FILE *normShadowFile() {
   static std::FILE *f = [] {
     const char *p = std::getenv("NNTR_NORM_SHADOW");
@@ -75,7 +77,17 @@ inline int htpDecodeOp(unsigned kind, unsigned pos, const float *in,
                                                   out_len, param, param_len,
                                                   state, state_len, eps);
 }
+/** @brief dev/norm-shadow: the DSP's RMSNorm of n floats in chunks. */
+inline int htpDevRmsNorm(const float *x, const float *gamma, float *y,
+                         unsigned n, unsigned chunk, float eps) {
+  return nntrainer::get_htp_ops()->dev_rmsnorm_det_fp32(x, gamma, y, n, chunk,
+                                                        eps);
+}
 #else
+inline int htpDevRmsNorm(const float *, const float *, float *, unsigned,
+                         unsigned, float) {
+  return 0;
+}
 inline int htpDecodeOp(unsigned, unsigned, const float *, unsigned, float *,
                        unsigned, const float *, unsigned, const float *,
                        unsigned, float) {
