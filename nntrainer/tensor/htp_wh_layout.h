@@ -133,6 +133,32 @@ inline void whSourcePageRange(const void *src, size_t len, size_t page_size,
   *out_len = end > begin ? static_cast<size_t>(end - begin) : 0u;
 }
 
+/**
+ * @brief [#157] Makes WH bytes the CPU just wrote through a CACHED arena
+ *        mapping visible to the DSP: cleans their D-cache lines to the
+ *        point of coherency (DC CVAC, which Linux lets EL0 issue), then a
+ *        DSB. The arena is uncached unless the split asks for a cached one
+ *        (the CPU then reads the same bytes at DDR speed); a weight is
+ *        written once and never again, so one clean per fill leaves no
+ *        line that can go stale. No-op off aarch64 (the host builds have
+ *        no DSP reading).
+ */
+inline void whPublish(const void *p, size_t n) {
+#if defined(__aarch64__)
+  uint64_t ctr = 0;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  const uintptr_t line = uintptr_t(4) << ((ctr >> 16) & 0xFu); // DminLine
+  uintptr_t a = reinterpret_cast<uintptr_t>(p) & ~(line - 1u);
+  const uintptr_t end = reinterpret_cast<uintptr_t>(p) + n;
+  for (; a < end; a += line)
+    __asm__ volatile("dc cvac, %0" : : "r"(a) : "memory");
+  __asm__ volatile("dsb sy" : : : "memory");
+#else
+  (void)p;
+  (void)n;
+#endif
+}
+
 } // namespace nntrainer
 
 #endif // __NNTRAINER_HTP_WH_LAYOUT_H__

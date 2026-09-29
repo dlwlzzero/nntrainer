@@ -1,6 +1,7 @@
 htp_backend_sources = [
   'htp_backend.cpp',
   'htp_compute_ops.cpp',
+  'htp_moe_cpu.cpp',
 ]
 
 htp_backend_headers = [

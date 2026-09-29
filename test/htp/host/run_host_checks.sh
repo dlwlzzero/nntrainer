@@ -212,6 +212,29 @@ for mut in \
   echo "MOE SPLIT MUTANT CAUGHT: $mut"
 done
 
+# The split's CPU object must round like the spec: no fused multiply-add
+# anywhere in htp_moe_cpu.cpp's aarch64 code (moe_m1_det.h's barriers),
+# at libnntrainer.so's flags and at the app's -ffast-math, and the sdot
+# GEMV must be the path compiled. Needs the NDK (env.sh's ANDROID_NDK).
+NDKBIN="${ANDROID_NDK:-}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+if [ -x "$NDKBIN/aarch64-linux-android30-clang++" ]; then
+  for fl in "-O3" "-O3 -ffast-math"; do
+    "$NDKBIN/aarch64-linux-android30-clang++" -std=c++17 $fl \
+      -march=armv8.2-a+fp16+dotprod+i8mm -I "$BACKEND/.." -I "$BACKEND" \
+      -I "$BACKEND/../../utils" -I "$BACKEND/../.." \
+      -c "$BACKEND/htp_moe_cpu.cpp" -o "$OUT/htp_moe_cpu.o"
+    "$NDKBIN/llvm-objdump" -d "$OUT/htp_moe_cpu.o" > "$OUT/htp_moe_cpu.dis"
+    fma=$(grep -cE '\s(fmla|fmls|fmadd|fmsub|fnmadd|fnmsub)\s' "$OUT/htp_moe_cpu.dis" || true)
+    sdot=$(grep -cE '\ssdot\s' "$OUT/htp_moe_cpu.dis" || true)
+    if [ "$fma" != 0 ] || [ "$sdot" = 0 ]; then
+      echo "MOE SPLIT AARCH64 FMA FOUND ($fl): fma=$fma sdot=$sdot"; exit 1
+    fi
+    echo "MOE SPLIT AARCH64 NO FMA ($fl: fmla/fmls/fmadd/fmsub=0, sdot=$sdot)"
+  done
+else
+  echo "MOE SPLIT AARCH64 FMA CHECK SKIPPED (no NDK; source tools/htp/env.sh)"
+fi
+
 # The per-token entry (#85): htp_graph_desc.h's validator and LFM2
 # builder (the LFM2.5 list validates, each mutation fails with its own
 # code, never AEE_EBADPARM) and hexkl_graph.c's forward loop on the tiny

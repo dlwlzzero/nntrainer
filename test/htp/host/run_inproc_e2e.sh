@@ -77,6 +77,12 @@
 #   E2E dspq on-lines tiny/lfm25/hmx calls=<n> ok      (on once, close
 #                              calls=N served=N bad=0, N = M==1 MoE calls)
 #   E2E dspq off-path banner=1 bit_identical=1         (NNTR_INPROC_NO_DSPQ=1)
+# and, since #157, the M==1 MoE call split between the DSP and the CPU
+# (NNTR_MOE_HTP_SPLIT=k, moe_m1_det.h's scalar path on this host; the
+# fixtures route top-2, so k = 1 and 0), against the dspq runs' dumps:
+#   E2E eval split1-tiny / split0-tiny / split1-lfm25 ... bit_identical=1
+#   E2E split lines tiny1/tiny0/lfm25 calls=<n> ok     (banner once, every
+#                              M==1 call split: split_calls = the manifest's)
 # NNTR_INPROC_GOLDEN=update rewrites test/htp/host/golden/lfm2_moe_tiny,
 # lfm2_moe_tiny_hd64 and lfm2_moe_tiny_lfm25 from this run's switch-off
 # HTP dumps (deliberate, like reference_logits.json).
@@ -215,6 +221,15 @@ NNTR_HTP_DSPQ=1 NNTR_MOE_HTP_M1_GEMV=0 \
   run_e2e dspq-hmx "$OUT/htp" htp "$OUT/dump_dspqhmx" "$OUT/dspqhmx.log"
 NNTR_INPROC_NO_DSPQ=1 NNTR_HTP_DSPQ=1 \
   run_e2e dspq-off "$OUT/htp" htp "$OUT/dump_dspqoff" "$OUT/dspqoff.log"
+# [#157] the split: one expert on the DSP and one on the CPU, both on the
+# CPU, and the lfm25 shape at prompt 512 with one on each
+echo "== [#157] htp, NNTR_MOE_HTP_SPLIT=1 / 0 (tiny) and 1 (lfm25, prompt 512)"
+NNTR_HTP_DSPQ=1 NNTR_MOE_HTP_SPLIT=1 \
+  run_e2e split1-tiny "$OUT/htp" htp "$OUT/dump_split1" "$OUT/split1.log"
+NNTR_HTP_DSPQ=1 NNTR_MOE_HTP_SPLIT=0 \
+  run_e2e split0-tiny "$OUT/htp" htp "$OUT/dump_split0" "$OUT/split0.log"
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_DSPQ_SPIN_US=0 NNTR_MOE_HTP_SPLIT=1 \
+  run_e2e split1-lfm25 "$OUT/htp25" htp "$OUT/dump_25split1" "$OUT/25split1.log" --max-seq 2048
 echo "== [#132] htp, ADD resident without RMSNORM (must be refused)"
 rc_add=0
 NNTR_HTP_FORWARD=1 NNTR_HTP_FORWARD_KINDS=MOE,CONV1D_GATE,ADD "$E2E" \
@@ -372,6 +387,24 @@ if [ "$banner" = 1 ] && grep -q 'bit_identical=1' <<< "$off_line" &&
 else
   echo "E2E FAIL dspq off-path banner=$banner ($off_line)"; fail=1
 fi
+
+# (j) [#157] the split: the CPU's experts continue the DSP's partial sum in
+# its order, so every MoE call and every logit is the dspq run's, bit for
+# bit; the banner once, and the exit line counts every M==1 call as split.
+for d in "tiny1 1 split1 dump_dspq dump_split1" "tiny0 0 split0 dump_dspq dump_split0" \
+  "lfm25 1 25split1 dump_25dspq dump_25split1"; do
+  read -r fx k tag ref dump <<< "$d"
+  $EVAL --label "split$k-${fx%[01]}" "$OUT/$ref" "$OUT/$dump" | tail -1 || fail=1
+  n="$(m1_calls "$OUT/$dump")"
+  if [ "$n" -gt 0 ] && [ "$(grep -c "^\[HTP\] moe split: k=$k " "$OUT/$tag.log")" = 1 ] &&
+    grep -q "^\[HTP\] moe m1 split=$k calls=$n split_calls=$n " "$OUT/$tag.log"; then
+    echo "E2E split lines $fx calls=$n ok"
+  else
+    echo "E2E FAIL split $fx: banner / exit line (manifest M==1 calls=$n)"
+    grep '^\[HTP\] moe' "$OUT/$tag.log" || true
+    fail=1
+  fi
+done
 
 # (h) [#134] NNTR_PPL_DECODE on the app's own decode loop (CausalLM::run,
 # --run). g1: the self run writes its greedy continuation, the forced run

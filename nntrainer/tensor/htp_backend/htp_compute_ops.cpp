@@ -48,11 +48,13 @@
 #include <htp_backend.h>
 #include <htp_dspq_wire.h>
 #include <htp_graph_desc.h>
+#include <htp_moe_cpu.h>
 #include <htp_moe_opts.h>
 #include <htp_q4_0_convert.h>
 #include <htp_rpcmem.h>
 #include <htp_wh_layout.h>
 #include <swiglu_det.h>
+#include <thread_manager.h>
 
 #include <algorithm>
 #include <atomic>
@@ -62,6 +64,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1250,6 +1254,8 @@ public:
       if (M == 1 && moe_bound_ == moe_ops_.size() && graphOp(op)->resident &&
           (sole || row_bound_)) {
         ensureGraphInit(session);
+        if (moeSplitK() < 4)
+          splitRefused("the per-token entry (NNTR_HTP_FORWARD=1)");
         // pos: no MoE stretch reads the position; the hooks' row does
         runStretchOp(session, op, sole ? 0u : cur_pos_, act, K, out, N_out,
                      &row_index, &row_count, &row_weight);
@@ -1285,6 +1291,163 @@ public:
       return env != nullptr && std::atoi(env) != 0;
     }();
     return on;
+  }
+
+  /** [#157] NNTR_MOE_HTP_SPLIT=k: a decode (M == 1, dspqueue) MoE call
+   *  keeps its first k active experts, in ascending id, on the DSP and the
+   *  CPU computes the rest with moe_m1_det.h and continues the DSP's
+   *  partial sum in the same order -- bit-identical to the DSP alone (plan
+   *  157). 4, or unset, is today's call byte for byte; 0 is the CPU alone.
+   *  Anything else is refused rather than guessed at. */
+  static int moeSplitK() {
+    static const int k = [] {
+      const char *e = std::getenv("NNTR_MOE_HTP_SPLIT");
+      if (e == nullptr || *e == '\0')
+        return 4;
+      char *end = nullptr;
+      const long v = std::strtol(e, &end, 10);
+      if (*end != '\0' || v < 0 || v > 4)
+        throw std::invalid_argument(
+          std::string("NNTR_MOE_HTP_SPLIT=") + e +
+          ": want 0..4, the experts kept on the DSP (4 = no split)");
+      return static_cast<int>(v);
+    }();
+    return k;
+  }
+
+  /** [#157] The arena mapped cached on the ARM side, with one D-cache clean
+   *  per fill (whPublish): what the split's CPU experts read at DDR speed.
+   *  On with the split; NNTR_HTP_ARENA_CACHED=1 turns it on alone (the
+   *  handoff's variant C, which isolates the attribute). */
+  static bool arenaCached() {
+    static const bool on = [] {
+      const char *e = std::getenv("NNTR_HTP_ARENA_CACHED");
+      return moeSplitK() < 4 || (e != nullptr && std::atoi(e) != 0);
+    }();
+    return on;
+  }
+
+  /** [#157] Decode MoE call totals, printed once at exit when the split is
+   *  on or NNTR_OP_TIME is set: where the call's time went, the DSP's wait
+   *  against the CPU's experts. Microseconds and bytes; the model's thread
+   *  only writes them. */
+  struct MoeSplitStats {
+    uint64_t calls = 0, split_calls = 0, call_us = 0, cpu_us = 0,
+             dsp_wait_us = 0, cpu_bytes = 0;
+  };
+  static MoeSplitStats &splitStats() {
+    static MoeSplitStats st;
+    return st;
+  }
+  static bool splitStatsOn() {
+    static const bool on = [] {
+      const bool want =
+        moeSplitK() < 4 || std::getenv("NNTR_OP_TIME") != nullptr;
+      if (want) {
+        splitStats(); // constructed first, so it outlives the handler
+        std::atexit([] {
+          const MoeSplitStats &st = splitStats();
+          std::fprintf(
+            stderr,
+            "[HTP] moe m1 split=%d calls=%llu split_calls=%llu "
+            "call_us=%llu cpu_us=%llu dsp_wait_us=%llu "
+            "cpu_MB=%.1f\n",
+            moeSplitK(), (unsigned long long)st.calls,
+            (unsigned long long)st.split_calls, (unsigned long long)st.call_us,
+            (unsigned long long)st.cpu_us, (unsigned long long)st.dsp_wait_us,
+            st.cpu_bytes / 1048576.0);
+        });
+      }
+      return want;
+    }();
+    return on;
+  }
+
+  /** @brief [#157] One call's split: the DSP's prefix routing and the CPU's
+   *  experts, in the order the merge adds them. */
+  struct MoeSplit {
+    std::vector<unsigned int> row_index, row_count;
+    std::vector<float> row_weight;
+    std::vector<moe_m1_weights> w;
+    std::vector<float> weight;
+    size_t bytes = 0; /**< the CPU experts' weight bytes */
+  };
+
+  /** @brief Builds @a sp for an M == 1 call: the first moeSplitK() active
+   *  experts in ascending id keep their routing, the rest go to the CPU.
+   *  False (today's call) when the split is off, nothing is left for the
+   *  CPU, or a CPU expert's weight is not an arena WH weight of this
+   *  shape -- said once, so a run that asked for the split and did not
+   *  get it shows it. */
+  bool planSplit(const std::vector<uint32_t> &h_gu,
+                 const std::vector<uint32_t> &h_dn,
+                 const std::vector<unsigned int> &row_index,
+                 const std::vector<unsigned int> &row_count,
+                 const std::vector<float> &row_weight, unsigned int K,
+                 unsigned int inter, unsigned int N_out, MoeSplit &sp) {
+    const int k = moeSplitK();
+    if (k >= 4)
+      return false;
+    sp.row_count.assign(row_count.size(), 0u);
+    sp.row_index.clear();
+    sp.row_weight.clear();
+    sp.w.clear();
+    sp.weight.clear();
+    sp.bytes = 0;
+    const char *why = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(cpu_wh_mutex_);
+      const size_t bias_n = std::max<size_t>(2u * inter, N_out);
+      if (cpu_zero_bias_.size() < bias_n)
+        cpu_zero_bias_.assign(bias_n, 0.0f);
+      size_t base = 0;
+      int kept = 0;
+      for (size_t e = 0; e < row_count.size() && why == nullptr; ++e) {
+        if (row_count[e] == 0u)
+          continue;
+        if (row_count[e] != 1u) {
+          why = "an expert with more than one row";
+        } else if (base >= row_index.size()) {
+          why = "row counts past the routing"; // the DSP refuses it whole
+        } else if (kept < k) {
+          sp.row_count[e] = 1u;
+          sp.row_index.push_back(row_index[base]);
+          sp.row_weight.push_back(row_weight[base]);
+          ++kept;
+        } else {
+          const auto g = cpu_wh_.find(h_gu[e]), d = cpu_wh_.find(h_dn[e]);
+          if (g == cpu_wh_.end() || d == cpu_wh_.end()) {
+            why = "an expert weight that is not a QS4CX_WH arena weight";
+          } else if (g->second.K != K || g->second.N != 2u * inter ||
+                     d->second.K != inter || d->second.N != N_out) {
+            why = "an expert weight of another shape";
+          } else {
+            sp.w.push_back({g->second.wh, g->second.w_scale.data(),
+                            g->second.colsum_w.data(), cpu_zero_bias_.data(),
+                            d->second.wh, d->second.w_scale.data(),
+                            d->second.colsum_w.data(), cpu_zero_bias_.data()});
+            sp.weight.push_back(row_weight[base]);
+            sp.bytes += whBytes(K, 2u * inter) + whBytes(inter, N_out);
+          }
+        }
+        base += row_count[e];
+      }
+    }
+    if (why != nullptr)
+      splitRefused(why);
+    return why == nullptr && !sp.w.empty();
+  }
+
+  /** @brief Says once that a decode call the split was asked for stays
+   *  whole on the DSP, and why: such a run's numbers are not the split's. */
+  void splitRefused(const char *why) {
+    if (split_warned_)
+      return;
+    split_warned_ = true;
+    std::fprintf(stderr,
+                 "[HTP] moe split: k=%d asked for, but a call has %s; such "
+                 "calls stay whole on the DSP\n",
+                 moeSplitK(), why);
   }
 
   /** The graph entries' error, named: 0x8000040E from them means the
@@ -2788,7 +2951,8 @@ private:
                const std::vector<unsigned int> &row_index,
                const std::vector<unsigned int> &row_count,
                const std::vector<float> &row_weight, size_t act_bytes,
-               size_t out_bytes, uint32_t *stage_us) {
+               size_t out_bytes, uint32_t *stage_us,
+               const std::function<void()> *overlap = nullptr) {
     static_assert(HTP_MOE_N_STAGES == HTP_DSPQ_STAGES,
                   "htp_dspq_wire.h's stage count is the timed call's");
     DspqMoe &st = *dspq_;
@@ -2834,6 +2998,17 @@ private:
     htp_dspq_resp resp;
     uint32_t flags = 0, rnb = 0, len = 0;
     struct dspqueue_buffer rbufs[2] = {};
+    // [#157] The split's CPU experts run here, while the DSP has the packet.
+    // A throw is held until the response is read: the DSP still owns the
+    // buffers until then.
+    std::exception_ptr overlap_err;
+    if (err == AEE_SUCCESS && overlap != nullptr) {
+      try {
+        (*overlap)();
+      } catch (...) {
+        overlap_err = std::current_exception();
+      }
+    }
     if (err == AEE_SUCCESS) {
       // Spin for the poll-QoS window, as the FastRPC call does, then block.
       const uint64_t t0 = HtpProfile::nowUs();
@@ -2862,6 +3037,8 @@ private:
       throw std::runtime_error(msg);
     }
     ++st.calls;
+    if (overlap_err)
+      std::rethrow_exception(overlap_err);
     if (stage_us != nullptr && resp.rc == AEE_SUCCESS) {
       if (len != HTP_DSPQ_RESP_BASE_BYTES + 4u * HTP_DSPQ_STAGES)
         throw std::runtime_error("dspq: timed response without stage slots");
@@ -2904,6 +3081,35 @@ private:
                           row_count.size() == h_gu.size() &&
                           row_weight.size() == row_index.size() &&
                           dspqReady(session, act_bytes, out_bytes, msg_bytes);
+    // [#157] NNTR_MOE_HTP_SPLIT: the DSP gets the prefix routing (planSplit)
+    // and the CPU the other experts, run between the queue's write and its
+    // read; their sum is continued below in the DSP's order. With k = 0
+    // there is no DSP call at all.
+    MoeSplit &sp = split_;
+    if (!via_dspq && M == 1 && kind == 0 && moeSplitK() < 4)
+      splitRefused("no dspqueue (NNTR_HTP_DSPQ=0, or a call too large)");
+    const bool split = via_dspq && planSplit(h_gu, h_dn, row_index, row_count,
+                                             row_weight, K, inter, N_out, sp);
+    const bool dsp_call = !split || !sp.row_index.empty();
+    const bool stats = via_dspq && splitStatsOn();
+    const uint64_t t_call = stats ? HtpProfile::nowUs() : 0;
+    uint64_t t_cpu0 = 0, t_cpu1 = 0;
+    bool cpu_ran = false;
+    const auto cpu_work = [&] {
+      if (cpu_ran)
+        return; // NNTR_HTP_PROFILE=3 repeats the DSP call, not this
+      cpu_ran = true;
+      t_cpu0 = HtpProfile::nowUs();
+      moe_cpu_.run(act, K, inter, N_out, sp.w.data(),
+                   static_cast<uint32_t>(sp.w.size()));
+      t_cpu1 = HtpProfile::nowUs();
+    };
+    if (split && !split_banner_) {
+      split_banner_ = true;
+      std::fprintf(stderr, "[HTP] moe split: k=%d cpu_threads=%u arena=%s\n",
+                   moeSplitK(), ThreadManager::Global().getComputeThreadCount(),
+                   arenaCached() ? "cached" : "uncached");
+    }
     HtpRpcBuffer &act_stage =
       via_dspq ? *dspq_->act : stage(act_pool_, act_bytes);
     HtpRpcBuffer &out_stage =
@@ -2933,12 +3139,20 @@ private:
     const int reps = (profile.level() >= 3) ? 5 : 1;
     uint64_t best_elapsed = UINT64_MAX;
     int err = AEE_SUCCESS;
-    for (int rep = 0; rep < reps && err == AEE_SUCCESS; ++rep) {
+    std::function<void()> cpu_fn; // only a split call pays for the wrapper
+    if (split)
+      cpu_fn = cpu_work;
+    if (!dsp_call)
+      cpu_work();
+    for (int rep = 0; dsp_call && rep < reps && err == AEE_SUCCESS; ++rep) {
       uint32_t rep_stage[HTP_MOE_N_STAGES] = {0};
       const uint64_t t0 = profile.level() ? HtpProfile::nowUs() : 0;
-      err = via_dspq ? dspqCall(M, K, inter, N_out, h_gu, h_dn, row_index,
-                                row_count, row_weight, act_bytes, out_bytes,
-                                timed ? rep_stage : nullptr)
+      err = via_dspq ? dspqCall(M, K, inter, N_out, h_gu, h_dn,
+                                split ? sp.row_index : row_index,
+                                split ? sp.row_count : row_count,
+                                split ? sp.row_weight : row_weight, act_bytes,
+                                out_bytes, timed ? rep_stage : nullptr,
+                                split ? &cpu_fn : nullptr)
             : timed  ? nntr_hvx_mm_u8i4_moe_layer_timed(
                          session, M, K, inter, N_out, h_gu.data(),
                          static_cast<int>(h_gu.size()), h_dn.data(),
@@ -2987,11 +3201,30 @@ private:
         " failed: err=" + std::to_string(err) + hint +
         (via_dspq ? " (via dspq)" : ""));
     }
-    stagedMemcpy(out, out_f32, out_bytes);
+    if (dsp_call)
+      stagedMemcpy(out, out_f32, out_bytes);
+    else
+      std::memset(out, 0, out_bytes); // the DSP's own start: +0
+    if (split)
+      moe_cpu_.merge(out, sp.weight.data());
+    if (stats) {
+      MoeSplitStats &st = splitStats();
+      const uint64_t t_end = HtpProfile::nowUs();
+      ++st.calls;
+      st.call_us += t_end - t_call;
+      if (split) {
+        ++st.split_calls;
+        st.cpu_us += t_cpu1 - t_cpu0;
+        st.dsp_wait_us += t_end - t_cpu1;
+        st.cpu_bytes += sp.bytes;
+      } else {
+        st.dsp_wait_us += t_end - t_call;
+      }
+    }
     dumpMoeCall("moe_layer", act, static_cast<size_t>(act_len), out,
                 static_cast<size_t>(out_len), M, K, inter, N_out, kind,
                 row_count);
-    if (profile.level()) {
+    if (profile.level() && dsp_call) {
       // [#88] The bytes the stub hands the driver outside ION: the 48-byte
       // primitive block (_primIn[12] in generated/nntr_hvx_stub.c) and the
       // five uint32/float sequences that are not the staged activation.
@@ -3004,7 +3237,7 @@ private:
                                 timed ? stage_us : nullptr, act_stage,
                                 out_stage, in_arg_bytes, kind, via_dspq);
     }
-    if (timed) {
+    if (timed && dsp_call) {
       // [#87] The per-descriptor trace of the last repeat, for the first
       // NNTR_HTP_DMA_TRACE calls of this bucket. Read now, while the skel's
       // static tables still hold this call; printed now, so the lines sit
@@ -3363,6 +3596,8 @@ private:
       std::vector<uint8_t> wh(wh_len);
       whPack(rm, K, N, wh.data());
       std::memcpy(arena_chunks_[chunk].buf->data() + off, wh.data(), wh_len);
+      if (arenaCached())
+        whPublish(arena_chunks_[chunk].buf->data() + off, wh_len);
       ArenaEntry e;
       e.chunk = chunk;
       e.off = off;
@@ -3565,10 +3800,12 @@ private:
      parameter type has to be complete where the function is declared, unlike
      a member a function BODY refers to. Only an HTP build compiles this
      file, so a host build cannot catch it. */
-  /** @brief One uncached ION buffer the DSP has mapped, filled front to
-   *  back. Never reused or rewritten: a weight placed here keeps its bytes
-   *  for the process lifetime, which is also why the DSP can borrow them
-   *  and why no cache line in either direction can go stale. */
+  /** @brief One ION buffer the DSP has mapped, filled front to back:
+   *  uncached, or cached on the ARM side when arenaCached() (#157), where
+   *  every fill site must follow its memcpy with whPublish. Never reused or
+   *  rewritten: a weight placed here keeps its bytes for the process
+   *  lifetime, which is also why the DSP can borrow them and why, once
+   *  published, no cache line in either direction can go stale. */
   struct ArenaChunk {
     std::unique_ptr<HtpRpcBuffer> buf;
     uint32_t dsp_id; /**< what nntr_hvx_arena_attach called it */
@@ -3682,6 +3919,8 @@ private:
         " chunks, RSS=" + std::to_string(rssKb() >> 10) + " MB");
     }
     std::memcpy(arena_chunks_[chunk].buf->data() + off, matAdata, wh_len);
+    if (arenaCached())
+      whPublish(arena_chunks_[chunk].buf->data() + off, wh_len);
 
     ArenaEntry e;
     e.chunk = chunk;
@@ -3705,6 +3944,13 @@ private:
       throw std::runtime_error("weight_register_u8i4_arena rejected a " +
                                std::to_string(K) + "x" + std::to_string(N) +
                                " WH weight");
+    }
+    // [#157] The split's CPU experts read this weight where the DSP does.
+    if (moeSplitK() < 4) {
+      std::lock_guard<std::mutex> cpu_lock(cpu_wh_mutex_);
+      cpu_wh_.emplace(handle,
+                      CpuWh{arena_chunks_[chunk].buf->data() + off, K, N,
+                            std::move(e.w_scale), std::move(e.colsum_w)});
     }
     // Only now: e.w_scale and e.colsum_w are already copies, so the source
     // buffer -- whose scales sit just past the nibbles -- has no reader left.
@@ -3879,7 +4125,17 @@ private:
     // BEFORE attaching and used a cached buffer, so this ordering is the
     // one thing section 34 rests on that the probe did not show; the
     // ArenaUncachedWriteAfterMap test is what answers it.
-    auto buf = std::make_unique<HtpRpcBuffer>(size, HTP_RPC_FLAGS_UNCACHED);
+    // [#157] Cached instead when the split reads the weights on the CPU
+    // (arenaCached): every fill is then followed by whPublish.
+    auto buf = std::make_unique<HtpRpcBuffer>(
+      size, arenaCached() ? HTP_RPC_FLAGS_DEFAULT : HTP_RPC_FLAGS_UNCACHED);
+    static bool cached_said = false;
+    if (arenaCached() && !cached_said) {
+      cached_said = true;
+      std::fprintf(stderr, "[HTP] arena: cached, one D-cache clean per "
+                           "weight (NNTR_MOE_HTP_SPLIT / "
+                           "NNTR_HTP_ARENA_CACHED)\n");
+    }
     if (!buf->isIon()) {
       arena_fail_ = "rpcmem_alloc(" + std::to_string(size >> 20) +
                     " MiB) failed -- the HOST ION heap is out, so the ARM "
@@ -4122,6 +4378,22 @@ private:
   /** [#141] The M==1 MoE call's dspqueue; null until the first such call
       unless NNTR_HTP_DSPQ=0. */
   std::shared_ptr<DspqMoe> dspq_;
+  /** [#157] The split's state: the CPU's view of every arena WH weight by
+   *  handle (filled at registration when the split is on), the zero bias
+   *  the experts carry and the CPU driver. */
+  struct CpuWh {
+    const uint8_t *wh;
+    uint32_t K, N;
+    std::vector<float> w_scale;
+    std::vector<int32_t> colsum_w;
+  };
+  std::mutex cpu_wh_mutex_;
+  std::unordered_map<uint32_t, CpuWh> cpu_wh_;
+  std::vector<float> cpu_zero_bias_;
+  MoeSplit split_;
+  HtpMoeCpu moe_cpu_;
+  bool split_banner_ = false;
+  bool split_warned_ = false;
   /** invokeConvBlock's conv_w in and state out, one small ION buffer. */
   std::unique_ptr<HtpRpcBuffer> conv_buf_;
 
