@@ -920,9 +920,11 @@ static int run_m1_case(const char *shape, uint32_t M, uint32_t K,
       fail = 1;
     }
     /* #185: GU(0) is one submitted job when the pool has a worker per
-       queue, else a run; then n A runs, run B and n C runs. */
+       queue, else a run; then n A runs, run B only at an odd n (it carries
+       downs 0 and 1), and n C runs. The requants ride A and C runs. */
     const uint32_t want_sub = g_workers >= nq ? 1u : 0u;
-    const uint32_t want_runs = (1u - want_sub) + active + 1u + active;
+    const uint32_t want_runs =
+      (1u - want_sub) + active + (active & 1u) + active;
     const int ov_ok =
       g_submits - sub0 == want_sub && g_run - run0 == want_runs + want_sub;
     if (!ov_ok) {
@@ -1175,8 +1177,9 @@ static int run_m1_cases(uint8_t *vtcm, size_t vtcm_bytes,
     fail |= f;
   }
   if (g_ov_ok && g_ov_cells != 0u)
-    printf("M1 FEED OVERLAP OK (%u cells; GU(0) job beside QUANT; run B "
-           "always)\n",
+    printf("M1 FEED OVERLAP OK (n=1..6,10; B only for odd n; downs ride "
+           "C(j-2); requant(i) rides A(i+1); GU(0) job beside QUANT; "
+           "dataflow clean; %u cells)\n",
            g_ov_cells);
   else
     printf("M1 FEED OVERLAP WRONG (%u cells)\n", g_ov_cells);

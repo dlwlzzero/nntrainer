@@ -601,20 +601,23 @@ static uint32_t moe_tail_rows(uint32_t n_e) {
  *   run    carries          dest            computes
  *   GU0    GU(0)            slab 0          - (caller: scan + pack)
  *   A(0)   GU(1)            slab 1          A(0)
- *   A(1)   GU(2)            slab 0          A(1)
- *   A(2)   GU(3)            slab 1          A(2)
- *   A(3)   D(0), D(1)       slab 0          A(3)
- *   B      -                -               requant of every expert
- *   C(0)   D(2)             slab 1 half 0   C(0)
+ *   A(1)   GU(2)            slab 0          A(1) + requant(0)
+ *   A(2)   GU(3)            slab 1          A(2) + requant(1)
+ *   A(3)   D(0), D(1)       slab 0          A(3) + requant(2)
+ *   C(0)   D(2)             slab 1 half 0   C(0) + requant(3)
  *   C(1)   D(3)             slab 1 half 1   C(1)
  *   C(2)   -                -               C(2)
  *   C(3)   -                -               C(3)
  *
- * The last A frees downs {0, 1} (odd n: they ride B, read by C(0)) or
- * {2, 3} (even n: they ride C(0) and C(1), two joins ahead of their
- * readers). A fifth or later down D(j + 3) rides C(j). Every slice is
- * still issued and polled by one lane inside one run and read only in a
- * later run, the invariant the host check proves.
+ * The last A frees downs {0, 1} (odd n: they ride a run B, read by C(0),
+ * which also takes requant(n - 1)) or {2, 3} (even n: they ride C(0) and
+ * C(1), two joins ahead of their readers, and there is no B). A fifth or
+ * later down D(j + 3) rides C(j). requant(i) rides the run after A(i),
+ * on its last lane after that lane's units: gate_f32(i) is complete at
+ * A(i)'s join and mid_ah(i) is read only by C(i). Every slice is still
+ * issued and polled by one lane inside one run and read only in a later
+ * run, the invariant the host check proves; its dataflow scoreboard holds
+ * the requant's buffers against the other lanes of its run.
  *
  * ponytail: C(2) and C(3) move no bytes (~38 us/call of idle engines).
  * The next rung is a third down slot in the arena's spare ~0.9 MiB or a
@@ -754,22 +757,28 @@ static void moe_m1_pair_worker(uint32_t n_lanes, uint32_t i, void *v) {
   moe_worker_probe_add(t0);
 }
 
-/** @brief Stage B. One expert per unit: moe_tail_requant_unit's body. */
+/** @brief Stage B for expert @a u: moe_tail_requant_unit's body. Reads
+ *         its gate_f32, writes its mid_ah and row params, nothing else. */
+static void moe_m1_requant_one(const moe_m1_ctx *c, uint32_t u) {
+  const moe_m1_expert *e = &c->ex[u];
+  const uint32_t m4 = ROUND_UP_U32(e->m, 4u);
+  if (m4 > e->m) {
+    memset(e->gate_f32 + (size_t)e->m * c->inter, 0,
+           sizeof(float) * (size_t)(m4 - e->m) * c->inter);
+  }
+  hvx_quant_rows_u8_params(e->gate_f32, e->m, HEXKL_HMX_INT8_BLOCK_N_ROW,
+                           c->inter, e->rq_scale, e->rq_zp, NULL);
+  hvx_quant_pack_u8_ah_rows(e->gate_f32, NULL, 0u, m4, c->inter, e->rq_scale,
+                            e->rq_zp, e->mid_ah);
+}
+
+/** @brief Stage B. One expert per unit. */
 static void moe_m1_requant_worker(uint32_t n_lanes, uint32_t i, void *v) {
   const moe_m1_ctx *c = (const moe_m1_ctx *)v;
   uint32_t lo, hi;
   moe_m1_slice(0u, c->n_active, n_lanes, i, &lo, &hi);
   for (uint32_t u = lo; u < hi; ++u) {
-    const moe_m1_expert *e = &c->ex[u];
-    const uint32_t m4 = ROUND_UP_U32(e->m, 4u);
-    if (m4 > e->m) {
-      memset(e->gate_f32 + (size_t)e->m * c->inter, 0,
-             sizeof(float) * (size_t)(m4 - e->m) * c->inter);
-    }
-    hvx_quant_rows_u8_params(e->gate_f32, e->m, HEXKL_HMX_INT8_BLOCK_N_ROW,
-                             c->inter, e->rq_scale, e->rq_zp, NULL);
-    hvx_quant_pack_u8_ah_rows(e->gate_f32, NULL, 0u, m4, c->inter, e->rq_scale,
-                              e->rq_zp, e->mid_ah);
+    moe_m1_requant_one(c, u);
   }
 }
 
@@ -929,6 +938,10 @@ typedef struct {
   volatile uint32_t timed_out;
   hvx_worker_pool_func inner; /**< the stage worker, or NULL */
   void *inner_ctx;
+  /** #185: the expert whose requant rides this run on its last lane, after
+      that lane's stage work (UINT32_MAX: none), and the call's context. */
+  uint32_t rq;
+  const moe_m1_ctx *rq_c;
 } moe_m1_qrun;
 
 /** @brief Per lane, the two descriptors of its chain in the current run.
@@ -976,6 +989,9 @@ static void moe_m1_q_worker(uint32_t n, uint32_t i, void *v) {
   if (q->inner != NULL) {
     q->inner(n, i, q->inner_ctx);
   }
+  if (q->rq != UINT32_MAX && i == n - 1u) {
+    moe_m1_requant_one(q->rq_c, q->rq);
+  }
   if (last != NULL && hexkl_dma_lane_wait(last) != 0) {
     q->timed_out = 1u;
   }
@@ -992,6 +1008,7 @@ static void moe_m1_q_run(hvx_worker_pool *pool, moe_m1_qrun *q,
   hvx_worker_pool_run(pool, moe_m1_q_worker, q,
                       n_units > q->nq ? n_units : q->nq);
   q->n_push = 0u;
+  q->rq = UINT32_MAX;
 }
 
 /** @brief #185: the posted matrices as a workers-only job (no stage work):
@@ -1290,6 +1307,8 @@ int hexkl_mm_u8i4_moe_layer_run(
   m1q.nq = m1_feed ? hexkl_moe_flags_dma_q(flags) : 1u;
   m1q.nq_used = 1u;
   m1q.timed_out = 0u;
+  m1q.rq = UINT32_MAX;
+  m1q.rq_c = NULL;
   /* Pairs per staged batch; the chunk size the gate_up pushes use too. */
   const uint32_t half = L.acc_tiles / 2u;
   /* Bounded arrays below; a shape that needs more chunks than they hold is
@@ -1637,9 +1656,11 @@ int hexkl_mm_u8i4_moe_layer_run(
                           n_active * inter_ntiles);
     } else if (m1q.nq > 1u) {
       /* #177: run A(i) carries what the ring schedule pushes after A(i-1)'s
-         join -- GU(1) for i = 0 -- and run B what it pushes after the last
-         A. The same slabs, each written one run after the join that frees
-         it and read only after the join of the run that wrote it. */
+         join -- GU(1) for i = 0 -- and, at an odd n, run B what it pushes
+         after the last A (#185). The same slabs, each written one run after the
+         join that frees it and read only after the join of the run that wrote
+         it. */
+      m1q.rq_c = &m1;
       for (uint32_t i = 0; i < n_active; ++i) {
         if (i == 0u) {
           if (n_active > 1u) {
@@ -1649,6 +1670,10 @@ int hexkl_mm_u8i4_moe_layer_run(
         } else {
           moe_m1_q_post_after_a(&m1q, &m1, i - 1u, vtcm_base, gu_bytes,
                                 dn_bytes);
+          /* #185: gate_f32(i - 1) is complete at A(i - 1)'s join; its
+             requant rides A(i) on the last lane, after that lane's units.
+             A(i)'s lanes write expert i's buffers only. */
+          m1q.rq = i - 1u;
         }
         m1.u_lo = i * inter_ntiles;
         m1.u_hi = (i + 1u) * inter_ntiles;
@@ -1694,11 +1719,13 @@ int hexkl_mm_u8i4_moe_layer_run(
     }
     HEXKL_PROBE_ADD(HEXKL_PROBE_MM, p0);
     HEXKL_PROBE_T0(p0);
-    if (m1q.n_push != 0u) {
-      /* #177: downs 0 and 1 of an odd n ride the requant run. */
-      moe_m1_q_run(pool, &m1q, moe_m1_requant_worker, &m1, n_active);
-    } else {
+    if (!m1_feed || m1q.nq == 1u) {
       hvx_worker_pool_run(pool, moe_m1_requant_worker, &m1, n_active);
+    } else if (m1q.n_push != 0u) {
+      /* #185: run B only at an odd n: downs 0 and 1 and the last requant.
+         At an even n the last requant rides C(0) and there is no B. */
+      m1q.rq = n_active - 1u;
+      moe_m1_q_run(pool, &m1q, NULL, NULL, m1q.nq);
     }
     HEXKL_PROBE_ADD(HEXKL_PROBE_REQUANT, p0);
     HEXKL_PROBE_T0(p0);
@@ -1712,6 +1739,9 @@ int hexkl_mm_u8i4_moe_layer_run(
          after C(j - 1)'s join, so a fifth or later expert's down D(j + 3)
          rides C(j)'s run. At most two posts a run. */
       for (uint32_t j = 0; j < n_active; ++j) {
+        if (j == 0u && ((n_active - 1u) & 1u)) {
+          m1q.rq = n_active - 1u; /* C(0) reads expert 0's buffers */
+        }
         if (j < 2u && ((n_active - 1u) & 1u) && j + 2u < n_active) {
           moe_m1_q_post(&m1q,
                         vtcm_base + moe_m1_dn_off(j + 2u, gu_bytes, dn_bytes),
