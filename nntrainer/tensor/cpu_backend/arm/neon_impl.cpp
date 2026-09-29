@@ -2164,9 +2164,13 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
 /**
  * @brief NEON fp32 prefill kernel for causal depthwise Conv1D k=3.
  *
- * Processes all H timesteps for each batch row. The two previous values are
- * kept in vector/scalar registers per channel block, so the causal left padding
- * for t=0 and t=1 naturally starts from zero.
+ * [#187] Channel blocks of 64 run in parallel; inside a block time is the
+ * outer loop, so each row's 256 bytes are contiguous (the old channel-outer
+ * walk touched one 16-byte vector per 4*W-byte row on one thread). x_{t-1}
+ * and x_{t-2} are re-read from the input (zero before t = 1 / t = 2) instead
+ * of carried, and every lane keeps the same vmulq, VFMAQ_F32, VFMAQ_F32
+ * (+ vaddq bias) sequence, so the output is bit-identical to the old loop.
+ * The scalar tail for W % 4 is the old code.
  */
 void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
                                 const float *bias, float *output,
@@ -2176,42 +2180,38 @@ void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
   const float *w0 = packed_weight;
   const float *w1 = packed_weight + 1 * W;
   const float *w2 = packed_weight + 2 * W;
+  constexpr unsigned int CB = 64; // channels per task
+  const unsigned int W4 = W / 4 * 4;
+  const float32x4_t zero = vdupq_n_f32(0.0f);
 
   for (unsigned int b = 0; b < B; ++b) {
     const float *x_base = input + static_cast<size_t>(b) * H * W;
     float *y_base = output + static_cast<size_t>(b) * H * W;
 
-    unsigned int c = 0;
+    nntrainer::ThreadManager::Global().parallel_for(
+      0, (W4 + CB - 1) / CB, [&](size_t blk) {
+        const unsigned int c0 = static_cast<unsigned int>(blk) * CB;
+        const unsigned int c1 = std::min(c0 + CB, W4);
+        for (unsigned int t = 0; t < H; ++t) {
+          const float *x_t = x_base + static_cast<size_t>(t) * W;
+          float *y_t = y_base + static_cast<size_t>(t) * W;
+          for (unsigned int c = c0; c < c1; c += 4) {
+            const float32x4_t cur = vld1q_f32(x_t + c);
+            const float32x4_t prev1 = t >= 1 ? vld1q_f32(x_t - W + c) : zero;
+            const float32x4_t prev2 =
+              t >= 2 ? vld1q_f32(x_t - 2 * W + c) : zero;
+            float32x4_t vy = vmulq_f32(cur, vld1q_f32(w0 + c));
+            vy = VFMAQ_F32(vy, prev1, vld1q_f32(w1 + c));
+            vy = VFMAQ_F32(vy, prev2, vld1q_f32(w2 + c));
+            if (bias)
+              vy = vaddq_f32(vy, vld1q_f32(bias + c));
+            vst1q_f32(y_t + c, vy);
+          }
+        }
+      });
 
     if (bias) {
-      for (; c + 4 <= W; c += 4) {
-        const float32x4_t vw0 = vld1q_f32(w0 + c);
-        const float32x4_t vw1 = vld1q_f32(w1 + c);
-        const float32x4_t vw2 = vld1q_f32(w2 + c);
-        const float32x4_t vb = vld1q_f32(bias + c);
-
-        float32x4_t prev2 = vdupq_n_f32(0.0f);
-        float32x4_t prev1 = vdupq_n_f32(0.0f);
-
-        for (unsigned int t = 0; t < H; ++t) {
-          const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
-          float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
-
-          const float32x4_t cur = vld1q_f32(x_ptr);
-
-          float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = VFMAQ_F32(vy, prev1, vw1);
-          vy = VFMAQ_F32(vy, prev2, vw2);
-          vy = vaddq_f32(vy, vb);
-
-          vst1q_f32(y_ptr, vy);
-
-          prev2 = prev1;
-          prev1 = cur;
-        }
-      }
-
-      for (; c < W; ++c) {
+      for (unsigned int c = W4; c < W; ++c) {
         const float sw0 = w0[c];
         const float sw1 = w1[c];
         const float sw2 = w2[c];
@@ -2230,32 +2230,7 @@ void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
         }
       }
     } else {
-      for (; c + 4 <= W; c += 4) {
-        const float32x4_t vw0 = vld1q_f32(w0 + c);
-        const float32x4_t vw1 = vld1q_f32(w1 + c);
-        const float32x4_t vw2 = vld1q_f32(w2 + c);
-
-        float32x4_t prev2 = vdupq_n_f32(0.0f);
-        float32x4_t prev1 = vdupq_n_f32(0.0f);
-
-        for (unsigned int t = 0; t < H; ++t) {
-          const float *x_ptr = x_base + static_cast<size_t>(t) * W + c;
-          float *y_ptr = y_base + static_cast<size_t>(t) * W + c;
-
-          const float32x4_t cur = vld1q_f32(x_ptr);
-
-          float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = VFMAQ_F32(vy, prev1, vw1);
-          vy = VFMAQ_F32(vy, prev2, vw2);
-
-          vst1q_f32(y_ptr, vy);
-
-          prev2 = prev1;
-          prev1 = cur;
-        }
-      }
-
-      for (; c < W; ++c) {
+      for (unsigned int c = W4; c < W; ++c) {
         const float sw0 = w0[c];
         const float sw1 = w1[c];
         const float sw2 = w2[c];

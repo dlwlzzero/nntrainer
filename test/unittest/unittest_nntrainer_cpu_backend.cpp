@@ -24,6 +24,8 @@
 #include <vector>
 
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <iostream>
 using std::chrono::duration_cast;
 using std::chrono::high_resolution_clock;
@@ -245,6 +247,73 @@ TEST(nntrainer_cpu_backend_standalone,
   for (size_t i = 0; i < output.size(); ++i) {
     EXPECT_NEAR(output[i], expected[i], 1.0e-6f);
   }
+}
+
+/**
+ * @brief [#187] Bit spec of the NEON prefill conv: per lane
+ * fma(prev2, w2, fma(prev1, w1, cur * w0)) (+ b), which is what the kernel's
+ * vmulq, VFMAQ_F32, VFMAQ_F32 (+ vaddq) compute on aarch64. The same binary
+ * run against the old libnntrainer.so gives the old loop's time and proves
+ * old == spec, so old == new. W % 4 == 0 here: the scalar tail is not part
+ * of the spec.
+ */
+TEST(nntrainer_cpu_backend_standalone,
+     causal_depthwise_conv1d_k3_prefill_bit_spec) {
+#ifndef __aarch64__
+  GTEST_SKIP() << "NEON-only bit spec; x86 dispatches to avx2::";
+#else
+  nntrainer::init_backend();
+  const unsigned int shapes[][2] = {{512, 2048}, {7, 64}};
+  std::mt19937 rng(187);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  for (const auto &s : shapes) {
+    const unsigned int H = s[0], W = s[1];
+    std::vector<float> x(static_cast<size_t>(H) * W), w(3 * W), bias(W);
+    for (auto &v : x)
+      v = dist(rng);
+    for (auto &v : w)
+      v = dist(rng);
+    for (auto &v : bias)
+      v = dist(rng);
+    for (const float *b : {static_cast<const float *>(nullptr),
+                           static_cast<const float *>(bias.data())}) {
+      std::vector<float> spec(x.size()), out(x.size());
+      for (unsigned int t = 0; t < H; ++t) {
+        for (unsigned int c = 0; c < W; ++c) {
+          const float cur = x[static_cast<size_t>(t) * W + c];
+          const float p1 = t >= 1 ? x[static_cast<size_t>(t - 1) * W + c] : 0;
+          const float p2 = t >= 2 ? x[static_cast<size_t>(t - 2) * W + c] : 0;
+          float y =
+            std::fmaf(p2, w[2 * W + c], std::fmaf(p1, w[W + c], cur * w[c]));
+          if (b)
+            y = y + b[c];
+          spec[static_cast<size_t>(t) * W + c] = y;
+        }
+      }
+      nntrainer::causal_depthwise_conv1d_k3(x.data(), w.data(), b, out.data(),
+                                            1, H, W);
+      EXPECT_EQ(
+        0, std::memcmp(spec.data(), out.data(), spec.size() * sizeof(float)))
+        << "H=" << H << " W=" << W << " bias=" << (b != nullptr);
+      if (H == 512) {
+        long best = -1;
+        for (int r = 0; r < 6; ++r) {
+          const auto t0 = high_resolution_clock::now();
+          nntrainer::causal_depthwise_conv1d_k3(x.data(), w.data(), b,
+                                                out.data(), 1, H, W);
+          const long us =
+            duration_cast<microseconds>(high_resolution_clock::now() - t0)
+              .count();
+          if (r > 0 && (best < 0 || us < best))
+            best = us;
+        }
+        std::cout << "conv1d_k3 prefill H=" << H << " W=" << W
+                  << " bias=" << (b != nullptr) << " us_min5=" << best
+                  << std::endl;
+      }
+    }
+  }
+#endif
 }
 
 TEST(nntrainer_cpu_backend_standalone,
