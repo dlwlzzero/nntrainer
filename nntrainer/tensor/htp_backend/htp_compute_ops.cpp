@@ -1198,6 +1198,10 @@ public:
   // single decode token cannot amortize the 64-row pad tax.
   bool supports_gemm_qs4cx_moe_layer_fp32() const override { return true; }
 
+  void set_moe_window_work(std::function<void()> job) override {
+    moe_window_job_ = std::move(job);
+  }
+
   void gemm_qs4cx_moe_layer_fp32(const std::vector<void *> &gate_up_data,
                                  const std::vector<float *> &gate_up_scale,
                                  const std::vector<void *> &down_data,
@@ -1208,6 +1212,12 @@ public:
                                  const float *act, float *out, unsigned int M,
                                  unsigned int K, unsigned int inter,
                                  unsigned int N_out, bool weights_wh) override {
+    // [#162] The window job is this call's only: dspqCall runs it, and any
+    // other path (FastRPC, the per-token entry, a throw) drops it here.
+    struct DropJob {
+      std::function<void()> &job;
+      ~DropJob() { job = nullptr; }
+    } drop_job{moe_window_job_};
     const size_t n_experts = gate_up_data.size();
     if (n_experts == 0 || gate_up_scale.size() != n_experts ||
         down_data.size() != n_experts || down_scale.size() != n_experts ||
@@ -2628,6 +2638,7 @@ private:
     bool act_mapped = false, out_mapped = false;
     uint32_t seq = 0;
     uint64_t calls = 0;
+    uint64_t window_jobs = 0; /**< [#162] set_moe_window_work jobs run */
     uint32_t arm_spin_us = 0;
     std::atomic<int> cb_err{0}; /**< the queue's error callback */
     std::vector<uint32_t> msg;  /**< the request message, reused */
@@ -2664,9 +2675,11 @@ private:
     const int err = nntr_hvx_dspq_stop(st.session, res, 4);
     std::fprintf(stderr,
                  "[HTP] dspq: close calls=%llu served=%u bad=%u "
-                 "empty_polls=%u dsp_spin_us=%u stop_err=0x%x\n",
+                 "empty_polls=%u dsp_spin_us=%u stop_err=0x%x "
+                 "window_jobs=%llu\n",
                  (unsigned long long)st.calls, res[0], res[1], res[2], res[3],
-                 static_cast<unsigned>(err));
+                 static_cast<unsigned>(err),
+                 (unsigned long long)st.window_jobs);
     dspqRelease(st);
   }
 
@@ -2838,6 +2851,13 @@ private:
     uint32_t flags = 0, rnb = 0, len = 0;
     struct dspqueue_buffer rbufs[2] = {};
     if (err == AEE_SUCCESS) {
+      // [#162] The request is out and the DSP computes: the CPU's window.
+      if (moe_window_job_) {
+        std::function<void()> job = std::move(moe_window_job_);
+        moe_window_job_ = nullptr;
+        job();
+        ++st.window_jobs;
+      }
       // Spin for the poll-QoS window, as the FastRPC call does, then block.
       const uint64_t t0 = HtpProfile::nowUs();
       for (uint32_t spins = 1;; ++spins) {
@@ -4092,6 +4112,8 @@ private:
   std::unordered_map<uint32_t, uint32_t> moe_op_by_handle_;
   bool graph_inited_ = false;
   bool graph_short_warned_ = false;
+  // [#162] set_moe_window_work's job for the next MoE layer call
+  std::function<void()> moe_window_job_;
   // [#130] The stretch tables of section 3.2: per op the maximal resident
   // run it belongs to, per kind the resident ops in list order (what the
   // hooks' counters index), per op whether its parameter is bound and,

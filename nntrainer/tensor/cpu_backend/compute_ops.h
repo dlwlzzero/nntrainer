@@ -32,6 +32,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <vector>
 
@@ -303,6 +304,13 @@ public:
     const std::vector<float> &row_weight, const float *act, float *out,
     unsigned int M, unsigned int K, unsigned int inter, unsigned int N_out,
     bool weights_wh);
+
+  // [#162] A one-shot job the next gemm_qs4cx_moe_layer_fp32 call runs on
+  // the CPU while the accelerator computes (after the request is sent,
+  // before the wait for the answer), then drops. The caller uses it to
+  // touch the next layer's weights into the cache. A backend with no such
+  // window drops the job unrun; nothing depends on whether it ran.
+  virtual void set_moe_window_work(std::function<void()> job) { (void)job; }
 
   // [#85] Hands the accelerator the decode step's op list (the words of
   // htp_backend/htp_graph_desc.h, built by the model) so it can validate
