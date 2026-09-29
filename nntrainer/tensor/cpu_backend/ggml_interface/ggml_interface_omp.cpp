@@ -30,11 +30,14 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
                                const unsigned int lda, const void *B,
                                const unsigned int ldb, float *C,
                                const unsigned int ldc) {
-  // [#187] the production schedule; a measured one replaces the defaults
-  // only if it passes plan 187's gate F (unittest_nntrainer_ggml_arm
-  // gemm_q4_0_4x8_sched_benchmark on the device)
+  // [#187] column-major task order: each thread keeps its slice of B hot
+  // while A streams, instead of every thread streaming all of B once per
+  // row chunk. S26, M = 512, 8 threads: in_proj (K 2048, N 6144) 13.8 ->
+  // 7.1 ms, the other LFM2 shapes within noise, -24..-29 % on the
+  // layer-weighted FC time (unittest_nntrainer_ggml_arm
+  // gemm_q4_0_4x8_sched_benchmark, measurement 187)
   __ggml_q4_0_4x8_q8_0_GEMM_sched(M, N, K, A, lda, B, ldb, C, ldc,
-                                  q4_0_sched{});
+                                  q4_0_sched{16, 0, true});
 }
 
 void __ggml_q4_0_4x8_q8_0_GEMM_sched(const unsigned int M, const unsigned int N,
