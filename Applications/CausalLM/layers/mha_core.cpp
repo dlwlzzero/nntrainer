@@ -410,7 +410,37 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                                           bool training) {
   // [#130] one decode row through the HTP when ATTN_M1 is resident, on
   // either cache path: _from is the absolute position on both.
-  if (_to - _from == 1 && htpDecodeAttention(context, _from)) {
+  if (!attn_shadow_running_ && _to - _from == 1 &&
+      htpDecodeAttention(context, _from)) {
+    if (attnShadowFile() != nullptr) {
+      // dev/attn-shadow-170: the CPU's fp16 attention on the same row, its
+      // own cache written as without the hook; the HTP output is restored.
+      static int next_ordinal = 0;
+      if (attn_shadow_ordinal_ < 0)
+        attn_shadow_ordinal_ = next_ordinal++;
+      nntrainer::Tensor &o = context.getOutput(INOUT_INDEX::OUTPUT);
+      nntrainer::Tensor &qi = context.getInput(INOUT_INDEX::QUERY);
+      nntrainer::Tensor &ki = context.getInput(INOUT_INDEX::KEY);
+      nntrainer::Tensor &vi = context.getInput(INOUT_INDEX::VALUE);
+      const unsigned n_out = o.width();
+      std::vector<float> htp(o.getData<float>(), o.getData<float>() + n_out);
+      std::vector<float> row(qi.width() + ki.width() + vi.width());
+      std::memcpy(row.data(), qi.getData<float>(), qi.width() * sizeof(float));
+      std::memcpy(row.data() + qi.width(), ki.getData<float>(),
+                  ki.width() * sizeof(float));
+      std::memcpy(row.data() + qi.width() + ki.width(), vi.getData<float>(),
+                  vi.width() * sizeof(float));
+      const bool owned = htp_owns_cache_;
+      htp_owns_cache_ = false;
+      attn_shadow_running_ = true;
+      incremental_forwarding(context, _from, _to, training);
+      attn_shadow_running_ = false;
+      htp_owns_cache_ = owned;
+      attnShadowWrite(_from, (unsigned)attn_shadow_ordinal_, row.data(),
+                      (unsigned)row.size(), o.getData<float>(), htp.data(),
+                      n_out);
+      std::memcpy(o.getData<float>(), htp.data(), n_out * sizeof(float));
+    }
     cache_index = _to;
     htp_owns_cache_ = true;
     return;
