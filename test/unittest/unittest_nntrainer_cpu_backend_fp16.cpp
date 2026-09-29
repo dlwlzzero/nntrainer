@@ -13,12 +13,16 @@
 #include "kleidiai_interface.h"
 #include "m1_ops_det.h"
 #include "nntrainer_test_util.h"
+#include <arm_neon.h>
 #include <cfloat>
+#include <climits>
 #include <cpu_backend.h>
 #include <fallback_internal.h>
 #include <gtest/gtest.h>
+#include <iomanip>
 #include <numeric>
 #include <random>
+#include <thread_manager.h>
 #include <tuple>
 #include <vector>
 
@@ -1147,6 +1151,226 @@ TEST(AttnM1F16Det, ExpProbeExhaustive) {
             << " bad_p1=" << bad1 << " bad_in[-17.5,0]=" << bad_range
             << std::endl;
   EXPECT_EQ(bad0 + bad1, 0);
+}
+
+/* ---- [#162] decode attention phases: time and bit-compare --------------- */
+
+namespace {
+
+/** @brief The library's -march for the fp16 NEON prototypes below; the test
+ *         itself builds without it (test/jni ARM_MARCH_FLAGS is empty unless
+ *         MESON_ARM_MARCH is set). */
+#define MHA_M1_FP16 __attribute__((target("arch=armv8.2-a+fp16")))
+
+/** @brief One score as compute_kcaches(__fp16) forms it: the fmla chain in
+ *         acc, the vpaddq tree, 0 + lane, / sqrt(64). */
+MHA_M1_FP16 inline __fp16 mha_m1_score(float16x8_t acc) {
+  acc = vpaddq_f16(acc, acc);
+  acc = vpaddq_f16(acc, acc);
+  acc = vpaddq_f16(acc, acc);
+  __fp16 sum = 0.0f;
+  sum += vgetq_lane_f16(acc, 0);
+  return sum / sqrt((float)kF16Hd);
+}
+
+/** @brief kv_ilp kcache prototype for kv head n: compute_kcaches(__fp16)'s
+ *         per-position chain unchanged, 4 positions interleaved in 4
+ *         independent accumulators (plan 162 section 3.2 (a2)). */
+MHA_M1_FP16 void mha_m1_kcache_ilp(const __fp16 *q, const __fp16 *kc,
+                                   __fp16 *out, int L, int n) {
+  const int stride = kF16Kv * kF16Hd;
+  for (int r0 = 0; r0 < L; r0 += 4) {
+    const int nr = std::min(4, L - r0);
+    for (unsigned g = 0; g < kF16Gqa; ++g) {
+      const __fp16 *qp = q + (n * kF16Gqa + g) * kF16Hd;
+      const __fp16 *k0 = kc + (size_t)r0 * stride + n * kF16Hd;
+      __fp16 *o = out + (size_t)r0 * kF16Nq + n * kF16Gqa + g;
+      if (nr == 4) {
+        float16x8_t a0 = vdupq_n_f16(0.0), a1 = a0, a2 = a0, a3 = a0;
+        for (unsigned i = 0; i < kF16Hd; i += 8) {
+          const float16x8_t qv = vld1q_f16(qp + i);
+          a0 = vfmaq_f16(a0, qv, vld1q_f16(k0 + i));
+          a1 = vfmaq_f16(a1, qv, vld1q_f16(k0 + stride + i));
+          a2 = vfmaq_f16(a2, qv, vld1q_f16(k0 + 2 * stride + i));
+          a3 = vfmaq_f16(a3, qv, vld1q_f16(k0 + 3 * stride + i));
+        }
+        o[0] = mha_m1_score(a0);
+        o[kF16Nq] = mha_m1_score(a1);
+        o[2 * kF16Nq] = mha_m1_score(a2);
+        o[3 * kF16Nq] = mha_m1_score(a3);
+        continue;
+      }
+      for (int r = 0; r < nr; ++r) {
+        float16x8_t a = vdupq_n_f16(0.0);
+        for (unsigned i = 0; i < kF16Hd; i += 8) {
+          a = vfmaq_f16(a, vld1q_f16(qp + i), vld1q_f16(k0 + r * stride + i));
+        }
+        o[r * kF16Nq] = mha_m1_score(a);
+      }
+    }
+  }
+}
+
+/** @brief kv_ilp vcache prototype for kv head n: gqa 4, head_dim 64, the 32
+ *         accumulators of compute_fp16vcache_transposed held in registers
+ *         over two passes of 16; each one's fmla sequence over positions
+ *         stays ascending (plan 162 section 3.2 (a2)). */
+MHA_M1_FP16 void mha_m1_vcache_reg(const __fp16 *s, const __fp16 *vc,
+                                   __fp16 *out, int L, int n) {
+  for (unsigned half = 0; half < 2u; ++half) {
+    float16x8_t acc[kF16Gqa][4];
+    for (unsigned h = 0; h < kF16Gqa; ++h) {
+      for (unsigned b = 0; b < 4u; ++b) {
+        acc[h][b] = vdupq_n_f16(0.0f);
+      }
+    }
+    for (int j = 0; j < L; ++j) {
+      const __fp16 *vp =
+        vc + ((size_t)j * kF16Kv + n) * kF16Hd + half * (kF16Hd / 2u);
+      const __fp16 *sp = s + (size_t)j * kF16Nq + n * kF16Gqa;
+      float16x8_t v[4];
+      for (unsigned b = 0; b < 4u; ++b) {
+        v[b] = vld1q_f16(vp + 8u * b);
+      }
+      for (unsigned h = 0; h < kF16Gqa; ++h) {
+        const float16x8_t a = vdupq_n_f16(sp[h]);
+        for (unsigned b = 0; b < 4u; ++b) {
+          acc[h][b] = vfmaq_f16(acc[h][b], a, v[b]);
+        }
+      }
+    }
+    for (unsigned h = 0; h < kF16Gqa; ++h) {
+      for (unsigned b = 0; b < 4u; ++b) {
+        vst1q_f16(out + (n * kF16Gqa + h) * kF16Hd + half * (kF16Hd / 2u) +
+                    8u * b,
+                  acc[h][b]);
+      }
+    }
+  }
+}
+
+/** @brief split4 softmax: each group of 8 heads gathered into a
+ *         thread-local [L][8] buffer, the unchanged softmax_row_inplace on
+ *         it, scattered back, one group per pool job (plan 162 section 3.2
+ *         (a1)). */
+void mha_m1_softmax_split4(__fp16 *sc, int L) {
+  nntrainer::ThreadManager::Global().parallel_for(
+    0, kF16Nq / 8u, [=](size_t grp) {
+      thread_local std::vector<__fp16> buf;
+      buf.resize((size_t)L * 8u);
+      for (int r = 0; r < L; ++r) {
+        std::memcpy(buf.data() + r * 8u, sc + (size_t)r * kF16Nq + grp * 8u,
+                    8u * sizeof(__fp16));
+      }
+      nntrainer::softmax_row_inplace(buf.data(), 0, L, 8);
+      for (int r = 0; r < L; ++r) {
+        std::memcpy(sc + (size_t)r * kF16Nq + grp * 8u, buf.data() + r * 8u,
+                    8u * sizeof(__fp16));
+      }
+    });
+}
+
+double mha_m1_median(std::vector<double> v) {
+  std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+  return v[v.size() / 2];
+}
+
+} // namespace
+
+/**
+ * @brief [#162 step 0] The decode mha_core sequence at LFM2.5's shape (32 q
+ *        / 8 kv heads, head_dim 64, fp16) on ThreadManager::Global() as
+ *        mha_core.cpp runs it (kcache over the 8 kv heads, softmax, vcache
+ *        over the 8 kv heads), per phase timed at L = 513 / 1024 / 1536:
+ *        impl=as_is (the exported functions), split4 (softmax per 8-head
+ *        group on the pool), kv_ilp (the two register kernels above), all
+ *        (both). 50 timed iterations (medians) after 5 warm-ups; bad counts,
+ *        over all 55, the fp16 outputs and the softmax rows that differ
+ *        bitwise from as_is. Run with NNTR_NUM_THREADS=8.
+ */
+TEST(MhaM1Phases, Decode) {
+  using clk = std::chrono::steady_clock;
+  const int kWarm = 5, kIters = 50;
+  const size_t row = (size_t)kF16Kv * kF16Hd, nq = (size_t)kF16Nq * kF16Hd;
+  auto &tm = nntrainer::ThreadManager::Global();
+  const char *impls[] = {"as_is", "split4", "kv_ilp", "all"};
+  for (int L : {513, 1024, 1536}) {
+    std::mt19937 rng(0x16200000u + L);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<_FP16> q(nq), kc(L * row), vc(L * row);
+    for (auto *x : {&q, &kc, &vc}) {
+      for (auto &e : *x) {
+        e = static_cast<_FP16>(dist(rng));
+      }
+    }
+    std::vector<_FP16> sc((size_t)L * kF16Nq), o(nq), ref_sc, ref_o;
+    for (int impl = 0; impl < 4; ++impl) {
+      const bool split = impl == 1 || impl == 3, ilp = impl >= 2;
+      std::vector<double> t_k, t_s, t_v, t_all;
+      int bad = 0;
+      for (int it = 0; it < kWarm + kIters; ++it) {
+        const _FP16 *qd = q.data(), *kd = kc.data(), *vd = vc.data();
+        _FP16 *sd = sc.data(), *od = o.data();
+        const auto t0 = clk::now();
+        tm.parallel_for(0, kF16Kv, [=](size_t n) {
+          if (ilp) {
+            mha_m1_kcache_ilp(qd, kd, sd, L, (int)n);
+          } else {
+            nntrainer::compute_kcaches(qd, kd, sd, L, kF16Kv, kF16Hd, kF16Gqa,
+                                       4, UINT_MAX, (int)n, (int)n + 1);
+          }
+        });
+        const auto t1 = clk::now();
+        if (split) {
+          mha_m1_softmax_split4(sd, L);
+        } else {
+          nntrainer::softmax_row_inplace(sd, 0, L, kF16Nq);
+        }
+        const auto t2 = clk::now();
+        tm.parallel_for(0, kF16Kv, [=](size_t n) {
+          if (ilp) {
+            mha_m1_vcache_reg(sd, vd, od, L, (int)n);
+          } else {
+            nntrainer::compute_fp16vcache_transposed(L - 1, sd, vd, od, kF16Kv,
+                                                     kF16Gqa, kF16Hd, UINT_MAX,
+                                                     (int)n, (int)n + 1);
+          }
+        });
+        const auto t3 = clk::now();
+        if (it >= kWarm) {
+          auto us = [](clk::time_point a, clk::time_point b) {
+            return std::chrono::duration<double, std::micro>(b - a).count();
+          };
+          t_k.push_back(us(t0, t1));
+          t_s.push_back(us(t1, t2));
+          t_v.push_back(us(t2, t3));
+          t_all.push_back(us(t0, t3));
+        }
+        if (impl == 0 && it == 0) {
+          ref_sc = sc;
+          ref_o = o;
+        }
+        for (size_t i = 0; i < nq; ++i) {
+          bad += f16_bits(static_cast<float>(o[i])) !=
+                 f16_bits(static_cast<float>(ref_o[i]));
+        }
+        for (int r = 0; r < L; ++r) {
+          bad += std::memcmp(sc.data() + (size_t)r * kF16Nq,
+                             ref_sc.data() + (size_t)r * kF16Nq,
+                             kF16Nq * sizeof(_FP16)) != 0;
+        }
+      }
+      std::cout << std::fixed << std::setprecision(1) << "MHA_M1_PHASE L=" << L
+                << " impl=" << impls[impl]
+                << " threads=" << tm.getComputeThreadCount()
+                << " kcache_us=" << mha_m1_median(t_k)
+                << " softmax_us=" << mha_m1_median(t_s)
+                << " vcache_us=" << mha_m1_median(t_v)
+                << " total_us=" << mha_m1_median(t_all) << " bad=" << bad
+                << " iters=" << kIters << std::defaultfloat << std::endl;
+      EXPECT_EQ(bad, 0) << "L=" << L << " impl=" << impls[impl];
+    }
+  }
 }
 
 int main(int argc, char **argv) {

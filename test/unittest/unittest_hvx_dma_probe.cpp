@@ -56,6 +56,7 @@
 #include <remote.h>
 
 #include "htp_backend/hmx/hexkl_dma_trace.h"
+#include "htp_backend/htp_moe_opts.h"
 #include "nntr_dma_probe_plan.h"
 #include "nntr_hvx.h"
 #include "nntr_moe_dma_plan.h"
@@ -942,7 +943,9 @@ private:
  * at T = 1, 2, 7 (the call with T workers touching B, released as it is
  * issued; then the re-read). 64 iterations a cell, medians. The re-read is
  * a stream, not the Q4_0 GEMV, so saved_us is a byte saving. Cache re-read
- * times are not DDR rates and carry no bound.
+ * times are not DDR rates and carry no bound. The call's src_bypass bit
+ * follows the app (#162): on unless NNTR_MOE_DMA_BYPASS=0, echoed as
+ * bypass= in PREFETCH_CONFIG.
  */
 TEST_F(HvxDmaProbe, PrefetchOverlap) {
   using clock = std::chrono::steady_clock;
@@ -955,7 +958,10 @@ TEST_F(HvxDmaProbe, PrefetchOverlap) {
     ASSERT_EQ(sets.Register(handle_, arenas, chunks_[0].bytes), AEE_SUCCESS);
   }
   uint32_t applied = 0;
-  const uint32_t feed = GemvOpts(192, true, true);
+  // #162: the app's word, bypass on unless NNTR_MOE_DMA_BYPASS=0 (0x303e1)
+  const uint32_t bypass =
+    htp_moe_opts_dma_bypass(std::getenv("NNTR_MOE_DMA_BYPASS"));
+  const uint32_t feed = GemvOpts(192, true, true) | bypass;
   ASSERT_EQ(nntr_hvx_moe_set_opts(handle_, feed, &applied), AEE_SUCCESS);
   ASSERT_EQ(applied, feed) << "the skel does not know #117's feed bit";
   uint32_t call_i = 0;
@@ -978,6 +984,7 @@ TEST_F(HvxDmaProbe, PrefetchOverlap) {
   std::cout << "PREFETCH_CONFIG readers=" << kReaders << " workers=" << kWorkers
             << " ring_mib=" << (kRingBytes >> 20) << " sets=" << sets.n_sets
             << " opts=0x" << std::hex << feed << std::dec
+            << " bypass=" << (bypass != 0u)
             << " chunk_bytes=" << chunks_[0].bytes << "\n";
 
   size_t g = 0; // the ring position runs on across cells
