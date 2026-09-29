@@ -383,14 +383,19 @@ template <>
 void gemm_q4_0(const unsigned int M, const unsigned int N, const unsigned int K,
                const float *A, const unsigned int lda, const void *B,
                const unsigned int ldb, float *C, const unsigned int ldc) {
-  return __ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A, lda, B, ldb, C, ldc);
+  __ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A, lda, B, ldb, C, ldc);
+  if (M == 1 && g_q4_0_m1_shadow) // dev/fc-shadow only
+    g_q4_0_m1_shadow(N, K, A, B, C);
 }
 
 void gemm_q4_0(const unsigned int M, std::vector<unsigned int> Ns,
                const unsigned int K, const float *A, const unsigned int lda,
                std::vector<void *> Bs, std::vector<unsigned int> ldbs,
                std::vector<float *> Cs, std::vector<unsigned int> ldcs) {
-  return __ggml_q4_0_4x8_q8_0_GEMM<float>(M, Ns, K, A, lda, Bs, ldbs, Cs, ldcs);
+  __ggml_q4_0_4x8_q8_0_GEMM<float>(M, Ns, K, A, lda, Bs, ldbs, Cs, ldcs);
+  if (M == 1 && g_q4_0_m1_shadow) // dev/fc-shadow only
+    for (size_t i = 0; i < Ns.size(); ++i)
+      g_q4_0_m1_shadow(Ns[i], K, A, Bs[i], Cs[i]);
 }
 
 size_t q4_0_gemv_activation_size(const unsigned int K) {
