@@ -34,6 +34,11 @@ typedef struct {
 
 typedef HVX_Vector HVX_UVector;
 
+/** @brief A register pair: lo is v[0], hi v[1] (#132's vunpack). */
+typedef struct {
+  HVX_Vector v[2];
+} HVX_VectorPair;
+
 /** @brief A vector predicate: one flag per byte, as the ISA defines it. The
  *         word-lane ops below set and test all four bytes of a lane. */
 typedef struct {
