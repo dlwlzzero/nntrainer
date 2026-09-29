@@ -174,6 +174,39 @@ int nntr_hvx_open(const char *uri, remote_handle64 *handle) {
       FARF(HIGH, "nntr_hvx_open: bus bandwidth vote rejected (continuing)");
     }
 #endif
+#ifdef HAP_POWER_SET_HMX_V2_DEFINED
+    /* [#187] The HMX clock, separately from the Q6. HexKL powers HMX with
+       set_clock=0, which is the lowest HMX clock on chips that have a
+       separate one; target corners aggregate by max across clients, so this
+       context raises it without touching HexKL's vote. Measured on v81:
+       M>1 dsp 14.09 -> 12.95 ms/call, bit-identical (the tiles are int32
+       whatever the clock). pick_default=1 measured no change. HAP returns
+       AEE_EBADPARM on chips without a separate HMX clock, so this is logged,
+       never a failure of open. */
+    {
+      HAP_power_response_t before, after;
+      memset(&before, 0, sizeof(before));
+      before.type = HAP_power_get_hmx_core_clk_Freq;
+      int get_rc = HAP_power_get((void *)s, &before);
+      memset(&req, 0, sizeof(req));
+      req.type = HAP_power_set_HMX_v2;
+      req.hmx_v2.set_clock = TRUE;
+      req.hmx_v2.target_corner = HAP_DCVS_EXP_VCORNER_TUR;
+      req.hmx_v2.min_corner = HAP_DCVS_EXP_VCORNER_TUR;
+      req.hmx_v2.max_corner = HAP_DCVS_EXP_VCORNER_MAX;
+      req.hmx_v2.perf_mode = HAP_CLK_PERF_HIGH;
+      const int rc = HAP_power_set((void *)s, &req);
+      memset(&after, 0, sizeof(after));
+      after.type = HAP_power_get_hmx_core_clk_Freq;
+      get_rc |= HAP_power_get((void *)s, &after);
+      (void)rc; /* used only by FARF, which may compile to nothing */
+      (void)get_rc;
+      FARF(ALWAYS,
+           "nntr_hvx_open: hmx vote rc=0x%x get_rc=0x%x hmx_hz before=%u "
+           "after=%u",
+           (unsigned)rc, (unsigned)get_rc, before.clkFreqHz, after.clkFreqHz);
+    }
+#endif
   }
 #endif
 
