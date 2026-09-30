@@ -1,12 +1,78 @@
 # Measurement 132 Part B E5: the two-session NPU end-to-end decode on silicon
 
-**Current set: set_e5h** — branch `htp/132-partb-prefetch` @ `8dbcd15d`
-(on `htp/132-partb-e3` @ `d8143090`), staged at
-`/local/mnt/workspace/htp_moe/132/set_e5h/` — estimated device time:
-**≈ 60 min** (phone rebooted first). set_e5g2 (`htp/132-partb-e3` @
-`d8143090`) is staged and not yet read.
+**Current set: set_e5i** — branch `htp/132-partb-prefetch` @ `c6fa0352`
++ this doc (on `htp/132-partb-e3` @ `ad8496e2`, which carries the teardown
+fix), staged at `/local/mnt/workspace/htp_moe/132/set_e5i/` — estimated
+device time: **≈ 40 min** (phone rebooted first).
 
-## set_e5h (staged): the weight prefetch across the alternation
+## set_e5h as read (2026-09-30 10:37–11:2x, R3CY10WM83Y after a reboot)
+
+* **Prefetch (lever (d)): void, a net loss at every window.** Ladder at
+  G = 64 (E, one run each):
+
+  | prefetch KiB | decode tok/s | S2 fc+ffn+lm_head ms/token | S1 MoE ms/round | prefetch MB/token s1 / s2 |
+  |---|---|---|---|---|
+  | 0 | 30.84 | 11.18 | 0.458 | 0 / 0 |
+  | 1024 | 29.68 | 12.01 | 0.477 | 5.25 / 22.0 |
+  | 2048 | 29.26 | 12.97 | 0.487 | 5.25 / 44.0 |
+  | 4096 | 28.37 | 14.10 | 0.504 | 5.25 / 79.3 |
+  | 8192 | 27.81 | 14.72 | 0.490 | 5.25 / 127.3 |
+
+  G = 512: E 30.66 / 30.78, Epf (4096) 29.84 / 29.66; G = 64: E 29.14 /
+  28.83, Epf 28.52 / 28.02; A 51.32 / 53.78 (G 64), 52.86 (G 512 r1).
+  The l2fetch traffic slows S2's own reads (the same L2) and S1's MoE DMA
+  (+4–10 % a round), as #162's prefetch did on the hybrid path. The code
+  stays behind `NNTR_HTP_E2E_PREFETCH_KB` (default 0 = off, bit-identical);
+  not a lever.
+* **The ceiling loss is not S2's.** `STOP: LEAK: S1 ceiling 3584 MiB after
+  sanity_after_E_G512_r2`: the last process before the drop was an A run
+  (no S2); every E close in the sitting read `unmap_fail=0 detach_fail=0`;
+  the loss is one 256 MiB chunk, as in every earlier case (E5g after an A
+  and the probe, E5f before an A, E5b's sanity). No logcat was kept for A
+  runs (the runner saved E runs' only), so `sanity_after_E_G512_r2.logcat`
+  does not exist. The cause in the code: the one-session path never
+  unmapped S1's arena — its chunks stayed `FASTRPC_MAP_FD`-mapped and
+  DSP-attached to process exit, and their ION buffers were `rpcmem_free`'d
+  by `HtpComputeOps`'s static destructor, whose order against
+  `HtpBackend`'s (the session close) is not fixed. The S1Ceiling probe,
+  which detaches, unmaps and only then closes, never lost a window in ≈ 60
+  runs. Fix below (set_e5i).
+* **Canary: `HvxM1Ops.ConvGateM1MatchesDetBitExact` has failed on silicon
+  since E5f** (E5f, E5g, E5h alike: `bad_out=229` of 8 × 2048, first
+  `dsp=-0x1.54bfap-128 ref=-0x1.54bfa8p-128`), outputs in the subnormal
+  range only (the test's special-value rows); hvx_emu and the host check
+  pass. The E path's 64-step bit identity on the real model (E5e) and every
+  text cell hold; an open item, not fixed here.
+
+## set_e5i (staged): the orderly teardown under a stress cell
+
+* Fix (`8bb8a3f8`, `ad8496e2`): a new skel entry `arenas_release` (the
+  release half of `close()`, which now calls it: dspq thread and token
+  driver stopped, graph freed, weights and Q4M1 slots released, every
+  arena put); S1's arena lives in a `shared_ptr` its close hook owns, and
+  that hook runs after every other one (`HtpBackend::atCloseLast`: the
+  queues and token drivers stop first), calls `arenas_release`,
+  `fastrpc_munmap`s each chunk with its rc checked (a line per refusal),
+  frees the buffers; the sessions close after. Every run prints
+  `[HTP] arena: chunks unmapped n/n mib=… (release rc=0x0 put=n)`.
+* Host: the stand-in counts the DSP side's references (an unmap it still
+  holds is refused), a mapped bit per domain, buffers freed while mapped,
+  and what is mapped at exit; `E2E teardown 25off / 25e3 arena chunks
+  unmapped 1/1 mapped_kib=0 freed_while_mapped=0` (the arena line after
+  S2's close), `INPROC E2E PASS`, every other gate line unchanged.
+* Cells (`run_e5i.sh`, runner `8e426feb…`, skel `bf022353…`,
+  `libnntrainer.so` `24947166…`, `unittest_hvx_two_sessions` `d14128bc…`):
+  canary (exact FC; the conv cell printed as information); 20 × A at
+  G = 8, then 10 × E at G = 8; S1's ceiling after every run, logcat of
+  every run, the teardown line checked per run; stops at the first ceiling
+  below 3840 and names the run.
+* Expected: `ceiling after <run>: 3840 MiB` for all 30 runs, every run
+  `chunks unmapped 15/15`-style with n/n and `release rc=0x0`, E closes
+  `unmap_fail=0 detach_fail=0`, `expectation mismatches: 0`. At E5f–E5h's
+  rate (≈ 1 in 20) 30 clean runs would happen by chance ≈ 20 % of the
+  time, so a clean sitting is evidence, not proof; a loss names the run.
+
+## set_e5h (staged): the weight prefetch across the alternation (read above: void)
 
 * Design. `NNTR_HTP_E2E_PREFETCH_KB=<n>` (0 = off, the default; ≤ 65535)
   rides both OP_TOKEN packets (flags bits 16–31). S2, after posting each
