@@ -104,6 +104,10 @@
 #                              skips it, LM_BAN, as the CPU's -inf does)
 #   E2E ppl-decode e3==e1-hd64 steps=7 identical=1     (NNTR_PPL_DECODE
 #                              forced on E1's path: the logits come back)
+#   E2E prefetch kb=4096 s2_mb/token>0 bit_identical=1 (E5h: S2 l2fetches
+#                              the next FC's first 4 MiB during S1's round
+#                              and reads that prefix through the L2, S1 the
+#                              next router: reads only, every logit equal)
 #   E2E teardown 25off / 25e3 arena chunks unmapped n/n mapped_kib=0
 #                              freed_while_mapped=0  (E5i: the S1 arena
 #                              released on the DSP, then unmapped, before
@@ -305,6 +309,8 @@ NNTR_PPL_DECODE="$OUT/e3.ids" NNTR_HTP_FORWARD=1 NNTR_HTP_FORWARD_KINDS=$E1_KIND
   run_e2e q64-e1ppl "$OUT/htp64q" htp "$OUT/dump_64e1ppl" "$OUT/64e1ppl.log" --max-seq 32 --run
 NNTR_PPL_DECODE="$OUT/e3.ids" NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 \
   run_e2e q64-e3ppl "$OUT/htp64q" htp "$OUT/dump_64e3ppl" "$OUT/64e3ppl.log" --max-seq 32 --run
+PROMPT=512 NNTR_HTP_E2E_PREFETCH_KB=4096 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 \
+  run_e2e q25-e3pf "$OUT/htp25q" htp "$OUT/dump_25e3pf" "$OUT/25e3pf.log" --max-seq 2048
 PROMPT=512 NNTR_HTP_PROFILE=1 NNTR_INPROC_MMAP_CAP_MIB=100 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 \
   run_e2e q25-e3cap "$OUT/htp25q" htp "$OUT/dump_25e3cap" "$OUT/25e3cap.log" --max-seq 2048
 rc_e1=0
@@ -500,6 +506,13 @@ for d in "hd64 64e3 64e1a 4.00" "lfm25 25e3 25e1a 8.00"; do
     echo "E2E FAIL $fx e3: calls/token=${calls:-none} close=[$close]"; fail=1
   fi
 done
+pf_eval="$($EVAL --label e3pf "$OUT/dump_25e3" "$OUT/dump_25e3pf" | tail -1 || true)"
+pf_mb="$(sed -n 's/.*prefetch_mb\/token s1=[0-9.]* s2=\([0-9.]*\).*/\1/p' "$OUT/25e3pf.log")"
+if grep -q 'bit_identical=1' <<< "$pf_eval" && awk -v m="${pf_mb:-0}" 'BEGIN{exit !(m > 0)}'; then
+  echo "E2E prefetch kb=4096 s2_mb/token=$pf_mb bit_identical=1"
+else
+  echo "E2E FAIL prefetch: s2_mb/token=${pf_mb:-none} [$pf_eval]"; fail=1
+fi
 cap_eval="$($EVAL --label e3cap "$OUT/dump_25e3" "$OUT/dump_25e3cap" | tail -1 || true)"
 refused=$(grep -c 'arena: [0-9]* MiB refused' "$OUT/25e3cap.log" || true)
 if grep -q 'bit_identical=1' <<< "$cap_eval" && [ "$refused" -ge 1 ]; then
