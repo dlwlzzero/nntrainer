@@ -3024,6 +3024,20 @@ private:
    *  and on its dspqueue after a token. E5b's 1000 us kept one of the six
    *  hardware threads busy through the other session's compute; E5d read
    *  20.8 / 20.2 / 16.5 tok/s at 0 / 20 / 1000. */
+  /** [#132 Part B E5h] NNTR_HTP_E2E_PREFETCH_KB (default 0 = off): per
+   *  hop, S2 l2fetches the first this-many KiB of the next stretch's first
+   *  FC weight while S1 runs the MoE round (and reads that prefix through
+   *  the L2), and S1 l2fetches its next router's weights while S2 runs.
+   *  Reads only: the bits do not move. */
+  static uint32_t e2ePrefetchKb() {
+    static const uint32_t kb = [] {
+      const char *e = std::getenv("NNTR_HTP_E2E_PREFETCH_KB");
+      const unsigned long v = e ? std::strtoul(e, nullptr, 10) : 0ul;
+      return static_cast<uint32_t>(v > 65535ul ? 65535ul : v);
+    }();
+    return kb;
+  }
+
   static uint32_t e2eSpinUs() {
     static const uint32_t us = [] {
       const char *e = std::getenv("NNTR_HTP_E2E_SPIN_US");
@@ -3311,9 +3325,10 @@ private:
     e.spin_us = spin_us;
     std::fprintf(stderr,
                  "[HTP] token driver: on s1_effdom=%d s2_effdom=%d mbox=%zu "
-                 "spin_us=%u rounds=%u hops/token=%u logits_buf=%zu\n",
+                 "spin_us=%u rounds=%u hops/token=%u logits_buf=%zu "
+                 "prefetch_kb=%u\n",
                  static_cast<int>(CDSP_DOMAIN_ID), e.dom2, e.mbox->size(),
-                 spin_us, rounds, 2u * rounds, logits_bytes);
+                 spin_us, rounds, 2u * rounds, logits_bytes, e2ePrefetchKb());
   }
 
   /** @brief [#132 Part B E3] The close hook, before the sessions close:
@@ -3389,7 +3404,8 @@ private:
           stderr,
           "[HTP] graph[S1] moe pcyc/round=%.0f (%.3f ms) "
           "router pcyc/round=%.0f; s2 fc+dense_ffn+lm_head "
-          "ms/token=%.3f (isolated #178: 8.06); arm token_ms=%.3f\n",
+          "ms/token=%.3f (isolated #178: 8.06); arm token_ms=%.3f "
+          "prefetch_mb/token s1=%.2f s2=%.2f\n",
           moe, mhz1 > 0 ? moe / mhz1 / 1000.0 : 0.0,
           static_cast<double>(e.kind1[HTP_OP_ROUTER_TOPK]) / n /
             static_cast<double>(e.rounds),
@@ -3399,7 +3415,9 @@ private:
                                   e.kind2[HTP_OP_LM_HEAD]) /
                 n / (static_cast<double>(e.wall2_pcyc) / e.wall2_us) / 1000.0
             : 0.0,
-          static_cast<double>(e.token_us) / n / 1000.0);
+          static_cast<double>(e.token_us) / n / 1000.0,
+          static_cast<double>(e.pf1_kib) / n / 1024.0,
+          static_cast<double>(e.pf2_kib) / n / 1024.0);
       }
       std::fprintf(stderr,
                    "[HTP] token driver: close tokens=%llu hops/token=%.2f "
@@ -3503,9 +3521,14 @@ private:
     std::lock_guard<std::mutex> lock(invoke_mutex_);
     std::memcpy(q2.act->data(), act, act_bytes);
     const uint32_t tok = e.tok++;
-    const htp_dspq_token_req r1 = {HTP_DSPQ_OP_TOKEN, tok, 0u, pos};
+    const uint32_t pf = e2ePrefetchKb();
+    const htp_dspq_token_req r1 = {
+      HTP_DSPQ_OP_TOKEN, tok, (pf != 0u ? 1u : 0u) << HTP_DSPQ_TOKEN_PF_SHIFT,
+      pos};
     const htp_dspq_token_req r2 = {HTP_DSPQ_OP_TOKEN, tok,
-                                   logits ? HTP_DSPQ_TOKEN_LOGITS : 0u, pos};
+                                   (logits ? HTP_DSPQ_TOKEN_LOGITS : 0u) |
+                                     (pf << HTP_DSPQ_TOKEN_PF_SHIFT),
+                                   pos};
     struct dspqueue_buffer b[2] = {};
     b[0].fd = static_cast<uint32_t>(q2.act->fd());
     b[0].size = static_cast<uint32_t>(act_bytes);
@@ -3590,6 +3613,8 @@ private:
     e.wall2_us += s2r.wall_us;
     e.wall1_pcyc += s1r.wall_pcyc;
     e.wall2_pcyc += s2r.wall_pcyc;
+    e.pf1_kib += s1r.pf_kib;
+    e.pf2_kib += s2r.pf_kib;
     for (uint32_t k = 0; k < HTP_OP_KIND_N; ++k) {
       e.kind1[k] += s1r.kind_pcyc[k];
       e.kind2[k] += s2r.kind_pcyc[k];
@@ -5058,6 +5083,7 @@ private:
     uint64_t wall1_us = 0, wall2_us = 0, wall1_pcyc = 0, wall2_pcyc = 0,
              token_us = 0; /**< per side; token_us: the ARM's round trip */
     uint64_t kind1[HTP_OP_KIND_N] = {0}, kind2[HTP_OP_KIND_N] = {0};
+    uint64_t pf1_kib = 0, pf2_kib = 0; /**< [E5h] l2fetch'd, all tokens */
     uint32_t rounds = 0, spin_us = 0;
   };
   /** @brief The mailbox page: HEXKL_MBOX_BYTES (16 896) rounded to the
