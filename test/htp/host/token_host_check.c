@@ -33,6 +33,11 @@
  * back), and S1's forward failing (S2 returns S1's code well inside the
  * window). What this cannot show: the DSP's caches (the clean /
  * flush-invalidate calls are fences here), hop time, two PDs.
+ *
+ * [#194 L4] The bit-identical run again with no leading spin (the device's
+ * default) and the deadline wait's bound at 0 / 50 / 200 us: no lost or
+ * stale post (every token equal, timeouts 0), the window used when the
+ * bound is set (dl_hits > 0 on both sides) and never when it is 0.
  */
 #include "hexkl_graph.h"
 #include "hexkl_token.h"
@@ -296,7 +301,7 @@ static uint64_t now_us(void) {
 typedef struct {
   session *s;
   uint8_t *page;
-  uint32_t first, n;
+  uint32_t first, n, spin;
   hexkl_token_stats st;
   int rc;
 } serve_args;
@@ -306,7 +311,7 @@ static void *serve_thread(void *arg) {
   uint32_t t;
   for (t = a->first; t < a->first + a->n; ++t) {
     a->rc = hexkl_token_serve(a->s->g, &a->s->env, a->page, t,
-                              t % a->s->g->max_seq, SPIN_US, &a->st);
+                              t % a->s->g->max_seq, a->spin, &a->st);
     if (a->rc != AEE_SUCCESS)
       break;
   }
@@ -319,7 +324,9 @@ static uint8_t *new_page(void) {
   return p;
 }
 
-static void check_bit_identical(const uint32_t *words, uint32_t n) {
+/** @brief @a spin: tk_take's word, the leading spin | the L4 bound << 16. */
+static void check_bit_identical(const uint32_t *words, uint32_t n,
+                                uint32_t spin) {
   static float ref_logits[TOKENS][VOCAB], logits[VOCAB], x[HID];
   static uint32_t ref_id[TOKENS];
   const uint32_t moe_per_token = 2u;
@@ -368,13 +375,14 @@ static void check_bit_identical(const uint32_t *words, uint32_t n) {
   sa.page = new_page();
   sa.first = 0;
   sa.n = TOKENS;
+  sa.spin = spin;
   memset(&st, 0, sizeof(st));
   g_moe_calls = 0;
   pthread_create(&th, NULL, serve_thread, &sa);
   for (t = 0; t < TOKENS; ++t) {
     emb_row(t, x);
     rc = hexkl_token_main(s2.g, &s2.env, sa.page, t, t % s2.g->max_seq, x, HID,
-                          t % 2u ? logits : NULL, VOCAB, SPIN_US, &st, &id);
+                          t % 2u ? logits : NULL, VOCAB, spin, &st, &id);
     if (rc != AEE_SUCCESS) {
       CHECK(0, "S2 token %u: 0x%x", t, (unsigned)rc);
       break;
@@ -404,7 +412,16 @@ static void check_bit_identical(const uint32_t *words, uint32_t n) {
           st.timeouts + sa.st.timeouts + st.stale + sa.st.stale == 0u,
         "hops S2 %u S1 %u timeouts %u %u stale %u %u", st.hops, sa.st.hops,
         st.timeouts, sa.st.timeouts, st.stale, sa.st.stale);
-  if (g_fail == 0)
+  /* [#194 L4] the deadline window: used with a bound, never without */
+  if ((spin >> 16) != 0u) {
+    CHECK(st.dl_hits > 0u && sa.st.dl_hits > 0u,
+          "L4 bound %u: dl_hits S2 %u S1 %u", spin >> 16, st.dl_hits,
+          sa.st.dl_hits);
+  } else {
+    CHECK(st.dl_hits + sa.st.dl_hits + st.dl_spin_us + sa.st.dl_spin_us == 0u,
+          "no L4 bound, yet a deadline window");
+  }
+  if (g_fail == 0 && spin == SPIN_US)
     printf("TOKEN DRIVER BIT-IDENTICAL: tokens %u/%u (%u distinct ids) "
            "logits bit_identical=1 "
            "moe_calls %u/%u in+out bit_identical=1 hops=%u (%u x tokens) "
@@ -413,6 +430,16 @@ static void check_bit_identical(const uint32_t *words, uint32_t n) {
            "all-resident run)\n",
            same_id, TOKENS, distinct, same_moe, g_moe_cap, st.hops,
            2u * rounds);
+  else if (g_fail == 0)
+    printf("TOKEN DRIVER L4 lead=%u bound=%u: tokens %u/%u bit_identical=1 "
+           "timeouts=0 stale=0 dl_hits S2 %u/%u S1 %u/%u, per hop: "
+           "hop_us S2 %.1f S1 %.1f dl_spin_us S2 %.1f S1 %.1f\n",
+           spin & 0xFFFFu, spin >> 16, same_id, TOKENS, st.dl_hits,
+           st.hops / 2u, sa.st.dl_hits, sa.st.hops / 2u,
+           (double)st.hop_us / (st.hops / 2u),
+           (double)sa.st.hop_us / (sa.st.hops / 2u),
+           (double)st.dl_spin_us / (st.hops / 2u),
+           (double)sa.st.dl_spin_us / (sa.st.hops / 2u));
   close_session(&s1);
   close_session(&s2);
   free(sa.page);
@@ -539,7 +566,9 @@ static void check_failures(const uint32_t *words, uint32_t n) {
 int main(void) {
   static uint32_t words[MAXW];
   const uint32_t n = build_words(words);
-  check_bit_identical(words, n);
+  check_bit_identical(words, n, SPIN_US);
+  for (uint32_t b = 0; b < 3u && g_fail == 0; ++b) /* [#194 L4], no lead */
+    check_bit_identical(words, n, (b == 0u ? 0u : b == 1u ? 50u : 200u) << 16);
   check_failures(words, n);
   if (g_fail) {
     printf("TOKEN CHECKS FAILED (%d)\n", g_fail);

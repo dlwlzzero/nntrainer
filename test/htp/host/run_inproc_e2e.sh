@@ -129,6 +129,10 @@
 #   E2E eval l123-lfm25 ... min_snr_db=<x>             (x >= 30 vs E0)
 #   E2E eval l23-vs-l1-lfm25 ... bit_identical=0       (L2 / L3 are wired)
 #   E2E levers banner l123 L2=router_vec L3=norm_conv_swiglu_vec ok
+# and L4 (0x1E, the hops' deadline wait at its default 50 us bound): no
+# arithmetic, so bit-identical to 0xE, and no hop lost:
+#   E2E eval l4==l123-lfm25 files=16 bit_identical=1 ...
+#   E2E l4 hop_spin_us=50 timeouts=0/0 stale=0/0 ok
 #   E2E L0 wake split closes: disp s1=.. s2=.. s2_pkt=.. ret s2=.. clk_resid=..
 #   E2E ppl-decode alts steps=7 ok                     (NNTR_PPL_DECODE_ALTS:
 #                              the step lines gain the ids' logits)
@@ -336,6 +340,8 @@ NNTR_PPL_DECODE="$OUT/e3.ids" NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS
   run_e2e q64-l123ppl "$OUT/htp64q" htp "$OUT/dump_64l123ppl" "$OUT/64l123ppl.log" --max-seq 32 --run
 PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0xE \
   run_e2e q25-l123 "$OUT/htp25q" htp "$OUT/dump_25l123" "$OUT/25l123.log" --max-seq 2048
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0x1E \
+  run_e2e q25-l1234 "$OUT/htp25q" htp "$OUT/dump_25l1234" "$OUT/25l1234.log" --max-seq 2048
 rc_e1=0
 NNTR_HTP_FORWARD=1 NNTR_HTP_FORWARD_KINDS=$E1_KINDS "$E2E" --model "$OUT/htp" \
   --tokenizer "$FIX/tokenizer.json" --prompt $PROMPT --steps $STEPS \
@@ -762,10 +768,17 @@ echo "$l23_line"
 grep -q 'bit_identical=0' <<< "$l23_line" ||
   { echo "E2E FAIL l123-lfm25 bit-identical to L1: L2 / L3 are not wired"; fail=1; }
 if grep -q '^\[HTP\] ppl levers=0xe L1=native_fc$' "$OUT/25l123.log" &&
-  grep -q '^\[HTP\] ppl levers L2=router_vec L3=norm_conv_swiglu_vec$' "$OUT/25l123.log"; then
+  grep -q '^\[HTP\] ppl levers L2=router_vec L3=norm_conv_swiglu_vec L4 hop_spin_us=0$' "$OUT/25l123.log"; then
   echo "E2E levers banner l123 L2=router_vec L3=norm_conv_swiglu_vec ok"
 else
   echo "E2E FAIL levers banner l123"; fail=1
+fi
+$EVAL --label l4==l123-lfm25 "$OUT/dump_25l123" "$OUT/dump_25l1234" | tail -1 || fail=1
+if grep -q 'token driver: on .* hop_spin_us=50 ' "$OUT/25l1234.log" &&
+  grep -q 'token driver: close .* timeouts=0/0 stale=0/0 ' "$OUT/25l1234.log"; then
+  echo "E2E l4 hop_spin_us=50 timeouts=0/0 stale=0/0 ok"
+else
+  echo "E2E FAIL l4 driver lines"; fail=1
 fi
 if grep -q '^\[HTP\] ppl levers=0x0 L1=exact$' "$OUT/64e3.log" &&
   grep -q '^\[HTP\] ppl levers=0x2 L1=native_fc$' "$OUT/25l1.log"; then
