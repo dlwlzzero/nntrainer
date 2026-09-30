@@ -124,4 +124,27 @@ void hvx_router_topk_f32(const float *x, const float *w32, const float *bias,
                          uint32_t K, uint32_t E, uint32_t top_k, float *logits,
                          uint32_t *sel, float *weight, hvx_worker_pool *pool);
 
+/* ---- [#194 L2 / L3, htp_moe_ppl] the vector numerics, bit for bit
+   m1_ops_vec_det.h (not the CPU's order) ---- */
+
+/** @brief m1v_rmsnorm: hvx_rmsnorm_f32's arguments (chunk % 32 == 0), the
+ *         sum of squares on the vector unit. */
+void hvx_rmsnorm_vec_f32(const float *x, const float *gamma, float *y,
+                         uint32_t n, uint32_t chunk, float eps);
+
+/** @brief m1v_conv_gate: hvx_conv_gate_m1_f32's arguments, unfused taps. */
+void hvx_conv_gate_m1_vec_f32(const float *abc, float *state3,
+                              const float *conv_w, float *out, uint32_t C);
+
+/** @brief m1v_swiglu: out = silu(y) * z by hvx_swiglu_det_sf, one thread;
+ *         n % 32 == 0 (the rest is not written). */
+void hvx_swiglu_vec_f32(const float *y, const float *z, float *out, uint32_t n);
+
+/** @brief m1v_router: hvx_router_topk_f32's arguments without the pool
+ *         (K % 4 == 0); one thread, four vector partial sums. */
+void hvx_router_topk_vec_f32(const float *x, const float *w32,
+                             const float *bias, uint32_t K, uint32_t E,
+                             uint32_t top_k, float *logits, uint32_t *sel,
+                             float *weight);
+
 #endif /* __NNTRAINER_HVX_M1_OPS_F32_H__ */

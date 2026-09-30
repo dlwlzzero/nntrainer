@@ -347,3 +347,116 @@ uint32_t hvx_argmax_first_f32(const float *x, uint32_t n) {
   }
   return idx;
 }
+
+/* ---- [#194 L2 / L3] the vector numerics (m1_ops_vec_det.h) ------------ */
+
+/** @brief m1v_tree: lane l += lane (l + d) mod 32 for d = 16 .. 1 (vror by
+ *         4 d bytes), the sum in every lane. */
+static inline HVX_Vector hvx_vec_tree(HVX_Vector t) {
+  for (int b = 64; b >= 4; b >>= 1) {
+    t = Q6_Vsf_vadd_VsfVsf(t, Q6_V_vror_VR(t, b));
+  }
+  return t;
+}
+
+void hvx_rmsnorm_vec_f32(const float *x, const float *gamma, float *y,
+                         uint32_t n, uint32_t chunk, float eps) {
+  if (!x || !gamma || !y || chunk == 0u || chunk % LANES != 0u ||
+      n % chunk != 0u) {
+    return;
+  }
+  const uint32_t nvec = chunk / LANES;
+  const HVX_UVector *vg = (const HVX_UVector *)gamma;
+  for (uint32_t c = 0; c < n / chunk; ++c) {
+    const HVX_UVector *vx = (const HVX_UVector *)(x + (size_t)c * chunk);
+    HVX_UVector *vy = (HVX_UVector *)(y + (size_t)c * chunk);
+    HVX_Vector acc = Q6_V_vzero();
+    for (uint32_t i = 0; i < nvec; ++i) {
+      acc = Q6_Vsf_vadd_VsfVsf(acc, Q6_Vsf_vmpy_VsfVsf(vx[i], vx[i]));
+    }
+    const int32_t sb = Q6_R_vextract_VR(hvx_vec_tree(acc), 0);
+    float s;
+    memcpy(&s, &sb, sizeof(s));
+    const HVX_Vector r = hvx_splat_sf(m1_norm_scale_det(s, chunk, eps));
+    for (uint32_t i = 0; i < nvec; ++i) {
+      vy[i] = Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(vx[i], r), vg[i]);
+    }
+  }
+}
+
+void hvx_conv_gate_m1_vec_f32(const float *abc, float *state3,
+                              const float *conv_w, float *out, uint32_t C) {
+  if (!abc || !state3 || !conv_w || !out || C == 0u || C % LANES != 0u) {
+    return;
+  }
+  const HVX_UVector *va = (const HVX_UVector *)abc;
+  const HVX_UVector *vb = (const HVX_UVector *)(abc + C);
+  const HVX_UVector *vc = (const HVX_UVector *)(abc + 2u * C);
+  const HVX_UVector *vw0 = (const HVX_UVector *)conv_w;
+  const HVX_UVector *vw1 = (const HVX_UVector *)(conv_w + C);
+  const HVX_UVector *vw2 = (const HVX_UVector *)(conv_w + 2u * C);
+  const HVX_UVector *vs0 = (const HVX_UVector *)state3;
+  const HVX_UVector *vs1 = (const HVX_UVector *)(state3 + C);
+  HVX_UVector *vg = (HVX_UVector *)(state3 + 2u * C);
+  HVX_UVector *vo = (HVX_UVector *)out;
+  for (uint32_t i = 0; i < C / LANES; ++i) {
+    const HVX_Vector g = Q6_Vsf_vmpy_VsfVsf(va[i], vc[i]);
+    HVX_Vector y = Q6_Vsf_vmpy_VsfVsf(vw0[i], g);
+    y = Q6_Vsf_vadd_VsfVsf(y, Q6_Vsf_vmpy_VsfVsf(vw1[i], vs1[i]));
+    y = Q6_Vsf_vadd_VsfVsf(y, Q6_Vsf_vmpy_VsfVsf(vw2[i], vs0[i]));
+    vo[i] = Q6_Vsf_vmpy_VsfVsf(vb[i], y);
+    vg[i] = g;
+  }
+  /* state <- x_{t-1} | g, as hvx_conv_gate_m1_f32 */
+  memcpy(state3, state3 + C, (size_t)C * sizeof(float));
+  memcpy(state3 + C, state3 + 2u * C, (size_t)C * sizeof(float));
+}
+
+void hvx_swiglu_vec_f32(const float *y, const float *z, float *out,
+                        uint32_t n) {
+  const HVX_UVector *vy = (const HVX_UVector *)y, *vz = (const HVX_UVector *)z;
+  HVX_UVector *vo = (HVX_UVector *)out;
+  for (uint32_t i = 0; i < n / LANES; ++i) { /* n % 32 == 0 */
+    vo[i] = hvx_swiglu_det_sf(vy[i], vz[i]);
+  }
+}
+
+void hvx_router_topk_vec_f32(const float *x, const float *w32,
+                             const float *bias, uint32_t K, uint32_t E,
+                             uint32_t top_k, float *logits, uint32_t *sel,
+                             float *weight) {
+  float sig[LANES], score[LANES];
+  if (!x || !w32 || !bias || !logits || !sel || !weight || K == 0u ||
+      K % 4u != 0u || E == 0u || E > LANES || top_k == 0u || top_k > E) {
+    return;
+  }
+  const HVX_UVector *w = (const HVX_UVector *)w32;
+  HVX_Vector acc[4] = {Q6_V_vzero(), Q6_V_vzero(), Q6_V_vzero(), Q6_V_vzero()};
+  for (uint32_t k = 0; k < K; k += 4u) {
+#if defined(__hexagon__)
+    if (k % ROUTER_PF_ROWS == 0u && k + ROUTER_PF_ROWS < K) {
+      Q6_l2fetch_AP((void *)(w32 + (size_t)(k + ROUTER_PF_ROWS) * LANES),
+                    ((uint64_t)(LANES * 4u) << 32) |
+                      ((uint64_t)(LANES * 4u) << 16) |
+                      (uint64_t)ROUTER_PF_ROWS);
+    }
+#endif
+    for (uint32_t j = 0; j < 4u; ++j) {
+      acc[j] = Q6_Vsf_vadd_VsfVsf(
+        acc[j], Q6_Vsf_vmpy_VsfVsf(hvx_splat_sf(x[k + j]), w[k + j]));
+    }
+  }
+  const HVX_Vector lg = Q6_Vsf_vadd_VsfVsf(Q6_Vsf_vadd_VsfVsf(acc[0], acc[1]),
+                                           Q6_Vsf_vadd_VsfVsf(acc[2], acc[3]));
+  const HVX_Vector e = hvx_exp_det_sf(Q6_Vsf_vsub_VsfVsf(Q6_V_vzero(), lg));
+  const HVX_Vector s =
+    hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
+  float lgf[LANES];
+  memcpy(lgf, &lg, sizeof(lgf));
+  memcpy(sig, &s, sizeof(sig));
+  for (uint32_t k = 0; k < E; ++k) {
+    logits[k] = lgf[k];
+    score[k] = m1_det_add(sig[k], bias[k]);
+  }
+  m1_router_cpu_pick(sig, score, E, top_k, sel, weight);
+}

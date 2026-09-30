@@ -198,7 +198,9 @@ enum { HTP_GRAPH_FFN_DENSE = 0, HTP_GRAPH_FFN_MOE = 1 };
  * lanes for a part with K <= 2048 / K > 2048, 0 = the runner's default
  * (HTP_GRAPH_FEED_*); [#194 L1, htp_moe_ppl] bit 16 the native kernels
  * (q4_gemv_native_det.h: vector quantizer, no emulated FMA) in place of the
- * CPU-exact ones. Other kinds leave all of these 0. n_kv / gqa /
+ * CPU-exact ones; [#194 L2 / L3] bit 18 (HTP_GRAPH_OP_VEC, also on
+ * RMSNORM, QK_NORM, CONV1D_GATE and ROUTER_TOPK) the vector numerics of
+ * m1_ops_vec_det.h. Other kinds leave all of these 0. n_kv / gqa /
  * head_dim describe the attention kinds (QK_NORM,
  * ROPE, ATTN_M1: K == (gqa + 2) n_kv head_dim, ATTN_M1's N == gqa n_kv
  * head_dim) and eps_bits holds the f32 bits of the norm epsilon (RMSNORM,
@@ -230,6 +232,15 @@ typedef struct {
 /** @brief The Q4M1 kinds' feed word (htp_graph_op.feed). */
 #define HTP_GRAPH_FEED_L2 1u
 #define HTP_GRAPH_FEED_NATIVE (1u << 16)
+/** @brief [#194 L2 / L3] Any op's feed word: the vector numerics of
+ *  m1_ops_vec_det.h for RMSNORM, QK_NORM, CONV1D_GATE, ROUTER_TOPK and
+ *  DENSE_FFN's SwiGLU (else the CPU-order kernels); refused elsewhere. */
+#define HTP_GRAPH_OP_VEC (1u << 18)
+#define HTP_GRAPH_KINDS_VEC                                                    \
+  (HTP_GRAPH_KIND_BIT(HTP_OP_RMSNORM) | HTP_GRAPH_KIND_BIT(HTP_OP_QK_NORM) |   \
+   HTP_GRAPH_KIND_BIT(HTP_OP_CONV1D_GATE) |                                    \
+   HTP_GRAPH_KIND_BIT(HTP_OP_ROUTER_TOPK) |                                    \
+   HTP_GRAPH_KIND_BIT(HTP_OP_DENSE_FFN))
 #define HTP_GRAPH_FEED_LANES_SMALL(f) (((f) >> 8) & 0xFu)
 #define HTP_GRAPH_FEED_LANES_LARGE(f) (((f) >> 12) & 0xFu)
 typedef char
@@ -462,8 +473,8 @@ static inline uint32_t htp_graph_validate(const uint32_t *w, uint32_t n_words,
     }
     if ((HTP_GRAPH_KINDS_Q4M1 & HTP_GRAPH_KIND_BIT(k)) != 0u) {
       if (op->n_experts > HTP_GRAPH_MAX_EXPERTS ||
-          (op->feed & ~(HTP_GRAPH_FEED_L2 | 0xFF00u | HTP_GRAPH_FEED_NATIVE)) !=
-            0u ||
+          (op->feed & ~(HTP_GRAPH_FEED_L2 | 0xFF00u | HTP_GRAPH_FEED_NATIVE |
+                        HTP_GRAPH_OP_VEC)) != 0u ||
           HTP_GRAPH_FEED_LANES_SMALL(op->feed) > 8u ||
           HTP_GRAPH_FEED_LANES_LARGE(op->feed) > 8u)
         return HTP_GRAPH_E_INVALIDFORMAT;
@@ -472,6 +483,11 @@ static inline uint32_t htp_graph_validate(const uint32_t *w, uint32_t n_words,
            (k == HTP_OP_DENSE_FFN && (op->N % 64u != 0u || op->N > 8192u))))
         return HTP_GRAPH_E_SCHEMENOTSUPPORTED;
     }
+    if ((HTP_GRAPH_KINDS_Q4M1 & HTP_GRAPH_KIND_BIT(k)) == 0u &&
+        (op->feed & ~((HTP_GRAPH_KINDS_VEC & HTP_GRAPH_KIND_BIT(k)) != 0u
+                        ? HTP_GRAPH_OP_VEC
+                        : 0u)) != 0u)
+      return HTP_GRAPH_E_INVALIDFORMAT;
     /* v2: the attention record, its in-layer order and the norm epsilon */
     if (k == HTP_OP_QK_NORM || k == HTP_OP_ROPE || k == HTP_OP_ATTN_M1) {
       if (op->n_kv == 0u || op->gqa == 0u || op->head_dim == 0u ||

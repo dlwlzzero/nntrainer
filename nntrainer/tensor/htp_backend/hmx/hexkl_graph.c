@@ -122,7 +122,11 @@ static int graph_op_rmsnorm(hexkl_graph *g, const htp_graph_op *op,
   if (gamma == NULL) {
     return AEE_EBADSTATE;
   }
-  hvx_rmsnorm_f32(in, gamma, out, op->K, op->K, graph_eps(op), NULL);
+  if ((op->feed & HTP_GRAPH_OP_VEC) != 0u) { /* #194 L3 */
+    hvx_rmsnorm_vec_f32(in, gamma, out, op->K, op->K, graph_eps(op));
+  } else {
+    hvx_rmsnorm_f32(in, gamma, out, op->K, op->K, graph_eps(op), NULL);
+  }
   return AEE_SUCCESS;
 }
 
@@ -138,8 +142,13 @@ static int graph_op_qk_norm(hexkl_graph *g, const htp_graph_op *op,
   if (gamma == NULL) {
     return AEE_EBADSTATE;
   }
-  hvx_rmsnorm_f32(in, gamma, out, n_q, hd, eps, NULL);
-  hvx_rmsnorm_f32(in + n_q, gamma + hd, out + n_q, n_k, hd, eps, NULL);
+  if ((op->feed & HTP_GRAPH_OP_VEC) != 0u) { /* #194 L3 */
+    hvx_rmsnorm_vec_f32(in, gamma, out, n_q, hd, eps);
+    hvx_rmsnorm_vec_f32(in + n_q, gamma + hd, out + n_q, n_k, hd, eps);
+  } else {
+    hvx_rmsnorm_f32(in, gamma, out, n_q, hd, eps, NULL);
+    hvx_rmsnorm_f32(in + n_q, gamma + hd, out + n_q, n_k, hd, eps, NULL);
+  }
   if (in != out) {
     memcpy(out + n_q + n_k, in + n_q + n_k, (size_t)n_k * sizeof(float));
   }
@@ -167,7 +176,9 @@ static int graph_op_conv1d_gate(hexkl_graph *g, const htp_graph_op *op,
   if (g->param[i] == NULL || g->state[i] == NULL) {
     return AEE_EBADSTATE;
   }
-  hvx_conv_gate_m1_f32(in, g->state[i], g->param[i], out, op->N);
+  ((op->feed & HTP_GRAPH_OP_VEC) != 0u
+     ? hvx_conv_gate_m1_vec_f32 /* #194 L3 */
+     : hvx_conv_gate_m1_f32)(in, g->state[i], g->param[i], out, op->N);
   return AEE_SUCCESS;
 }
 
@@ -215,8 +226,13 @@ static int graph_op_router_topk(hexkl_graph *g, const htp_graph_op *op,
   if (g->param[i] == NULL || g->state[i] == NULL) {
     return AEE_EBADSTATE;
   }
-  hvx_router_topk_f32(in, g->param[i], g->state[i], op->K, op->n_experts,
-                      op->top_k, out, sel, w, call->env->pool);
+  if ((op->feed & HTP_GRAPH_OP_VEC) != 0u) { /* #194 L2 */
+    hvx_router_topk_vec_f32(in, g->param[i], g->state[i], op->K, op->n_experts,
+                            op->top_k, out, sel, w);
+  } else {
+    hvx_router_topk_f32(in, g->param[i], g->state[i], op->K, op->n_experts,
+                        op->top_k, out, sel, w, call->env->pool);
+  }
   memset(g->route_cnt, 0, sizeof(g->route_cnt));
   for (r = 0; r < op->top_k; ++r) {
     g->route_cnt[sel[r]] = 1u;
@@ -295,7 +311,11 @@ static int graph_op_dense_ffn(hexkl_graph *g, const htp_graph_op *op,
   if (rc != AEE_SUCCESS) {
     return rc;
   }
-  hvx_swiglu_cpu_f32(gate, up, act, op->N, call->env->pool);
+  if ((op->feed & HTP_GRAPH_OP_VEC) != 0u) { /* #194 L3 */
+    hvx_swiglu_vec_f32(gate, up, act, op->N);
+  } else {
+    hvx_swiglu_cpu_f32(gate, up, act, op->N, call->env->pool);
+  }
   graph_prep(op, act, op->N, &g->act);
   return call->env->fc(call->env->fc_ctx, op->h_dn[0], op->feed, &g->act, out);
 }

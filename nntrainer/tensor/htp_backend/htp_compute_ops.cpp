@@ -1456,24 +1456,38 @@ public:
     }
     // [#194, htp_moe_ppl] NNTR_HTP_PPL_LEVERS=<mask>: the non-bit-exact
     // levers of plan 194 section 3.1, bit n = lever Ln (0x2: L1, the native
-    // FC / DENSE_FFN / LM_HEAD kernels). Unset or 0 = the CPU-exact kernels
-    // (E0, bit-identical to htp_moe); a bit no lever owns yet is refused.
+    // FC / DENSE_FFN / LM_HEAD kernels; 0x4: L2, the vector router; 0x8:
+    // L3, the vector norms / conv gate / SwiGLU, m1_ops_vec_det.h). Unset
+    // or 0 = the CPU-exact kernels (E0, bit-identical to htp_moe); a bit no
+    // lever owns yet is refused.
     uint32_t levers = 0;
     if (const char *l = std::getenv("NNTR_HTP_PPL_LEVERS")) {
       char *end = nullptr;
       const unsigned long v = std::strtoul(l, &end, 0);
-      if (end == l || *end != '\0' || (v & ~0x2ul) != 0)
+      if (end == l || *end != '\0' || (v & ~0xEul) != 0)
         throw std::invalid_argument("NNTR_HTP_PPL_LEVERS=" + std::string(l) +
-                                    " (known: 0x2 = L1 native FC)");
+                                    " (known: 0x2 = L1 native FC, 0x4 = L2 "
+                                    "vector router, 0x8 = L3 vector norms)");
       levers = static_cast<uint32_t>(v);
     }
     std::fprintf(stderr, "[HTP] ppl levers=0x%x L1=%s\n", levers,
                  (levers & 0x2u) ? "native_fc" : "exact");
+    if ((levers & 0xCu) != 0u) // the line above stays as sitting 1 read it
+      std::fprintf(stderr, "[HTP] ppl levers L2=%s L3=%s\n",
+                   (levers & 0x4u) ? "router_vec" : "exact",
+                   (levers & 0x8u) ? "norm_conv_swiglu_vec" : "exact");
+    const uint32_t vec_kinds =
+      ((levers & 0x4u) ? HTP_GRAPH_KIND_BIT(HTP_OP_ROUTER_TOPK) : 0u) |
+      ((levers & 0x8u)
+         ? HTP_GRAPH_KINDS_VEC & ~HTP_GRAPH_KIND_BIT(HTP_OP_ROUTER_TOPK)
+         : 0u);
     for (uint32_t i = 0; i < n_ops; ++i) {
       htp_graph_op *op = htp_graph_op_at(graph_words_.data(), i);
       if ((HTP_GRAPH_KINDS_Q4M1 & HTP_GRAPH_KIND_BIT(op->kind)) != 0u)
         op->feed = (feed_s == "l2" ? HTP_GRAPH_FEED_L2 : 0u) | fc_lanes |
                    ((levers & 0x2u) ? HTP_GRAPH_FEED_NATIVE : 0u);
+      if ((vec_kinds & HTP_GRAPH_KIND_BIT(op->kind)) != 0u)
+        op->feed |= HTP_GRAPH_OP_VEC;
     }
     resident_mask_ = mask;
     moe_ops_.clear();
