@@ -217,11 +217,17 @@ graph_check() { # graph_check <hexkl_graph.c> <exe>
 graph_check "$BACKEND/hmx/hexkl_graph.c" "$OUT/graph_host_check"
 "$OUT/graph_host_check"
 # gate and up swapped; the part offset fixed at one group; down fed the
-# FFN input's quantization; the argmax over the first slice only
+# FFN input's quantization; the argmax over the first slice only; [#194
+# L2 / L3] each HTP_GRAPH_OP_VEC site running the CPU-order kernel instead
 for mut in 's/hvx_swiglu_cpu_f32(gate, up, act, op->N,/hvx_swiglu_cpu_f32(up, gate, act, op->N,/' \
   's/y += g->q4m1\[h\[p\]\].N;/y += Q4M1_GROUP;/' \
   's/graph_prep(op, act, op->N, &g->act);/(void)act;/' \
-  's/hvx_argmax_first_f32(g->logits, op->N)/hvx_argmax_first_f32(g->logits, op->N \/ 2u)/'; do
+  's/hvx_argmax_first_f32(g->logits, op->N)/hvx_argmax_first_f32(g->logits, op->N \/ 2u)/' \
+  's/hvx_rmsnorm_vec_f32(in, gamma, out, op->K, op->K, graph_eps(op));/hvx_rmsnorm_f32(in, gamma, out, op->K, op->K, graph_eps(op), NULL);/' \
+  's/hvx_rmsnorm_vec_f32(in + n_q, gamma + hd, out + n_q, n_k, hd, eps);/hvx_rmsnorm_f32(in + n_q, gamma + hd, out + n_q, n_k, hd, eps, NULL);/' \
+  's/? hvx_conv_gate_m1_vec_f32/? hvx_conv_gate_m1_f32/' \
+  's/HTP_GRAPH_OP_VEC) != 0u) { \/\* #194 L2/HTP_GRAPH_OP_VEC) != 0u \&\& op->K == 0u) { \/* #194 L2/' \
+  's/hvx_swiglu_vec_f32(gate, up, act, op->N);/hvx_swiglu_cpu_f32(gate, up, act, op->N, call->env->pool);/'; do
   sed "$mut" "$BACKEND/hmx/hexkl_graph.c" > "$OUT/hexkl_graph_mutant.c"
   if cmp -s "$OUT/hexkl_graph_mutant.c" "$BACKEND/hmx/hexkl_graph.c"; then
     echo "GRAPH Q4M1 MUTATION DID NOT APPLY: $mut"; exit 1

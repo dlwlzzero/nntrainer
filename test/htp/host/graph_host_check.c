@@ -55,7 +55,12 @@
    the LFM2.5 list (each validates, together they are every kind, and
    their stretches alternate at the MoE hops). run_host_checks.sh then
    builds this file against mutants of hexkl_graph.c, each of which must
-   fail it. */
+   fail it.
+
+   [#194 L2 / L3, htp_moe_ppl] The two hd64 stretch checks again with
+   HTP_GRAPH_OP_VEC on every RMSNORM, QK_NORM, CONV1D_GATE and ROUTER_TOPK
+   op, against m1_ops_vec_det.h (g_vec); DENSE_FFN's SwiGLU with the bit;
+   the bit refused on a ROPE op. */
 #include "hexkl_graph.h"
 #include "htp_graph_desc.h"
 #include <AEEStdErr.h>
@@ -68,6 +73,7 @@
 #include "hvx_q4_gemv_f32.h"
 #include "hvx_worker_pool.h"
 #include "m1_ops_det.h"
+#include "m1_ops_vec_det.h"
 #include "q4_gemv_native_det.h"
 
 /** @brief A real pthread pool (hvx_worker_pool.c on stub/qurt.h) for the
@@ -81,6 +87,33 @@ static hvx_worker_pool *real_pool(void) {
 }
 
 static int g_fail;
+
+/* [#194 L2 / L3] 1: the stretch checks set HTP_GRAPH_OP_VEC on the graph's
+   norm / conv / router ops and compare with m1_ops_vec_det.h */
+static int g_vec;
+static void spec_rms(const float *x, const float *g, float *y, uint32_t n,
+                     uint32_t chunk, float eps) {
+  if (g_vec)
+    m1v_rmsnorm(x, g, y, n, chunk, eps);
+  else
+    m1_rmsnorm_det(x, g, y, n, chunk, eps, NULL);
+}
+static void spec_conv(const float *abc, float *st, const float *w, float *out,
+                      uint32_t C) {
+  (g_vec ? m1v_conv_gate : m1_conv_gate_det)(abc, st, w, out, C);
+}
+static void spec_router(const float *x, const float *w, const float *b,
+                        uint32_t K, uint32_t E, uint32_t k, float *lg,
+                        uint32_t *sel, float *wt) {
+  (g_vec ? m1v_router : m1_router_cpu_det)(x, w, b, K, E, k, lg, sel, wt);
+}
+/** @brief With g_vec, the bit on every op of @a g that takes it. */
+static void vec_mark(hexkl_graph *g) {
+  for (uint32_t i = 0; g_vec && i < g->n_ops; ++i)
+    if ((HTP_GRAPH_KINDS_VEC & HTP_GRAPH_KIND_BIT(g->ops[i].kind)) != 0u &&
+        (HTP_GRAPH_KINDS_Q4M1 & HTP_GRAPH_KIND_BIT(g->ops[i].kind)) == 0u)
+      g->ops[i].feed |= HTP_GRAPH_OP_VEC;
+}
 #define CHECK(cond, ...)                                                       \
   do {                                                                         \
     if (!(cond)) {                                                             \
@@ -730,10 +763,19 @@ static void check_stretches(void) {
   env.tbl = &g_tbl;
   n = build(w, cap, &kHd64, "CAC", mask);
   CHECK(n != 0u, "hd64 build");
+  if (g_vec) { /* [#194 L3] the bit on a ROPE op is refused */
+    htp_graph_op *ro = htp_graph_op_at(w, nth_op(w, HTP_OP_ROPE, 0));
+    ro->feed = HTP_GRAPH_OP_VEC;
+    rc = (uint32_t)hexkl_graph_init(w, n, &g_tbl, NULL, 0u, &g);
+    CHECK(rc == HTP_GRAPH_E_INVALIDFORMAT && g == NULL,
+          "HTP_GRAPH_OP_VEC on ROPE: %s", htp_graph_err_name(rc));
+    ro->feed = 0u;
+  }
   rc = (uint32_t)hexkl_graph_init(w, n, &g_tbl, NULL, 0u, &g);
   CHECK(rc == 0u && g != NULL, "hd64 init: %s", htp_graph_err_name(rc));
   if (g == NULL)
     return;
+  vec_mark(g);
   CHECK(g->n_ops == 30u && g->slot_words == 3u * HID, "hd64 n_ops %u slots %u",
         g->n_ops, g->slot_words);
   op_rms = nth_op(w, HTP_OP_RMSNORM, 0);
@@ -773,10 +815,48 @@ static void check_stretches(void) {
                                      out, HID, &resume);
   CHECK(rc == 0u && resume == op_rms + 1u, "RMSNORM forward: %s resume %u",
         htp_graph_err_name(rc), resume);
-  m1_rmsnorm_det(in, gamma, ref, HID, HID, kHd64.eps, NULL);
+  spec_rms(in, gamma, ref, HID, HID, kHd64.eps);
   CHECK(memcmp(out, ref, HID * sizeof(float)) == 0, "RMSNORM differs");
   check_pcycles(g, op_rms, op_rms + 1u, "RMSNORM");
   err |= memcmp(out, ref, HID * sizeof(float)) != 0;
+  if (g_vec) {
+    /* [#194 L3] 64 rows through RMSNORM and QK_NORM alone: every one the
+       vec spec's, and some not the CPU order's (else the bit is unread) */
+    static float qref[(N_Q + 2u * N_KV) * HD], qout[(N_Q + 2u * N_KV) * HD];
+    uint32_t off_cpu = 0, qoff_cpu = 0, bad = 0;
+    fill(qk_gamma, 2u * HD, &seed);
+    rc = (uint32_t)hexkl_graph_set_param(g, op_qk, HTP_GRAPH_PARAM_GAMMA,
+                                         qk_gamma, 2u * HD);
+    CHECK(rc == 0u, "set qk gamma: %s", htp_graph_err_name(rc));
+    for (t = 0; t < 64u; ++t) {
+      fill(in, (N_Q + 2u * N_KV) * HD, &seed);
+      rc = (uint32_t)hexkl_graph_forward(g, &env, op_rms, 1u, 0u, NULL, in, HID,
+                                         out, HID, &resume);
+      m1v_rmsnorm(in, gamma, ref, HID, HID, kHd64.eps);
+      bad += rc != 0u || memcmp(out, ref, HID * sizeof(float)) != 0;
+      m1_rmsnorm_det(in, gamma, ref, HID, HID, kHd64.eps, NULL);
+      off_cpu += memcmp(out, ref, HID * sizeof(float)) != 0;
+      rc = (uint32_t)hexkl_graph_forward(g, &env, op_qk, 1u, 0u, NULL, in,
+                                         (N_Q + 2u * N_KV) * HD, qout,
+                                         (N_Q + 2u * N_KV) * HD, &resume);
+      memcpy(qref, in, sizeof(qref));
+      m1v_rmsnorm(in, qk_gamma, qref, N_Q * HD, HD, kHd64.eps);
+      m1v_rmsnorm(in + N_Q * HD, qk_gamma + HD, qref + N_Q * HD, N_KV * HD, HD,
+                  kHd64.eps);
+      bad += rc != 0u || memcmp(qout, qref, sizeof(qref)) != 0;
+      m1_rmsnorm_det(in, qk_gamma, qref, N_Q * HD, HD, kHd64.eps, NULL);
+      m1_rmsnorm_det(in + N_Q * HD, qk_gamma + HD, qref + N_Q * HD, N_KV * HD,
+                     HD, kHd64.eps, NULL);
+      qoff_cpu += memcmp(qout, qref, sizeof(qref)) != 0;
+    }
+    printf("  OP_VEC RMSNORM / QK_NORM 64 rows: bad=%u, off the CPU order "
+           "%u / %u\n",
+           bad, off_cpu, qoff_cpu);
+    CHECK(bad == 0u && off_cpu > 0u && qoff_cpu > 0u,
+          "OP_VEC norms: bad %u, off the CPU order %u / %u", bad, off_cpu,
+          qoff_cpu);
+    err |= bad != 0u || off_cpu == 0u || qoff_cpu == 0u;
+  }
 
   /* (2) [CONV1D_GATE]: no conv_w / state -> EBADSTATE; an 8-token chain
      from a seeded state; the state re-sent mid-chain */
@@ -814,7 +894,7 @@ static void check_stretches(void) {
                                        3u * HID, out, HID, &resume);
     CHECK(rc == 0u && resume == op_conv + 1u, "conv t=%u: %s resume %u", t,
           htp_graph_err_name(rc), resume);
-    m1_conv_gate_det(in, state_ref, conv_w, ref, HID);
+    spec_conv(in, state_ref, conv_w, ref, HID);
     CHECK(memcmp(out, ref, HID * sizeof(float)) == 0, "conv t=%u differs", t);
     err |= memcmp(out, ref, HID * sizeof(float)) != 0;
   }
@@ -882,8 +962,8 @@ static void check_stretches(void) {
     CHECK(rc == 0u && resume == op_qk + 3u, "attn pos %u: %s resume %u", pos,
           htp_graph_err_name(rc), resume);
     /* the spec: per-head norm, RoPE on q then k heads, append, attend */
-    m1_rmsnorm_det(in, qk_gamma, qn, N_Q * HD, HD, kHd64.eps, NULL);
-    m1_rmsnorm_det(in + N_Q * HD, qk_gamma + HD, kn, HD, HD, kHd64.eps, NULL);
+    spec_rms(in, qk_gamma, qn, N_Q * HD, HD, kHd64.eps);
+    spec_rms(in + N_Q * HD, qk_gamma + HD, kn, HD, HD, kHd64.eps);
     for (i = 0; i < N_Q; ++i)
       m1_rope64_det(qn + i * HD, cs + (size_t)pos * HD);
     m1_rope64_det(kn, cs + (size_t)pos * HD);
@@ -925,9 +1005,10 @@ static void check_stretches(void) {
   }
   hexkl_graph_free(g);
   if (err == 0)
-    printf("GRAPH STRETCH BIT-IDENTICAL: RMSNORM CONV1D_GATE "
+    printf("%sGRAPH STRETCH BIT-IDENTICAL: RMSNORM CONV1D_GATE "
            "QK_NORM+ROPE+ATTN_M1 (hd64 shape, pos 0/31/32/63, conv chain "
-           "of 12 with a re-seed)\n");
+           "of 12 with a re-seed)\n",
+           g_vec ? "[OP_VEC vs m1_ops_vec_det] " : "");
 }
 
 /* ---- #132: [ADD RMSNORM] and [ADD RMSNORM ROUTER_TOPK MOE ADD RMSNORM] -- */
@@ -980,6 +1061,7 @@ static void check_add_router(void) {
   CHECK(rc == 0u && g != NULL, "hd64 D init: %s", htp_graph_err_name(rc));
   if (g == NULL)
     return;
+  vec_mark(g);
   /* layer 0's norms (0, 5), layer 1's ffn norm (15), layer 2's operator
      norm (19); layer 0's ffn-side ADD (4) and layer 1's first ADD (14) */
   op_norm[0] = nth_op(w, HTP_OP_RMSNORM, 0);
@@ -1044,7 +1126,7 @@ static void check_add_router(void) {
         htp_graph_err_name(rc), resume);
   for (i = 0; i < HID; ++i)
     h[i] = m1_det_add(x[i], a[i]);
-  m1_rmsnorm_det(h, gam[1], ref, HID, HID, kHd64.eps, NULL);
+  spec_rms(h, gam[1], ref, HID, HID, kHd64.eps);
   CHECK(memcmp(out, ref, sizeof(ref)) == 0, "[ADD RMSNORM] differs");
   CHECK(memcmp(g->slots, h, sizeof(h)) == 0, "slot 0 != x + a");
   check_pcycles(g, op_add0, op_norm[1] + 1u, "[ADD RMSNORM]");
@@ -1060,8 +1142,8 @@ static void check_add_router(void) {
         htp_graph_err_name(rc), resume);
   for (i = 0; i < HID; ++i)
     h[i] = m1_det_add(h[i], a2[i]);
-  m1_rmsnorm_det(h, gam[2], nrm, HID, HID, kHd64.eps, NULL);
-  m1_router_cpu_det(nrm, rw, rbias, HID, HD64_E, HD64_TOP, lg, sel, wt);
+  spec_rms(h, gam[2], nrm, HID, HID, kHd64.eps);
+  spec_router(nrm, rw, rbias, HID, HD64_E, HD64_TOP, lg, sel, wt);
   for (r = 0; r < HD64_TOP; ++r) {
     r_cnt[sel[r]] = 1u;
     by_e[sel[r]] = wt[r];
@@ -1084,7 +1166,7 @@ static void check_add_router(void) {
   }
   for (i = 0; i < HID; ++i)
     h[i] = m1_det_add(h[i], moe[i]);
-  m1_rmsnorm_det(h, gam[3], ref, HID, HID, kHd64.eps, NULL);
+  spec_rms(h, gam[3], ref, HID, HID, kHd64.eps);
   CHECK(memcmp(out, ref, sizeof(ref)) == 0,
         "[ADD RMSNORM ROUTER_TOPK MOE ADD RMSNORM] differs");
   CHECK(memcmp(g->slots, h, sizeof(h)) == 0, "slot 0 != h2");
@@ -1092,9 +1174,10 @@ static void check_add_router(void) {
   err |= memcmp(out, ref, sizeof(ref)) != 0 || memcmp(g->slots, h, sizeof(h));
   hexkl_graph_free(g);
   if (err == 0)
-    printf("GRAPH STRETCH BIT-IDENTICAL: ADD+RMSNORM "
+    printf("%sGRAPH STRETCH BIT-IDENTICAL: ADD+RMSNORM "
            "ADD+RMSNORM+ROUTER_TOPK+MOE+ADD+RMSNORM (hd64 shape, MOE on the "
-           "stand-in, slot 0 carried across calls, resume_at the next FC)\n");
+           "stand-in, slot 0 carried across calls, resume_at the next FC)\n",
+           g_vec ? "[OP_VEC vs m1_ops_vec_det] " : "");
 }
 
 /* ---- #132 Part B: the Q4M1 kinds against the CPU-order specs ---------- */
@@ -1444,6 +1527,33 @@ static void check_q4m1(void) {
              "q4_gemv_native_det (bit 17 refused)\n");
   }
   g_native = 0;
+  g->ops[fc_qkv].feed &= ~HTP_GRAPH_FEED_NATIVE;
+  g->ops[ffn].feed &= ~HTP_GRAPH_FEED_NATIVE;
+  g->ops[lm].feed &= ~HTP_GRAPH_FEED_NATIVE;
+  { /* [#194 L3] DENSE_FFN's SwiGLU by m1v_swiglu under HTP_GRAPH_OP_VEC */
+    g->ops[ffn].feed |= HTP_GRAPH_OP_VEC;
+    rc = (uint32_t)hexkl_graph_forward(g, &env, ffn, 1u, 0u, NULL, x, HID, out,
+                                       HID, &resume);
+    op = &g->ops[ffn];
+    spec_fc(op->h_gu[0], x, up);
+    spec_fc(op->h_gu[1], x, gate);
+    m1v_swiglu(gate, up, act, 64u);
+    spec_fc(op->h_dn[0], act, ref);
+    /* the f32 SwiGLU row itself (g->ffn + 2N): the down FC's Q8 input
+       rounds the two orders' ulps away, the row does not */
+    const float *g_act = g->ffn + 2u * 64u;
+    const int verr = rc != 0u || memcmp(out, ref, HID * sizeof(float)) != 0 ||
+                     memcmp(g_act, act, 64u * sizeof(float)) != 0;
+    m1_swiglu_cpu_det(gate, up, act, 64u);
+    CHECK(verr == 0, "[#194 L3] DENSE_FFN with HTP_GRAPH_OP_VEC differs "
+                     "from m1v_swiglu");
+    CHECK(memcmp(g_act, act, 64u * sizeof(float)) != 0,
+          "[#194 L3] DENSE_FFN with HTP_GRAPH_OP_VEC ran the CPU order");
+    err |= verr;
+    g->ops[ffn].feed &= ~HTP_GRAPH_OP_VEC;
+    if (verr == 0)
+      printf("GRAPH DENSE_FFN OP_VEC BIT-IDENTICAL: swiglu by m1v_swiglu\n");
+  }
   hexkl_graph_free(g);
   if (err == 0)
     printf("GRAPH Q4M1 BIT-IDENTICAL: FC q|k|v (3 parts, feed passed) "
@@ -1459,6 +1569,10 @@ int main(void) {
   check_stretches();
   check_add_router();
   check_q4m1();
+  g_vec = 1; /* [#194 L2 / L3] */
+  check_stretches();
+  check_add_router();
+  g_vec = 0;
   if (g_fail) {
     printf("GRAPH CHECKS FAILED (%d)\n", g_fail);
     return 1;

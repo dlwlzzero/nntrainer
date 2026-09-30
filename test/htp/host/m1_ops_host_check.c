@@ -55,6 +55,15 @@
  * The bionic expf port is pinned to glibc's same algorithm, the SwiGLU
  * spec to an independent copy of neon::swiglu (three mutants), and
  * argmax_first to std::max_element's tie rule.
+ *
+ * [#194 L2 / L3, htp_moe_ppl] The *_vec kernels (vector sum of squares,
+ * unfused conv taps, pooled-free SwiGLU, four-partial-sum router) are
+ * memcmp'd against m1_ops_vec_det.h on the same rows, and the spec is held
+ * to the CPU order (m1_ops_det.h) by SNR: >= 50 dB for the norms, conv and
+ * SwiGLU, the router's expert set identical on the random and exact-tie
+ * rows (the planted 1-ulp near ties may flip: printed; they are the risk
+ * the device's P1 / P2 read); the flips
+ * over 4000 LFM2.5-shaped random rows are printed, not gated) (M1 OPS VEC).
  */
 
 #include <math.h>
@@ -66,6 +75,7 @@
 #include "hvx_conv_gate_f32.h"
 #include "hvx_m1_ops_f32.h"
 #include "m1_ops_det.h"
+#include "m1_ops_vec_det.h"
 
 /* The pool, run in place of the pthread pool: min(n_units, 3) lanes called
    one after another on the caller -- lanes are independent by the pool's
@@ -1205,6 +1215,223 @@ static void check_swiglu_argmax_kernels(void) {
   free(x);
 }
 
+/* ---- [#194 L2 / L3] the vector numerics (m1_ops_vec_det.h) ------------- */
+
+/** @brief 10 log10(sum ref^2 / sum (x - ref)^2); 999 when equal. */
+static double snr_db(const float *ref, const float *x, size_t n) {
+  double s = 0.0, e = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const double d = (double)x[i] - (double)ref[i];
+    s += (double)ref[i] * (double)ref[i];
+    e += d * d;
+  }
+  return e == 0.0 ? 999.0 : s == 0.0 ? -999.0 : 10.0 * log10(s / e);
+}
+
+/** @brief The norm: the fixed kinds and random rows (as check_rmsnorm),
+ *  kernel vs m1v_rmsnorm bit for bit, m1v vs m1_rmsnorm_det by SNR. */
+static void check_vec_norm(const char *name, uint32_t n, uint32_t chunk) {
+  const float eps = 1e-5f;
+  const uint32_t nchunk = n / chunk;
+  float *x = malloc(n * sizeof(float)), *gamma = malloc(chunk * sizeof(float));
+  float *yh = malloc(n * sizeof(float)), *yv = malloc(n * sizeof(float));
+  float *yc = malloc(n * sizeof(float));
+  float *rs = malloc(nchunk * sizeof(float));
+  uint32_t bad = 0;
+  double snr = 999.0;
+  fill_rand(gamma, chunk, 0.5f, 1.5f);
+  for (int t = 0; t < 64; ++t) {
+    for (uint32_t c = 0; c < nchunk; ++c) {
+      /* single chunk: kinds 0..3 then random; else heads 0..2 fixed */
+      const int kind =
+        nchunk > 1u ? (t == 0 && c < 3u ? (int)c + 1 : 0) : (t < 4 ? t : 0);
+      fill_row(x + c * chunk, chunk, kind);
+    }
+    memset(yh, 0xA5, n * sizeof(float));
+    hvx_rmsnorm_vec_f32(x, gamma, yh, n, chunk, eps);
+    m1v_rmsnorm(x, gamma, yv, n, chunk, eps);
+    m1_rmsnorm_det(x, gamma, yc, n, chunk, eps, rs);
+    bad += memcmp(yh, yv, n * sizeof(float)) != 0;
+    /* by chunk: a zero or subnormal head on its own, not drowned */
+    for (uint32_t c = 0; c < nchunk; ++c) {
+      const double d = snr_db(yc + c * chunk, yv + c * chunk, chunk);
+      snr = d < snr && d > -999.0 ? d : snr;
+    }
+  }
+  printf("M1 OPS VEC %s n=%u chunk=%u bit-exact vs spec bad=%u/64 "
+         "min_snr_db(vs cpu order)=%.1f\n",
+         name, n, chunk, bad, snr);
+  CHECK(bad == 0u, "%s vec: the kernel differs from m1v_rmsnorm", name);
+  CHECK(snr >= 50.0, "%s vec: %.1f dB from the CPU order", name, snr);
+  free(x);
+  free(gamma);
+  free(yh);
+  free(yv);
+  free(yc);
+  free(rs);
+}
+
+/** @brief The conv gate: an M=1 chain of CONV_CHAIN tokens from a random
+ *  state; out and state bit for bit, out's SNR against m1_conv_gate_det. */
+static void check_vec_conv(void) {
+  const uint32_t C = CONV_C;
+  float *abc = malloc(3u * C * sizeof(float)),
+        *w = malloc(3u * C * sizeof(float));
+  float *s3 = malloc(3u * C * sizeof(float)),
+        *sv = malloc(2u * C * sizeof(float));
+  float *sc = malloc(2u * C * sizeof(float));
+  float *oh = malloc(C * sizeof(float)), *ov = malloc(C * sizeof(float));
+  float *oc = malloc(C * sizeof(float));
+  uint32_t bad = 0;
+  double snr = 999.0;
+  fill_rand(w, 3u * C, -1.0f, 1.0f);
+  fill_rand(sv, 2u * C, -3.0f, 3.0f);
+  memcpy(sc, sv, 2u * C * sizeof(float));
+  memcpy(s3, sv, 2u * C * sizeof(float));
+  for (uint32_t t = 0; t < CONV_CHAIN; ++t) {
+    fill_row(abc, 3u * C, t >= 1u && t <= 3u ? (int)t : 0);
+    memset(oh, 0xA5, C * sizeof(float));
+    hvx_conv_gate_m1_vec_f32(abc, s3, w, oh, C);
+    m1v_conv_gate(abc, sv, w, ov, C);
+    m1_conv_gate_det(abc, sc, w, oc, C);
+    bad += memcmp(oh, ov, C * sizeof(float)) != 0;
+    bad += memcmp(s3, sv, 2u * C * sizeof(float)) != 0;
+    const double d = snr_db(oc, ov, C);
+    snr = d < snr && d > -999.0 ? d : snr;
+  }
+  printf("M1 OPS VEC conv_gate_m1 C=%u chain=%d bit-exact vs spec bad=%u "
+         "min_snr_db(vs cpu order)=%.1f\n",
+         C, CONV_CHAIN, bad, snr);
+  CHECK(bad == 0u, "conv vec: the kernel differs from m1v_conv_gate");
+  CHECK(snr >= 50.0, "conv vec: %.1f dB from the CPU order", snr);
+  free(abc);
+  free(w);
+  free(s3);
+  free(sv);
+  free(sc);
+  free(oh);
+  free(ov);
+  free(oc);
+}
+
+/** @brief The SwiGLU: check_swiglu_argmax_kernels' rows (three spans and
+ *  the exp clamps' edges), kernel vs m1v_swiglu, m1v vs the CPU's. */
+static void check_vec_swiglu(void) {
+  enum { N = 7168 };
+  float *y = malloc(N * sizeof(float)), *z = malloc(N * sizeof(float));
+  float *oh = malloc(N * sizeof(float)), *ov = malloc(N * sizeof(float));
+  float *oc = malloc(N * sizeof(float));
+  uint32_t bad = 0;
+  double snr = 999.0;
+  for (int t = 0; t < 12; ++t) {
+    const float span = t < 4 ? 8.0f : t < 8 ? 100.0f : 1e4f;
+    fill_rand(y, N, -span, span);
+    fill_rand(z, N, -4.0f, 4.0f);
+    if (t == 11) {
+      for (uint32_t i = 0; i < N; ++i)
+        y[i] = (i % 3 == 0) ? 88.37626f : (i % 3 == 1) ? -88.37627f : -0.0f;
+    }
+    memset(oh, 0xA5, N * sizeof(float));
+    hvx_swiglu_vec_f32(y, z, oh, N);
+    m1v_swiglu(y, z, ov, N);
+    m1_swiglu_cpu_det(y, z, oc, N);
+    bad += memcmp(oh, ov, N * sizeof(float)) != 0;
+    const double d = snr_db(oc, ov, N);
+    snr = d < snr ? d : snr;
+  }
+  printf("M1 OPS VEC swiglu n=%d bit-exact vs spec bad=%u/12 "
+         "min_snr_db(vs cpu order)=%.1f\n",
+         N, bad, snr);
+  CHECK(bad == 0u, "swiglu vec: the kernel differs from m1v_swiglu");
+  CHECK(snr >= 50.0, "swiglu vec: %.1f dB from the CPU order", snr);
+  free(y);
+  free(z);
+  free(oh);
+  free(ov);
+  free(oc);
+}
+
+/** @brief Whether two selections hold different experts (in any order). */
+static int sel_set_differs(const uint32_t *a, const uint32_t *b, uint32_t n) {
+  uint64_t ma = 0, mb = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    ma |= 1ull << (a[i] & 63u);
+    mb |= 1ull << (b[i] & 63u);
+  }
+  return ma != mb;
+}
+
+/** @brief The router at check_router_kernel's shapes and rows: logits,
+ *  selection and weights bit for bit against m1v_router; the selection
+ *  against m1_router_cpu_det (identical on these rows), the logits' SNR;
+ *  then 4000 LFM2.5-shaped random rows, whose flips are printed. */
+static void check_vec_router(void) {
+  static const uint32_t shapes[3][3] = {
+    {2048u, 32u, 4u}, {128u, 4u, 2u}, {64u, 4u, 2u}};
+  float *x = malloc(ROUTER_MAX_K * sizeof(float));
+  float *w = malloc((size_t)ROUTER_MAX_K * ROUTER_MAX_E * sizeof(float));
+  float *w32 = malloc((size_t)ROUTER_MAX_K * ROUTER_MAX_E * sizeof(float));
+  float bias[ROUTER_MAX_E], lh[ROUTER_MAX_E], lv[ROUTER_MAX_E];
+  float lc[ROUTER_MAX_E], wh[ROUTER_MAX_E], wv[ROUTER_MAX_E];
+  float wc[ROUTER_MAX_E];
+  uint32_t sh[ROUTER_MAX_E], sv[ROUTER_MAX_E], sc[ROUTER_MAX_E];
+  for (int s = 0; s < 3; ++s) {
+    const uint32_t K = shapes[s][0], E = shapes[s][1], top_k = shapes[s][2];
+    uint32_t bad = 0, flips = 0, near = 0, reorders = 0, rows = 0;
+    double snr = 999.0, wsnr = 999.0;
+    for (int kind = 0; kind < 3; ++kind) {
+      for (int rep = 0; rep < 8; ++rep, ++rows) {
+        router_inputs(x, w, w32, bias, K, E, top_k, kind);
+        memset(lh, 0xA5, sizeof(lh));
+        memset(wh, 0xA5, sizeof(wh));
+        memset(sh, 0xA5, sizeof(sh));
+        hvx_router_topk_vec_f32(x, w32, bias, K, E, top_k, lh, sh, wh);
+        m1v_router(x, w, bias, K, E, top_k, lv, sv, wv);
+        m1_router_cpu_det(x, w, bias, K, E, top_k, lc, sc, wc);
+        bad += memcmp(lh, lv, E * sizeof(float)) != 0;
+        bad += memcmp(sh, sv, top_k * sizeof(uint32_t)) != 0;
+        bad += memcmp(wh, wv, top_k * sizeof(float)) != 0;
+        /* kind 2's planted 1-ulp bias gap survives only the sigmoid it
+           was built on: another sigmoid may round it away (or not) */
+        const int set = sel_set_differs(sv, sc, top_k);
+        flips += kind < 2 && set;
+        near += kind == 2 && set;
+        reorders += !set && memcmp(sv, sc, top_k * sizeof(uint32_t)) != 0;
+        double d = snr_db(lc, lv, E);
+        snr = d < snr ? d : snr;
+        d = snr_db(wc, wv, top_k);
+        wsnr = d < wsnr ? d : wsnr;
+      }
+    }
+    printf("M1 OPS VEC router K=%u E=%u top_k=%u rows=%u bit-exact vs spec "
+           "bad=%u routing_flips(vs cpu order: random+tie)=%u near_tie=%u/8 "
+           "order_only=%u min_snr_db logits=%.1f weights=%.1f\n",
+           K, E, top_k, rows, bad, flips, near, reorders, snr, wsnr);
+    CHECK(bad == 0u, "router vec K=%u: the kernel differs from m1v_router", K);
+    CHECK(flips == 0u, "router vec K=%u: a selection differs from the CPU's",
+          K);
+    CHECK(snr >= 50.0 && wsnr >= 50.0, "router vec K=%u: %.1f / %.1f dB", K,
+          snr, wsnr);
+  }
+  uint32_t flips = 0, bad = 0;
+  for (int r = 0; r < 4000; ++r) {
+    router_inputs(x, w, w32, bias, 2048u, 32u, 4u, 0);
+    hvx_router_topk_vec_f32(x, w32, bias, 2048u, 32u, 4u, lh, sh, wh);
+    m1v_router(x, w, bias, 2048u, 32u, 4u, lv, sv, wv);
+    m1_router_cpu_det(x, w, bias, 2048u, 32u, 4u, lc, sc, wc);
+    bad += memcmp(sh, sv, 4u * sizeof(uint32_t)) != 0 ||
+           memcmp(wh, wv, 4u * sizeof(float)) != 0;
+    flips += sel_set_differs(sv, sc, 4u);
+  }
+  printf("M1 OPS VEC router K=2048 E=32 top_k=4 random rows=4000 bad=%u "
+         "routing_flips(vs cpu order)=%u (printed, not gated)\n",
+         bad, flips);
+  CHECK(bad == 0u, "router vec: the kernel differs from m1v_router");
+  free(x);
+  free(w);
+  free(w32);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 5 && !strcmp(argv[1], "--replay")) {
     return replay(argc - 2, argv + 2);
@@ -1221,11 +1448,18 @@ int main(int argc, char **argv) {
   check_router_vs_cpu();
   check_expf_port();
   check_swiglu_argmax();
+  check_vec_norm("rmsnorm", 2048u, 2048u);
+  check_vec_norm("qk_norm_q", 32u * 64u, 64u);
+  check_vec_norm("qk_norm_k", 8u * 64u, 64u);
+  check_vec_conv();
+  check_vec_swiglu();
+  check_vec_router();
   if (g_fail) {
     printf("M1 OPS CHECK FAILED\n");
     return 1;
   }
   printf("ROUTER TOPK BIT-IDENTICAL\n");
   printf("M1 OPS BIT-IDENTICAL\n");
+  printf("M1 OPS VEC BIT-EXACT VS SPEC, SNR FLOORS HELD\n");
   return 0;
 }

@@ -123,6 +123,12 @@
 #   E2E eval l1-lfm25 ... min_snr_db=<x>               (x >= 30 gated, vs E0;
 #                              bit_identical=0, else the lever is not wired)
 #   E2E levers banner e0=0x0 l1=0x2 ok
+# and, since #194 S3, L1 + L2 + L3 (NNTR_HTP_PPL_LEVERS=0xE: the vector
+# router, norms, conv gate and SwiGLU of m1_ops_vec_det.h as well):
+#   E2E ppl-decode hd64 levers=0xE e0=<ppl> l123=<ppl> delta=<%> ok  (<= 2 %)
+#   E2E eval l123-lfm25 ... min_snr_db=<x>             (x >= 30 vs E0)
+#   E2E eval l23-vs-l1-lfm25 ... bit_identical=0       (L2 / L3 are wired)
+#   E2E levers banner l123 L2=router_vec L3=norm_conv_swiglu_vec ok
 #   E2E L0 wake split closes: disp s1=.. s2=.. s2_pkt=.. ret s2=.. clk_resid=..
 #   E2E ppl-decode alts steps=7 ok                     (NNTR_PPL_DECODE_ALTS:
 #                              the step lines gain the ids' logits)
@@ -325,6 +331,11 @@ NNTR_PPL_DECODE="$OUT/e3.ids" NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS
   run_e2e q64-l1ppl "$OUT/htp64q" htp "$OUT/dump_64l1ppl" "$OUT/64l1ppl.log" --max-seq 32 --run
 PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=2 \
   run_e2e q25-l1 "$OUT/htp25q" htp "$OUT/dump_25l1" "$OUT/25l1.log" --max-seq 2048
+# [#194 S3] levers L1 + L2 + L3
+NNTR_PPL_DECODE="$OUT/e3.ids" NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0xE \
+  run_e2e q64-l123ppl "$OUT/htp64q" htp "$OUT/dump_64l123ppl" "$OUT/64l123ppl.log" --max-seq 32 --run
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0xE \
+  run_e2e q25-l123 "$OUT/htp25q" htp "$OUT/dump_25l123" "$OUT/25l123.log" --max-seq 2048
 rc_e1=0
 NNTR_HTP_FORWARD=1 NNTR_HTP_FORWARD_KINDS=$E1_KINDS "$E2E" --model "$OUT/htp" \
   --tokenizer "$FIX/tokenizer.json" --prompt $PROMPT --steps $STEPS \
@@ -735,6 +746,26 @@ if awk -v l="$wk" 'BEGIN{n = split(l, f, "[ =]"); ok = n > 0; for (i = 1; i < n;
   echo "E2E L0 wake split closes: ${wk#*us/token }"
 else
   echo "E2E FAIL L0 wake split [$wk]"; fail=1
+fi
+# (k) [#194 S3] L1 + L2 + L3: the same gates, and not bit-identical to L1
+l123="$(dec_field "$OUT/64l123ppl.log" ppl)"
+if [ "$(dec_field "$OUT/64l123ppl.log" source)" = file ] &&
+  awk -v a="$e0" -v b="$l123" 'BEGIN{d = (b / a - 1) * 100; if (d < 0) d = -d;
+    exit !(a + 0 > 0 && b + 0 > 0 && d <= 2)}'; then
+  echo "E2E ppl-decode hd64 levers=0xE e0=$e0 l123=$l123 delta=$(awk -v a="$e0" -v b="$l123" 'BEGIN{printf "%+.3f%%", (b / a - 1) * 100}') ok"
+else
+  echo "E2E FAIL ppl-decode hd64 levers=0xE e0=${e0:-none} l123=${l123:-none}"; fail=1
+fi
+$EVAL --label l123-lfm25 --allow-diff --snr-floor 30 "$OUT/dump_25e3" "$OUT/dump_25l123" | tail -1 || fail=1
+l23_line="$($EVAL --label l23-vs-l1-lfm25 --allow-diff "$OUT/dump_25l1" "$OUT/dump_25l123" | tail -1)" || true
+echo "$l23_line"
+grep -q 'bit_identical=0' <<< "$l23_line" ||
+  { echo "E2E FAIL l123-lfm25 bit-identical to L1: L2 / L3 are not wired"; fail=1; }
+if grep -q '^\[HTP\] ppl levers=0xe L1=native_fc$' "$OUT/25l123.log" &&
+  grep -q '^\[HTP\] ppl levers L2=router_vec L3=norm_conv_swiglu_vec$' "$OUT/25l123.log"; then
+  echo "E2E levers banner l123 L2=router_vec L3=norm_conv_swiglu_vec ok"
+else
+  echo "E2E FAIL levers banner l123"; fail=1
 fi
 if grep -q '^\[HTP\] ppl levers=0x0 L1=exact$' "$OUT/64e3.log" &&
   grep -q '^\[HTP\] ppl levers=0x2 L1=native_fc$' "$OUT/25l1.log"; then
