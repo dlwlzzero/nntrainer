@@ -38,8 +38,20 @@
  * with a pause between reads, then sleeps HEXKL_TOKEN_POLL_US between
  * reads, and gives up HEXKL_TOKEN_TIMEOUT_US after the
  * spin window with AEE_EEXPIRED -- the ARM turns that into its throw, a
- * lost post is never a hang. A side whose forward fails posts its code in
- * the header, so the other returns it at once instead of timing out.
+ * lost post is never a hang.
+ *
+ * [#194 L4, htp_moe_ppl] The deadline wait: spin_us's low 16 bits are that
+ * leading spin, its high 16 bits a bound B (us). With B > 0 each side
+ * remembers, per round (the first HEXKL_TOKEN_DL_ROUNDS), how long the
+ * wait took on the last token -- the other side's stretch, which repeats
+ * token to token -- and the next wait sleeps until HEXKL_TOKEN_DL_LEAD_US
+ * before that, then spins with a pause for at most B, then sleeps again.
+ * The sleep's tick (the QuRT timer's, ~20 us and more) is what a hop
+ * loses today; a spin started at the deadline holds a hardware thread for
+ * <= B a hop, not through the other side's whole compute (LEDGER rule 56's
+ * objection to the leading spin). B = 0 is the wait as before. A side whose
+ * forward fails posts its code in the header, so the other returns it at once
+ * instead of timing out.
  *
  * Before each post the side parks its worker pool
  * (hvx_worker_pool_park): the other session computes next, and a pool
@@ -74,6 +86,10 @@
  *  session holds no hardware thread the other session's lanes need
  *  (E5b: the 1 ms busy spin tripled both sessions' cycles). */
 #define HEXKL_TOKEN_POLL_US 20u
+/** @brief [#194 L4] Rounds whose wait the deadline tracks (LFM2.5: 24). */
+#define HEXKL_TOKEN_DL_ROUNDS 64u
+/** @brief [#194 L4] The spin starts this long before the expected post. */
+#define HEXKL_TOKEN_DL_LEAD_US 40u
 /** @brief Rounds (S1 stretches) one token may have: seq's low byte. */
 #define HEXKL_TOKEN_MAX_ROUNDS 255u
 /** @brief A header or trailer that does not carry the posted seq. */
@@ -100,6 +116,10 @@ typedef struct {
   uint32_t stale;    /**< reads refused as stale */
   uint64_t pcycles;  /**< the op_pcycles of every stretch this side ran */
   uint64_t kind_pcycles[HTP_OP_KIND_N]; /**< the same, per op kind */
+  uint32_t dl_hits;    /**< [#194 L4] posts seen inside the spin window */
+  uint32_t dl_spin_us; /**< [#194 L4] time spent in the spin windows */
+  uint32_t dl_expect_us[HEXKL_TOKEN_DL_ROUNDS]; /**< [#194 L4] each round's
+                                                     last wait (0 at start) */
 } hexkl_token_stats;
 
 /** @brief The sequence value of round @a round of token @a tok. */

@@ -1454,28 +1454,45 @@ public:
                                     " (want <small>,<large>, 1..8 each)");
       fc_lanes = (a << 8) | (b << 12);
     }
-    // [#194, htp_moe_ppl] NNTR_HTP_PPL_LEVERS=<mask>: the non-bit-exact
-    // levers of plan 194 section 3.1, bit n = lever Ln (0x2: L1, the native
-    // FC / DENSE_FFN / LM_HEAD kernels; 0x4: L2, the vector router; 0x8:
-    // L3, the vector norms / conv gate / SwiGLU, m1_ops_vec_det.h). Unset
-    // or 0 = the CPU-exact kernels (E0, bit-identical to htp_moe); a bit no
-    // lever owns yet is refused.
+    // [#194, htp_moe_ppl] NNTR_HTP_PPL_LEVERS=<mask>: the levers of plan
+    // 194 section 3.1, bit n = lever Ln (0x2: L1, the native FC / DENSE_FFN
+    // / LM_HEAD kernels; 0x4: L2, the vector router; 0x8: L3, the vector
+    // norms / conv gate / SwiGLU, m1_ops_vec_det.h; 0x10: L4, the hops'
+    // deadline wait, bound NNTR_HTP_E2E_HOP_SPIN_US, default 50 us). Unset
+    // or 0 = E0 (the CPU-exact kernels, bit-identical to htp_moe); a bit
+    // no lever owns yet is refused.
     uint32_t levers = 0;
     if (const char *l = std::getenv("NNTR_HTP_PPL_LEVERS")) {
       char *end = nullptr;
       const unsigned long v = std::strtoul(l, &end, 0);
-      if (end == l || *end != '\0' || (v & ~0xEul) != 0)
-        throw std::invalid_argument("NNTR_HTP_PPL_LEVERS=" + std::string(l) +
-                                    " (known: 0x2 = L1 native FC, 0x4 = L2 "
-                                    "vector router, 0x8 = L3 vector norms)");
+      if (end == l || *end != '\0' || (v & ~0x1Eul) != 0)
+        throw std::invalid_argument(
+          "NNTR_HTP_PPL_LEVERS=" + std::string(l) +
+          " (known: 0x2 = L1 native FC, 0x4 = L2 vector router, 0x8 = L3 "
+          "vector norms, 0x10 = L4 hop deadline wait)");
       levers = static_cast<uint32_t>(v);
     }
+    // a lever's bound in us: its default, or the variable (0..65535)
+    auto bound_us = [](bool on, const char *name, uint32_t dflt) {
+      const char *l = on ? std::getenv(name) : nullptr;
+      if (l == nullptr)
+        return on ? dflt : 0u;
+      char *end = nullptr;
+      const unsigned long v = std::strtoul(l, &end, 10);
+      if (end == l || *end != '\0' || v > 0xFFFFul)
+        throw std::invalid_argument(std::string(name) + "=" + l +
+                                    " (0..65535 us)");
+      return static_cast<uint32_t>(v);
+    };
+    ppl_levers_ = levers;
+    hop_spin_us_ = bound_us(levers & 0x10u, "NNTR_HTP_E2E_HOP_SPIN_US", 50u);
     std::fprintf(stderr, "[HTP] ppl levers=0x%x L1=%s\n", levers,
                  (levers & 0x2u) ? "native_fc" : "exact");
-    if ((levers & 0xCu) != 0u) // the line above stays as sitting 1 read it
-      std::fprintf(stderr, "[HTP] ppl levers L2=%s L3=%s\n",
+    if ((levers & 0x1Cu) != 0u) // the line above stays as sitting 1 read it
+      std::fprintf(stderr, "[HTP] ppl levers L2=%s L3=%s L4 hop_spin_us=%u\n",
                    (levers & 0x4u) ? "router_vec" : "exact",
-                   (levers & 0x8u) ? "norm_conv_swiglu_vec" : "exact");
+                   (levers & 0x8u) ? "norm_conv_swiglu_vec" : "exact",
+                   hop_spin_us_);
     const uint32_t vec_kinds =
       ((levers & 0x4u) ? HTP_GRAPH_KIND_BIT(HTP_OP_ROUTER_TOPK) : 0u) |
       ((levers & 0x8u)
@@ -3322,12 +3339,17 @@ private:
                                std::to_string(rc));
     }
     const uint32_t spin_us = e2eSpinUs();
+    if (spin_us > 0xFFFFu)
+      throw std::invalid_argument("NNTR_HTP_E2E_SPIN_US > 65535 us");
+    // [#194 L4] the deadline spin's bound rides spin_us's high half
+    // (hexkl_token.h); 0 = the wait as before
+    const uint32_t spin_word = spin_us | (hop_spin_us_ << 16);
     rc = nntr_hvx_token_driver_start(
-      e.h1, fd, static_cast<uint32_t>(e.mbox->size()), 1u, spin_us);
+      e.h1, fd, static_cast<uint32_t>(e.mbox->size()), 1u, spin_word);
     e.drv1 = rc == AEE_SUCCESS;
     if (rc == AEE_SUCCESS)
       rc = nntr_hvx_token_driver_start(
-        e.h2, fd, static_cast<uint32_t>(e.mbox->size()), 0u, spin_us);
+        e.h2, fd, static_cast<uint32_t>(e.mbox->size()), 0u, spin_word);
     e.drv2 = e.drv1 && rc == AEE_SUCCESS;
     if (rc != AEE_SUCCESS) {
       throw std::runtime_error("nntr_hvx_token_driver_start[" +
@@ -3341,9 +3363,10 @@ private:
     e.spin_us = spin_us;
     std::fprintf(stderr,
                  "[HTP] token driver: on s1_effdom=%d s2_effdom=%d mbox=%zu "
-                 "spin_us=%u rounds=%u hops/token=%u logits_buf=%zu\n",
+                 "spin_us=%u hop_spin_us=%u rounds=%u hops/token=%u "
+                 "logits_buf=%zu\n",
                  static_cast<int>(CDSP_DOMAIN_ID), e.dom2, e.mbox->size(),
-                 spin_us, rounds, 2u * rounds, logits_bytes);
+                 spin_us, hop_spin_us_, rounds, 2u * rounds, logits_bytes);
   }
 
   /** @brief [#132 Part B E3] The close hook, before the sessions close:
@@ -5170,6 +5193,9 @@ private:
    *  #178 probe's 64 KiB. */
   static constexpr size_t kMboxBytes = size_t(64) << 10;
   bool e2e_ = false; /**< NNTR_HTP_E2E=1 and a description set */
+  /** [#194] NNTR_HTP_PPL_LEVERS as the description step read it, and L4's
+   *  hop spin bound (us, 0 = off) */
+  uint32_t ppl_levers_ = 0, hop_spin_us_ = 0;
   std::shared_ptr<E2eState> e2e_st_;
   bool q4m1_bound_ = false; /**< the Q4M1 weights registered at load (E3) */
   size_t q4m1_left_ = 0;    /**< S2 arena bytes still to place */

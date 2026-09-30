@@ -117,33 +117,50 @@ static void tk_post(uint8_t *slot, volatile uint32_t *word, uint32_t seq,
 }
 
 /** @brief Waits for @a word == @a seq, then reads the slot's header and
- *  checks it and the trailer against @a seq.
+ *  checks it and the trailer against @a seq. @a spin_us: the leading spin
+ *  (low 16 bits) and [#194 L4] the deadline spin's bound (high 16 bits),
+ *  whose deadline is *@a expect (NULL: none), updated to this wait.
  *  @return 0, AEE_EEXPIRED or HEXKL_TOKEN_E_STALE */
 static int tk_take(uint8_t *slot, volatile uint32_t *word, uint32_t seq,
-                   uint32_t spin_us, hexkl_token_stats *st,
+                   uint32_t spin_us, uint32_t *expect, hexkl_token_stats *st,
                    hexkl_mbox_hdr *out) {
   const uint64_t t0 = tk_now_us();
-  uint64_t seen;
+  const uint32_t lead = spin_us & 0xFFFFu;
+  const uint32_t bound = expect != NULL ? spin_us >> 16 : 0u;
+  const uint64_t dl0 = bound == 0u ? 0u
+                       : *expect > HEXKL_TOKEN_DL_LEAD_US
+                         ? *expect - HEXKL_TOKEN_DL_LEAD_US
+                         : 0u;
+  uint64_t seen, dt;
   uint32_t row;
   for (;;) {
     tk_refresh((void *)word, 4u);
     if (*word == seq) {
       break;
     }
-    const uint64_t dt = tk_now_us() - t0;
-    if (dt >= (uint64_t)spin_us + HEXKL_TOKEN_TIMEOUT_US) {
+    dt = tk_now_us() - t0;
+    if (dt >= (uint64_t)lead + HEXKL_TOKEN_TIMEOUT_US) {
       st->wait_us += (uint32_t)dt;
       ++st->timeouts;
       return AEE_EEXPIRED;
     }
-    if (dt >= spin_us) {
-      tk_sleep(); /* one read of the word per wake */
-    } else {
+    if (dt < lead || (bound != 0u && dt >= dl0 && dt < dl0 + bound)) {
       tk_pause();
+    } else {
+      tk_sleep(); /* one read of the word per wake */
     }
   }
   seen = tk_now_us();
-  st->wait_us += (uint32_t)(seen - t0);
+  dt = seen - t0;
+  st->wait_us += (uint32_t)dt;
+  if (bound != 0u) {
+    if (dt >= dl0) {
+      const uint64_t end = dt < dl0 + bound ? dt : dl0 + bound;
+      st->dl_spin_us += (uint32_t)(end - dl0);
+      st->dl_hits += dt < dl0 + bound;
+    }
+    *expect = (uint32_t)dt;
+  }
   tk_refresh(slot, HEXKL_MBOX_LINE);
   memcpy(out, slot, sizeof(*out));
   if (out->seq != seq || out->n * 4u > HEXKL_MBOX_ROW_MAX) {
@@ -250,7 +267,9 @@ int hexkl_token_main(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
       return rc;
     }
     tk_pcycles(g, start, end, st);
-    rc = tk_take(theirs, pong, seq, spin_us, st, &h);
+    rc = tk_take(
+      theirs, pong, seq, spin_us,
+      round < HEXKL_TOKEN_DL_ROUNDS ? &st->dl_expect_us[round] : NULL, st, &h);
     if (rc != AEE_SUCCESS) {
       return rc;
     }
@@ -287,7 +306,9 @@ int hexkl_token_serve(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
     const uint32_t seq = hexkl_token_seq(tok, r);
     uint32_t end = 0, n_out = 0, resume = 0;
     hexkl_mbox_hdr h;
-    int rc = tk_take(theirs, ping, seq, spin_us, st, &h);
+    int rc =
+      tk_take(theirs, ping, seq, spin_us,
+              r < HEXKL_TOKEN_DL_ROUNDS ? &st->dl_expect_us[r] : NULL, st, &h);
     if (rc == AEE_EEXPIRED) {
       return rc; /* S2 is gone or on another token: nobody to tell */
     }
