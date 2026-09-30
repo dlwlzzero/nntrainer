@@ -1,10 +1,43 @@
 # Measurement 132 Part B E5: the two-session NPU end-to-end decode on silicon
 
-**Current set: set_e5b** — branch `htp/132-partb-e3` @ `54a30c7f` (app set
-**e3**) and `dev/e2e-shadow-132` @ `e91737a2` (app set **sh**, never merged),
-staged at `/local/mnt/workspace/htp_moe/132/set_e5b/` — estimated device
-time: **≈ 90 min** (phone rebooted first). set_e5 (below, `10bb91b7` /
-`d77a4bf2`) was read on 2026-09-30 06:13.
+**Current set: set_e5h** — branch `htp/132-partb-prefetch` @ `8dbcd15d`
+(on `htp/132-partb-e3` @ `d8143090`), staged at
+`/local/mnt/workspace/htp_moe/132/set_e5h/` — estimated device time:
+**≈ 60 min** (phone rebooted first). set_e5g2 (`htp/132-partb-e3` @
+`d8143090`) is staged and not yet read.
+
+## set_e5h (staged): the weight prefetch across the alternation
+
+* Design. `NNTR_HTP_E2E_PREFETCH_KB=<n>` (0 = off, the default; ≤ 65535)
+  rides both OP_TOKEN packets (flags bits 16–31). S2, after posting each
+  hop, `l2fetch`es the first n KiB of the first Q4M1 weight of its next
+  stretch (the next layer's conv in_proj or qkv part; the lm_head's first
+  slice after the last round) while S1 runs the MoE round, and that run's
+  DMA reads the prefix through the L2 (`src_bypass 0`) and the rest around
+  it as before. S1, after each pong, `l2fetch`es its next router's rows
+  (K × 32 × 4 B). Reads only: the vector unit sees the same bytes.
+* Accounting: the moe pcyc/round close line adds `prefetch_mb/token s1=…
+  s2=…` beside `s2 fc+dense_ffn+lm_head ms/token=…`; the token driver
+  banner names `prefetch_kb=`.
+* Host (in-process lfm25, prompt 512): prefetch 0 / 64 / 4096 KiB
+  bit-identical; `E2E prefetch kb=4096 s2_mb/token=10.28 bit_identical=1`
+  (s1 0.75 MB/token). The l2fetch is a no-op off the device: **its effect
+  is unmeasured.**
+* Expectation. The window is bounded by the L2, not by DRAM headroom:
+  #90 / #162 read a gain at 4 MiB and a loss past 10–20 MiB on the hybrid
+  path, and one l2fetch per hop per thread covers only the next stretch's
+  first weight. So the saving is likely well below the ≈ 3 ms of the
+  estimate below; the ladder decides the default.
+* Cells (`run_e5h.sh`, runner `b32ecf63…`, skel `c311c2f1…`,
+  `libnntrainer.so` `21cf5e99…`): canary (4 FC/M1 cells); warm-up A;
+  ladder at G = 64, E with 0 / 1024 / 2048 / 4096 / 8192 KiB; then per G
+  in 64 / 512 / 1024: A, E, Epf, Epf, E, A (Epf = 4096 KiB, or `PF_KB=`);
+  S1's ceiling read after every run and an A sanity after every E (E5g's
+  protocol); text of every cell against A r1 of its G; per-kind lines of
+  E and Epf at G = 512.
+* Expected: `canary 4 tests PASSED`, `ceiling after <run>: 3840 MiB`
+  throughout, `speed: text == A r1 of its G` = 0 DIFF, ladder
+  `prefetch_mb/token s2` rising with the window, `mismatches: 0`.
 
 ## set_e5g as read (2026-09-30 10:02–10:3x): not a leak, a refused retry
 
@@ -71,7 +104,7 @@ with S1's ceiling read before the sitting and after every run (below 3840:
 `STOP: LEAK … after <run>`), an A sanity after every E run, each E run's
 close line and logcat kept.
 
-## Follow-up after the leak: weight prefetch across the alternation
+## Follow-up after the leak: weight prefetch across the alternation (the estimate; built as set_e5h)
 
 The data dependence leaves one overlap: while S1 runs a layer's MoE round,
 S2 is idle, and DRAM has ≈ 12–15 GB/s of headroom beside the MoE feed. A
