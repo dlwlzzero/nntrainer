@@ -3,7 +3,7 @@
 **Current set: set_e5i** — branch `htp/132-partb-prefetch` @ `c6fa0352`
 + this doc (on `htp/132-partb-e3` @ `ad8496e2`, which carries the teardown
 fix), staged at `/local/mnt/workspace/htp_moe/132/set_e5i/` — estimated
-device time: **≈ 40 min** (phone rebooted first).
+device time: **≈ 45 min** (phone rebooted first).
 
 ## set_e5h as read (2026-09-30 10:37–11:2x, R3CY10WM83Y after a reboot)
 
@@ -60,12 +60,15 @@ device time: **≈ 40 min** (phone rebooted first).
   and what is mapped at exit; `E2E teardown 25off / 25e3 arena chunks
   unmapped 1/1 mapped_kib=0 freed_while_mapped=0` (the arena line after
   S2's close), `INPROC E2E PASS`, every other gate line unchanged.
-* Cells (`run_e5i.sh`, runner `8e426feb…`, skel `bf022353…`,
+* Cells (`run_e5i.sh`, runner `a4e8abb9…`, skel `bf022353…`,
   `libnntrainer.so` `24947166…`, `unittest_hvx_two_sessions` `d14128bc…`):
   canary (exact FC; the conv cell printed as information); 20 × A at
   G = 8, then 10 × E at G = 8; S1's ceiling after every run, logcat of
   every run, the teardown line checked per run; stops at the first ceiling
-  below 3840 and names the run.
+  below 3840 and names the run. Then E and A at G = 64 with
+  `NNTR_OP_TIME=1` (inert, host `E2E op-time inert`): the per-node table
+  of the ARM side for the L0 split (E's token call sits in the first
+  hooked node; every other E node is the walk), ≈ 3 min.
 * Expected: `ceiling after <run>: 3840 MiB` for all 30 runs, every run
   `chunks unmapped 15/15`-style with n/n and `release rc=0x0`, E closes
   `unmap_fail=0 detach_fail=0`, `expectation mismatches: 0`. At E5f–E5h's
