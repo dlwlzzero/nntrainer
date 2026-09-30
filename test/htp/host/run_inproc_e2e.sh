@@ -133,6 +133,13 @@
 # arithmetic, so bit-identical to 0xE, and no hop lost:
 #   E2E eval l4==l123-lfm25 files=16 bit_identical=1 ...
 #   E2E l4 hop_spin_us=50 timeouts=0/0 stale=0/0 ok
+# and L0 (0x1F: S2's queue spins 3000 us after a token, the ARM polls S2's
+# answer +-1000 us around the last token's time, and a steady token is
+# posted at op 0's hook so the layer walk runs beside it): bit-identical
+# to 0x1E, the ARM's window taken and early posts made at least once:
+#   E2E eval l0==l4-lfm25 files=16 bit_identical=1 ...
+#   E2E l0 s2q_spin_us=3000 arm_window_us=1000 arm_hits=<h>/<n> ...
+#       early_posts=<p> timeouts=0/0 ok
 #   E2E L0 wake split closes: disp s1=.. s2=.. s2_pkt=.. ret s2=.. clk_resid=..
 #   E2E ppl-decode alts steps=7 ok                     (NNTR_PPL_DECODE_ALTS:
 #                              the step lines gain the ids' logits)
@@ -342,6 +349,8 @@ PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0xE \
   run_e2e q25-l123 "$OUT/htp25q" htp "$OUT/dump_25l123" "$OUT/25l123.log" --max-seq 2048
 PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0x1E \
   run_e2e q25-l1234 "$OUT/htp25q" htp "$OUT/dump_25l1234" "$OUT/25l1234.log" --max-seq 2048
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_PPL_LEVERS=0x1F \
+  run_e2e q25-l01234 "$OUT/htp25q" htp "$OUT/dump_25l01234" "$OUT/25l01234.log" --max-seq 2048
 rc_e1=0
 NNTR_HTP_FORWARD=1 NNTR_HTP_FORWARD_KINDS=$E1_KINDS "$E2E" --model "$OUT/htp" \
   --tokenizer "$FIX/tokenizer.json" --prompt $PROMPT --steps $STEPS \
@@ -768,7 +777,7 @@ echo "$l23_line"
 grep -q 'bit_identical=0' <<< "$l23_line" ||
   { echo "E2E FAIL l123-lfm25 bit-identical to L1: L2 / L3 are not wired"; fail=1; }
 if grep -q '^\[HTP\] ppl levers=0xe L1=native_fc$' "$OUT/25l123.log" &&
-  grep -q '^\[HTP\] ppl levers L2=router_vec L3=norm_conv_swiglu_vec L4 hop_spin_us=0$' "$OUT/25l123.log"; then
+  grep -q '^\[HTP\] ppl levers L2=router_vec L3=norm_conv_swiglu_vec L4 hop_spin_us=0 L0 s2q_spin_us=0 arm_spin_us=0$' "$OUT/25l123.log"; then
   echo "E2E levers banner l123 L2=router_vec L3=norm_conv_swiglu_vec ok"
 else
   echo "E2E FAIL levers banner l123"; fail=1
@@ -779,6 +788,15 @@ if grep -q 'token driver: on .* hop_spin_us=50 ' "$OUT/25l1234.log" &&
   echo "E2E l4 hop_spin_us=50 timeouts=0/0 stale=0/0 ok"
 else
   echo "E2E FAIL l4 driver lines"; fail=1
+fi
+$EVAL --label l0==l4-lfm25 "$OUT/dump_25l1234" "$OUT/dump_25l01234" | tail -1 || fail=1
+l0="$(grep -ho 'L0 spins .*' "$OUT/25l01234.log" || true)"
+if grep -q 's2q_spin_us=3000 arm_window_us=1000 arm_hits=[1-9].* early_posts=[1-9]' <<< "$l0" &&
+  grep -q 'dspq\[S2\]: on .*dsp_spin_us=3000 ' "$OUT/25l01234.log" &&
+  grep -q 'token driver: close .* timeouts=0/0 stale=0/0 ' "$OUT/25l01234.log"; then
+  echo "E2E l0 ${l0#L0 spins } timeouts=0/0 ok"
+else
+  echo "E2E FAIL l0 [$l0]"; fail=1
 fi
 if grep -q '^\[HTP\] ppl levers=0x0 L1=exact$' "$OUT/64e3.log" &&
   grep -q '^\[HTP\] ppl levers=0x2 L1=native_fc$' "$OUT/25l1.log"; then
