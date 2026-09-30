@@ -1,12 +1,54 @@
 # Measurement 194 sitting 1: E0 / E1 on silicon, the L0 split, the first PPL gate
 
-Branch `htp/194-s1` @ `9b6f575d` (code; this file is the commit after it),
-staged at `/local/mnt/workspace/htp_moe/194/s1/` — estimated device time:
-**≈ 110 min** (reboot first). Track `htp_moe_ppl` (plan
+Sitting 1: branch `htp/194-s1` @ `9b6f575d`, staged at
+`/local/mnt/workspace/htp_moe/194/s1/` (read below). **Sitting 1b (the
+user's next device step): branch `htp/194-s3` @ `b0248a63` (code; this
+file is the commit after it), staged at `/local/mnt/workspace/htp_moe/194/s1b/`
+— estimated device time ≈ 110 min** (reboot first; section "Sitting 1b"). Track `htp_moe_ppl` (plan
 `docs/plans/194-htp-moe-ppl.md`): no bit-preserving rule; the accuracy gate
 is plan 194 section 1 (P1–P4), read against this sitting's A.
 
-## State at pause (2026-09-30)
+## State (resumed 2026-09-30, after the pause)
+
+**Resumed** by the user the same day (the pause for FSU, below, did not
+change the two-session layout: no FSU change has landed). Branches, all
+linear on `origin/htp/ppl-plan` @ `40762adf` (= `htp_moe_ppl` @ `c34fc445`
++ the plan):
+
+* `htp/194-s1` @ `ec860006`: S0 + S1 rebased onto the teardown fix of
+  `htp/132-partb-e3` (its six commits after `69251151`, cherry-picked in
+  order after `ce37cccd`: the arena retry with a fresh fd, the MoE warm-up
+  after mapping, the stand-in cap, e5g's handoff, **`8bb8a3f8` the S1
+  arena released on the DSP and unmapped before the close** and its test
+  `ad8496e2`). Old → new: `33b7ce36` → `ec860006` (one conflict in
+  `run_inproc_e2e.sh`, both sides kept). Rung 1 green on it.
+* `htp/194-s3` @ `b0248a63` (supersedes `htp/194-s3-wip` @ `d8599531`,
+  left on origin untouched): plan S3 on the host, every lever a bit of
+  `NNTR_HTP_PPL_LEVERS`, all off unless set:
+
+  | bit | lever | what | host gate (rung 1) |
+  |---|---|---|---|
+  | 0x2 | L1 | native FC (sitting 1) | as sitting 1 |
+  | 0x4 | L2 | router on 32 f32 lanes, four partial sums, swiglu_det's exp / reciprocal as the sigmoid | kernel ≡ `m1_ops_vec_det.h` (3 shapes × 24 rows); spec vs CPU order: logits ≥ 117 dB, weights ≥ 120 dB; expert set identical on random and exact-tie rows, 0 flips in 4000 LFM2.5 rows; planted 1-ulp near ties flip 1 / 0 / 2 of 8 (printed: that is what P1 / P2 read) |
+  | 0x8 | L3 | RMSNORM / QK_NORM sum of squares on 32 lanes + rotate tree, conv gate unfused, DENSE_FFN SwiGLU by `swiglu_det_one` | kernel ≡ spec on 64 rows each; spec vs CPU order 133–146 dB; graph ops ≡ spec with the bit, 5 graph mutants caught |
+  | 0x10 | L4 | the hops' deadline wait: sleep to the last token's wait of that round − 40 µs, spin ≤ `NNTR_HTP_E2E_HOP_SPIN_US` (50) | 10 000 tokens bit-identical at bounds 0 / 50 / 200 µs, lead 0, timeouts 0, stale 0; 0x1E ≡ 0xE in-process |
+  | 0x1 | L0 | op 0's hook posts a steady token so the layer walk runs beside it (the walk is overlapped, not skipped: plan wording deviates); S2's queue spins `NNTR_HTP_E2E_S2Q_SPIN_US` (3000) after each answer; the ARM polls S2's answer ± `NNTR_HTP_E2E_ARM_SPIN_US` (1000) around the last token's time | 0x1F ≡ 0x1E in-process, `early_posts` 6 of 7, `arm_hits` 4/7, timeouts 0 |
+
+  In-process PPL / SNR with L1–L3 (0xE): hd64 −0.009 % vs E0, lfm25
+  32.5 dB vs E0 (gate ≥ 30), 34.1 dB vs L1 alone (the bits are wired).
+  **Host-only**: no device number exists for L2–L4 or L0's fixes; the
+  vector kernels have no device gtest (their silicon reading is the
+  sitting's PPL, plan P1 / P2); the host's µs are not device µs.
+* Code review (`/code-review high`, `ec860006..`): one finding, fixed in
+  the L0 commit — the ARM's window slept once to its deadline and then
+  recorded the read time, so after one slow token the estimate fell by
+  only a window a token; it now sleeps in 500 µs slices with a poll
+  between. Nothing else found in the state machine, L4 or the kernels.
+* Not done in S3: the first decode token's one-time ≈ 140 ms (moving the
+  KV seed / E2E start to the end of the prefill); a DSP-side spin of S1's
+  queue (not needed: S1 waits for S2's first stretch anyway).
+
+## State at pause (2026-09-30, superseded by the section above)
 
 **htp_moe_ppl is paused** (user decision 2026-09-30: FSU will shrink the
 MoE's DRAM residency, which changes the two-session premise). No sitting
@@ -111,24 +153,52 @@ one-time moved; plan §3.4's L0 row (−5, range −3…−7) holds.
 still expected E5f's trailing `s1_heap_kib=`, which the s2 line no longer
 prints. The runs were fine; run_s1b.sh matches `… s1_arena_mib=3840`.
 
-## Sitting 1b (staged; run after the teardown fix)
+## Sitting 1b (staged from `htp/194-s3` @ `b0248a63`; the user's next step)
 
-`/local/mnt/workspace/htp_moe/194/s1b/run_s1b.sh [serial]` — the cells
+`bash /local/mnt/workspace/htp_moe/194/s1b/run_s1b.sh R3CY10WM83Y` (any
+attached S25 Ultra serial) — **≈ 110 min, reboot first**. The cells
 sitting 1 did not reach: canary; speed A E0 E1 E1 E0 A + an E0
 `NNTR_OP_TIME=1` run at G = 512 and 1024; the lane ladder (E1 G = 64 at
 6,3 / 6,6 / 8,8) + an E0 L0 run at G = 64 (the wake split); the 8 prompts
 at G = 256 (A self, A forced p01, E0 / E1 forced, E1 free text); mc-40 (A
-and E1 all 40, E0 q01–q08). **Resumable**: each block leaves
-`logs/done/<block>`; after any STOP, reboot and run the same command — it
-skips finished blocks and restarts the unfinished one. ≈ 100 min in all;
-the summary (nulls, P1–P4, speed, L0 with the wake split, lanes) prints
-after the last block. Checked on the workstation with a fake `adb` (two
-boots, a stop injected mid-block, the resume and the summary), not on the
-phone. Staged from `1ba5ae06` (the wake split); **re-stage after rebasing
-onto the teardown fix**: rebuild (rungs 2, 3; `ninja -C builddir install`
-first — `--cache` skips nntrainer), then `bash
-/local/mnt/workspace/htp_moe/194/s1b/stage_s1b.sh` rewrites `app/`,
-`tools/`, `md5.txt` and the runner's commit.
+and E1 all 40, E0 q01–q08); **new, last and informational: block `e2`**
+— E1, E2 (`NNTR_HTP_PPL_LEVERS=0x1F`: L0–L4) and E2s (E2 with
+`NNTR_HTP_E2E_HOP_SPIN_US=200`) at G = 64, for the S3 levers' speed and
+L0 split on silicon (≈ 8 min; not a gate — their P1–P4 is sitting 2's).
+**Resumable**: each block leaves `logs/done/<block>`; after any STOP,
+reboot and run the same command — it skips finished blocks and restarts
+the unfinished one. The summary (nulls, P1–P4, speed, L0 with the wake
+split, lanes, e2) prints after the 17th block. Dry-run on the workstation
+with a fake `adb` (every block, a stop injected mid-block, the resume and
+the summary), not on the phone.
+
+The binary carries the teardown fix (the S1 arena released on the DSP and
+unmapped before the close) and every S3 lever; E0 (mask 0) and E1 (mask
+2) run the same code paths as sitting 1's apart from that fix, so their
+cells read as sitting 1's. Expected lines, in addition to the ones listed
+under Steps: every E2 / E2s run `[HTP] ppl levers=0x1f L1=native_fc` and
+`[HTP] ppl levers L2=router_vec L3=norm_conv_swiglu_vec L4
+hop_spin_us=50 L0 s2q_spin_us=3000 arm_spin_us=1000` (200 for E2s), a
+`token driver: L0 spins … arm_hits=… early_posts=…` line at the close,
+and the same clean close (`timeouts=0/0 stale=0/0 … id_mismatch=0`).
+
+| file (under `/local/mnt/workspace/htp_moe/194/s1b/`) | md5 | built with |
+|---|---|---|
+| app/libnntr_hvx_skel.so | `f87aef1a429bd9c5a301fbb5792aa603` | `test/htp/build.sh` (`UNDEFINED SYMBOLS OK (58 runtime imports)`) |
+| app/nntrainer_causallm | `f5afd05b2674d484ba637868ec5a5ffd` | `(cd builddir && ninja install)`, then `build_android.sh --htp --cache` |
+| app/libcausallm_core.so | `ee0bc1d6fb83197845b00f0d098930b8` | 〃 (`NNTR_HTP_FORWARD_KINDS` ×2, `NNTR_PPL_DECODE_ALTS` ×2) |
+| app/libnntrainer.so | `8e6127005cc2201b157109e93021bfdf` | 〃 (`jni/obj/local`; `NEEDED libsdkl.so, libcdsprpc.so`) |
+| app/libccapi-nntrainer.so | `d4d3dbf4d82bfffd0812f0792d437823` | 〃 (`jni/obj/local`) |
+| app/libc++_shared.so | `b1586b9b512712800fd36a24abac1c0a` | NDK r30 sysroot |
+| app/libsdkl.so | `0ad4e22a70e4f135bce38ad8fd1e001b` | HexKL beta.2 `lib/6.4.0.1/armv8_android26` |
+| app/unittest_hvx_softmax | `eab0334e10f40ac08b6b6c61f373995e` | `ndk-build` (canary) |
+| app/unittest_hvx_two_sessions | `712a6a101678ad5344b4eb1974e496c2` | `ndk-build` (`TwoSessions.S1Ceiling`) |
+| run_s1b.sh, the prompts, mc-40, tools | `md5.txt` | `stage_s1b.sh` |
+
+The skel's md5 names one build, not its sources: `hexagon-link` stores
+its command line, with randomly suffixed `/tmp/*.o` names, in the
+binary, so two builds of the same commit differ. The staged copy and
+`md5.txt` are what the runner checks on both ends.
 
 ## Why
 
@@ -164,7 +234,10 @@ whose nll lines must equal A's to 17 digits.
   (`docs/measurements/prompts/mc-40*`, `tools/htp/mc_ids.py`,
   `tools/htp/mc_score.py`).
 
-## Artifacts (built on the workstation, SDK 6.4.0.1, HexKL beta.2 6.4.0.1, NDK r30, v79)
+## Artifacts (sitting 1; built on the workstation, SDK 6.4.0.1, HexKL beta.2 6.4.0.1, NDK r30, v79)
+
+Sitting 1b's artifacts and command are in section "Sitting 1b"; the
+fill-in tables under Results serve both sittings.
 
 | file (under `/local/mnt/workspace/htp_moe/194/s1/`) | md5 | built with |
 |---|---|---|
@@ -185,7 +258,7 @@ whose nll lines must equal A's to 17 digits.
 `md5.txt` in the stage lists every file; the runner checks it on both ends
 and stops on a mismatch.
 
-## Steps (workstation, phone on USB)
+## Steps (sitting 1; 1b: the same, with `run_s1b.sh` in step 2)
 
 1. **Reboot the phone**, let it idle to zone0 ≤ 35 °C.
 2. `bash /local/mnt/workspace/htp_moe/194/s1/run_s1.sh R3CY10WM83Y`
@@ -272,6 +345,14 @@ Reference (E5f, same unit, 2026-09-30): A 53.96 / 53.57 / 51.49, E 29.38 /
 | 6,3 (default) | | |
 | 6,6 | | |
 | 8,8 | | |
+
+### e2 (informational; E1 / E2 / E2s at G = 64, `logs/e2.txt`)
+
+| variant | prefill | decode tok/s | text = E1 of the block | L0 us/token (rt / s2_wall / wake / arm_us) | hop_us s1 / s2 | L0 spins (arm_hits, early_posts) |
+|---|---|---|---|---|---|---|
+| E1 | | | (ref) | | | — |
+| E2 | | | | | | |
+| E2s | | | | | | |
 
 ## Text approval
 
