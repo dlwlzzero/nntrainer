@@ -141,6 +141,8 @@ void nntr_hvx_graph_env(const nntr_hvx_session *s, hexkl_graph_env *env) {
   env->attn_m1 = s->attn_m1;        /* [#130] borrowed; NULL until registered */
   env->fc = nntr_hvx_fc_q4m1_graph; /* [#132 Part B] */
   env->fc_ctx = (void *)s;
+  env->q4m1_ptr = nntr_hvx_q4m1_ptr; /* [E5h] */
+  env->prefetch_bytes = 0u;          /* the token call sets it */
 }
 
 /** @brief One FARF line per call (HIGH: silent unless the mask enables

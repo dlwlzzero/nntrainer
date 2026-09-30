@@ -32,6 +32,7 @@
 
 #if defined(__hexagon__)
 #include <HAP_perf.h>
+#include <hexagon_protos.h>
 #include <qurt.h>
 #include <qurt_memory.h>
 #else
@@ -175,6 +176,68 @@ static uint32_t tk_stretch_end(const hexkl_graph *g, uint32_t s) {
   return s;
 }
 
+/** @brief [E5h] One background L2 fetch of [p, p + n), n rounded down to
+ *  32 KiB rows (Rtt: stride [47:32], width [31:16], height [15:0]). A later
+ *  l2fetch from the same thread replaces it, so one a hop. */
+static uint32_t tk_l2fetch(const void *p, uint32_t n) {
+  const uint32_t row = 32768u, rows = n / row;
+  if (p == NULL || rows == 0u) {
+    return 0u;
+  }
+#if defined(__hexagon__)
+  Q6_l2fetch_AP((void *)p, ((uint64_t)row << 32) | ((uint64_t)row << 16) |
+                             (uint64_t)(rows > 65535u ? 65535u : rows));
+#endif
+  return (rows > 65535u ? 65535u : rows) * row;
+}
+
+/** @brief [E5h] S2, after posting a hop: the next stretch's first Q4M1
+ *  weight -- the ops from the first resident op after @a end (S1's
+ *  stretch skipped) to the end of that stretch -- its first
+ *  env->prefetch_bytes into the L2, the handle marked in g->pf_*. */
+static void tk_prefetch_next_fc(hexkl_graph *g, const hexkl_graph_env *env,
+                                uint32_t end, hexkl_token_stats *st) {
+  uint32_t i = end, bytes = 0;
+  if (env->prefetch_bytes == 0u || env->q4m1_ptr == NULL) {
+    return;
+  }
+  while (i < g->n_ops && !g->ops[i].resident) {
+    ++i;
+  }
+  for (; i < g->n_ops && g->ops[i].resident; ++i) {
+    const uint32_t k = g->ops[i].kind;
+    if (k == HTP_OP_FC || k == HTP_OP_DENSE_FFN || k == HTP_OP_LM_HEAD) {
+      const uint32_t h = g->ops[i].h_gu[0];
+      const uint8_t *w = env->q4m1_ptr(env->fc_ctx, h, &bytes);
+      const uint32_t n = tk_l2fetch(
+        w, bytes < env->prefetch_bytes ? bytes : env->prefetch_bytes);
+      if (n != 0u) {
+        g->pf_h = h;
+        g->pf_bytes = n;
+        st->pf_bytes += n;
+      }
+      return;
+    }
+  }
+}
+
+/** @brief [E5h] S1, after posting a pong: the next resident ROUTER_TOPK's
+ *  weight rows (K x 32 f32, 256 KiB at LFM2.5) into the L2. */
+static void tk_prefetch_next_router(const hexkl_graph *g,
+                                    const hexkl_graph_env *env, uint32_t end,
+                                    hexkl_token_stats *st) {
+  uint32_t i;
+  if (env->prefetch_bytes == 0u) {
+    return;
+  }
+  for (i = end; i < g->n_ops; ++i) {
+    if (g->ops[i].resident && g->ops[i].kind == HTP_OP_ROUTER_TOPK) {
+      st->pf_bytes += tk_l2fetch(g->param[i], g->ops[i].K * 32u * 4u);
+      return;
+    }
+  }
+}
+
 uint32_t hexkl_token_rounds(const hexkl_graph *g) {
   uint32_t i, n = 0;
   for (i = 0; i < g->n_ops; ++i) {
@@ -236,6 +299,9 @@ int hexkl_token_main(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
     hvx_worker_pool_park(env->pool); /* S1 computes next */
     /* posted either way: a failure ends S1's token at once */
     tk_post(mine, ping, seq, end, n_out, rc);
+    if (rc == AEE_SUCCESS) {
+      tk_prefetch_next_fc(g, env, end, st); /* [E5h] during S1's round */
+    }
     ++st->hops;
     if (rc != AEE_SUCCESS) {
       return rc;
@@ -301,6 +367,9 @@ int hexkl_token_serve(hexkl_graph *g, const hexkl_graph_env *env, uint8_t *mbox,
     }
     hvx_worker_pool_park(env->pool); /* S2 computes next */
     tk_post(mine, pong, seq, resume, n_out, rc);
+    if (rc == AEE_SUCCESS) {
+      tk_prefetch_next_router(g, env, end, st); /* [E5h] */
+    }
     ++st->hops;
     if (rc != AEE_SUCCESS) {
       return rc;

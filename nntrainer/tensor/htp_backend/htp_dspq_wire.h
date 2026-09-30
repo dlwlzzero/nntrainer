@@ -37,6 +37,10 @@
 /** @brief OP_TOKEN: S2 writes the logits into buffer 1 (NNTR_PPL_DECODE,
  *  the shadows); without it only the id travels. */
 #define HTP_DSPQ_TOKEN_LOGITS 1u
+/** @brief [#132 Part B E5h] OP_TOKEN flags bits 16-31: the weight prefetch
+ *  per hop in KiB (S2: the next FC's prefix; S1: any nonzero value
+ *  prefetches the next router), 0 = off. */
+#define HTP_DSPQ_TOKEN_PF_SHIFT 16u
 /** @brief mm_u8i4_moe_layer_timed's slot count; both sides check theirs. */
 #define HTP_DSPQ_STAGES 31u
 #define HTP_DSPQ_MAX_MSG 4096u
@@ -79,6 +83,7 @@ typedef struct htp_dspq_token_resp_s {
   int32_t rc;
   uint32_t id, hops, wait_us, pcycles;
   uint32_t wall_us, wall_pcyc;
+  uint32_t pf_kib; /**< [E5h] KiB this side l2fetch'd in the token */
   uint32_t kind_pcyc[HTP_DSPQ_TOKEN_KINDS];
 } htp_dspq_token_resp;
 

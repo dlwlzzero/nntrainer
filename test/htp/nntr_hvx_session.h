@@ -139,7 +139,8 @@ void nntr_hvx_graph_env(const nntr_hvx_session *s, hexkl_graph_env *env);
 struct htp_dspq_token_resp_s;
 int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
                        const float *act, uint32_t act_len, float *logits,
-                       uint32_t logits_len, struct htp_dspq_token_resp_s *r);
+                       uint32_t logits_len, uint32_t pf_kib,
+                       struct htp_dspq_token_resp_s *r);
 
 /** @brief [#132 Part B E2] Stops the token driver, if any (close()).
  *  Lives in nntr_hvx_token.c. */
@@ -167,7 +168,11 @@ int nntr_hvx_q4m1_borrows(const nntr_hvx_session *s, const uint8_t *va,
  */
 int nntr_hvx_fc_q4m1_run(nntr_hvx_session *s, uint32_t h, const hvx_q4m1_act *a,
                          float *y, uint32_t lanes, uint32_t feed,
-                         uint32_t *lanes_used);
+                         uint32_t pf_bytes, uint32_t *lanes_used);
+
+/** @brief [#132 Part B E5h] Q4M1 slot @a h's weight and its size (the
+ *  graph env's q4m1_ptr); NULL for a free slot. In nntr_hvx_fc_q4.c. */
+const uint8_t *nntr_hvx_q4m1_ptr(void *ctx, uint32_t h, uint32_t *bytes);
 
 /** @brief [#132 Part B] The graph's hexkl_graph_fc_fn over @a ctx = the
  *  session: the op's feed 0 takes VTCM at 6 lanes when two groups per lane

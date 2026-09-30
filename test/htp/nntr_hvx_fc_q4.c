@@ -228,6 +228,9 @@ typedef struct {
   float *y;
   uint32_t feed_vtcm;  /**< any DMA feed (VTCM or L2) */
   uint32_t dst_bypass; /**< 1 the VTCM feed, 0 the L2 feed */
+  size_t pf_bytes;     /**< [E5h] the prefix the token driver l2fetch'd: its
+                            groups are read through the L2 (src_bypass 0), the
+                            rest around it (1). Same bytes either way */
   uint8_t *vtcm;
   uint32_t vtcm_per_lane;
   uint32_t lanes_used;           /**< written by lane 0 */
@@ -238,11 +241,12 @@ typedef struct {
  *  scratch) on this thread's engine, reading around the DSP L2 (the
  *  registration cleaned the source). */
 static void fc_dma_start(hexkl_dma_desc2d *d, void *dst, const void *src,
-                         uint32_t bytes, uint32_t dst_bypass) {
+                         uint32_t bytes, uint32_t dst_bypass,
+                         uint32_t src_bypass) {
   memset(d, 0, sizeof(*d));
   d->desc_size = 1;
   d->desc_type = 9;
-  d->src_bypass = 1;
+  d->src_bypass = src_bypass;
   d->dst_bypass = dst_bypass;
   d->src = (void *)src;
   d->dst = dst;
@@ -285,7 +289,8 @@ static void fc_lane(uint32_t n, uint32_t i, void *v) {
   uint32_t cur = 0;
   if (i < c->G) {
     fc_dma_start(&g_desc[i][0], buf[0], c->w + i * c->gbytes,
-                 (uint32_t)c->gbytes, c->dst_bypass);
+                 (uint32_t)c->gbytes, c->dst_bypass,
+                 (i + 1u) * c->gbytes > c->pf_bytes);
   }
   for (uint32_t g = i; g < c->G; g += n) {
     if (!fc_dma_wait(&g_desc[i][cur])) {
@@ -295,7 +300,7 @@ static void fc_lane(uint32_t n, uint32_t i, void *v) {
     if (g + n < c->G) {
       fc_dma_start(&g_desc[i][cur ^ 1u], buf[cur ^ 1u],
                    c->w + (g + n) * c->gbytes, (uint32_t)c->gbytes,
-                   c->dst_bypass);
+                   c->dst_bypass, (g + n + 1u) * c->gbytes > c->pf_bytes);
     }
     hvx_q4m1_gemv_groups(buf[cur], c->K, 1u, c->a,
                          c->y + (size_t)g * Q4M1_GROUP);
@@ -305,7 +310,7 @@ static void fc_lane(uint32_t n, uint32_t i, void *v) {
 
 int nntr_hvx_fc_q4m1_run(nntr_hvx_session *s, uint32_t h, const hvx_q4m1_act *a,
                          float *y, uint32_t lanes, uint32_t feed,
-                         uint32_t *lanes_used) {
+                         uint32_t pf_bytes, uint32_t *lanes_used) {
   if (h >= NNTR_HVX_Q4M1_SLOTS || s->q4m1[h].w == NULL) {
     return AEE_EBADITEM;
   }
@@ -324,6 +329,7 @@ int nntr_hvx_fc_q4m1_run(nntr_hvx_session *s, uint32_t h, const hvx_q4m1_act *a,
   c.a = a;
   c.y = y;
   c.feed_vtcm = feed != 0u;
+  c.pf_bytes = pf_bytes;
   c.dst_bypass = feed == FC_Q4_FEED_VTCM;
   if (feed == FC_Q4_FEED_VTCM) {
     /* two groups per lane below the HMX config block; nothing of the
@@ -356,6 +362,16 @@ int nntr_hvx_fc_q4m1_run(nntr_hvx_session *s, uint32_t h, const hvx_q4m1_act *a,
   return AEE_SUCCESS;
 }
 
+const uint8_t *nntr_hvx_q4m1_ptr(void *ctx, uint32_t h, uint32_t *bytes) {
+  const nntr_hvx_session *s = (const nntr_hvx_session *)ctx;
+  if (h >= NNTR_HVX_Q4M1_SLOTS || s->q4m1[h].w == NULL) {
+    *bytes = 0u;
+    return NULL;
+  }
+  *bytes = (uint32_t)q4m1_bytes(s->q4m1[h].K, s->q4m1[h].N);
+  return s->q4m1[h].w;
+}
+
 int nntr_hvx_fc_q4m1_graph(void *ctx, uint32_t h, uint32_t feed,
                            const hvx_q4m1_act *a, float *y) {
   nntr_hvx_session *s = (nntr_hvx_session *)ctx;
@@ -363,10 +379,11 @@ int nntr_hvx_fc_q4m1_graph(void *ctx, uint32_t h, uint32_t feed,
     return AEE_EBADITEM;
   }
   const size_t gbytes = (size_t)(s->q4m1[h].K / 64u) * Q4M1_PAIR_BYTES;
+  const uint32_t pf = (feed >> 16) << 10; /* [E5h] prefetched prefix, KiB */
   const uint32_t per_lane = (s->config_off / FC_Q4_GRAPH_LANES_VTCM) & ~127u;
   if ((feed & HTP_GRAPH_FEED_L2) == 0u && per_lane >= 2u * gbytes) {
     return nntr_hvx_fc_q4m1_run(s, h, a, y, FC_Q4_GRAPH_LANES_VTCM,
-                                FC_Q4_FEED_VTCM, NULL);
+                                FC_Q4_FEED_VTCM, pf, NULL);
   }
   const uint32_t small = s->q4m1[h].K <= 2048u;
   uint32_t lanes =
@@ -374,7 +391,7 @@ int nntr_hvx_fc_q4m1_graph(void *ctx, uint32_t h, uint32_t feed,
   if (lanes == 0u) {
     lanes = small ? FC_Q4_GRAPH_LANES_L2_SMALL_K : FC_Q4_GRAPH_LANES_L2;
   }
-  return nntr_hvx_fc_q4m1_run(s, h, a, y, lanes, FC_Q4_FEED_L2, NULL);
+  return nntr_hvx_fc_q4m1_run(s, h, a, y, lanes, FC_Q4_FEED_L2, pf, NULL);
 }
 
 int nntr_hvx_fc_q4m1_f32(remote_handle64 handle, uint32 h, uint32 variant,
@@ -405,7 +422,8 @@ int nntr_hvx_fc_q4m1_f32(remote_handle64 handle, uint32 h, uint32 variant,
     hvx_q4m1_prep(x, w->K, &a);
     const uint64_t t1 = hexkl_probe_now();
     const uint64_t p0 = HAP_perf_get_pcycles();
-    const int rc = nntr_hvx_fc_q4m1_run(s, h, &a, y, lanes, feed, &lanes_used);
+    const int rc =
+      nntr_hvx_fc_q4m1_run(s, h, &a, y, lanes, feed, 0u, &lanes_used);
     pcyc += HAP_perf_get_pcycles() - p0;
     if (rc != AEE_SUCCESS) {
       return rc;

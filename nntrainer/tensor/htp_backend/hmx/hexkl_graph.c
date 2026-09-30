@@ -245,7 +245,12 @@ static int graph_q4m1_parts(hexkl_graph *g, const htp_graph_op *op,
                             uint32_t n, float *y) {
   uint32_t p;
   for (p = 0; p < n; ++p) {
-    const int rc = call->env->fc(call->env->fc_ctx, h[p], op->feed, &g->act, y);
+    uint32_t feed = op->feed;
+    if (h[p] == g->pf_h) { /* [E5h] the prefetched prefix, in KiB */
+      feed |= (g->pf_bytes >> 10) << 16;
+      g->pf_h = HTP_GRAPH_NO_OP;
+    }
+    const int rc = call->env->fc(call->env->fc_ctx, h[p], feed, &g->act, y);
     if (rc != AEE_SUCCESS) {
       return rc;
     }
@@ -276,7 +281,11 @@ static int graph_op_dense_ffn(hexkl_graph *g, const htp_graph_op *op,
     return AEE_EBADSTATE;
   }
   hvx_q4m1_prep(in, op->K, &g->act);
-  rc = call->env->fc(call->env->fc_ctx, op->h_gu[0], op->feed, &g->act, up);
+  rc = call->env->fc(
+    call->env->fc_ctx, op->h_gu[0],
+    op->feed | (op->h_gu[0] == g->pf_h ? (g->pf_bytes >> 10) << 16 : 0u),
+    &g->act, up);
+  g->pf_h = HTP_GRAPH_NO_OP;
   if (rc == AEE_SUCCESS) {
     rc = call->env->fc(call->env->fc_ctx, op->h_gu[1], op->feed, &g->act, gate);
   }
@@ -434,6 +443,7 @@ int hexkl_graph_init(const uint32_t *words, uint32_t n_words,
   if (g == NULL) {
     return AEE_ENOMEMORY;
   }
+  g->pf_h = HTP_GRAPH_NO_OP; /* [E5h] no prefetched prefix */
   g->n_layers = words[2];
   g->n_ops = n_ops;
   g->hidden = words[4];

@@ -124,7 +124,8 @@ void nntr_hvx_token_shutdown(nntr_hvx_session *s) {
 
 int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
                        const float *act, uint32_t act_len, float *logits,
-                       uint32_t logits_len, struct htp_dspq_token_resp_s *r) {
+                       uint32_t logits_len, uint32_t pf_kib,
+                       struct htp_dspq_token_resp_s *r) {
   struct nntr_hvx_token *t = s ? s->token : NULL;
   hexkl_graph_env env;
   uint32_t id = 0, k;
@@ -136,6 +137,7 @@ int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
   const uint64_t us0 = HAP_perf_qtimer_count_to_us(HAP_perf_get_qtimer_count());
   const uint64_t pc0 = HAP_perf_get_pcycles();
   nntr_hvx_graph_env(s, &env);
+  env.prefetch_bytes = pf_kib << 10; /* [E5h] */
   if (t->role == 0u) {
     if (act == NULL) {
       return AEE_EINVALIDFORMAT;
@@ -153,6 +155,7 @@ int nntr_hvx_token_run(nntr_hvx_session *s, uint32_t tok, uint32_t pos,
   r->hops = t->st.hops - before.hops;
   r->wait_us = t->st.wait_us - before.wait_us;
   r->pcycles = (uint32_t)(t->st.pcycles - before.pcycles);
+  r->pf_kib = (uint32_t)((t->st.pf_bytes - before.pf_bytes) >> 10);
   for (k = 0; k < HTP_DSPQ_TOKEN_KINDS && k < HTP_OP_KIND_N; ++k) {
     r->kind_pcyc[k] =
       (uint32_t)(t->st.kind_pcycles[k] - before.kind_pcycles[k]);

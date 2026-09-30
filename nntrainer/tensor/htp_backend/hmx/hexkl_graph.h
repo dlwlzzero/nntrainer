@@ -85,6 +85,10 @@ typedef struct {
   hexkl_graph_fc_fn fc;     /**< [#132 Part B] the Q4M1 kinds' runner; NULL
                                  = none, and they fail with AEE_EBADSTATE */
   void *fc_ctx;
+  /** [#132 Part B E5h] Q4M1 handle h's bytes (NULL = unknown), fc_ctx's;
+   *  the token driver's weight prefetch reads it */
+  const uint8_t *(*q4m1_ptr)(void *ctx, uint32_t h, uint32_t *bytes);
+  uint32_t prefetch_bytes; /**< [E5h] per hop; 0 = no prefetch */
 } hexkl_graph_env;
 
 /** @brief The MoE routing of this token, in mm_u8i4_moe_layer's layout:
@@ -128,6 +132,11 @@ typedef struct {
   float *logits;  /**< vocab floats: LM_HEAD's output, not a slot */
   uint32_t lm_id; /**< m1_argmax_first of the last LM_HEAD's logits, the
                        LM_BAN ids skipped */
+  /** [#132 Part B E5h] A Q4M1 handle whose first pf_bytes the token driver
+   *  l2fetch'd during the other session's round (HTP_GRAPH_NO_OP: none):
+   *  its next run reads that prefix through the L2 (fc's feed bits 16-31,
+   *  KiB) and clears it */
+  uint32_t pf_h, pf_bytes;
   uint32_t ban[HTP_GRAPH_MAX_BAN]; /**< [#132 Part B E3] LM_BAN's ids */
   uint32_t n_ban;
 } hexkl_graph;

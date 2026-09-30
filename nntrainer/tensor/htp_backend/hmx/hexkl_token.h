@@ -41,6 +41,11 @@
  * lost post is never a hang. A side whose forward fails posts its code in
  * the header, so the other returns it at once instead of timing out.
  *
+ * [E5h] With env->prefetch_bytes, S2 l2fetches, after each ping, the
+ * first prefetch_bytes of the first Q4M1 weight its next stretch reads
+ * (and marks it: its DMA then reads that prefix through the L2); S1
+ * l2fetches its next router's weight rows after each pong. Reads only.
+ *
  * Before each post the side parks its worker pool
  * (hvx_worker_pool_park): the other session computes next, and a pool
  * that spins after its last job would hold the hardware threads its lanes
@@ -96,6 +101,7 @@ typedef struct {
   uint32_t stale;    /**< reads refused as stale */
   uint64_t pcycles;  /**< the op_pcycles of every stretch this side ran */
   uint64_t kind_pcycles[HTP_OP_KIND_N]; /**< the same, per op kind */
+  uint64_t pf_bytes; /**< [E5h] bytes l2fetch'd while the other side ran */
 } hexkl_token_stats;
 
 /** @brief The sequence value of round @a round of token @a tok. */
