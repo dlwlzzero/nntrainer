@@ -69,6 +69,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -1458,18 +1459,20 @@ public:
     // 194 section 3.1, bit n = lever Ln (0x2: L1, the native FC / DENSE_FFN
     // / LM_HEAD kernels; 0x4: L2, the vector router; 0x8: L3, the vector
     // norms / conv gate / SwiGLU, m1_ops_vec_det.h; 0x10: L4, the hops'
-    // deadline wait, bound NNTR_HTP_E2E_HOP_SPIN_US, default 50 us). Unset
-    // or 0 = E0 (the CPU-exact kernels, bit-identical to htp_moe); a bit
-    // no lever owns yet is refused.
+    // deadline wait, bound NNTR_HTP_E2E_HOP_SPIN_US, default 50 us; 0x1:
+    // L0, S2's queue thread spins NNTR_HTP_E2E_S2Q_SPIN_US (3000) after
+    // each token and the ARM polls S2's answer around its expected time,
+    // +-NNTR_HTP_E2E_ARM_SPIN_US (1000)). Unset or 0 = E0 (the CPU-exact
+    // kernels, bit-identical to htp_moe); a bit no lever owns is refused.
     uint32_t levers = 0;
     if (const char *l = std::getenv("NNTR_HTP_PPL_LEVERS")) {
       char *end = nullptr;
       const unsigned long v = std::strtoul(l, &end, 0);
-      if (end == l || *end != '\0' || (v & ~0x1Eul) != 0)
+      if (end == l || *end != '\0' || (v & ~0x1Ful) != 0)
         throw std::invalid_argument(
           "NNTR_HTP_PPL_LEVERS=" + std::string(l) +
-          " (known: 0x2 = L1 native FC, 0x4 = L2 vector router, 0x8 = L3 "
-          "vector norms, 0x10 = L4 hop deadline wait)");
+          " (known: 0x1 = L0 spins, 0x2 = L1 native FC, 0x4 = L2 vector "
+          "router, 0x8 = L3 vector norms, 0x10 = L4 hop deadline wait)");
       levers = static_cast<uint32_t>(v);
     }
     // a lever's bound in us: its default, or the variable (0..65535)
@@ -1486,13 +1489,18 @@ public:
     };
     ppl_levers_ = levers;
     hop_spin_us_ = bound_us(levers & 0x10u, "NNTR_HTP_E2E_HOP_SPIN_US", 50u);
+    s2q_spin_us_ = bound_us(levers & 0x1u, "NNTR_HTP_E2E_S2Q_SPIN_US", 3000u);
+    arm_spin_us_ = bound_us(levers & 0x1u, "NNTR_HTP_E2E_ARM_SPIN_US", 1000u);
+    const uint32_t hop_spin = hop_spin_us_;
     std::fprintf(stderr, "[HTP] ppl levers=0x%x L1=%s\n", levers,
                  (levers & 0x2u) ? "native_fc" : "exact");
-    if ((levers & 0x1Cu) != 0u) // the line above stays as sitting 1 read it
-      std::fprintf(stderr, "[HTP] ppl levers L2=%s L3=%s L4 hop_spin_us=%u\n",
+    if ((levers & 0x1Du) != 0u) // the line above stays as sitting 1 read it
+      std::fprintf(stderr,
+                   "[HTP] ppl levers L2=%s L3=%s L4 hop_spin_us=%u L0 "
+                   "s2q_spin_us=%u arm_spin_us=%u\n",
                    (levers & 0x4u) ? "router_vec" : "exact",
-                   (levers & 0x8u) ? "norm_conv_swiglu_vec" : "exact",
-                   hop_spin_us_);
+                   (levers & 0x8u) ? "norm_conv_swiglu_vec" : "exact", hop_spin,
+                   s2q_spin_us_, arm_spin_us_);
     const uint32_t vec_kinds =
       ((levers & 0x4u) ? HTP_GRAPH_KIND_BIT(HTP_OP_ROUTER_TOPK) : 0u) |
       ((levers & 0x8u)
@@ -1926,6 +1934,16 @@ public:
       pending_rc_ = rc ? *rc : no_u;
       pending_rw_ = rw ? *rw : no_f;
       pending_op_ = s;
+      // [#194 L0] the whole token on op 0's row: post it now, and the
+      // layer walk to the LM_HEAD hook (which reads the answer) runs beside
+      // the DSP's token -- unless a hook on the way would call the DSP (a
+      // parameter, a conv state or a KV cache still to send)
+      if (e2e_ && (ppl_levers_ & 0x1u) != 0u && s == 0u &&
+          e == stretch_start_.size() && e2eSteady(pos)) {
+        tokenPost(pos, pending_in_.data(),
+                  static_cast<unsigned>(pending_in_.size()), graph_words_[5]);
+        ++e2e_st_->early_posts;
+      }
       return;
     }
     if (pending_op_ != s) {
@@ -1942,6 +1960,27 @@ public:
                     sole_moe);
       clearPending();
     }
+  }
+
+  /** @brief [#194 L0] Whether no hook of the token at @a pos will call the
+   *  DSP: every parameter bound, every conv state and KV cache at @a pos. */
+  bool e2eSteady(uint32_t pos) const {
+    if (!rope_bound_)
+      return false;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(stretch_start_.size());
+         ++i) {
+      const uint32_t k = graphOp(i)->kind;
+      if ((k == HTP_OP_RMSNORM || k == HTP_OP_QK_NORM ||
+           k == HTP_OP_CONV1D_GATE || k == HTP_OP_ROUTER_TOPK) &&
+          !param_bound_[i])
+        return false;
+      if (k == HTP_OP_CONV1D_GATE && conv_next_pos_[i] != pos)
+        return false;
+    }
+    for (uint32_t len : kv_len_)
+      if (pos != 0u && len != pos)
+        return false;
+    return true;
   }
 
   void clearPending() {
@@ -2883,7 +2922,10 @@ private:
         throw std::runtime_error(
           "token driver: stretch [" + std::to_string(op) + ", " +
           std::to_string(expected_resume) + ") is not the whole token");
-      tokenForward(pos, act, K, out, N_out);
+      if (e2e_st_->posted) // [#194 L0] posted at op 0's hook
+        tokenFinish(pos, out, N_out);
+      else
+        tokenForward(pos, act, K, out, N_out);
       return;
     }
     const int act_len = static_cast<int>(K);
@@ -3310,9 +3352,9 @@ private:
     }
     e.q1 = dspq_;
     const size_t logits_bytes = static_cast<size_t>(graph_words_[5]) * 4u;
-    e.q2 =
-      dspqMake(e.h2, e.dom2, "dspq[S2]",
-               std::max<size_t>(HTP_DSPQ_BUF_BYTES, logits_bytes), e2eSpinUs());
+    e.q2 = dspqMake(e.h2, e.dom2, "dspq[S2]",
+                    std::max<size_t>(HTP_DSPQ_BUF_BYTES, logits_bytes),
+                    std::max(e2eSpinUs(), s2q_spin_us_)); // [#194 L0]
     if (e.q2->state != DspqMoe::ON) {
       throw std::runtime_error("NNTR_HTP_E2E=1: S2's dspqueue is off (see "
                                "the dspq[S2] line)");
@@ -3361,6 +3403,8 @@ private:
       rounds += graphOp(i)->kind == HTP_OP_ROUTER_TOPK;
     e.rounds = rounds;
     e.spin_us = spin_us;
+    e.s2q_spin_us = s2q_spin_us_;
+    e.arm_window_us = arm_spin_us_;
     std::fprintf(stderr,
                  "[HTP] token driver: on s1_effdom=%d s2_effdom=%d mbox=%zu "
                  "spin_us=%u hop_spin_us=%u rounds=%u hops/token=%u "
@@ -3489,6 +3533,15 @@ private:
         static_cast<double>(e.hop1_us) / n, static_cast<double>(e.hop2_us) / n,
         static_cast<double>(e.fwd_us) / n, static_cast<double>(e.arm_us) / an,
         (unsigned long long)e.arm_n);
+      if ((e.s2q_spin_us | e.arm_window_us) != 0u || e.early_posts != 0u)
+        std::fprintf(
+          stderr,
+          "[HTP] token driver: L0 spins s2q_spin_us=%u "
+          "arm_window_us=%u arm_hits=%llu/%llu "
+          "arm_spin_us/token=%.1f early_posts=%llu\n",
+          e.s2q_spin_us, e.arm_window_us, (unsigned long long)e.arm_hits,
+          (unsigned long long)e.tokens, static_cast<double>(e.arm_spin_us) / n,
+          (unsigned long long)e.early_posts);
       std::fprintf(stderr,
                    "[HTP] token driver: close tokens=%llu hops/token=%.2f "
                    "s1_served=%u s2_served=%u timeouts=%u/%u stale=%u/%u "
@@ -3573,8 +3626,19 @@ private:
    *  queues broken (the DSP may still hold a packet). */
   void tokenForward(uint32_t pos, const float *act, unsigned K, float *out,
                     unsigned N_out) {
+    tokenPost(pos, act, K, N_out);
+    tokenFinish(pos, out, N_out);
+  }
+
+  /** @brief [#194 L0] tokenForward's first half: the checks, the ban, the
+   *  row into S2's act buffer and both packets written. The answer is
+   *  read by tokenFinish; a second post before it throws. */
+  void tokenPost(uint32_t pos, const float *act, unsigned K, unsigned N_out) {
     E2eState &e = *e2e_st_;
     const uint64_t entry_us = HtpProfile::nowUs();
+    if (e.posted)
+      throw std::runtime_error("token driver: a token was posted and its "
+                               "answer never read");
     if (e.last_exit_us != 0) {
       e.arm_us += entry_us - e.last_exit_us;
       ++e.arm_n;
@@ -3626,8 +3690,8 @@ private:
     b[1].flags = DSPQUEUE_BUFFER_FLAG_REF;
     b[1].ptr = q2.out->data();
     const uint32_t nb2 = logits ? 2u : 1u;
-    const uint32_t c0 = sysCounterUs();
-    const uint64_t t0 = HtpProfile::nowUs();
+    e.c0 = sysCounterUs();
+    e.t0 = HtpProfile::nowUs();
     int err =
       q1.api->write(q1.q, 0, 0, nullptr, sizeof(r1),
                     reinterpret_cast<const uint8_t *>(&r1), kDspqTimeoutUs);
@@ -3635,14 +3699,69 @@ private:
       err =
         q2.api->write(q2.q, 0, nb2, b, sizeof(r2),
                       reinterpret_cast<const uint8_t *>(&r2), kDspqTimeoutUs);
+    e.posted = true;
+    e.post_err = err;
+    e.post_tok = tok;
+    e.post_pos = pos;
+    e.post_nb2 = nb2;
+    e.post_logits = logits;
+    e.post_n_out = N_out;
+    e.fwd_us += HtpProfile::nowUs() - entry_us;
+  }
+
+  /** @brief [#194 L0] tokenForward's second half: both answers read (the
+   *  ARM's window first), checked, the logits or the id taken. */
+  void tokenFinish(uint32_t pos, float *out, unsigned N_out) {
+    E2eState &e = *e2e_st_;
+    const uint64_t entry_us = HtpProfile::nowUs();
+    if (!e.posted || pos != e.post_pos || N_out != e.post_n_out)
+      throw std::runtime_error("token driver: no token posted at pos " +
+                               std::to_string(pos) + " for " +
+                               std::to_string(N_out) + " logits");
+    e.posted = false;
+    DspqMoe &q1 = *dspq_, &q2 = *e.q2;
+    const uint32_t tok = e.post_tok, nb2 = e.post_nb2, c0 = e.c0;
+    const uint64_t t0 = e.t0;
+    const bool logits = e.post_logits;
+    const size_t out_bytes = static_cast<size_t>(N_out) * sizeof(float);
+    int err = e.post_err;
+    std::lock_guard<std::mutex> lock(invoke_mutex_);
     htp_dspq_token_resp s1r = {}, s2r = {};
     uint32_t len2 = 0, len1 = 0, rnb2 = 0, rnb1 = 0;
     if (err == AEE_SUCCESS) {
-      // blocking reads (the token is ~20 ms; S1 answers before S2 ends)
+      // blocking reads (the token is ~20 ms; S1 answers before S2 ends);
+      // [#194 L0] first, with the ARM's window set: to the last token's
+      // answer time less the window, sleep in kArmSliceUs slices with a
+      // poll of S2's queue between them (so an early answer is taken
+      // within a slice and the estimate follows it at once, not by one
+      // window a token), spin-poll to that time plus the window, then
+      // block. The ARM is idle through the token; the window only takes
+      // its wake-up off the blocking read's path.
       uint32_t flags = 0;
       struct dspqueue_buffer rb[2] = {};
-      err = q2.api->read(q2.q, &flags, 2, &rnb2, rb, sizeof(s2r), &len2,
-                         reinterpret_cast<uint8_t *>(&s2r), kDspqTimeoutUs);
+      err = AEE_EWOULDBLOCK;
+      if (arm_spin_us_ != 0u) {
+        constexpr uint64_t kArmSliceUs = 500;
+        const uint64_t w = arm_spin_us_;
+        const uint64_t lo = e.s2_expect_us > w ? e.s2_expect_us - w : 0u;
+        for (;;) {
+          err = q2.api->read_noblock(q2.q, &flags, 2, &rnb2, rb, sizeof(s2r),
+                                     &len2, reinterpret_cast<uint8_t *>(&s2r));
+          const uint64_t dt = HtpProfile::nowUs() - t0;
+          if (err != AEE_EWOULDBLOCK || dt >= e.s2_expect_us + w)
+            break;
+          if (dt < lo)
+            std::this_thread::sleep_for(
+              std::chrono::microseconds(std::min(kArmSliceUs, lo - dt)));
+        }
+        const uint64_t end = HtpProfile::nowUs() - t0;
+        e.arm_spin_us += end > lo ? end - lo : 0u;
+        e.arm_hits += err != AEE_EWOULDBLOCK;
+      }
+      if (err == AEE_EWOULDBLOCK)
+        err = q2.api->read(q2.q, &flags, 2, &rnb2, rb, sizeof(s2r), &len2,
+                           reinterpret_cast<uint8_t *>(&s2r), kDspqTimeoutUs);
+      e.s2_expect_us = HtpProfile::nowUs() - t0;
       if (err == AEE_SUCCESS)
         err = q1.api->read(q1.q, &flags, 2, &rnb1, rb, sizeof(s1r), &len1,
                            reinterpret_cast<uint8_t *>(&s1r), kDspqTimeoutUs);
@@ -5186,8 +5305,18 @@ private:
      *  DSP thread's read (per session), S2's write to the ARM's read, S2's
      *  packet handling around its token (out - in) */
     int64_t disp1_us = 0, disp2_us = 0, ret2_us = 0, inout2_us = 0;
+    /** [#194 L0] the last token's answer time from the post (the ARM's
+     *  deadline), answers taken inside the ARM's window, ARM spin time */
+    uint64_t s2_expect_us = 0, arm_hits = 0, arm_spin_us = 0;
+    /** [#194 L0] the posted token tokenFinish reads, and the posts made at
+     *  op 0's hook (the layer walk then runs beside the DSP's token) */
+    bool posted = false, post_logits = false;
+    int post_err = 0;
+    uint32_t post_tok = 0, post_pos = 0, post_nb2 = 0, post_n_out = 0, c0 = 0;
+    uint64_t t0 = 0, early_posts = 0;
     uint64_t kind1[HTP_OP_KIND_N] = {0}, kind2[HTP_OP_KIND_N] = {0};
     uint32_t rounds = 0, spin_us = 0;
+    uint32_t s2q_spin_us = 0, arm_window_us = 0; /**< [#194 L0], as set */
   };
   /** @brief The mailbox page: HEXKL_MBOX_BYTES (16 896) rounded to the
    *  #178 probe's 64 KiB. */
@@ -5196,6 +5325,9 @@ private:
   /** [#194] NNTR_HTP_PPL_LEVERS as the description step read it, and L4's
    *  hop spin bound (us, 0 = off) */
   uint32_t ppl_levers_ = 0, hop_spin_us_ = 0;
+  /** [#194 L0] S2's queue spin after each token and the ARM's window
+   *  around S2's expected answer (us, 0 = off) */
+  uint32_t s2q_spin_us_ = 0, arm_spin_us_ = 0;
   std::shared_ptr<E2eState> e2e_st_;
   bool q4m1_bound_ = false; /**< the Q4M1 weights registered at load (E3) */
   size_t q4m1_left_ = 0;    /**< S2 arena bytes still to place */
