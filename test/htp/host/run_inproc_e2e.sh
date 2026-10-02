@@ -120,6 +120,12 @@
 #                              NNTR_HTP_E2E=1, the miss rounds served by the
 #                              ARM's pool server; logits against the
 #                              all-resident E run of the same fixture)
+#   E2E e3 pool tier=1 C=2 hd64 / C=1, C=2 lfm25, tier=2 C=1 lfm25 ==
+#                              tier=0 bit_identical=1 misses=<n> tier_hits=<n>
+#                              tier_reads=0  (#219: NNTR_MOE_TIER, the
+#                              arena's complement in the ARM tier; the app's
+#                              load (--repack) preloads the pool; misses as
+#                              the same pool untiered, every one a tier hit)
 #   E2E e2e pds=2 refused ok   (#211: NNTR_HTP_E2E_PDS is a guard, the
 #                              two-PD path is gone)
 # and, since #194 S1 (htp_moe_ppl), the same token with lever
@@ -339,6 +345,15 @@ for c in 1 2; do
   PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_MOE_CACHE_EXPERTS=$c \
     run_e2e q25-e3pool$c "$OUT/htp25q" htp "$OUT/dump_25e3pool$c" "$OUT/25e3pool$c.log" --max-seq 2048
 done
+# [#219] the pools again as the app loads them (--repack: the arena filled
+# at load, so the tier's hook runs), without the tier and with it
+for ck in "64 2 0" "64 2 1" "25 1 0" "25 1 1" "25 1 2" "25 2 0" "25 2 1"; do
+  set -- $ck
+  ms=32; [ $1 = 25 ] && ms=2048
+  PROMPT=$([ $1 = 25 ] && echo 512 || echo $PROMPT) NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 \
+    NNTR_MOE_CACHE_EXPERTS=$2 NNTR_MOE_TIER=$3 \
+    run_e2e q$1-e3tier$2k$3 "$OUT/htp$1q" htp "$OUT/dump_$1e3tier$2k$3" "$OUT/$1e3tier$2k$3.log" --max-seq $ms --repack
+done
 # [#211] NNTR_HTP_E2E_PDS is a guard: anything but 1 is refused at load
 rc_pds=0
 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_E2E_PDS=2 "$E2E" --model "$OUT/htp64q" \
@@ -439,6 +454,26 @@ for d in "64e3 64e3pool2 hd64 2" "25e3 25e3pool1 lfm25 1" "25e3 25e3pool2 lfm25 
     echo "E2E e3 pool C=$4 $3 == e3 bit_identical=1 misses=$misses calls/token=1.00 timeouts=0"
   else
     echo "E2E FAIL e3 pool C=$4 $3: [$ev] calls/token=${calls:-none} misses=${misses:-none} close=[$close]"; fail=1
+  fi
+done
+# [#219] tier: every dump and the misses as the same preloaded pool without
+# the tier (its load-time warm-up call dumps too, so not against e3), each
+# decode load a tier hit, no file read
+for d in "64 2 1 hd64" "25 1 1 lfm25" "25 1 2 lfm25" "25 2 1 lfm25"; do
+  set -- $d
+  ev="$($EVAL --label "e3tier-$4-C$2-k$3" "$OUT/dump_$1e3tier$2k0" "$OUT/dump_$1e3tier$2k$3" | tail -1 || true)"
+  lg="$OUT/$1e3tier$2k$3.log"
+  calls="$(calls_per_token "$lg")"
+  m0="$(sed -n 's/.*token driver: pool misses=\([0-9]*\) .*/\1/p' "$OUT/$1e3tier$2k0.log")"
+  m1="$(sed -n 's/.*token driver: pool misses=\([0-9]*\) .*/\1/p' "$lg")"
+  hits="$(sed -n 's/.* tier_hits=\([0-9]*\) .*/\1/p' "$lg")"
+  reads="$(sed -n 's/.* tier_reads=\([0-9]*\) .*/\1/p' "$lg")"
+  tier="$(grep -o 'tier: experts=.*' "$lg" | tail -1 || true)"
+  if grep -q 'bit_identical=1' <<< "$ev" && [ "$calls" = 1.00 ] && [ -n "$tier" ] &&
+     [ "${m1:-0}" -gt 0 ] && [ "$m1" = "$m0" ] && [ "$hits" = "$m1" ] && [ "$reads" = 0 ]; then
+    echo "E2E e3 pool tier=$3 C=$2 $4 == tier=0 bit_identical=1 misses=$m1 tier_hits=$hits tier_reads=0 calls/token=1.00 [$tier]"
+  else
+    echo "E2E FAIL e3 pool tier=$3 C=$2 $4: [$ev] calls/token=${calls:-none} misses=${m1:-none} (untiered ${m0:-none}) tier_hits=${hits:-none} tier_reads=${reads:-none} [$tier]"; fail=1
   fi
 done
 if [ $rc_pds = 1 ] &&
