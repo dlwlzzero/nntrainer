@@ -532,6 +532,8 @@ bool Lfm2MoELayer::preloadExperts(nntrainer::RunLayerContext &context) {
                                "filled past its capacity");
       });
   }
+  if (need.size() < num_experts) // [#219] the pool is full from here on
+    ops->tier_qs4cx_wh_experts({descs.begin() + need.size(), descs.end()});
   return need.size() == num_experts;
 }
 
