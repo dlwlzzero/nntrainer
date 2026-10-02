@@ -10,7 +10,12 @@ Token counts: the model's own `tokenizer.json`
 md5 `7b8067a580173d3eb1697afae3b456f5`, `tokenizers` 0.22.2, no special
 tokens added; the device passes the file as `"$(cat <file>)"`, which drops
 the final newline and does not change the count). Every prompt is at most
-512 tokens (`init_seq_len: 512`).
+512 tokens (`init_seq_len: 512` until #222, 1024 in the config of record).
+`causal_lm.cpp` registers the prefill's token only when the prompt is
+shorter than `init_seq_len`, so p01 (512 tokens) printed its text without
+the first generated token under 512 and prints it under 1024: across the
+two configs compare p01's texts with the new one's first token dropped,
+or by the position-indexed `[PPL] decode step=` lines.
 
 | id | file | domain | tokens | md5 |
 |---|---|---|---|---|
