@@ -1172,6 +1172,15 @@ public:
     prefetch_cv_.notify_all();
     for (std::thread &t : prefetch_readers_)
       t.join();
+    if (tier_) {
+      {
+        std::lock_guard<std::mutex> lock(tier_->mu);
+        tier_->stop = true;
+      }
+      tier_->cv.notify_all();
+      tier_->th.join();
+      ::close(tier_->fd);
+    }
     if (fwd_calls_ != 0) {
       std::fprintf(stderr,
                    "[HTP] graph: forward calls=%llu tokens=%llu "
@@ -2944,6 +2953,8 @@ public:
     handle_cache_.erase(it->second.key_dn);
     free_expert_slots_.push_back(slot);
     experts_.erase(it);
+    if (tier_) // [#219] back to the tier, off this thread
+      tierQueue(d);
     return true;
   }
 
@@ -4091,11 +4102,12 @@ private:
     e.moe_ops = static_cast<uint32_t>(moe_ops_.size());
     e.spin_us = spin_us;
     e.pgpgin0 = vmstatPgpginKib();
+    e.tier0 = e.tier1 = tierCount();
     std::fprintf(stderr,
                  "[HTP] token driver: on mbox=%zu spin_us=%u moe_ops=%u "
-                 "logits_buf=%zu fadvise=%d\n",
+                 "logits_buf=%zu fadvise=%d tier=%d\n",
                  e.mbox->size(), spin_us, e.moe_ops, logits_bytes,
-                 fadviseKnob());
+                 fadviseKnob(), tierKnob());
   }
 
   /** @brief [#132 Part B E3, #211] The close hook, before the session
@@ -4189,18 +4201,25 @@ private:
         (static_cast<double>(e.token_us) - static_cast<double>(e.wall_us)) / n,
         static_cast<double>(e.hop_us) / n, static_cast<double>(e.fwd_us) / n,
         static_cast<double>(e.arm_us) / an, (unsigned long long)e.arm_n);
+      const TierCount &tc = e.tier1; // [#219] the decode window's share
       if (e.pool_rounds != 0 || e.misses != 0)
         std::fprintf(
           stderr,
           "[HTP] token driver: pool misses=%llu misses/token=%.2f "
           "miss_wait_us/token=%.1f rounds=%llu arm_ms/round=%.3f "
-          "pgpgin_mib=%.1f\n",
+          "pgpgin_mib=%.1f tier_hits=%llu tier_waits=%llu tier_wait_us=%llu "
+          "tier_reads=%llu refill_ms=%.1f\n",
           (unsigned long long)e.misses, static_cast<double>(e.misses) / n,
           static_cast<double>(e.miss_us) / n, (unsigned long long)e.pool_rounds,
           e.pool_rounds
             ? static_cast<double>(e.pool_read_us) / 1000.0 / e.pool_rounds
             : 0.0,
-          static_cast<double>(vmstatPgpginKib() - e.pgpgin0) / 1024.0);
+          static_cast<double>(vmstatPgpginKib() - e.pgpgin0) / 1024.0,
+          (unsigned long long)(tc.hits - e.tier0.hits),
+          (unsigned long long)(tc.waits - e.tier0.waits),
+          (unsigned long long)(tc.wait_us - e.tier0.wait_us),
+          (unsigned long long)(tc.reads - e.tier0.reads),
+          static_cast<double>(tc.refill_us - e.tier0.refill_us) / 1000.0);
       std::fprintf(
         stderr,
         "[HTP] token driver: close tokens=%llu hops/token=%.2f "
@@ -4400,6 +4419,8 @@ private:
     ++e.tokens;
     e.misses += r.misses;
     e.miss_us += r.miss_us;
+    if (tier_)
+      e.tier1 = tierCount();
     if (!pool_descs_.empty())
       poolRefresh(r);
     e.hops += r.hops;
@@ -5580,11 +5601,21 @@ private:
     st.gu.chunk = st.dn.chunk = st.slot.chunk;
     st.gu.off = st.slot.off;
     st.dn.off = st.slot.off + gu_stride;
-    int rc =
-      readWeight(d.fd, d.off_gu, d.K, 2 * d.inter, base, st.gu, use_pool);
+    // [#219] from the tier when it holds the expert, else from the file
+    int tier_slot = -1;
+    const uint8_t *img = tier_ ? tierTake(d, tier_slot) : nullptr;
+    const uint8_t *img_gu = img ? img + (d.off_gu & 4095u) : nullptr;
+    const uint8_t *img_dn =
+      img ? img + tier_->gu_cap + (d.off_dn & 4095u) : nullptr;
+    if (img != nullptr && tierKnob() == 2)
+      use_pool = false;
+    int rc = readWeight(d.fd, d.off_gu, d.K, 2 * d.inter, base, st.gu, use_pool,
+                        img_gu);
     if (rc == 0)
       rc = readWeight(d.fd, d.off_dn, d.inter, d.N_out, base + gu_stride, st.dn,
-                      use_pool);
+                      use_pool, img_dn);
+    if (img != nullptr)
+      tierGive(tier_slot);
     if (rc == 0 && advise && fadviseKnob() != 0) // [#216] the slot holds it
       adviseLater({{d, false}});
     return rc;
@@ -5639,6 +5670,17 @@ private:
    *  dup of the fd, so a model closed before the queue drains cannot send
    *  the advice to a file that reuses the number. */
   using Advice = std::pair<ExpertFileDesc, bool>;
+  /** @brief Every core for the calling thread: a thread inherits its
+   *  creator's pin (ThreadManager pins the loader and the pool server). */
+  static void unpinThisThread() {
+#if defined(__linux__)
+    cpu_set_t all;
+    CPU_ZERO(&all);
+    for (long c = 0; c < sysconf(_SC_NPROCESSORS_CONF) && c < CPU_SETSIZE; ++c)
+      CPU_SET(c, &all);
+    sched_setaffinity(0, sizeof(all), &all);
+#endif
+  }
   static void adviseLater(std::vector<Advice> v) {
     if (v.empty()) // before the worker exists: unset spawns no thread
       return;
@@ -5650,14 +5692,7 @@ private:
     static Queue *const q = [] {
       Queue *n = new Queue;
       std::thread([n] {
-#if defined(__linux__)
-        cpu_set_t all;
-        CPU_ZERO(&all);
-        for (long c = 0; c < sysconf(_SC_NPROCESSORS_CONF) && c < CPU_SETSIZE;
-             ++c)
-          CPU_SET(c, &all);
-        sched_setaffinity(0, sizeof(all), &all);
-#endif
+        unpinThisThread();
         for (;;) {
           std::unique_lock<std::mutex> lock(n->mu);
           n->cv.wait(lock, [n] { return !n->q.empty(); });
@@ -5694,6 +5729,261 @@ private:
       std::fclose(f);
     }
     return v;
+  }
+
+  /** [#219] The tier's counters; the pool line prints the decode window's
+   *  share (E2eState::tier0 holds them at driver on). */
+  struct TierCount {
+    uint64_t hits = 0, waits = 0, wait_us = 0, reads = 0, refill_us = 0;
+  };
+  /** [#219] NNTR_MOE_TIER: the experts the arena does not hold, each as
+   *  the file image of its two weights (4 KiB-aligned enclosing ranges, so
+   *  an O_DIRECT pread fills it), in cached anon memory. An expert is in
+   *  the arena, in the tier, or between them: queued for a refill (slot
+   *  < 0), being read by the refill thread (slot set, not ready), ready.
+   *  All under mu. */
+  struct Tier {
+    struct Entry {
+      ExpertFileDesc d;
+      int slot = -1;
+      bool ready = false;
+    };
+    struct Free {
+      void operator()(uint8_t *p) const { std::free(p); }
+    };
+    std::mutex mu;
+    std::condition_variable cv;
+    int fd = -1;         /**< the model file, O_DIRECT when direct */
+    bool direct = false; /**< open with O_DIRECT worked */
+    size_t gu_cap = 0, slot_bytes = 0;
+    std::vector<std::unique_ptr<uint8_t, Free>> slots;
+    std::vector<int> free;
+    std::unordered_map<const void *, Entry> map;
+    std::deque<const void *> queue; /**< refills to make, oldest first */
+    bool stop = false;
+    std::thread th;
+    TierCount n;
+  };
+
+  /** @brief [#219] NNTR_MOE_TIER: unset / 0 = no tier (today's reads,
+   *  slots and bytes); 1 = the arena's complement in the tier, a load is a
+   *  copy from it (8 slices on the synchronous paths, as the file read);
+   *  2 = the same with a one-thread copy (diagnostic: the uncached store
+   *  rate). */
+  static int tierKnob() {
+    static const int k = [] {
+      const char *v = std::getenv("NNTR_MOE_TIER");
+      return v != nullptr ? std::atoi(v) : 0;
+    }();
+    return k;
+  }
+
+  /** @brief [#219] Reads @a d's two weights, as the 4 KiB-aligned ranges
+   *  that enclose them, into the tier slot @a dst (gate_up at 0, down at
+   *  @a gu_cap). Short only at end of file, past the last weight byte.
+   *  No throw: the refill thread calls it. @return 0, errno, or -1. */
+  static int tierRead(int fd, const ExpertFileDesc &d, uint8_t *dst,
+                      size_t gu_cap) {
+    const auto span = [fd](uint64_t off, uint64_t len, uint8_t *to) {
+      const uint64_t a = off & ~uint64_t(4095);
+      const uint64_t want = off + len - a;
+      const uint64_t n = (want + 4095) & ~uint64_t(4095);
+      uint64_t got = 0;
+      while (got < n) {
+        const ssize_t r = ::pread(fd, to + got, n - got, a + got);
+        if (r < 0 && errno == EINTR)
+          continue;
+        if (r < 0)
+          return errno;
+        if (r == 0)
+          break;
+        got += static_cast<uint64_t>(r);
+      }
+      return got >= want ? 0 : -1;
+    };
+    const uint32_t n_gu = 2 * d.inter;
+    int rc = span(d.off_gu, whBytes(d.K, n_gu) + 8ull * n_gu, dst);
+    if (rc == 0)
+      rc = span(d.off_dn, whBytes(d.inter, d.N_out) + 8ull * d.N_out,
+                dst + gu_cap);
+    return rc;
+  }
+
+  /** @brief [#219] compute_ops.h. Called by each layer whose experts did
+   *  not all fit the arena, in layer order, so from the first call on the
+   *  arena is full and these experts are its complement: each is read
+   *  into a tier slot here, on the loader, then the model file's pages
+   *  are dropped once, whole file -- the preload read them buffered, and
+   *  from here on every load is a copy from the tier and every refill an
+   *  O_DIRECT read, so the page cache does not hold the model again. */
+  void tier_qs4cx_wh_experts(
+    const std::vector<ExpertFileDesc> &not_preloaded) override {
+    if (tierKnob() == 0 || not_preloaded.empty())
+      return;
+    const uint64_t t0 = HtpProfile::nowUs();
+    const ExpertFileDesc &d0 = not_preloaded[0];
+    const auto cap = [](uint32_t K, uint32_t N) {
+      return ((whBytes(K, N) + 8ull * N + 4095) & ~size_t(4095)) + 4096;
+    };
+    const size_t gu_cap = cap(d0.K, 2 * d0.inter);
+    const size_t slot_bytes = gu_cap + cap(d0.inter, d0.N_out);
+    if (!tier_) {
+      auto t = std::make_unique<Tier>();
+#if defined(__linux__) && defined(O_DIRECT)
+      const std::string self = "/proc/self/fd/" + std::to_string(d0.fd);
+      t->fd = ::open(self.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+      t->direct = t->fd >= 0;
+#endif
+      // ponytail: buffered when O_DIRECT is refused (tmpfs on a host); the
+      // refills then fill the page cache again, logged as direct=0, which
+      // is a stop on the device
+      if (t->fd < 0)
+        t->fd = ::dup(d0.fd);
+      if (t->fd < 0)
+        throw std::runtime_error(std::string("NNTR_MOE_TIER: cannot open the "
+                                             "model file again: ") +
+                                 std::strerror(errno));
+      t->gu_cap = gu_cap;
+      t->slot_bytes = slot_bytes;
+      tier_ = std::move(t);
+      // ponytail: one refill thread, unpinned like the advice worker; a
+      // second is the upgrade if refill_ms lags the prefill's evictions
+      tier_->th = std::thread([this] { tierRefillLoop(); });
+    }
+    Tier &t = *tier_;
+    if (t.slot_bytes != slot_bytes)
+      throw std::runtime_error("NNTR_MOE_TIER: expert shape differs from "
+                               "the tier's");
+    for (const ExpertFileDesc &d : not_preloaded) {
+      std::lock_guard<std::mutex> lock(t.mu);
+      if (t.map.count(d.key_gu) != 0)
+        continue;
+      void *p = nullptr;
+      if (posix_memalign(&p, 4096, slot_bytes) != 0)
+        throw std::bad_alloc();
+      t.slots.emplace_back(static_cast<uint8_t *>(p));
+      throwPread(tierRead(t.fd, d, t.slots.back().get(), gu_cap),
+                 "expert weight (tier)");
+      t.map[d.key_gu] = {d, static_cast<int>(t.slots.size() - 1), true};
+    }
+    const uint64_t t1 = HtpProfile::nowUs();
+#if defined(__linux__)
+    (void)posix_fadvise(t.fd, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+    const uint64_t t2 = HtpProfile::nowUs();
+    std::fprintf(stderr,
+                 "[HTP] tier: experts=%zu mib=%.1f read_ms=%.1f drop_ms=%.1f "
+                 "direct=%d\n",
+                 t.slots.size(),
+                 static_cast<double>(t.slots.size() * slot_bytes) / 1048576.0,
+                 static_cast<double>(t1 - t0) / 1000.0,
+                 static_cast<double>(t2 - t1) / 1000.0, t.direct ? 1 : 0);
+  }
+
+  /** @brief [#219] The tier's image of @a d (@a slot set), its slot freed
+   *  by tierGive once the copy is done; null when the expert has to come
+   *  from the file: not in the tier (a refill failed), or queued for a
+   *  refill with no free slot to land in -- waiting then could wait on a
+   *  slot only this caller's own later load frees. A queued or in-flight
+   *  refill with somewhere to land is waited for (tier_waits). Never
+   *  throws (prefetch readers call it). */
+  const uint8_t *tierTake(const ExpertFileDesc &d, int &slot) {
+    Tier &t = *tier_;
+    const void *key = d.key_gu;
+    std::unique_lock<std::mutex> lock(t.mu);
+    auto it = t.map.find(key);
+    if (it != t.map.end() && it->second.slot < 0 && t.free.empty()) {
+      t.queue.erase(std::find(t.queue.begin(), t.queue.end(), key));
+      t.map.erase(it);
+      it = t.map.end();
+    }
+    if (it != t.map.end() && !it->second.ready) {
+      const uint64_t w0 = HtpProfile::nowUs();
+      ++t.n.waits;
+      if (it->second.slot < 0) { // to the front of the refills
+        t.queue.erase(std::find(t.queue.begin(), t.queue.end(), key));
+        t.queue.push_front(key);
+        t.cv.notify_all();
+      }
+      t.cv.wait(lock, [&t, key] {
+        auto i = t.map.find(key);
+        return i == t.map.end() || i->second.ready;
+      });
+      t.n.wait_us += HtpProfile::nowUs() - w0;
+      it = t.map.find(key);
+    }
+    if (it == t.map.end()) {
+      ++t.n.reads;
+      return nullptr;
+    }
+    slot = it->second.slot;
+    t.map.erase(it);
+    ++t.n.hits;
+    return t.slots[slot].get();
+  }
+
+  /** @brief [#219] A tier slot copied out is free for the next refill. */
+  void tierGive(int slot) {
+    {
+      std::lock_guard<std::mutex> lock(tier_->mu);
+      tier_->free.push_back(slot);
+    }
+    tier_->cv.notify_all();
+  }
+
+  /** @brief [#219] An expert that left the arena goes back to the tier:
+   *  queued here, read by the refill thread once a slot is free. */
+  void tierQueue(const ExpertFileDesc &d) {
+    {
+      std::lock_guard<std::mutex> lock(tier_->mu);
+      if (tier_->map.emplace(d.key_gu, Tier::Entry{d}).second)
+        tier_->queue.push_back(d.key_gu);
+    }
+    tier_->cv.notify_all();
+  }
+
+  /** @brief [#219] The refill thread: the oldest queued expert into a free
+   *  slot, O_DIRECT, off the token and the prefill path. A failed read
+   *  drops the expert from the tier -- its next load reads the file and
+   *  counts in tier_reads. */
+  void tierRefillLoop() {
+    unpinThisThread(); // created on the loader, which ThreadManager pins
+    Tier &t = *tier_;
+    std::unique_lock<std::mutex> lock(t.mu);
+    for (;;) {
+      t.cv.wait(
+        lock, [&t] { return t.stop || (!t.queue.empty() && !t.free.empty()); });
+      if (t.stop)
+        return;
+      const void *key = t.queue.front();
+      t.queue.pop_front();
+      Tier::Entry &e = t.map.at(key);
+      e.slot = t.free.back();
+      t.free.pop_back();
+      const ExpertFileDesc d = e.d;
+      const int slot = e.slot;
+      uint8_t *dst = t.slots[slot].get();
+      lock.unlock();
+      const uint64_t r0 = HtpProfile::nowUs();
+      const int rc = tierRead(t.fd, d, dst, t.gu_cap);
+      lock.lock();
+      t.n.refill_us += HtpProfile::nowUs() - r0;
+      if (rc == 0) {
+        t.map.at(key).ready = true;
+      } else {
+        t.map.erase(key);
+        t.free.push_back(slot);
+      }
+      t.cv.notify_all();
+    }
+  }
+
+  /** @brief [#219] The tier's counters now; zeros without a tier. */
+  TierCount tierCount() {
+    if (!tier_)
+      return {};
+    std::lock_guard<std::mutex> lock(tier_->mu);
+    return tier_->n;
   }
 
   /** @brief Registers a read expert and files it. On any failure the slot
@@ -5879,9 +6169,12 @@ private:
    *  arrays stay empty, which is what tells the swap call the arrays are
    *  in the arena. whBytes(K, N) is the nibble half exactly:
    *  QS4CX_Tensor::size() counts N * ceil(K / 2) and K is a multiple of
-   *  32 here. @return 0, errno, or -1 at end of file. */
+   *  32 here. [#219] With @a src (the file's bytes from @a off on, held
+   *  in the tier) the same bytes are copied instead of read.
+   *  @return 0, errno, or -1 at end of file. */
   int readWeight(int fd, uint64_t off, uint32_t K, uint32_t N,
-                 uint8_t *arena_dst, ArenaEntry &e, bool use_pool) {
+                 uint8_t *arena_dst, ArenaEntry &e, bool use_pool,
+                 const uint8_t *src = nullptr) {
     const size_t nib = whBytes(K, N);
     // [doc 52 sections 10.7, 10.9] The nibble read is 82% of a miss and
     // capped near 4.9 GB/s by the uncached mapping whatever the thread
@@ -5891,6 +6184,10 @@ private:
     // across parallel_for, so each slice keeps its result.
     std::atomic<int> first_rc{0};
     auto slice_read = [&](uint8_t *dst, size_t len, uint64_t at) {
+      if (src != nullptr) {
+        std::memcpy(dst, src + (at - off), len);
+        return;
+      }
       const int rc = preadAll(fd, dst, len, at);
       if (rc == 0)
         return;
@@ -5914,8 +6211,12 @@ private:
     if (first_rc.load() != 0)
       return first_rc.load();
     std::vector<float> tail(2 * static_cast<size_t>(N));
+    if (src != nullptr)
+      std::memcpy(tail.data(), src + nib, tail.size() * sizeof(float));
     const int rc =
-      preadAll(fd, tail.data(), tail.size() * sizeof(float), off + nib);
+      src != nullptr
+        ? 0
+        : preadAll(fd, tail.data(), tail.size() * sizeof(float), off + nib);
     if (rc != 0)
       return rc;
     std::vector<int32_t> colsum(N);
@@ -6550,6 +6851,8 @@ private:
   std::atomic<uint32_t> prefetch_reader_cpus_{0};
   uint32_t prefetch_caller_cpus_ = 0;
 
+  std::unique_ptr<Tier> tier_;
+
   /**
    * @brief [doc 52 section 10.18] Measurement switches for the prefetch
    *        readers, read once. Section 10.13 found the readers make almost
@@ -6723,6 +7026,8 @@ private:
      *  rounds served and the ARM's time on them */
     uint64_t misses = 0, miss_us = 0, pool_rounds = 0, pool_read_us = 0;
     uint64_t pgpgin0 = 0; /**< [#216] vmstatPgpginKib() at driver on */
+    /** [#219] tierCount() at driver on and after the last token */
+    TierCount tier0, tier1;
   };
   /** @brief The mailbox page: HEXKL_MBOX_BYTES (18 432) rounded to the
    *  #178 probe's 64 KiB. */
