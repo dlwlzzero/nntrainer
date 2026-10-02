@@ -458,6 +458,14 @@ public:
     return false;
   }
 
+  // [#219] At load, the experts of a layer that did not fit the slot pool:
+  // a backend may hold their bytes elsewhere so a later load copies them
+  // instead of reading the model file. Advisory; the default holds nothing.
+  virtual void
+  tier_qs4cx_wh_experts(const std::vector<ExpertFileDesc> &not_preloaded) {
+    (void)not_preloaded;
+  }
+
   // The same for several experts, none at load (doc 52 section 10.23): a
   // backend with a batched register makes one round trip for all of them.
   virtual bool
