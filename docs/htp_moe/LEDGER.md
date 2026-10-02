@@ -1976,6 +1976,28 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
   its Q1–Q5 lines are what rule 59 and ㉝ cite. Its `TwoSessions` name is
   a probe's.
 
+* **#222 (2026-10-02): the engine keys act at prefill only, and the
+  in-process host build runs them.** `conv_block_engine`, `dense_ffn_engine`
+  and `attn_proj_engine` = `htp` (the config of record,
+  `docs/measurements/config/q40-qs4cx-wh.nntr_config.json`, user decision
+  on #222) move the M > 1 matmuls onto the HMX FC kernels; every decode
+  row stays where it was (hybrid: the CPU kernels, every FC gate declines
+  M == 1; one PD: `decode_row_resident`). Two code facts found on the
+  way: (1) the `dense_ffn` one-layer form did not ask
+  `htpDecodeRowResident`, so under `NNTR_HTP_E2E=1` it recomputed layers
+  0–1's FFN on the CPU every token and threw it away (host: `cpu fc
+  skipped` 8 / token instead of 10 on the lfm25 fixture; the logits are
+  unchanged by the fix, bit-identical) — on the 8B the per-token skip
+  count reads 32 with the keys (18 conv blocks, 6 × qkv + attention_out,
+  2 dense_ffn) against 36 without; (2) `htp_qs4cx_from_q4_0x4` reads only
+  the ARM q4_0x4 repack, so the in-process build (x86 repack) produced
+  NaN logits with any key on: `qs4cxFromModelQ4_0` re-lays the host's
+  repack as q4_0x4 off aarch64 (device bytes pass through unchanged).
+  `causal_lm.cpp:715` registers the prefill's token only when the prompt
+  is shorter than `init_seq_len`: at prompt 512 the old config (512)
+  prints the text without its first token, the new one (1024) with it
+  (`docs/measurements/prompts/README.md`).
+
 ## 4. Reusable code on `hvx_impl` (survey 2026-09-21; read with `git show hvx_impl:<path>`)
 
 `hvx_impl` (Qwen3-0.6B, W8A8 HVX-only) is frozen but its kernels and
