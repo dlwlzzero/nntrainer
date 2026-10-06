@@ -31,7 +31,7 @@ project now takes is nntrainer/nntrainer#4296 (Gemma 4 on the CPU),
 **Gemma watch (since cycle 35, user 2026-10-06, #234):** upstream
 nntrainer/nntrainer#4408 ("[WIP][DRAFT][HTP] Run gemma-4-26B-A4B on the HTP
 with flash offload", Seunghui98, `refs/pr/4408`) — watch sha
-**`28771a928`** (PR updated 2026-10-02 09:32 UTC; unchanged in cycle 35) —
+**`28771a928`** (PR updated 2026-10-02 09:32 UTC; unchanged in cycles 35–36; #4410's `updatedAt` moved to 2026-10-06 08:11 UTC with its head still `0d603f29a`) —
 and `htp_first_version` (cycle 35b: `78dace26f` — PR #237's sync of
 `htp_decode`, PR #233 merged `0e8888bde`, PR #224 merged; PR #240 (#219
 docs) open) are read each cycle; a port issue is
@@ -1262,6 +1262,91 @@ is decided). The label stands at `state:review` + `needs-user` as of
 10:22 UTC; **which it should be is the user's / orchestrator's call**,
 and the sync that carries `9c92d0ac8` here should keep one copy of rule
 65 and of the #219 rows (the facts agree).
+**Cycle 36 (2026-10-06 night, base `htp_first_version` @ `7244e7e2e`,
+PR #240 in): the LFM2.5 close-out — #236's and #219's close-out handoffs
+folded, the 9 × 3 × 3 table of record completed, no row of record moves;
+after this fold the project is Gemma's (#201 / #229 / #234, the other
+session's track on `htp_decode`).** Both sittings on `R3CY205ZMND`
+attached to the workstation, the agent driving adb (user 2026-10-06: no
+more farm sessions for LFM; `/data/local/tmp/nntrainer/.sitting.lock`
+marks a sitting since another session shares the unit). **#236**
+(`htp/236-qkv-chunks:docs/measurements/236-qkv-p1024.md @ 3d61c1aff`, PR
+#243 open; 20:35–20:43 KST, 8 runs + profile, no STOP / BAD): the M > 1
+FC entries step by min(`fcMaxRows`, `prefillRows`) = 512; hybrid B at
+P1024 on the config of record loads (`heap_kib=75776 requant=0`, no
+`0x80000600`) at **53.24 / 53.06 / 48.64**, prefill **725.7 / 722.7 /
+711.1**; anchor B P512 G64 56.49 / 745.3 vs #225's 55.17 / 727.3 (+2.4 %
+drift; A′ 56.84 / 749.6) → anchored 52.0 / 51.8 / 47.5 = Bfb's 52.03 /
+51.51 / 48.74 (decode equal — the M = 1 path is untouched), prefill
++9.4 / +11.1 / +9.5 % raw over Bfb; above the CPU of record at every G;
+A′ (the #225 set) reproduced the failure in-sitting
+(`err=-2147482112`); FC calls = rows / 512 (12 / 6144, 13 / 6656); Q P1024
+G64 40.76 (tier unset; #225 37.83). Provenance: the skels were replaced
+before the run (the #225 skels are stale after the #237 sync's IDL
+change — **rule 66**), `md5.txt` regenerated `1e6bf2f0…`, device md5 ==
+set — accepted (rule 22), not void. Gates G1–G4 pass; T2 recorded (B
+P1024 G512 loops where A does not, as Bfb did; G1024 both loop). **#219
+close-out** (`htp/219-tier-default:docs/measurements/219-tier-table.md @
+6923850d0`, PR #245 open: `NNTR_MOE_TIER` unset = 2 on the E2E path only,
+`HtpBackend::e2eRequested() ? 2 : 0`; 20:50–21:02 KST, 14 runs, 0 BAD /
+VOID / STOP, `MD5 OK`): the tiered E2E one PD (C = 28) 9 × 3 — **52.20 /
+54.60 / 53.89, 48.08 / 51.79 / 51.65, 44.02 / 50.59 / 50.78** at P64 /
+P512 / P1024 (G64 / G512 / G1024), prefill 282–287 / 794–803 / 763–773;
+`experts=88 mib=466.5 direct=1`, `tier_reads=0`, `tier_waits` 0 / 3 /
+3–4, misses/token at G64 1.16 / 1.61 / 2.62; Q0 P512 G64 37.58, B 56.44
+(= #236's 56.49). G1 / G2 / G4 pass, G3 (≥ 48.4) 48.08 = −0.7 %, inside
+drift; vs #225's untiered Q +10.7 … +21.9 %; vs the CPU of record ≥ 50
+and above at every P for G ≥ 512 (+2.1 … +7.1 %), under at G64 (−3.4 /
+−7.7 / −7.5 %) — **rule 67**. Deviations: 4.5–5.3 min idle after the
+reboot; the cool-wait fired before every Q cell but not before Q0 / B
+(Q's prefill +6 % at P512 is a start-condition difference). **Rule 68**
+(the P1024 FC chunking: deterministic failure by call shape, not heap
+residency; ≈ 3.4 % of the prefill, decode untouched). **Verdicts:** ㊱
+closed (#236 → `state:review` + `needs-user`: PR #243, texts); #219 →
+`state:review` + `needs-user` (PR #245, texts), ㊴ stays open and is not
+pursued on LFM; #225 close-out comment (`state:review` + `needs-user`:
+PRs #243 / #245 merge, PR 3 dropped unless the user says otherwise);
+tracker #76 with the closed-out section. **No row of record moves:** the
+texts of every config-of-record cell are approved n (#225) or pending
+(#236, #219t); the "now" stays the record sitting (53.97 / 52.16 / 51.41)
+and the contract §1 numbers are untouched — the table of record
+(BENCHMARK Method, cycle-36 paragraph) is the close-out reading beside
+it. Upstream watch unchanged (#4408 `28771a928`; #4410 `0d603f29a`,
+reference). Queue ≥ 2 (#110, #137, #229), nothing derived.
+
+**LFM2.5 status (close-out, cycle 36).** *Met and of record:* decode
+≥ 50 tok/s at G 64 / 512 / 1024 above the CPU on the old config (record
+sitting 2026-09-30, bit-identical levers, text ≡ A); the 9 × 3 × 3 table
+on the config of record (`init_seq_len 1024`, all engine keys `htp`, FC
+WH sidecar, hybrid prefill in 512-token chunks, `NNTR_MOE_TIER=2` E2E
+default): CPU #225 A, hybrid #225 B / #236 B (P1024), E2E #219t — the
+hybrid above the CPU at 9 / 9 and ≥ 50 at 8 / 9, the E2E above at 6 / 9
+(G ≥ 512) and under at G64 — as speed readings until the user approves
+the texts. *On hold (user 2026-10-06; not pursued on LFM, not handed to
+Gemma):* the FC quantization accuracy problem — the config-of-record
+texts loop at P1024 / G ≥ 512 where the CPU does not, prefill PPL +4 %
+and decode PPL +7–10 % over the keys-off model (#225 texts n). *Closed by
+decision:* the E2E decode speed gap on LFM2.5 (re-examined on Gemma);
+#225's PR 3 (`NNTR_HTP_FC_M1`) unless the user says otherwise. **What
+stays open and is Gemma's to pick up** (each with the LFM reading it
+starts from): (a) **accuracy / quantization** — an int4 FC set that
+passes an SNR gate yet loops in free-running text: Gemma's gate is 20 dB
+SNR + tokens vs the CPU, and the LFM T2 reading says the free-running
+text must be read beside it (rules 39 / 45); (b) **E2E G64 vs the
+hybrid** — the one-PD path is 3–8 % under the CPU and 8–15 % under the
+hybrid at G64 at every P because the residual scales with P (rule 67):
+misses/token × the copy plus a ≈ 45–160 ms decode-start cost a run; the
+levers are to drain the refill backlog before the first decode token
+(㊴ 2) and a pool that survives the prefill batch; (c) **`tier_waits`
+3–4 a run / `pswpin` ≠ 0** (㊴ 2–3, rule 65 b / c) — hygiene on the same
+path Gemma's one PD uses; (d) **skip loading the ARM Q4_0 FC set
+(≈ 170 MiB) on the E2E path** — the one PD never reads it (`cpu fc
+skipped` = 32 × tokens, #225), it only costs RSS and load time; Gemma's
+2 GB stage (㉟) is where it pays. Also carried: rule 66 (stale skel after
+an IDL change) and rule 68 (prefill FC chunking) apply to every Gemma
+sitting; the LFM2.5 device rules 61 / 65 hold for the S25 only until the
+S26 re-reads them.
+
 ## 1. Rules (device disagreed with reasoning; do not re-derive)
 
 Inherited from the PR's device work, with their sources:
@@ -2307,6 +2392,88 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
     `=2`; what is left between Q28 (48.5) and the CPU (52–54) at that
     cell is no longer the miss. Default not flipped — the user's call
     (#219, as #218).
+
+66. **A skel that was built before an IDL change in the base is stale
+    for an app built after it, even when the branch under test changed
+    no DSP source — "no DSP change on this branch" is not the test;
+    `git diff <skel's commit>..HEAD -- test/htp/nntr_hvx.idl` is** (#236
+    close-out, 2026-10-06: the handoff planned to reuse the #225 skels
+    `58e3a85f…` / `ca25ec2d…` because `htp/236-qkv-chunks` touches the
+    host only, but the #237 sync had brought #232's IDL change into
+    the base under it; the stub compiled into `libnntrainer.so` and the
+    reused skel would have disagreed — on the device that reads as
+    `0x8000040e` (the runner's STOP condition, rule 38's class), not as
+    a wrong answer). The set ran with skels rebuilt at `a3d966164`
+    against the current IDL (v79 `ce4e6486…`, v81 `adfd44d4…`), the
+    staged `md5.txt` was regenerated (`1e6bf2f0…`) and the device md5s
+    equal the regenerated set — a rule-22 case, accepted. Consequence:
+    a handoff that copies a skel from an earlier set states the skel's
+    source commit and the IDL diff against the app's commit (empty, or
+    rebuild); the supervisor voids a run whose skel predates an IDL
+    change in the app's history; `build.sh` is still not
+    bit-reproducible (rule 14: a second v79 build at the same commit
+    gave `b5f04afe…`), so skel identity is "built at commit X against
+    IDL Y", never an md5 match across machines.
+
+67. **With the tier on, the E2E one PD's G64 cell is still under the CPU
+    at every prompt length, and its residual scales with P: misses/token
+    × the tier copy plus a decode-start cost — 1.16 / 1.61 / 2.62
+    misses a token (`miss_wait_us/token` 157 / 317–331 / 472–475) and a
+    one-off ≈ 45 / 77 / 160 ms a run at P64 / P512 / P1024, so the G64
+    cell sits 0.8 / 1.5 / 3.0 ms a token behind the same P's G512 cell
+    and −3.4 / −7.7 / −7.5 % under the CPU, while at G ≥ 512 the same
+    path reads 50.6–54.6, ≥ 50 and above the CPU at every P** (#219
+    close-out, `R3CY205ZMND` 2026-10-06, 14 runs; Q 52.20 / 54.60 /
+    53.89, 48.08 / 51.79 / 51.65, 44.02 / 50.59 / 50.78 vs the CPU of
+    record 54.05 / 52.54 / 51.48, 52.07 / 50.70 / 49.47, 47.58 / 48.82 /
+    47.41). Against reasoning: plan 219 and the cycle-35b fold treated
+    the pool miss as *the* G64 term and expected the tier (ms/miss 3 →
+    0.44) to close that cell; it moved it +12 … +22 % over the untiered
+    Q, but the miss wait is now only 0.14–0.41 ms a token of the gap —
+    the rest is a start cost that grows with P (the prefill batch's
+    victims still refilling when decode starts: `tier_waits` 0 / 3 / 3
+    at P64 / P512 / P1024, constant across G, rule 65 b; plus the first
+    token's own work) and is paid once a run, so G amortises it (÷ 64
+    vs ÷ 512). Consequence: the G64 column of an E2E row is read as
+    "start cost ÷ G + misses × copy", not as a per-token rate; a lever
+    for it drains the refill queue before the first decode token (㊴ 2)
+    or keeps the prefill batch from evicting the pool, and is gated on
+    the G64 cell *at P1024* (the worst case), not at P512; the hybrid
+    (resident experts, no pool) has no such term and stays the fastest
+    configuration at every cell (56.4–56.5 at P512 G64 in both
+    close-out sittings). Not pursued on LFM2.5 (user: the E2E speed gap
+    is closed here, re-examined on Gemma).
+
+68. **The hybrid's P1024 failure beside the FC WH heap overflow is the
+    FC call's row count, not the overflow's residency: the same
+    `heap_kib=75776` overflow with every M > 1 FC call capped at 512
+    rows loads and runs P1024 at every G, the unchunked set fails
+    deterministically in the same sitting (`0x80000600` on the first
+    attention qkv call, A′ P1024 VOID), and the chunking costs ≈ 0 in
+    decode and ≈ 3.4 % of the prefill** (#236 close-out, `R3CY205ZMND`
+    2026-10-06: B P1024 53.24 / 53.06 / 48.64 = Bfb's 52.03 / 51.51 /
+    48.74 anchored (the M = 1 path is untouched), prefill 725.7 / 722.7 /
+    711.1 = +9.4 / +11.1 / +9.5 % over Bfb (which ran those FCs on the
+    CPU); `prof_B_P1024`: `M>1 FC K=2048 N=3072` 12 calls / 6144 rows,
+    `N=2048` 13 / 6656, 2.31 / 1.61 ms host a call with 0.60 / 0.37 ms
+    transport and `rest` 39–41 % of host (quant 0.42 + acc 0.19–0.29
+    ms), 48.8 ms of a 1458 ms profiled prefill). Against reasoning: plan
+    236 priced the extra calls at ≈ 0.4 ms each (≈ 5 ms, 0.3 %); on the
+    device an FC chunk is 1.6–2.3 ms of host time — the DSP work is
+    1.2–1.7 ms (77 / 74 % of host) and the per-call `quant` / `acc` /
+    transport ≈ 1 ms, ten times the plan's figure — yet still small
+    beside the 1.4 s prefill, so the plan's "chunking is free" verdict
+    stands at the prefill gate (+9 % over Bfb, floors 630 / 618 / 617
+    passed) while its per-call arithmetic does not. The o_proj row's
+    13th call (6656 = 6144 + 512 rows) is the host fixture's extra
+    call, read as expected; `heap_kib` stayed 75776 on every B run, so
+    the arena tails were filled as in #225 and the overflow itself is
+    sound with 512-row calls. Consequence: every HTP prefill entry a
+    config key can route obeys `prefillRows()` (rule 64's consequence,
+    now measured); a per-call cost on the DSP side is read from a
+    profile row, never from the plan's µs/call; Bfb (attention / dense
+    keys `cpu`) is no longer the hybrid's P1024 case of record — B is.
+
 ## 2. Verdicts (measured, closed)
 
 | item | verdict | source |
@@ -2373,6 +2540,8 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
 | **#222: the LFM2.5 closing sitting on the config of record — Aold / Anew / Qold / Qnew / CPU (`222-config-refresh.md`, PR #223 merged into `htp_first_version` `b7c1d4ff6`; farm `R3CY205ZMND`, S25 SM8750 v79, 2026-10-02 16:15–16:54 KST, set from `ddb7d9ad8`; handoff merged unfilled — numbers from #222's comments 08:00 / 08:30 UTC, no device md5 line seen by the supervisor)** | **FAIL on three counts; no row of record, next issue #225.** (1) **Qnew (one PD, C = 28) VOID in every cell**: `no room for the FC set beside the resident experts (mapped=3712 MiB, fastrpc_mmap(32 MiB) failed: err=1)`, same after a fresh reboot; `heap_used_kib` 92 058 (Qold) → 223 003 (Qnew attempt). (2) **Anew (hybrid) P1024 VOID** in `nntr_hvx_mm_u8i4_conv_block` (`AEE_ENOMEMORY`, M = 1024): the conv block's M-proportional DSP-heap scratch (≈ 26 MiB at 1024) beside the keys' ≈ 216 MiB WH copies. (3) **Anew accuracy fails**: prefill PPL 90.31 → 128.31 (+42 %), decode PPL forced 1.2108 → 1.3752 (+13.6 %, gate +2 %), G64 text loops — stacked Q4_0 → qs4cx quantization (rule 63). Information only, never averaged in: Qold (C = 28) loads, prefill / decode 556 / 33.7, 584 / 34.6 (G64), 455 / 43.3 (G512), 531 / 43.3 (G1024), texts = Aold r1; Anew P512 786.5 / 56.5, 761.9 / 56.4, 739.9 / 51.7, P64 294.9 / 56.1, 254.0 / 55.6, 266.7 / 52.9; CPU `q40` P64 244.3 / 53.6, 210.5 / 53.4, 210.5 / 49.4, P512 310.5 / 49.0, 307.7 / 46.9, 294.4 / 48.9, P1024 (`init_seq_len 1024`) 311.8 / 49.7, 317.8 / 49.1, 313.8 / 48.5. User (2026-10-06): the Qnew C = 24 follow-up is cancelled; the table of record is 9 cells × 3 cases on the config of record; the fix is option (b) — the FC weights as `QS4CX_WH` in a sidecar file written by the packer (#225, base `htp_first_version`; PR 1 = #230 merged `7f95140ad`, the 512-row prefill chunking is the hybrid's way of record); accuracy threshold for #225's handoff open (`needs-user`). #222 closed `completed` | #222 comments 2026-10-02 08:00 / 08:30 UTC and 2026-10-06; `/local/mnt/workspace/htp_moe/222/logs/` on the farm session's machine (not on this workstation); `222-config-refresh.md` (unfilled) on `htp_first_version` |
 | **#225: the LFM2.5 table of record, 9 cells × 3 cases on the config of record with the FC WH sidecar (`htp/225-fcwh-e2e:docs/measurements/225-fcwh-table.md @ f08cccfeb`, PR #233 open; farm `R3CY205ZMND`, S25 SM8750 v79, 2026-10-06 15:56–16:36 KST, one invocation, no STOP; set rebuilt from `51b2b4477` = code `7efd22adf`, `md5.txt` `23000b96…`, device md5 == set, sidecar `71812a91…` / main bin `7b7867fa…` byte-identical; started 52 s after reboot — rule 61 deviation; run by the user)** | **G1 fit pass with the Bfb substitution; G2 E2E pass; G3 hybrid P1024 FAIL (rule 64, #236); G4 under T2 recorded, approval pending — no row of record moves yet.** **CPU (A)** P64 54.05 / 52.54 / 51.48, P512 52.07 / 50.70 / 49.47, P1024 47.58 / 48.82 / 47.41 (prefill 231–328). **Hybrid (B)** P64 59.59 / 58.01 / 54.74 (prefill 272–284), P512 **55.17 / 55.72 / 51.43 (prefill 727–739)**, **P1024 B VOID** → **Bfb** 52.03 / 51.51 / 48.74 (prefill 650–686); vs the CPU +2.8 … +10.4 % at 9 / 9 cells, ≥ 50 at 8 / 9; vs Aoff (keys off, P512) 53.96 / 52.58 → +2.2 / +6.0 %, prefill +30–38 % — the prefill gate against the same binary passes. B's `fc wh: handles=112 arena_kib=145408 heap_kib=75776 requant=0` (overflow as planned); B P1024 dies in the attention qkv FC: `nntr_hvx_mm_u8i4_layer failed: err=0x80000600 (M=1024 K=2048 N=3072 handles=3)` (`AEE_ERPC`; the FC entries chunk by `fcMaxRows` = 1920 rows, not `prefillRows` = 512). **E2E one PD (Q28)** loads in every cell — `fc wh: … arena_kib=221184 heap_kib=0 requant=0`, `calls/token=1.00`, `cpu fc skipped` = 32 × tokens, mapped 192 + 3520 = 3712, `heap_used_kib` 94 604 (#222's Qnew 223 003, VOID) — at P64 42.81 (r2 49.31) / 49.34 / 48.49, P512 42.78 (r2 44.48) / 45.94 / 45.61, P1024 37.83 (r2 38.72) / 43.93 / 43.52 (prefill 248–755): under the CPU by 6–21 % and under the hybrid at every cell; `prof_Q` P512 G64 `wall_ms/token` 21.275 = MOE 10.946 + FC 3.819 + LM_HEAD 2.973 + DENSE_FFN 1.057 + ROUTER_TOPK 0.677 + ATTN_M1 0.620 + CONV1D_GATE 0.478 + RMSNORM 0.331 + ADD / QK_NORM / ROPE 0.21; pool misses 1.61 / token, `miss_wait_us/token` 549. **Accuracy (T2):** prefill PPL pooled A 86.44 / Aoff 90.31 / B 94.08 / Q 94.08; decode forced on A 1.1809 / 1.2139 / 1.2965 / 1.3318 (null check equal; worst p04 B 1.671 / Q 1.791, p07 1.853 / 1.989); every NPU text ≠ A (rule 39); r2 == r1 with the `[HTP]` banners stripped (B 3 / 3, Q 3 / 3); **loops where A has none: Bfb P1024 G64 (r1, r2), Bfb P1024 G512, Q P1024 G512**; B P64 G64 degenerate where A loops too; Q P512 G64 echoes the prompt; **approval column empty (user)**. Runner artifact: banners inside the text (㊲). User decisions in force: T2, fallback (b), 9 × 3 table of record, LFM2.5 is the test bed for Gemma. Next: PR #233 merge + text approval (user) → the table becomes the row of record; #236 (p1) re-reads B at P1024; #219's step-4 sitting is runnable after PR #233 | `htp/225-fcwh-e2e:docs/measurements/225-fcwh-table.md @ f08cccfeb`; #225 comment 2026-10-06 07:43 UTC; `/local/mnt/workspace/htp_moe/225/logs/` on the measuring workstation (`j2z0`) |
 | **#219: the pool miss as a memcpy from a cached ARM tier — `NNTR_MOE_TIER` A / B on a fresh and an old boot + `=2` ×4 (`htp/219-arm-tier:docs/measurements/219-arm-tier.md @ 149481ec4`, PR #240; farm `R3CY205ZMND` S25 v79, 2026-10-06 18:28–19:01 KST 30 runs + 19:09 12 runs; set from the local merge `8629b9392` = `htp/225-fcwh-e2e` @ `f08cccfeb` + `htp_first_version` @ `9f33d7d43`, device `MD5 OK` on all three boots, rule 22; config of record `3f6808e3…` + sidecar, `CONFIG OK 3848ab71…`; the code is PR #224, merged `9f33d7d43`)** | **Lever measured: the slow regime is gone, decode +19 / +24 % at G 64, G1 / G3–G7 pass, G2 missed on two counts; default not flipped (user's call).** Q28 one PD, G 64 block means (same-sitting A): **no tier 39.99 / 38.70 → `=1` 47.60 / 47.82 → `=2` 48.37 / 48.45** (fresh / old); G 512 51.13 / 50.54 → 52.75 / 52.73; G 1024 51.69 / 51.22 → 52.27 / 52.42; ×4 follow-up 37.15 (sd 5.43) / 47.31 (0.71) / **48.47 (0.23)**. ms/miss (profiled) **2.54 / 3.77 → 0.67 / 0.51 → 0.45 / 0.44**, follow-up 3.69 / 0.83 / 0.43; `miss_wait` at G 64 2927–12669 → 452–934 → 302–322 µs a token. Window refaults 74k–153k → ≤ 571 (`=2` ≤ 81), kswapd 65k–139k/s → 0, PSI io → 19–37 ms, `resident after` 0.7–3.2 GiB → 0 on every tiered run; `tier_hits = misses`, `tier_reads = 0`, app `pgpgin` = misses × 5.29 ± 7 MiB; `experts=88 mib=466.5 read_ms=78.5 direct=1`, the first call's `DONTNEED` 451.6 ms at load. **G1** `=1` 0.51–0.83 (the plan's 0.5–0.7 "copy store-bound" band, user's call), `=2` ≤ 0.45 on all six runs — pass. **G2 fail**: `tier_waits` 3–4 on every tiered run (gate ≤ 2; constant across G → the decode start's refill backlog, rule 65 b) and `pswpin` 0–2105 (gate 0; `=2` ≤ 168; rule 65 c); the rest of G2 holds. **G3** prefill: G 64 block means +2.1 / +0.9 %, ×4 +0.7 / +1.7 %; G 512 −1.2 / −1.0 %; fresh G 1024 −5.5 % (801.3 → 757.4, A the sitting's highest prefill of 30 runs, unprofiled) vs old +1.2 % — pass, the pair read as spread. **G4** pass (B's block means above A's best run, B ≥ A at G 512 / 1024 both boots). **G5** text == the boot's A1 on 36 / 36 Q runs (fresh B2's runner `DIFF` = a ` wh_handles=112` banner fragment, ㊲'s class), H == H0, host `bit_identical=1`. **G6** `calls/token=1.00`, close clean, ceiling 3840 after all 42; hybrid H0 / H 50.35 → 51.08, 53.51 → 53.92 (inside spread). **G7** `resident after` 0, `pswpout` 0 on the main sitting's tiered windows. **One-thread copy beats the 8-slice copy on every axis** (rule 65 a). "Now" not moved (lever cell; the table of record's E2E Q28 cells stay #225's). What is left → ㊴: the default / copy-mode decision (user), the decode-start refill backlog (`tier_waits`), the small `pswpin`; a tiered 9 × 3 E2E column would be its own sitting (not filed) | `219-arm-tier.md` @ `149481ec4` + `219-arm-tier-{run.sh,report.py}`, `219-b2x4-run.sh` (PR #240); issue #219 comments 2026-10-06 10:04 / 10:12 UTC; `/local/mnt/workspace/htp_moe/219/logs/{fresh,old}/` + `report.md` |
+| **#236 close-out: the hybrid at P1024 with the M > 1 FC entries in 512-row chunks (`htp/236-qkv-chunks:docs/measurements/236-qkv-p1024.md @ 3d61c1aff`, PR #243 open; `R3CY205ZMND` S25 v79 on the workstation's USB, agent-run, 2026-10-06 20:35–20:43 KST, uptime 1565 s at start, 8 runs + profile, no STOP / BAD; set from `a3d966164`, skels rebuilt against the current IDL (v79 `ce4e6486…`, v81 `adfd44d4…` — the #225 skels are stale after the #237 sync's IDL change, rule 66), `md5.txt` regenerated `1e6bf2f0…`, device md5 == set, `MD5 OK (app, sidecar)`; config of record `3f6808e3…` + sidecar `71812a91…`)** | **G1 loads pass, G2 prefill pass, G3 decode pass (= Bfb), G4 chunked pass; T2 recorded, approval pending — the table of record's hybrid P1024 cell moves from Bfb to B; ㊱ closed.** B P1024 **53.24 / 53.06 / 48.64** (G64 r2 52.89), prefill **725.7 / 722.7 / 711.1**, `fc wh: … heap_kib=75776 requant=0` on every run (= #225's overflow), no `0x80000600` / `0x80000402`; anchor B P512 G64 56.49 / 745.3 (#225 55.17 / 727.3 → +2.4 %, the sitting's drift; A′ 56.84 / 749.6) → anchored 52.00 / 51.82 / 47.50 vs Bfb 52.03 / 51.51 / 48.74 (−0.1 / +0.6 / −2.5 %: equal, the M = 1 path is untouched), prefill +9.4 / +11.1 / +9.5 % raw over Bfb (floors 630 / 618 / 617); vs the CPU of record 47.58 / 48.82 / 47.41 +11.9 / +8.7 / +2.6 %. **A′** (the #225 set as staged, `dd24b4fc…`, skel `58e3a85f…`) P1024 G64 VOID with `nntr_hvx_mm_u8i4_layer failed: err=-2147482112 (M=1024 K=2048 N=3072 handles=3)` — #225's failure reproduced in-sitting (deterministic; rule 68). `prof_B_P1024`: `M>1 FC K=2048 N=3072` calls 12 rows 6144, `N=2048` 13 / 6656 (every call 512 rows), 2.31 / 1.61 ms host a call, 48.8 ms of a 1458 ms prefill. Q P1024 G64 (tier unset) 772.2 / 40.76 vs #225's 699.0 / 37.83, text byte-identical to #225's Q. **T2:** B P512 text == #225's B byte for byte; B P1024 G64 no loop (1 / 0.23 vs A 0.00; ends on the loop's opening clause), G512 loops where #225's A does not (1.00 vs 0.16; as Bfb did — so it is the length / the FC quantization, not the fallback), G1024 both loop; r2 == r1; **approval pending (user)**. Logcat: one `0x80000414` `libdspqueue_rpc_skel` line at teardown in every run incl. the good ones (the queue close, not a failure). Next: PR #243 merge + text approval (user); nothing further on LFM | `236-qkv-p1024.md` @ `3d61c1aff` + `236-run.sh` / `236-stage.sh` (PR #243); issue #236 comment; `/local/mnt/workspace/htp_moe/236/logs/` |
+| **#219 close-out (#219t): the E2E one-PD row of the table of record with `NNTR_MOE_TIER=2` on by default (`htp/219-tier-default:docs/measurements/219-tier-table.md @ 6923850d0`, PR #245 open — `tierKnob()` unset = 2 when `HtpBackend::e2eRequested()`, else 0; hybrid / CPU untouched, no DSP / IDL change; `R3CY205ZMND` on the workstation's USB, agent-run, 2026-10-06 20:50–21:02 KST, 4.5–5.3 min after a reboot (rule 61 deviation), 14 runs, 0 BAD / VOID / STOP; set from `0235d9d79`, `md5.txt` `058b97a5…`, `MD5 OK (app, sidecar)`, skel v79 `1b35bff1…`; config of record + sidecar)** | **G1 tier-by-default pass, G2 E2E hygiene pass, G3 speed met within drift (48.08 vs ≥ 48.4, −0.7 %; #219's `=2` sd 0.23), G4 hybrid untouched pass; T2 recorded, approval pending — the table of record's E2E column becomes the tiered one, #225's untiered Q cells stay as the tier-off reading; ㊴ open, not pursued on LFM.** Q (C = 28, tier unset = 2) decode **P64 52.20 / 54.60 / 53.89, P512 48.08 / 51.79 / 51.65, P1024 44.02 / 50.59 / 50.78** (G64 r2 52.03 / 48.05 / 44.14), prefill 281.9 / 285.7 / 287.0, 793.8 / 802.5 / 800.0, 765.9 / 773.4 / 771.1; every Q run `token driver: on … tier=2`, three `[HTP] tier:` lines, the last `experts=88 mib=466.5 … direct=1`, `tier_reads=0`, `tier_hits == misses`, `calls/token=1.00`, `fc wh … heap_kib=0 requant=0`, mapped 192 + 3520, close clean; `tier_waits` 0 / 3 / 3 (P512 G ≥ 512: 4); misses/token at G64 1.16 / 1.61 / 2.62, `miss_wait_us/token` 157 / 317–331 / 472–475 (G ≥ 512: 10–64). Q0 (`=0`) P512 G64 37.58 (`miss_wait_us/token` 5905; Q +27.9 %); B P512 G64 56.44 / 749.6 (= #236's 56.49, −0.1 %; #225's 55.17 +2.3 %). vs #225's untiered Q +21.9 / +10.7 / +11.1, +12.4 / +12.7 / +13.2, +16.4 / +15.2 / +16.7 %; vs the CPU of record −3.4 / +3.9 / +4.7, −7.7 / +2.1 / +4.4, −7.5 / +3.6 / +7.1 % — **≥ 50 and above the CPU at every P for G ≥ 512, under at G64, residual scaling with P (rule 67)**. Prefill: Q +6 % over Q0 / B at P512, both of which ran without a cool-wait — a start-condition difference, not a tier effect (#219 read +1.7 %). **T2:** Q P512 G64 == Q0 (the tier copies the file's bytes — bit-preserving), every G64 r2 == r1; loops at P64 every G (the CPU too), P512 / P1024 G ≥ 512 (L1 run 17 / 35), none at G64 / Q0 / B; **approval pending (user)**. Next: PR #245 merge + text approval (user); ㊴ (`tier_waits`, `pswpin`, the G64 residual) is Gemma's | `219-tier-table.md` @ `6923850d0` + `219-tier-run.sh` / `219-tier-stage.sh` (PR #245); issue #219 comment; `/local/mnt/workspace/htp_moe/219t/logs/` |
 
 ## 3. Open items (candidates for issues; the supervisor promotes them)
 
@@ -2413,9 +2582,9 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
 | ㉝ | **S1 ceiling 3584 (LEAK) stops: 2 in 32 runs on the farm S25 `R3CY205ZMND` vs 1 across three sittings (≈ 94 runs) on `R3CY10WM83Y`** (rule 59 c); all four known cases on a boot's first G = 512 r1 or a profiled run, the stopped runs themselves closed clean. Per unit, per boot, no cause. Not a lever; a runner fact: the S26 sittings keep the reboot-and-resume rule and log uptime at every stop. Read `ceiling.txt` + the `.logcat` of the farm's two stops (on that machine) for the mapping that stays | which PD / process holds the 256 MiB after a clean close | farm session's logs |
 | ㉞ | **#201 S5 host-side prep (cycle 34, from the implementer's S4 close-out): three items that need no 26B files.** (a) The sliding layers' DSP attention cache (`HTP_ATTN_KV_CACHE_B`, hd 64) is sized at `max_seq` 4096 on the 26B-A4B shape ≈ 800 MiB — it has to be window-sized (Gemma's sliding window) or capped by a smaller `max_seq`, inside the one-PD budget of rule 63 (pool + FC set + heap + scratch ≤ 3840 MiB, S26 ceiling 3840 per #208); (b) #4296's CPU layers without a hook still compute at decode on stale rows and the result is discarded — correct, wasted CPU time per token; the E2E path should skip them the way `dense_ffn` does since PR #223 (`htpDecodeRowResident`); (c) the final soft-cap stays on the CPU (one op; the DSP has the soft-capped head since PR #214). Gate: the hd64 fixture's E2E lines unchanged (`calls/token=1.00`, tokens 8/8, SNR ≥ 20 dB), the cache bytes printed at load, the CPU skip count printed per token. Also from #229: the ternary → 4-bit converter and the prefill dequantization path are their own issue once the checkpoint's storage format is pinned (`needs-user`) | S5's 26B load fits the S26's one PD; decode's CPU remainder is the hooks' only | #201 (files), #229 |
 | ㉟ | **Peak memory < 2 GB — deferred constraint (user 2026-10-06, cycle 35; contract §1).** Stated: Gemma decode E2E should keep process peak RSS incl. the ION arenas under 2 GB (pool + FC set + KV caches + DSP heap + scratch), flash streaming (the expert pool / FSU) covering what does not fit. Same day: **considered last, after the ternary 26B decodes end to end on the S26** — not a gate on S5 / S6, so plan 229's one-PD sizing (C ≈ 57–66 on a 3.8 GB arena) stands for S5 and ㉞ (a)'s cache sizing works to rule 63's budget. For S5 and its levers: every Gemma row records peak RSS and the arena bytes (`mapped=` line, pool C, FC set, cache bytes) so the later stage starts from measured numbers. When promoted (after S5 / S6): one issue per budget term, gate = peak RSS < 2 GB on the S26 with text / SNR unchanged vs the unconstrained A and the pool's miss cost (㉜) re-read at the smaller C | sizing from S5's first sitting; which terms (pool C, KV `max_seq`, FC set bits) carry the cut | S5's first sitting (#201), #229 (2-bit halves the slots), #234 |
-| ㊱ | **Filed as #236 (p1, `state:needs-plan`, cycle 34; rule 64).** The hybrid's attention qkv FC at P1024 goes to the DSP as one M = 1024 call (`gemm_q4_0_batch_fp32` chunks by `fcMaxRows(K)` = 1920 at K = 2048, not by PR #230's `prefillRows()` = 512) and fails `AEE_ERPC` beside the FC WH overflow on the heap (`heap_kib=75776`); the same call runs on the one PD (`heap_kib=0`). Fix: the FC entries (`gemm_q4_0_accel_fp32`, `gemm_q4_0_batch_fp32`, and the qs4cx twins) take `prefillRows()` as their cap too, host-proven bit-identical chunked vs unchunked (the `CONV BLOCK CHUNKED BIT-IDENTICAL` template); then B's three P1024 cells are re-read on the config of record (Bfb is the case of record there until then) with the loop check against A — Bfb P1024 G64 / G512 loop where A does not, so the re-read also answers whether that is the fallback's or the length's | hybrid B loads and runs P1024 × G64 / G512 / G1024 on the config of record (no VOID, no `AEE_ERPC`); chunked == unchunked bit-identical on the host at M = 1024, K = 2048, 3 handles; prefill ≥ −5 % of the unchunked P512 cell (727–739); E2E Q unchanged (`calls/token=1.00`, `heap_kib=0`) | PR #233 merged; the user's text approval of the P512 cells |
+| ㊱ | **Closed by #236 (cycle 36, 2026-10-06; §2 #236 row, rule 68): B loads and runs P1024 × G64 / G512 / G1024 on the config of record (53.24 / 53.06 / 48.64, prefill 726 / 723 / 711, `heap_kib=75776`), chunked == unchunked bit-identical on the host, prefill +9 % over Bfb, E2E Q unchanged; the old set fails in the same sitting. B is the hybrid's P1024 case of record; PR #243 and the text approval are the user's.** Originally:**Filed as #236 (p1, `state:needs-plan`, cycle 34; rule 64).** The hybrid's attention qkv FC at P1024 goes to the DSP as one M = 1024 call (`gemm_q4_0_batch_fp32` chunks by `fcMaxRows(K)` = 1920 at K = 2048, not by PR #230's `prefillRows()` = 512) and fails `AEE_ERPC` beside the FC WH overflow on the heap (`heap_kib=75776`); the same call runs on the one PD (`heap_kib=0`). Fix: the FC entries (`gemm_q4_0_accel_fp32`, `gemm_q4_0_batch_fp32`, and the qs4cx twins) take `prefillRows()` as their cap too, host-proven bit-identical chunked vs unchunked (the `CONV BLOCK CHUNKED BIT-IDENTICAL` template); then B's three P1024 cells are re-read on the config of record (Bfb is the case of record there until then) with the loop check against A — Bfb P1024 G64 / G512 loop where A does not, so the re-read also answers whether that is the fallback's or the length's | hybrid B loads and runs P1024 × G64 / G512 / G1024 on the config of record (no VOID, no `AEE_ERPC`); chunked == unchunked bit-identical on the host at M = 1024, K = 2048, 3 handles; prefill ≥ −5 % of the unchunked P512 cell (727–739); E2E Q unchanged (`calls/token=1.00`, `heap_kib=0`) | PR #233 merged; the user's text approval of the P512 cells |
 | ㊲ | **Runner defect, docs-only (cycle 34):** `225-run.sh`'s `gen()` keeps `[HTP]` banners that print inside the generated text (`dspq: on queue=0x…`, `graph: init …` — stdout not line-terminated), so its `speed.txt` text column reads DIFF for every NPU run and the `every r2 text == its r1` check reports `BAD … got '2'` on a byte-identical pair (the queue address differs). Fix on PR #233's branch: strip `\[HTP[^\n]*\n` anywhere in the captured text before comparing (and in `loops.txt`'s input); the filled handoff's text-vs-A column was recomputed that way by hand. Filed as a comment on #225, not an issue | the next runner's `speed.txt` reads `same` for r2 vs r1 on every NPU cell; `loops.txt` computed on banner-free text | PR #233 |
-| ㊴ | **#219's remainder (cycle 35b, 2026-10-06; §2 #219 row, rule 65; ㊳ is `htp_decode`'s cycle-36 item for #229 S1) — three things, none a code change the gate asks for yet.** (1) **The default is the user's call** (`needs-user` on #219): flip `NNTR_MOE_TIER=2` (one-thread copy; G1 pass on every run, decode 48.47 sd 0.23 at G 64, refaults ≤ 81, `pswpin` ≤ 168) as the E2E one-PD default, or keep it env-only as #218's fadvise; `=1` (8-slice copy) is dominated on every axis and should not be the default either way. (2) **`tier_waits` 3–4 a run at every G** (G2 wants ≤ 2): the decode start's refill backlog from the prefill batch (constant across G, the host saw 2 waits behind `refill_ms=42.5`), not a growing race; lever = drain the refill queue (or `poolSync` on it) before the first decode token, cost ≈ one refill's time off the first token, not the per-token path; worth ≈ 3–4 × 1 ms a run — small, a hygiene item. (3) **`pswpin` non-zero with the tier** (0–1261; `=1` once 2105 / `pswpout` 3621): the sum anon 766 + tier 467 + ION 3 776 MiB is at the S25's edge; a cheaper tier (hold only the complement's gate | up images the pool actually re-reads, or drop the tier's slots the arena holds twice at load) or a smaller RSS recovers the ≈ 0.5 GiB. Also open: a tiered 9 × 3 E2E column (P64 / P512 / P1024 × G) is its own sitting on the same unit class as #225's Q cells — not filed until the default is decided | (1) a decision; (2) `tier_waits ≤ 2` on every run with decode unchanged; (3) `pswpin = pswpout = 0` in every tiered window | #219 `needs-user`; PR #240 |
+| ㊴ | **Cycle 36 (close-out): (1) decided — `NNTR_MOE_TIER=2` is the LFM E2E default (PR #245, `HtpBackend::e2eRequested() ? 2 : 0`; the tiered 9 × 3 E2E column is measured, §2 #219t row); (2) / (3) stay open and are not pursued on LFM2.5 (user) — they move to Gemma's one PD with rule 67's reading (the G64 residual = start cost ÷ G + misses × copy, scaling with P; `tier_waits` 0 / 3 / 3 at P64 / P512 / P1024) and the ≈ 170 MiB ARM Q4_0 FC set the E2E loads and never reads (`cpu fc skipped` = 32 × tokens) as the RSS item beside (3).** Originally:**#219's remainder (cycle 35b, 2026-10-06; §2 #219 row, rule 65; ㊳ is `htp_decode`'s cycle-36 item for #229 S1) — three things, none a code change the gate asks for yet.** (1) **The default is the user's call** (`needs-user` on #219): flip `NNTR_MOE_TIER=2` (one-thread copy; G1 pass on every run, decode 48.47 sd 0.23 at G 64, refaults ≤ 81, `pswpin` ≤ 168) as the E2E one-PD default, or keep it env-only as #218's fadvise; `=1` (8-slice copy) is dominated on every axis and should not be the default either way. (2) **`tier_waits` 3–4 a run at every G** (G2 wants ≤ 2): the decode start's refill backlog from the prefill batch (constant across G, the host saw 2 waits behind `refill_ms=42.5`), not a growing race; lever = drain the refill queue (or `poolSync` on it) before the first decode token, cost ≈ one refill's time off the first token, not the per-token path; worth ≈ 3–4 × 1 ms a run — small, a hygiene item. (3) **`pswpin` non-zero with the tier** (0–1261; `=1` once 2105 / `pswpout` 3621): the sum anon 766 + tier 467 + ION 3 776 MiB is at the S25's edge; a cheaper tier (hold only the complement's gate | up images the pool actually re-reads, or drop the tier's slots the arena holds twice at load) or a smaller RSS recovers the ≈ 0.5 GiB. Also open: a tiered 9 × 3 E2E column (P64 / P512 / P1024 × G) is its own sitting on the same unit class as #225's Q cells — not filed until the default is decided | (1) a decision; (2) `tier_waits ≤ 2` on every run with decode unchanged; (3) `pswpin = pswpout = 0` in every tiered window | #219 `needs-user`; PR #240 |
 
 ## 3a. Guide and tooling notes
 

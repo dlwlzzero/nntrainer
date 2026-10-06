@@ -28,6 +28,15 @@ detail:
 The LFM2.5 goal below was **met** (record sitting 2026-09-30) and its
 table of record (9 × 3 on the config of record, #225) closes on
 `htp_first_version`; the paragraphs that follow are kept as that record.
+**Closed out in cycle 36 (2026-10-06 night):** the 9 × 3 × 3 table is
+complete (hybrid P1024 = #236 B 53.24 / 53.06 / 48.64, E2E = #219's
+tiered Q 52.20 / 54.60 / 53.89, 48.08 / 51.79 / 51.65, 44.02 / 50.59 /
+50.78; BENCHMARK Method, cycle-36 paragraph); its texts are approved n
+(#225) or pending (#236, #219t), so under the accuracy gate below none of
+its cells replaces the "now" numbers in this table — they stay the record
+sitting's. The FC quantization accuracy problem is on hold (user), the
+E2E speed gap on LFM2.5 is closed by decision; what stays open is listed
+in LEDGER.md's "LFM2.5 status" note and is Gemma's.
 
 ---
 
