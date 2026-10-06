@@ -1,0 +1,23 @@
+{
+    "bad_word_ids": [],
+    "batch_size": 1,
+    "embedding_dtype": "Q4_0",
+    "fc_layer_dtype": "Q4_0",
+    "fsu": false,
+    "fsu_lookahead": 2,
+    "init_seq_len": 512,
+    "lmhead_dtype": "Q4_0",
+    "lora_alpha": 0,
+    "lora_rank": 0,
+    "lora_target": [],
+    "max_seq_len": 2048,
+    "model_file_name": "nntr_lfm2_8b_a1b_q40_arm.bin",
+    "model_tensor_type": "Q4_0-FP32",
+    "model_type": "CausalLM",
+    "moe_engine": "htp",
+    "moe_htp_layers": "",
+    "moe_layer_dtype": "QS4CX_WH",
+    "num_to_generate": 512,
+    "sample_input": "Explain the concept of AI",
+    "tokenizer_file": "/data/local/tmp/nntrainer/causallm/models/q40-qs4cx-wh/tokenizer.json"
+}
