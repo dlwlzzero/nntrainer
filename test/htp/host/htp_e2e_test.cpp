@@ -37,10 +37,13 @@
  * (#225): the load-time FC registrations, the FC WH sidecar and the
  * warm-up calls (which the MoE dumps then hold too); (#219) the expert
  * pool is preloaded at load, not in the first prefill.
+ * The model class follows config.json's architectures: Gemma4ForCausalLM
+ * is the Gemma 4 MoE fixture ([plan 201 S4]), anything else LFM2-MoE.
  * Exit 0, or 1 with `E2E FAIL <reason>` on any exception.
  */
 
 #include <causallm_test_utils.h>
+#include <gemma4_moe_causallm.h>
 #include <lfm2_moe_causallm.h>
 
 #include <algorithm>
@@ -113,6 +116,10 @@ void writeLogits(const std::string &dir, size_t step, const float *p,
   std::fclose(f);
 }
 
+template <typename Model>
+int runModel(const Options &o, nlohmann::json &cfg, nlohmann::json &gen,
+             nlohmann::json &nntr, const std::string &weights);
+
 int run(const Options &o) {
   namespace fs = std::filesystem;
   const fs::path dir = o.model;
@@ -128,6 +135,17 @@ int run(const Options &o) {
   // A config that asks for more keeps it (#222: init_seq_len 1024).
   nntr["init_seq_len"] =
     std::max(nntr.value("init_seq_len", 0u), o.run ? o.prompt + 1 : o.prompt);
+  const bool gemma = cfg.contains("architectures") &&
+                     cfg["architectures"].is_array() &&
+                     !cfg["architectures"].empty() &&
+                     cfg["architectures"][0] == "Gemma4ForCausalLM";
+  // Gemma 4 nests its shape in text_config; the model lifts it the same
+  // way (Gemma4Transformer::sanitizeConfig), before the override below
+  if (gemma && cfg.contains("text_config"))
+    for (auto it = cfg["text_config"].begin(); it != cfg["text_config"].end();
+         ++it)
+      if (!cfg.contains(it.key()))
+        cfg[it.key()] = it.value();
   if (cfg.value("max_position_embeddings", 0u) < o.max_seq)
     cfg["max_position_embeddings"] = o.max_seq;
   const std::string weights =
@@ -141,8 +159,15 @@ int run(const Options &o) {
     setenv("NNTR_HTP_DUMP", o.dump.c_str(), 1);
   }
 
-  causallm_test::CausalLMTestAdapter<causallm::Lfm2MoeCausalLM> model(cfg, gen,
-                                                                      nntr);
+  return gemma
+           ? runModel<causallm::Gemma4MoECausalLM>(o, cfg, gen, nntr, weights)
+           : runModel<causallm::Lfm2MoeCausalLM>(o, cfg, gen, nntr, weights);
+}
+
+template <typename Model>
+int runModel(const Options &o, nlohmann::json &cfg, nlohmann::json &gen,
+             nlohmann::json &nntr, const std::string &weights) {
+  causallm_test::CausalLMTestAdapter<Model> model(cfg, gen, nntr);
   model.initializeModel();
   model.loadWeight(weights);
   if (o.repack)
