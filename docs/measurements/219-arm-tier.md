@@ -70,6 +70,9 @@ not virtual: `preloadExperts` returns first).
 Staged at `/local/mnt/workspace/htp_moe/219/app/` (`md5.txt` beside it;
 the runner diffs it against the device's `md5sum` and stops on a
 mismatch). One set for every variant; variants are env only.
+This set's default is no tier; since #219's close-out (`htp/219-tier-default`)
+an unset `NNTR_MOE_TIER` is `2` under `NNTR_HTP_E2E=1`, so A on a newer
+set is `NNTR_MOE_TIER=0`.
 
 | file (`app/`) | md5 | built with |
 |---|---|---|
