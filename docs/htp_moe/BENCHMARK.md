@@ -365,6 +365,27 @@ NNTR_MOE_CACHE_EXPERTS=<C>`). All-resident E0 no longer loads on the 8B
 `NNTR_MOE_CACHE_EXPERTS`); the E0 / P cells above stay as history, and
 `NNTR_HTP_E2E_PDS` other than 1 is refused at load (LEDGER §3a).
 
+**Cycle 33 (2026-10-06): the #222 closing sitting (farm `R3CY205ZMND`,
+2026-10-02, config of record) adds no row — it is a verdict (LEDGER §2
+#222 row, rule 63).** One PD + C = 28 cannot load the engine keys' FC WH
+copies, the hybrid fails at P1024 (`AEE_ENOMEMORY` in the conv block) and
+the hybrid's accuracy fails (+42 % prefill PPL, +13.6 % decode PPL, G64
+loops). Its handoff merged unfilled (PR #223, into `htp_first_version`), so
+no cell is a row of record; the Qold / Anew / CPU readings of that sitting
+stay in #222's comments and the LEDGER row, never in this table. User
+(2026-10-06): **the LFM2.5 table of record is 9 cells × 3 cases — P64 /
+P512 / P1024 × G64 / G512 / G1024 for CPU only, hybrid and E2E one PD, all
+on the config of record (`init_seq_len 1024`)** — filled by #225's handoff
+(FC weights as `QS4CX_WH` in the sidecar `nntr_lfm2_8b_a1b_q40_arm_fcwh.bin`
+of the Artifacts table, PR 1 = #230 merged `7f95140ad`; on the hybrid the
+prefill runs in 512-token chunks, the way of record; PR 2 = the E2E FC ops
+on the WH GEMV; PR 3 = the hybrid's M = 1 FCs on the WH GEMV behind
+`NNTR_HTP_FC_M1`, default off, a reading beside the hybrid cell). Base
+`htp_first_version`; S25 via the farm, run by the user. The S25 `now`
+above stays the record sitting's old-config cells until that table exists.
+Gemma sittings (S26 Ultra attached, agent drives adb) open their own
+column when #201 S5 runs.
+
 ## Goals
 
 | goal | now | target | ceiling | status |
@@ -882,3 +903,4 @@ Pushing an old app with the new skel, or the reverse, fails with
 | 2026-10-02 | Cycle 30: **#216 folded, two rows added, no row of record moves** (`216-miss-read.md` PR #217; `216-fadvise.md` @ `45be8de65` PR #218; `R3CY10WM83Y`, 2026-10-01 21:43–23:36 KST, the last sittings before the unit was disconnected; device md5 == staged, verified against the sitting logs on this workstation). The pool-28 miss's slow regime is **page-cache eviction of the model file during the run** (storage reads: `pgpgin` / refaults / PSI io), not a busy core and not boot proximity (rule 61 amended, ㉜ rewritten); the `NNTR_MOE_FADVISE=1` lever holds the miss at 0.86–1.13 ms (+10 / +15 % decode at G = 64 on the E2E path) but **fails the prefill gate (−7 to −18 %)** because `posix_fadvise` costs 2–10 ms a call on this kernel (rule 62) — env-only on PR #218, default not flipped, the user decides at review. #211 closed (PR #215 `aa78104e9`); PR #213 (#201 S4 attention) merged `03a44701c`. **No device attached from 2026-10-02**: handoffs are filed as issues / comments with `needs-user` + `state:needs-measurement` and run by the user from a device-farm session (contract §12). **#219 filed** (p1, `state:needs-plan`): the complement in a cached ARM buffer, refilled off the token path. "Now" unchanged (record sitting 53.97 / 52.16 / 51.41; the S25 column is frozen, no S26 product unit) | results (2 rows), log |
 | 2026-10-02 | Cycle 31: no filled handoff, no row added, no `state:measured` issue; no device attached (contract §12). Merged by the user: PR #214 (#201 S4 head / QK_NORM 256–512 / dense GeGLU / two-branch FFN, `2b8832a23`), PR #212 (drop `RegistryCapacity`, rule 60, `0e880088d`), PR #217 (#216 step 1 docs, `b26c161eb`); every S4 kernel is in, the Gemma graph builder + load hand-over remain (host-gated). Open PRs: #218 (fadvise lever, env-only — user's call), #220 (guide refresh). #216 `state:review`, #201 `state:in-progress`; queue #219 / #137 `state:planned`, nothing derived. "Now" unchanged (record sitting 53.97 / 52.16 / 51.41; S25 column frozen). Tracker #76 body rewritten for `htp_decode` | none (log only) |
 | 2026-10-02 | Cycle 32: no filled handoff, no row added, no `state:measured` issue. PR #218 merged (`238a280b7`): `NNTR_MOE_FADVISE` env-only, default not flipped (user); #216 closed. User decisions (contract §12): the LFM2.5 table is closed out on the #222 config of record (all engine keys `htp`, `init_seq_len 1024`) via the closing sitting `222-config-refresh.md` (PR #223 open, user runs it on the S25 via the farm; folded only after it merges), then the project moves to Gemma, whose sittings run on an S26 Ultra attached to the workstation (new column; adb driver undecided). "Now" unchanged (record sitting 53.97 / 52.16 / 51.41; S25 column frozen). #219 `state:in-progress`, #201 PR #221 open, #137 `state:planned`; nothing derived | none (log only) |
+| 2026-10-06 | Cycle 33: **#222's closing sitting read as a verdict, no row added** (farm `R3CY205ZMND`, 2026-10-02; handoff `222-config-refresh.md` merged unfilled via PR #223 into `htp_first_version` `b7c1d4ff6`, numbers in #222's comments): Qnew (one PD C = 28) cannot load the keys' FC WH copies, hybrid P1024 `AEE_ENOMEMORY`, hybrid accuracy fails (+42 % prefill PPL, +13.6 % decode PPL, loops) — LEDGER rule 63, §2 #222 row; #222 closed; next issue **#225** (p0, `state:in-progress` + `needs-user`). User decisions (contract §12): Qnew C = 24 cancelled; **the LFM2.5 table of record is 9 cells × 3 cases on the config of record**; fix = option (b), the FC weights as `QS4CX_WH` in a sidecar (`nntr_lfm2_8b_a1b_q40_arm_fcwh.bin`, md5 `71812a91…`, main file unchanged) — **PR #230 (#225 PR 1) merged `7f95140ad`**, its 512-token prefill chunking the hybrid's way of record; PR 2 in progress, PR 3 = `NNTR_HTP_FC_M1` reading; LFM2.5 on the S25 farm (user), Gemma on the attached S26 (agent adb); #201 S4 (a)(b)(c) yes, PR #221 merged `78e597a5b`, PRs #226 / #227 / #231 open. **Base = `htp_first_version` from this cycle** (fast-forwarded from `htp_decode` @ `c7ec6c64a` + #223 + #230); the cycle-33 docs commit `0e89e600b` was dropped by PR #223's merge and is restored here. Open PRs #231 / #227 / #226 / #224 / #220 still target `htp_decode` (retarget: user). #219 waits on #225. "Now" unchanged (record sitting 53.97 / 52.16 / 51.41; S25 column frozen) | Method cycle-33 paragraph, log |

@@ -21,7 +21,11 @@ cycle 21, `bcfc1ac5` at the cycle 20 close, before that
 `700371da` in cycles 19–20, `4ae1ebd7` from cycle 12 through cycle 18,
 `a996b4bf` from cycle 7 through cycle 11). The commits after
 `4ae1ebd7` are **not merged** (cycle 19, cycle 20 close, cycles 21 and 22
-below).
+below). **Not watched since 2026-10-01 (user).** The one upstream PR this
+project now takes is nntrainer/nntrainer#4296 (Gemma 4 on the CPU),
+**pinned at `d345c3470`** (user decision 2026-10-06, contract §12), merged
+by #201 S4's PR #226 (open at cycle 33, stacked under #227 / #231); it is a
+pin, not a watch — later #4296 commits are not tracked here.
 
 `hvx_conv_gate_f32.{c,h}` (upstream `7f81560b`) reached `htp_moe` through
 PR #121's merge, so #82 is plan 82's case (a): it reuses the file unchanged
@@ -837,6 +841,95 @@ writer S5 → S4, head_dim ≥ 64 fixture). #219 `state:in-progress`
 (implementer on host steps 1–3). Queue healthy (#137 `state:planned`,
 #219), nothing derived; upstream not watched. Open PRs into
 `htp_decode`: #223, #221, #220 (guide). Tracker #76 body refreshed.
+
+**Cycle 33 (2026-10-06, base `htp_first_version` @ `7f95140ad`): the #222
+closing sitting is read as a verdict (no row of record, rule 63); one base
+again; #225 PR 1 merged; six user decisions.** **Base.** The user
+fast-forwarded `htp_first_version` to `htp_decode` @ `c7ec6c64a`, then
+merged PR #223 (`b7c1d4ff6`) and PR #230 (`7f95140ad`) into it: from this
+cycle `htp_first_version` is the only base (contract §5) and the
+supervisor's docs live there. `htp_decode` is behind it and receives
+nothing new; the PRs still open against it — #226 / #227 / #231 (#201 S4,
+stacked), #224 (#219), #220 (guide) — need retargeting, a user step. The
+first cycle-33 docs commit (`0e89e600b`, written on `htp_decode` before
+the fast-forward) was **dropped by the merge of PR #223**, which took the
+branch side of BENCHMARK / LEDGER / contract; its content (this paragraph's
+#222 part, rule 63, the §2 #222 row, BENCHMARK's Method paragraph and Log
+row, the contract's §4.1 / §4.2 / §5 / §12 hunks) is restored here. **(1)
+#222's closing sitting** (2026-10-02 16:15–16:54 KST, farm `R3CY205ZMND`,
+S25 v79, set from `ddb7d9ad8`; results only in #222's comments of 08:00 /
+08:30 UTC and the farm session's logs — the handoff `222-config-refresh.md`
+merged **unfilled**, no device md5 line reached the supervisor, so nothing
+is a row of record and no BENCHMARK Results row is added): **Qnew (one PD,
+C = 28) VOID in every cell** — `no room for the FC set beside the resident
+experts (mapped=3712 MiB, fastrpc_mmap(32 MiB) failed: err=1)`, reproduced
+after a fresh reboot, `heap_used_kib` 92 058 (Qold) → 223 003 (Qnew
+attempt); **Anew (hybrid) P1024 VOID** — `nntr_hvx_mm_u8i4_conv_block …
+err=0x80000402` (`AEE_ENOMEMORY`, M = 1024 K = 2048 C = 2048 N = 2048: the
+conv block's M-proportional session scratch, ≈ 13 MiB at M = 512 and ≈ 26
+MiB at 1024, no longer fits the DSP heap beside the keys' ≈ 216 MiB of WH
+copies); **Anew accuracy FAIL** — pooled over the 8 prompts prefill PPL
+90.31 → 128.31 (+42 %), decode PPL (forced) 1.2108 → 1.3752 (+13.6 %, gate
++2 %), G64 text degenerates into repetition (two stacked quantizations: the
+file's Q4_0, then per-column qs4cx over K = 2048 at load). Read for
+information only, not folded: Qold (C = 28) loads and closes clean, prefill
+/ decode 556 / 33.7 and 584 / 34.6 (G64), 455 / 43.3 (G512), 531 / 43.3
+(G1024), texts = Aold r1; Anew P512 786.5 / 56.5, 761.9 / 56.4, 739.9 /
+51.7 and P64 294.9 / 56.1, 254.0 / 55.6, 266.7 / 52.9 (the keys do move the
+prefill, at a PPL the gate refuses); CPU `q40` P64 244.3 / 53.6, 210.5 /
+53.4, 210.5 / 49.4, P512 310.5 / 49.0, 307.7 / 46.9, 294.4 / 48.9, P1024
+(`init_seq_len 1024`) 311.8 / 49.7, 317.8 / 49.1, 313.8 / 48.5 (P1024 +
+G1024 = `max_seq_len` 2048 generated to the end). Rule 63 and the §2 #222
+row carry the verdict; the accuracy fail is the next issue per the
+contract — **#225** (p0, filed by the user), the Qnew C = 24 follow-up is
+**cancelled** (user: the fix changes the FC format, the reading would not
+carry), #222 closed `completed` on PR #223's merge. **(2) The LFM2.5 table
+of record is 9 cells × 3 cases** — P64 / P512 / P1024 × G64 / G512 / G1024
+for CPU only, hybrid and E2E one PD, on the config of record with
+`init_seq_len 1024` (user) — filled by #225's handoff (step 7 of plan 225).
+**(3) #225 (`state:in-progress` + `needs-user`, p0): option (b) as a
+sidecar.** The FC weights are quantized once from f32 by the packer into
+`QS4CX_WH` images in a sidecar `<main>_fcwh.bin` (user: sidecar, not a
+single `.bin`): `nntr_lfm2_8b_a1b_q40_arm_fcwh.bin`, 66 weights,
+228,188,160 B, md5 `71812a91…`, written in the same packer run as the main
+file, whose md5 `7b7867fa…` is unchanged (`cmp` identical; BENCHMARK
+Artifacts). **PR 1 = #230 merged `7f95140ad`**: `--fc_wh_sidecar` in
+`nntr_quantize_stream`; the loader preads the images into the arena (no
+requant, no heap copy; a bit-exact unpack to the heap only on overflow); the
+conv block / dense FFN / MoE prefill calls run in 512-row chunks with the
+conv history carried in `conv_w` (no IDL change) — **the user made PR 1's
+512-token chunking the hybrid's way of record, not a stopgap**. Host:
+`E2E keys fcwh-lfm25 … heap=0 requant=0 … ok`, `E2E eval fcwh==wh-lfm25 …
+bit_identical=1`, `CONV BLOCK CHUNKED BIT-IDENTICAL`, `E2E keys lfm25-p2x
+prompt=1024 … bit_identical=1`; skels v79 + v81; no device run (the device
+gets PR 1 only with PR 2, plan 225 §3.4). PR 2 (E2E FC / DENSE_FFN on the
+WH GEMV with the VTCM feed, `htp/225-fcwh-e2e`) is being built; **PR 3
+(user request) = the hybrid's M = 1 FCs on the WH GEMV behind
+`NNTR_HTP_FC_M1`, default off, a reading beside B in the handoff**, with
+rule 40 / 42 / 49 caveats on record. Still `needs-user` before the handoff:
+the accuracy threshold (T1 contract §1 ≤ 1.02 × the no-keys hybrid vs T2
+rule 45 — deferred by the user) and the hybrid overflow fallback (pool
+C = 31 vs the attention / dense keys off at prefill). **(4) Devices:**
+LFM2.5 on the S25 via the farm, run by the user; Gemma on the S26 Ultra
+attached to the workstation, **the agent drives adb** (user; the
+2026-10-01 rule set applies to that unit). **(5) #201**
+(`state:in-progress`): the user answered the 2026-10-02 questions — (a)
+#4296 pinned at `d345c3470` merges now, (b) the Gemma HTP MoE layer +
+`QS4CX_WH` writer move S5 → S4, (c) an hd ≥ 64 fixture is added; PR #221
+(graph builder) merged `78e597a5b` (in the base); PRs #226 (pin merge),
+#227 (hand-over by name, per-op RoPE, two caches), #231 (Gemma HTP MoE
+layer + gate|up writer) open, stacked, all against `htp_decode`. The
+26B-A4B files are not on the workstation yet. **(6) #219**
+(`state:needs-measurement` + `needs-user`): PR #224 open (`NNTR_MOE_TIER`,
+host-gated); its step-4 sitting waited for #222's result, which is that
+the config of record cannot load one PD at all — it now waits on #225's
+PR 2 and shares its base / retarget question. **#229** (p1,
+`state:needs-plan`, Gemma ternary LUT review) belongs to another session
+and is not touched by this supervisor. Queue healthy (#229, #137
+`state:planned`, #110 `state:needs-plan` + `needs-user`), nothing derived;
+upstream #4327 not watched. "Now" unchanged (record sitting 53.97 / 52.16 /
+51.41 on the old config; S25 column frozen until the 9 × 3 table). Tracker
+#76 body refreshed.
 
 ## 1. Rules (device disagreed with reasoning; do not re-derive)
 
@@ -1786,6 +1879,33 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
     user buffer, or read with `O_DIRECT`, and drop the file's pages once
     at load.
 
+63. **The engine keys' load-time Q4_0 → qs4cx-WH re-quantization of the FC
+    weights is not the +4 % of doc 51 on this tree, and its ≈ 216 MiB of
+    copies live in the DSP heap, which the budget must count** (#222
+    closing sitting, farm `R3CY205ZMND` 2026-10-02, set from `ddb7d9ad8`;
+    numbers in #222's comments, handoff unfilled). Against reasoning: plan
+    222 and the handoff took doc 51's `attn_proj` +4.5 % / `dense_ffn`
+    +4.2 % prefill PPL as the accepted cost and budgeted the copies only
+    against the 3840 MiB map window ("≈ 200 MiB of room for 216"). The
+    device: (a) with all three keys the hybrid's prefill PPL is 90.31 →
+    128.31 (+42 %) and the forced decode PPL 1.2108 → 1.3752 (+13.6 %),
+    the G64 text loops — two stacked quantizations (the file's Q4_0, then
+    per-column qs4cx over K = 2048) are not the author's one; (b) the
+    copies raise `heap_used_kib` 92 058 → 223 003, and the conv block's
+    M-proportional session scratch (`hexkl_conv_block.c:268–284`, ≈ 26
+    MiB at M = 1024) then fails with `AEE_ENOMEMORY` at P1024 while P512
+    still fits; (c) one PD + pool C = 28 (3328 mapped) + the 448 MiB Q4M1
+    FC set + the copies reaches `mapped=3712` and the FC set's last 32 MiB
+    `fastrpc_mmap` fails — the "room" was never there once the heap is
+    counted. Consequence: a weight that the HTP reads at prefill and at
+    decode is stored **once, in a file, in the DSP's format** (#225: the
+    `QS4CX_WH` FC sidecar written by the packer from f32, PR #230; no
+    load-time re-quantization, the heap keeps scratch only), the prefill
+    runs in 512-row chunks (PR #230, the hybrid's way of record), a config
+    / feature that adds DSP-heap bytes is read at P1024 as well as P512
+    before it is adopted, and a one-PD budget sums pool + FC set + heap
+    copies + scratch against 3840.
+
 ## 2. Verdicts (measured, closed)
 
 | item | verdict | source |
@@ -1849,6 +1969,7 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
 | **#201 S2, one PD (Q28 / Q29 = P28 + `NNTR_HTP_E2E_PDS=1`) against two PDs (P28), E0 and A — sitting 1 `R3CY10WM83Y` (2026-10-01 09:43–09:58, G 64 / 512, set `f5e8b1648`, 22 runs, no stop) and sitting 2 `R3CY205ZMND` (device farm, #207, 10:57–11:22, G 64 / 512 / 1024, set rebuilt at `a2ebef9c9`, 32 runs, two LEAK stops, three boots; tables from the issue comment, logs on that machine); with S0 (hybrid pool, 21:42) and the two-PD sitting (22:18) of 2026-09-30 on `R3CY10WM83Y`** | **One PD wins, bit-identical, on both units; still under A.** Q28 **42.98 / 43.13, 43.40 / 42.44** (G 64 / 512) vs P28 36.72 / 35.81, 36.67 / 34.13 vs E0 30.51 / 30.46, 30.79 / 30.66 vs A 56.74 / 54.51, 48.45 / 54.23 on `R3CY10WM83Y`; **40.48 / 40.97, 44.68 / 46.74, 45.11 / 45.20** vs P28 33.16 / 32.94, 35.37 / 39.07, 36.75 / 35.89 vs E0 29.30 / 30.09, 31.23 / 32.31, 31.02 / 30.92 vs A 54.61 / 54.65, 51.81 / 56.11, 51.82 / 50.30 on the farm unit (G 64 / 512 / 1024); Q29 = Q28 within spread with fewer misses; every text == A r1 of its G (20 / 20, 30 / 30; S0 30 / 30, two-PD 28 / 28). Mechanism: FC set on S1's VTCM 9.2 ms vs 11.6–13.1 on S2, no hops, `rt` 22.4 vs 26.6 / 30.6 (rule 59 a). Two-PD sitting: the pool beats all-resident E0 by the server spin's wake-up effect (L0 by accident, ≈ −4.5 ms a token), P32 35.6 vs E0 30.3–30.8. S0: the pool on the hybrid path F28 ≈ A (54.9 / 53.5 / 54.4 vs 57.3 / 55.4 / 54.9), F16w −20 %, cold 12–13. Pool-28 miss 3.45 / 3.79 ms on the two units, unexplained (rule 59 b, ㉜); LEAK 2 in 32 (farm) vs 1 across three sittings (㉝). Prefill: sitting 1 and two-PD inside −5 % on the means; sitting 2's column not in the comment. **No row of record** (lever on open PR #203, under A, second unit); the next structural read is the MoE round (10.5 ms) and the FC set's 1.1 ms over isolated, on the S26 (#204 / #208) | `201-one-pd.md` §Sitting 1 / §Sitting 2, `201-fsu-e2e.md`, `201-pool-baseline.md` (all on `htp/201-pool-miss-path`); issue #207 comment 2026-10-01; `201/s0/`, `201/s2/logs/`, `201/s3/logs/` (sitting 1) |
 | **#208: the S26 re-baseline on `htp_decode` (plan 204 §4 step 7; set from `4c0c20dca`, v81 skel `26fdf25a…`; `R3CY70LV96T`, SM-S948U userdebug, 2026-10-01 14:12–15:29 KST, three invocations, 24 runs + 2 profiles + CPU control; run by the orchestrator)** | **E2E runs on v81; optimization deferred.** The one-PD E2E (Q28) and the two-PD variants ran on an S26 with every NPU text == A q4 r1 of its G (20 / 20) and the S1 ceiling at 3840 MiB on all 24 cells; gtests on the v81 skel pass except #137's known set (softmax 28/4, attn 10/2) and `RegistryCapacity`, which drops this unit (rule 60). The tables (A 53.9 / 53.6, 57.9 / 55.9 at G 64 q4 / q1; E0 29.3 / 29.3, 30.1 / 33.9; P28 27.2 / 28.6, 29.0 / 30.2; Q28 30.7 / 33.9, 31.7 / 35.1; G 512 q4 A 54.4, E0 30.7, P28 31.6, Q28 37.4; CPU 50.9) are an appendix of record only: **developer unit, not representative** (user) — no rule, no BENCHMARK column. Observations kept there: four DMA queues read no better than one on any variant (the banner shows the setting applied); a pool-28 miss reads 3.99–4.69 ms with the phone's page-cache `read()` at ≈ 1.6–2.0 GB/s. S26 optimization deferred until a product unit | `204-s26-rebaseline.md` §Results (this fold); `/local/mnt/workspace/htp_moe/204/s26/logs/` |
 | **#216: the pool-28 miss cost — step 1 (`216-miss-read.md`, PR #217; `R3CY10WM83Y` 2026-10-01 21:43–22:01 KST, sitting 1's build `a2ebef9c9`, MD5 OK on three boots, 12 profiled Q28 G = 64 runs, per-core `/proc/stat` + `top -H` + vmstat sampler at 0.5 s) and the fadvise lever (`216-fadvise.md` @ `45be8de65`, PR #218, `htp/216-fadvise` @ `222a3196c`; two sittings 23:06–23:36 KST on a fresh and a ≥ 10-min-old boot, set `61a26580…` / skel `9d61aef4…` rebuilt from `03811d8ef`, device md5 == staged on both boots, 26 runs)** | **Cause measured, first lever fails the prefill gate, default not flipped.** (1) The slow miss is a storage read, not a busy core and not boot proximity (rule 61 amended, ㉜): `pgpgin` 610 / 310 / 61 / 0 MiB and refaults 151 k / 79 k / 16 k / 1 in the decode window against 5.03 / 2.72 / 1.55 / 0.55 ms/miss, PSI io 92–296 ms in every slow window (0–31 fast), busiest non-app core 3–16 % in 11 / 12 windows; slow at uptime 300 s and after a 6-min idle. Memory arithmetic: arena 3 328 + FC 448 + RSS 766 unreclaimable + the model file 4 116 cached + Android ≈ 3 740 > 11 114 MiB — every resident expert held twice. Plan 216's slice lever not built (stop rule; patch kept). (2) `NNTR_MOE_FADVISE=1` (DONTNEED after a slot is filled, WILLNEED on the victim, 128 KiB pieces on one worker, decode drops at `poolSync`): ms/miss **B 0.86–1.13 vs A 0.68–4.38** on both boots; decode G = 64 block means **36.27 → 41.56 (+14.6 %) fresh, 38.67 → 42.71 (+10.5 %) old**, G = 512 −0.5 / +4.3 %; against A's one fast run (0.68, 43.66) B is 1–4 % slower. **Prefill 494.8 → 443.6 (−10.4 %) / 540.5 → 500.2 (−7.4 %) at G = 64, −17.8 / −11.9 % at G = 512 — gate fail**; `arm_ms/round` 1.20–1.58 vs A-fast 0.945 (fail); window `pgpgin` 639–643 MiB at G = 64 by the plan's own arithmetic (fail by construction); `=2` drop-only 3.87 / 3.97 ms/miss = A's slow regime (model confirmed: every decode miss is a re-miss). Text 26 / 26 == A, `calls/token=1.00` 22 / 22, ceiling 3840 after 25 / 26 (one 3584 after a hybrid run, unexplained); hybrid H vs H0 inside spread (the path never reaches `readExpert`). Host: `ALL CHECKS PASS`, `INPROC E2E PASS` under unset / `=1` / `=2` with the same `misses=`, `bit_identical=1`. Rule 62 (fadvise is 2–10 ms a call here, WILLNEED reads 1 MiB). What is left → **#219**: the complement in a cached ARM buffer, refilled off the token path, the page cache dropped once at load; not verified: G = 1024, the victim re-miss race, `MADV_PAGEOUT` / plain `pread` into scratch as a cheaper drop | `216-miss-read.md` + `216-core-load-{run.sh,report.py}`, `216-sampler.sh` (PR #217); `216-fadvise.md` + `216-fadvise-{run.sh,sampler.sh,report.py}` (PR #218); issue #216 comments 2026-10-01 13:03 / 14:54; `/local/mnt/workspace/htp_moe/216/{logs_core,fadvise}/` |
+| **#222: the LFM2.5 closing sitting on the config of record — Aold / Anew / Qold / Qnew / CPU (`222-config-refresh.md`, PR #223 merged into `htp_first_version` `b7c1d4ff6`; farm `R3CY205ZMND`, S25 SM8750 v79, 2026-10-02 16:15–16:54 KST, set from `ddb7d9ad8`; handoff merged unfilled — numbers from #222's comments 08:00 / 08:30 UTC, no device md5 line seen by the supervisor)** | **FAIL on three counts; no row of record, next issue #225.** (1) **Qnew (one PD, C = 28) VOID in every cell**: `no room for the FC set beside the resident experts (mapped=3712 MiB, fastrpc_mmap(32 MiB) failed: err=1)`, same after a fresh reboot; `heap_used_kib` 92 058 (Qold) → 223 003 (Qnew attempt). (2) **Anew (hybrid) P1024 VOID** in `nntr_hvx_mm_u8i4_conv_block` (`AEE_ENOMEMORY`, M = 1024): the conv block's M-proportional DSP-heap scratch (≈ 26 MiB at 1024) beside the keys' ≈ 216 MiB WH copies. (3) **Anew accuracy fails**: prefill PPL 90.31 → 128.31 (+42 %), decode PPL forced 1.2108 → 1.3752 (+13.6 %, gate +2 %), G64 text loops — stacked Q4_0 → qs4cx quantization (rule 63). Information only, never averaged in: Qold (C = 28) loads, prefill / decode 556 / 33.7, 584 / 34.6 (G64), 455 / 43.3 (G512), 531 / 43.3 (G1024), texts = Aold r1; Anew P512 786.5 / 56.5, 761.9 / 56.4, 739.9 / 51.7, P64 294.9 / 56.1, 254.0 / 55.6, 266.7 / 52.9; CPU `q40` P64 244.3 / 53.6, 210.5 / 53.4, 210.5 / 49.4, P512 310.5 / 49.0, 307.7 / 46.9, 294.4 / 48.9, P1024 (`init_seq_len 1024`) 311.8 / 49.7, 317.8 / 49.1, 313.8 / 48.5. User (2026-10-06): the Qnew C = 24 follow-up is cancelled; the table of record is 9 cells × 3 cases on the config of record; the fix is option (b) — the FC weights as `QS4CX_WH` in a sidecar file written by the packer (#225, base `htp_first_version`; PR 1 = #230 merged `7f95140ad`, the 512-row prefill chunking is the hybrid's way of record); accuracy threshold for #225's handoff open (`needs-user`). #222 closed `completed` | #222 comments 2026-10-02 08:00 / 08:30 UTC and 2026-10-06; `/local/mnt/workspace/htp_moe/222/logs/` on the farm session's machine (not on this workstation); `222-config-refresh.md` (unfilled) on `htp_first_version` |
 
 ## 3. Open items (candidates for issues; the supervisor promotes them)
 
@@ -2022,6 +2143,21 @@ Learned in this project (cycle 22: #150, #90, #99, #152, #158, unit
   is shorter than `init_seq_len`: at prompt 512 the old config (512)
   prints the text without its first token, the new one (1024) with it
   (`docs/measurements/prompts/README.md`).
+
+* **#225 PR 1 (cycle 33, `7f95140ad`): the FC WH sidecar and the 512-row
+  prefill chunks.** `nntr_quantize_stream --fc_wh_sidecar` writes the 66
+  FC weights as `QS4CX_WH` images from f32 beside the main file
+  (`<main>_fcwh.bin`; on the 8B 228,188,160 B, md5 `71812a91…`, main file
+  md5 `7b7867fa…` unchanged); `fc_wh_file_name` in `nntr_config.json`
+  names it. The loader preads each image into the arena keyed by the Q4_0
+  bytes (not by name — see PR #230's deviations), no re-quantization, no
+  heap copy; only an arena overflow unpacks bit-exactly to the heap
+  (`[HTP] fc wh: arena=<n> heap=<n>`). The conv block / dense FFN / MoE
+  prefill calls run in 512-row chunks, the conv history carried in `conv_w`
+  [5 × C] (no IDL change) — host `CONV BLOCK CHUNKED BIT-IDENTICAL`; the
+  user made the chunking the hybrid's way of record. The config of record
+  does not name the sidecar until #225's handoff; a no-keys config leaves
+  it unopened (bit-identical to before). E2E still binds Q4M1 until PR 2.
 
 ## 4. Reusable code on `hvx_impl` (survey 2026-09-21; read with `git show hvx_impl:<path>`)
 
