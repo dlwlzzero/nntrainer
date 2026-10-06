@@ -14,8 +14,10 @@
 #       page_cache_evict -1 (as #201 / #216 / #219 / #225)
 #   Q0  Q + NNTR_MOE_TIER=0 (no tier), P512 G64 only: the in-sitting anchor
 #       against #225's 42.78
-#   B   the hybrid (nothing set), P512 G64 only: the control that the
-#       default flip builds no tier there
+#   B   the hybrid of record (nothing set), P512 G64 only: unchanged
+#       against #225's B. Its experts are resident, so it never reaches the
+#       tier hook; the hybrid-with-pool case is the host line's
+#       (run_inproc_e2e.sh "E2E tier unset ... hybrid no tier ok")
 # Order per prompt length (cool start per block, zone0 <= 35 C):
 #   G64 Q, cool, Q (r2); G512 Q; G1024 Q; after P512's G64 block: Q0, B
 # A run that does not load or dies is VOID (logs/void_<run>: its error and
@@ -58,7 +60,7 @@ run() { # run <Q|Q0|B> <P> <G> <log>
   $AD logcat -c
   $AD shell "cd $D && cp cfg_new.json $M/nntr_config.json && sed -i -e 's/\"num_to_generate\": [0-9]*/\"num_to_generate\": $g/' \
     -e 's/\"bad_word_ids\": \[\]/\"bad_word_ids\": [124900]/' $M/nntr_config.json && \
-    md5sum libnntr_hvx_skel.so && echo NNTR_MOE_TIER=\${NNTR_MOE_TIER-unset} && \
+    md5sum libnntr_hvx_skel.so && \
     $pre $e NNTR_NUM_THREADS=8 LD_LIBRARY_PATH=. ADSP_LIBRARY_PATH=. \
     ./nntrainer_causallm $M \"\$(cat $pr)\"" > $L/$log.log 2>&1
   $AD logcat -d | grep -iE 'adsprpc|fastrpc|nntr_hvx|token' > $L/$log.logcat || true

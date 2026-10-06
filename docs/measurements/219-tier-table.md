@@ -22,7 +22,7 @@ the default it ships with.
 | G1 tier on by default | every Q run | `token driver: on … tier=2`; the last `[HTP] tier:` line `experts=88` (≈ 466 MiB), all three `direct=1`; `tier_reads=0` on the pool line |
 | G2 E2E hygiene | every Q run | `calls/token=1.00`; `[HTP] fc wh: … heap_kib=0 requant=0`; close clean (`timeouts=0 stale=0 id_mismatch=0`, `unmap_fail=0 detach_fail=0`); `mapped_mib + s1_arena_mib` ≤ 3840 (the tier is ARM memory: expected 192 + 3520 as #225) |
 | G3 speed | `Q_P512_G64_r1` / `_r2` | decode ≥ #219's **48.4** (`=2` mean 48.47); Q0 of this sitting is the drift anchor against #225's 42.78 |
-| G4 hybrid untouched | `B_P512_G64_r1` | `dspq: on`, no token driver, **no** `tier:` line; decode within the hybrid's spread of #225 (55.17) |
+| G4 hybrid untouched | `B_P512_G64_r1` | `dspq: on`, no token driver, no `tier:` line; decode within the hybrid's spread of #225 (55.17). B's experts are resident, so it never reaches the tier hook whatever the knob says: B shows the hybrid of record unchanged, not the gate itself. The gate (a hybrid **with** a pool builds no tier when the variable is unset) is host-proven (`E2E tier unset … hybrid no tier ok`); that the same hybrid builds one with `=1` was run by hand on the host (PR body) |
 | T2 texts | `logs/texts.txt`, `logs/loops.txt` | recorded, not gated; Q P512 G64 text == Q0's (the tier copies the file's bytes); r2 == r1; a loop where #225's A has none is noted; the user approves |
 
 ## What changed in the code
@@ -59,7 +59,7 @@ or kernel change.
 |---|---|---|---|
 | **Q** | `models/q40-qs4cx-wh`, `cfg_new.json` = the config of record (md5 `3f6808e3…`, sidecar `71812a91…`, `init_seq_len 1024`) | `NNTR_HTP_E2E=1 NNTR_MOE_CACHE_EXPERTS=28` (tier unset = 2); model file pre-read + `page_cache_evict -1` | 9 + G64 r2 at each P = 12 |
 | **Q0** | as Q | Q + `NNTR_MOE_TIER=0` | P512 × G64 (1) |
-| **B** (control) | as Q | nothing | P512 × G64 (1) |
+| **B** (control: the hybrid of record, experts resident) | as Q | nothing | P512 × G64 (1) |
 
 There is no CPU A in this sitting: the row is read against #225's table
 (same unit class, same config, same prompts) through Q0 and B, the
@@ -84,7 +84,7 @@ they get the fresh boot. The two use separate device dirs (`s236`,
 ## Artifacts (workstation, SDK 6.4.0.1, HexKL 6.4.0.1 (`hexkl-1.0-beta.2`), NDK r30; built from `0235d9d79`)
 
 Staged at `/local/mnt/workspace/htp_moe/219t/` by `219-tier-stage.sh`
-(`md5.txt` = `8ac8d9760a7ab0c517e99242d727e9d4`; the runner checks it on both ends).
+(`md5.txt` = `058b97a5f67d30aea52852dbb6dc52c1`; the runner checks it on both ends).
 
 | file | md5 | built with |
 |---|---|---|
@@ -99,7 +99,7 @@ Staged at `/local/mnt/workspace/htp_moe/219t/` by `219-tier-stage.sh`
 | `app/cfg_new.json` = `config/q40-qs4cx-wh.nntr_config.json` | `3f6808e30b6e16e1c8592fa39977814c` | the config of record |
 | `app/p64.txt` / `app/p01.txt` / `app/p1024.txt` | `c0d3e9ff…` / `fc65c158…` / `2e47c5f4…` | `prompts/p64.txt`, `77-prompt512.txt`, `prompts/p1024.txt` |
 | `model/nntr_lfm2_8b_a1b_q40_arm_fcwh.bin` | `71812a91d5acdbe9e026c479db8e275e` | #225 PR 1's sidecar |
-| `run_219t.sh` (= `219-tier-run.sh`) / `loop_check.py` | `03dcea473844f5aa9e37645056d7d21f` / `e607c5f7d4638a6eb199ac0d572867c1` | this branch / `tools/htp/loop_check.py` (host only) |
+| `run_219t.sh` (= `219-tier-run.sh`) / `loop_check.py` | `95d700df260505a905fdf4a2fcf4e66e` / `e607c5f7d4638a6eb199ac0d572867c1` | this branch / `tools/htp/loop_check.py` (host only) |
 | `/local/mnt/workspace/models/lfm2.5-8b-a1b/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm.bin` (on the unit) | `7b7867fab51845664c0050c0a837073e` | NPU model (#78); the config names `nntr_lfm2.5_…` = a symlink the runner makes |
 
 The skels are **not** #225's `58e3a85f…` / `ca25ec2d…`: the base
@@ -117,7 +117,7 @@ this tree. This branch changes no DSP source.
    --htp)`, then `bash docs/measurements/219-tier-stage.sh <checkout>`.
    Either way:
    ```
-   cd /local/mnt/workspace/htp_moe/219t && md5sum md5.txt   # 8ac8d9760a7ab0c517e99242d727e9d4
+   cd /local/mnt/workspace/htp_moe/219t && md5sum md5.txt   # 058b97a5f67d30aea52852dbb6dc52c1
    md5sum -c md5.txt | grep -vc ': OK$'                       # 0
    ```
    If the farm runs on another machine, copy the whole
