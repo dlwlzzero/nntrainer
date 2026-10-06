@@ -20,7 +20,7 @@
  *
  *   htp_e2e_test --model <quantized dir> --tokenizer <tokenizer.json>
  *                [--prompt 16] [--steps 8] [--moe-engine htp|cpu]
- *                [--dump <dir>] [--max-seq N] [--run]
+ *                [--dump <dir>] [--max-seq N] [--run] [--repack]
  *
  * The prompt is deterministic, ids[i] = 1 + (7 i mod 30): inside the
  * 32-token vocabulary, never bos (0) or eos (31). Output:
@@ -33,6 +33,9 @@
  * steps - 1 (run emits the prefill token plus that many), no E2E step
  * lines, and E2E gen read back from the model's token history. It is the
  * path NNTR_PPL_DECODE lives on.
+ * --repack calls repack_weight after the load, as the app's main does
+ * (#225): the load-time FC registrations, the FC WH sidecar and the
+ * warm-up calls (which the MoE dumps then hold too).
  * Exit 0, or 1 with `E2E FAIL <reason>` on any exception.
  */
 
@@ -54,7 +57,7 @@ namespace {
 struct Options {
   std::string model, tokenizer, engine = "htp", dump;
   unsigned prompt = 16, steps = 8, max_seq = 0;
-  bool run = false;
+  bool run = false, repack = false;
 };
 
 Options parse(int argc, char **argv) {
@@ -82,6 +85,8 @@ Options parse(int argc, char **argv) {
       o.max_seq = static_cast<unsigned>(std::stoul(value()));
     else if (a == "--run")
       o.run = true;
+    else if (a == "--repack")
+      o.repack = true;
     else
       throw std::invalid_argument("unknown option " + a);
   }
@@ -139,6 +144,8 @@ int run(const Options &o) {
                                                                       nntr);
   model.initializeModel();
   model.loadWeight(weights);
+  if (o.repack)
+    model.repack_weight();
 
   std::vector<unsigned int> ids(o.prompt);
   for (unsigned i = 0; i < o.prompt; ++i)

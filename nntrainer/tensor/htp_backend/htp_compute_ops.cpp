@@ -97,6 +97,10 @@ namespace nntrainer {
 
 namespace {
 
+/** [#225] Q4_0 weights re-quantized by qs4cxFromModelQ4_0 in this process:
+ *  the FC WH banner's requant=, 0 when the sidecar served every FC. */
+std::atomic<unsigned> g_q4_requant{0};
+
 /**
  * @brief htp_qs4cx_from_q4_0x4 on a model weight in the CPU's own repack.
  *
@@ -108,6 +112,7 @@ namespace {
  */
 void qs4cxFromModelQ4_0(const void *w, uint32_t K, uint32_t N, int8_t *q,
                         float *scale, int32_t *colsum) {
+  ++g_q4_requant;
 #if defined(__aarch64__)
   htp_qs4cx_from_q4_0x4(w, K, N, q, scale, colsum);
 #else
@@ -2687,6 +2692,57 @@ public:
     return true;
   }
 
+  /** [#225] Opens the FC WH sidecar and indexes it by fcWhKey, replacing
+   *  any earlier one (a reload). Every check that can fail on a wrong or
+   *  stale file fails here, at load, with the path: the magic and version
+   *  (the layout's tag), the index inside the file, each image's length
+   *  against its shape, each image inside the file, and no key twice. */
+  bool set_fc_wh_file(const char *path) override {
+    std::lock_guard<std::mutex> lock(handle_mutex_);
+    if (fcwh_fd_ >= 0)
+      ::close(fcwh_fd_);
+    fcwh_fd_ = -1;
+    fcwh_.clear();
+    const std::string where = std::string("fc_wh_file_name ") + path + ": ";
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+      throw std::runtime_error(where + std::strerror(errno));
+    std::unordered_map<uint64_t, FcWhEntry> index;
+    try {
+      const off_t end = ::lseek(fd, 0, SEEK_END);
+      const uint64_t size = end < 0 ? 0u : static_cast<uint64_t>(end);
+      char magic[sizeof(FCWH_MAGIC)];
+      uint32_t vc[2] = {0, 0}; // version, count
+      throwPread(preadAll(fd, magic, sizeof(magic), 0), "fc wh header");
+      throwPread(preadAll(fd, vc, sizeof(vc), sizeof(magic)), "fc wh header");
+      if (std::memcmp(magic, FCWH_MAGIC, sizeof(magic)) != 0 ||
+          vc[0] != FCWH_VERSION || fcWhHeaderBytes(vc[1]) > size) {
+        throw std::runtime_error("not an FC WH sidecar of version " +
+                                 std::to_string(FCWH_VERSION));
+      }
+      std::vector<FcWhEntry> entries(vc[1]);
+      throwPread(
+        preadAll(fd, entries.data(), entries.size() * sizeof(FcWhEntry), 16u),
+        "fc wh index");
+      for (const FcWhEntry &e : entries) {
+        const uint64_t want = whBytes(e.K, e.N) + 2u * sizeof(float) * e.N;
+        if (e.K % WH_TILE != 0 || e.N % WH_TILE != 0 || e.bytes != want ||
+            e.off > size || e.bytes > size - e.off ||
+            !index.emplace(e.key, e).second) {
+          throw std::runtime_error("bad index entry " +
+                                   std::string(e.name, strnlen(e.name, 64)));
+        }
+      }
+    } catch (const std::exception &err) {
+      ::close(fd);
+      throw std::runtime_error(where + err.what());
+    }
+    fcwh_ = std::move(index);
+    fcwh_fd_ = fd;
+    fcwh_name_ = path;
+    return true;
+  }
+
   /**
    * @brief [doc 52] One expert's two WH weights, read from the model file
    *        straight into an arena slot and registered from there.
@@ -4398,6 +4454,19 @@ private:
    *  weight. On the E2E path the FC set goes into its arena chunks now,
    *  at load (the startup cell), not at the first decode token. */
   bool finish_decode_graph_q4_0() override {
+    // [#225] Called once after the load's registrations: where the FC
+    // prefill weights went. heap_kib != 0 is the overflow plan 225 section
+    // 3.3 c expects on the full-residency hybrid; requant != 0 is a model
+    // without a sidecar.
+    if (std::lock_guard<std::mutex> lock(handle_mutex_);
+        fcwh_fd_ >= 0 || g_q4_requant.load() != 0) {
+      std::fprintf(stderr,
+                   "[HTP] fc wh: file=%s handles=%zu arena_kib=%zu "
+                   "heap_kib=%zu requant=%u\n",
+                   fcwh_fd_ >= 0 ? fcwh_name_.c_str() : "none", fcwhHandles(),
+                   fcwh_arena_bytes_ >> 10, fcwh_heap_bytes_ >> 10,
+                   g_q4_requant.load());
+    }
     std::lock_guard<std::mutex> lock(graph_mutex_);
     if (!e2e_ || q4_pending_.empty() || q4m1_bound_ || graph_inited_)
       return false;
@@ -4465,6 +4534,33 @@ private:
                       const std::vector<float> &row_weight, const float *act,
                       float *out, unsigned int M, unsigned int K,
                       unsigned int inter, unsigned int N_out, int kind = 0) {
+    // [#225] A long prefill in row chunks, each with its rows' share of the
+    // routing: the session scratch grows with M (the cached activation and
+    // its AH tiles), and at P1024 it no longer fits beside the weights.
+    // Every row's result is its own -- per-row quantization, experts added
+    // in index order -- so the chunks give the whole call's bytes.
+    const unsigned int step = prefillRows();
+    if (step != 0 && M > step) {
+      for (unsigned int m0 = 0; m0 < M; m0 += step) {
+        const unsigned int m = std::min(step, M - m0);
+        std::vector<unsigned int> ri, rc(row_count.size(), 0);
+        std::vector<float> rw;
+        for (size_t e = 0, at = 0; e < row_count.size(); at += row_count[e++]) {
+          for (unsigned int j = 0; j < row_count[e]; ++j) {
+            const unsigned int r = row_index[at + j];
+            if (r >= m0 && r < m0 + m) {
+              ri.push_back(r - m0);
+              rw.push_back(row_weight[at + j]);
+              ++rc[e];
+            }
+          }
+        }
+        invokeMoeLayer(
+          session, h_gu, h_dn, ri, rc, rw, act + static_cast<size_t>(m0) * K,
+          out + static_cast<size_t>(m0) * N_out, m, K, inter, N_out, kind);
+      }
+      return;
+    }
     const int act_len = static_cast<int>(M) * static_cast<int>(K);
     const int out_len = static_cast<int>(M) * static_cast<int>(N_out);
 
@@ -4617,10 +4713,13 @@ private:
   void invokeConvBlock(remote_handle64 session, const ConvHandles &ch,
                        const float *conv_w, const float *act, float *out,
                        float *state, unsigned int M, unsigned int K,
-                       unsigned int C, unsigned int N_out) {
+                       unsigned int C, unsigned int N_out,
+                       const float *hist = nullptr) {
     const int act_len = static_cast<int>(M) * static_cast<int>(K);
     const int out_len = static_cast<int>(M) * static_cast<int>(N_out);
-    const int conv_len = 3 * static_cast<int>(C);
+    // [#225] A chunk after the first carries the conv's two history rows
+    // after the taps, [5 x C] (hexkl_conv_block_run's hist): no IDL change
+    const int conv_len = (hist != nullptr ? 5 : 3) * static_cast<int>(C);
     const int state_len = 2 * static_cast<int>(C);
 
     std::lock_guard<std::mutex> lock(invoke_mutex_);
@@ -4630,15 +4729,16 @@ private:
       stage(out_pool_, static_cast<size_t>(out_len) * sizeof(float));
     float *act_f32 = reinterpret_cast<float *>(act_stage.data());
     float *out_f32 = reinterpret_cast<float *>(out_stage.data());
-    const size_t small_bytes =
-      static_cast<size_t>(conv_len + state_len) * sizeof(float);
+    const size_t small_bytes = static_cast<size_t>(7) * C * sizeof(float);
     if (!conv_buf_ || conv_buf_->size() < small_bytes)
       conv_buf_ = std::make_unique<HtpRpcBuffer>(small_bytes);
     float *conv_f32 = reinterpret_cast<float *>(conv_buf_->data());
-    float *state_f32 = conv_f32 + conv_len;
+    float *state_f32 = conv_f32 + 5 * C;
     stagedMemcpy(act_f32, act, static_cast<size_t>(act_len) * sizeof(float));
-    std::memcpy(conv_f32, conv_w,
-                static_cast<size_t>(conv_len) * sizeof(float));
+    std::memcpy(conv_f32, conv_w, static_cast<size_t>(3) * C * sizeof(float));
+    if (hist != nullptr)
+      std::memcpy(conv_f32 + 3 * C, hist,
+                  static_cast<size_t>(state_len) * sizeof(float));
 
     HtpProfile &profile = HtpProfile::global();
     uint32_t stage_us[HTP_MOE_N_STAGES] = {0};
@@ -4882,7 +4982,14 @@ private:
 
     FcHandles fh;
     const unsigned int cap = fcSliceCols(K);
-    if (N <= cap) {
+    if (const FcWhEntry *w = fcwhFind(matAdata, K, N)) {
+      for (uint32_t c0 = 0; c0 < N; c0 += cap) {
+        const uint32_t n = std::min<uint32_t>(cap, N - c0);
+        fh.handles.push_back(registerFcWh(static_cast<char *>(matAdata) + c0,
+                                          session, {{w, c0, n}}, 0, K));
+        fh.cols.push_back(n);
+      }
+    } else if (N <= cap) {
       fh.handles.push_back(get_or_register_unlocked(matAdata, session, K, N));
       fh.cols.push_back(N);
     } else {
@@ -4915,6 +5022,145 @@ private:
       }
     }
     return fc_cache_.emplace(matAdata, std::move(fh)).first->second;
+  }
+
+  /** @brief [#225] The sidecar image of the Q4_0 weight at @a q4, or
+   *  nullptr when the model has no sidecar. A sidecar that lacks the weight
+   *  or has it at another shape is a main file re-quantized without its
+   *  sidecar, refused rather than re-quantized around. */
+  const FcWhEntry *fcwhFind(const void *q4, uint32_t K, uint32_t N) const {
+    if (fcwh_fd_ < 0)
+      return nullptr;
+    const size_t len = static_cast<size_t>(N) * (K / 32u) * Q4_CPU_BLOCK_BYTES;
+    auto it = fcwh_.find(fcWhKey(q4, len));
+    if (it == fcwh_.end() || it->second.K != K || it->second.N != N) {
+      throw std::runtime_error(
+        "fc_wh_file_name " + fcwh_name_ + ": no image for a " +
+        std::to_string(K) + "x" + std::to_string(N) +
+        " Q4_0 weight of the model file -- the sidecar is not the one "
+        "nntr_quantize_stream --fc_wh_sidecar wrote with this model file");
+    }
+    return &it->second;
+  }
+
+  /** @brief [#225] Columns [c0, c0 + cn) of one sidecar image. */
+  struct WhPart {
+    const FcWhEntry *w;
+    uint32_t c0, cn;
+  };
+
+  /** @brief [#225] Registers rows [k0, k0 + kn) of the column parts
+   *  @a parts, side by side, as one [kn x sum(cn)] weight, from the sidecar.
+   *
+   * WH tiles are k-major (htp_wh_layout.h), so a part's kt-row is one
+   * contiguous run of cn / 32 tiles: the bytes are preads, straight into
+   * the arena when it has room -- no host copy, no conversion. The scales
+   * are the parts' own; the column sums too when the rows are all of K,
+   * else (the dense down's row chunks) summed from the values. No room:
+   * the DSP heap through weight_register_u8i4, from whUnpack's row-major
+   * values, which the bake packs back into the same tiles -- registerRm's
+   * overflow without its conversion. NNTR_HTP_FC_WH_HEAP=1 sends every
+   * handle that way (the host check of that path).
+   * @note Call with handle_mutex_ already held. */
+  uint32_t registerFcWh(void *key, remote_handle64 session,
+                        const std::vector<WhPart> &parts, uint32_t k0,
+                        uint32_t kn) {
+    const uint64_t t_begin = HtpProfile::nowUs();
+    uint32_t cn = 0;
+    for (const WhPart &p : parts)
+      cn += p.cn;
+    const size_t len = whBytes(kn, cn);
+    const size_t row = static_cast<size_t>(cn / WH_TILE) * WH_TILE_BYTES;
+    auto read_tiles = [&](uint8_t *dst) {
+      if (parts.size() == 1 && parts[0].cn == parts[0].w->N) {
+        // every column: the k-tile rows are one contiguous run
+        throwPread(preadAll(fcwh_fd_, dst, len,
+                            parts[0].w->off + static_cast<uint64_t>(k0) /
+                                                WH_TILE * (cn / WH_TILE) *
+                                                WH_TILE_BYTES),
+                   "fc wh image");
+        return;
+      }
+      for (uint32_t kt = 0; kt < kn / WH_TILE; ++kt) {
+        size_t at = static_cast<size_t>(kt) * row;
+        for (const WhPart &p : parts) {
+          const uint64_t n_tiles = p.w->N / WH_TILE;
+          const uint64_t src =
+            p.w->off +
+            ((k0 / WH_TILE + kt) * n_tiles + p.c0 / WH_TILE) * WH_TILE_BYTES;
+          const size_t bytes =
+            static_cast<size_t>(p.cn / WH_TILE) * WH_TILE_BYTES;
+          throwPread(preadAll(fcwh_fd_, dst + at, bytes, src), "fc wh image");
+          at += bytes;
+        }
+      }
+    };
+    std::vector<float> ws(cn), cs_f(cn);
+    std::vector<int32_t> cs(cn);
+    for (size_t i = 0, at = 0; i < parts.size(); at += parts[i++].cn) {
+      const WhPart &p = parts[i];
+      const uint64_t tail = p.w->off + whBytes(p.w->K, p.w->N);
+      throwPread(preadAll(fcwh_fd_, ws.data() + at, sizeof(float) * p.cn,
+                          tail + sizeof(float) * p.c0),
+                 "fc wh scales");
+      throwPread(preadAll(fcwh_fd_, cs_f.data() + at, sizeof(float) * p.cn,
+                          tail + sizeof(float) * (p.w->N + p.c0)),
+                 "fc wh column sums");
+    }
+    std::vector<uint8_t> host;
+    auto load_host = [&] {
+      if (host.empty()) {
+        host.resize(len);
+        read_tiles(host.data());
+      }
+    };
+    if (kn == parts[0].w->K) {
+      for (uint32_t i = 0; i < cn; ++i)
+        cs[i] = static_cast<int32_t>(cs_f[i]);
+    } else {
+      load_host();
+      std::vector<int8_t> rm(static_cast<size_t>(kn) * cn);
+      whUnpack(host.data(), kn, cn, rm.data());
+      for (uint32_t r = 0; r < kn; ++r)
+        for (uint32_t i = 0; i < cn; ++i)
+          cs[i] += rm[static_cast<size_t>(r) * cn + i];
+    }
+    static const bool heap_only = [] {
+      const char *v = std::getenv("NNTR_HTP_FC_WH_HEAP");
+      return v != nullptr && std::atoi(v) != 0;
+    }();
+    uint32_t chunk = 0, off = 0;
+    if (!heap_only && ensureArena(session) &&
+        placeExisting(static_cast<uint32_t>(len), &chunk, &off)) {
+      uint8_t *dst = arena_chunks_[chunk].buf->data() + off;
+      if (host.empty())
+        read_tiles(dst);
+      else
+        std::memcpy(dst, host.data(), len);
+      ArenaEntry e;
+      e.chunk = chunk;
+      e.off = off;
+      e.K = kn;
+      e.N = cn;
+      e.w_scale = ws;
+      e.colsum_w = cs;
+      e.bias.assign(cn, 0.0f);
+      const uint32_t handle = registerFromArena(session, e, kn, cn, t_begin);
+      if (handle != kNoHandle) {
+        handle_cache_.emplace(key, handle);
+        fcwh_arena_bytes_ += len;
+        return handle;
+      }
+    }
+    // Unpacked on the host and copied in whole: buf may be an uncached
+    // rpcmem mapping, where whUnpack's scattered stores would crawl.
+    load_host();
+    std::vector<int8_t> rm(static_cast<size_t>(kn) * cn);
+    whUnpack(host.data(), kn, cn, rm.data());
+    HtpRpcBuffer buf(rm.size());
+    std::memcpy(buf.data(), rm.data(), rm.size());
+    fcwh_heap_bytes_ += len;
+    return register_locked(key, session, kn, cn, buf, ws, cs, t_begin, 0);
   }
 
   /** @brief Registers one row-major int8 [K x N] weight (values in [-8, 7],
@@ -5002,6 +5248,20 @@ private:
         "gemm_q4_0_dense_ffn_fp32: intermediate size " + std::to_string(I) +
         " has no chunk width that is a multiple of 32");
     }
+    DenseHandles dh;
+    dh.w = w;
+    if (const FcWhEntry *wu = fcwhFind(up, K, I)) {
+      // [#225] the same chunks from the sidecar: gate | up column slices
+      // side by side, the down's row slices with their own column sums
+      const FcWhEntry *wg = fcwhFind(gate, K, I), *wd = fcwhFind(down, I, N);
+      for (uint32_t c0 = 0; c0 < I; c0 += w) {
+        dh.h_gu.push_back(registerFcWh(static_cast<char *>(gate) + c0, session,
+                                       {{wg, c0, w}, {wu, c0, w}}, 0, K));
+        dh.h_dn.push_back(registerFcWh(static_cast<char *>(down) + c0, session,
+                                       {{wd, 0, N}}, c0, w));
+      }
+      return dense_cache_.emplace(up, std::move(dh)).first->second;
+    }
     uint64_t t_begin = HtpProfile::nowUs();
     std::vector<int8_t> up_rm(static_cast<size_t>(K) * I),
       gate_rm(static_cast<size_t>(K) * I), down_rm(static_cast<size_t>(I) * N);
@@ -5014,8 +5274,6 @@ private:
                        down_c.data());
     uint64_t convert_us = HtpProfile::nowUs() - t_begin;
 
-    DenseHandles dh;
-    dh.w = w;
     for (uint32_t c0 = 0; c0 < I; c0 += w) {
       // gate_up chunk: [K x 2w], gate columns then up columns -- the pair
       // layout hexkl_mm_u8i4_moe.c's epilogue reads (gate j with up w+j).
@@ -5128,7 +5386,28 @@ private:
       static_cast<remote_handle64>(HtpBackend::global().handle());
     const ConvHandles &ch =
       get_or_register_conv(in_proj, out_proj, session, K, C, N);
-    invokeConvBlock(session, ch, conv_w, act, out, state, M, K, C, N);
+    // [#225] In row chunks like invokeMoeLayer's, each after the first
+    // continuing from the state the one before handed back
+    const unsigned int step = prefillRows() != 0 ? prefillRows() : M;
+    for (unsigned int m0 = 0; m0 < M; m0 += step) {
+      invokeConvBlock(session, ch, conv_w, act + static_cast<size_t>(m0) * K,
+                      out + static_cast<size_t>(m0) * N, state,
+                      std::min(step, M - m0), K, C, N,
+                      m0 != 0 ? state : nullptr);
+    }
+  }
+
+  /** @brief [#225] Rows per call of the prefill kernels whose session
+   *  scratch grows with M (conv block, dense FFN, MoE layer): 512, the
+   *  prefill the DSP heap held beside the FC weights in #222's sitting
+   *  where 1024 failed with AEE_ENOMEMORY. NNTR_HTP_PREFILL_ROWS=<n> sets
+   *  another, 0 one call per prefill (the host check of the chunking). */
+  static unsigned int prefillRows() {
+    static const unsigned int rows = [] {
+      const char *v = std::getenv("NNTR_HTP_PREFILL_ROWS");
+      return v != nullptr ? static_cast<unsigned int>(std::atoi(v)) : 512u;
+    }();
+    return rows;
   }
 
   bool register_q4_0_conv_block(void *in_proj, void *out_proj, unsigned int K,
@@ -6215,6 +6494,24 @@ private:
   std::unordered_map<const void *, DenseHandles> dense_cache_;
   /** Conv blocks by their in_proj's pointer; see get_or_register_conv. */
   std::unordered_map<const void *, ConvHandles> conv_cache_;
+  /** [#225] The FC WH sidecar (set_fc_wh_file): its fd, path and index by
+   *  fcWhKey, and the bytes its images took in the arena and on the heap. */
+  int fcwh_fd_ = -1;
+  std::string fcwh_name_;
+  std::unordered_map<uint64_t, FcWhEntry> fcwh_;
+  size_t fcwh_arena_bytes_ = 0, fcwh_heap_bytes_ = 0;
+  /** Handles registered from the sidecar: the FC slices plus the dense
+   *  chunks' two each. */
+  size_t fcwhHandles() const {
+    if (fcwh_fd_ < 0)
+      return 0;
+    size_t n = 0;
+    for (const auto &f : fc_cache_)
+      n += f.second.handles.size();
+    for (const auto &d : dense_cache_)
+      n += d.second.h_gu.size() + d.second.h_dn.size();
+    return n;
+  }
 
   /** S1's arena, shared with its close hook (s1ArenaTeardown): the two
    *  singletons' destruction order is not fixed. */
