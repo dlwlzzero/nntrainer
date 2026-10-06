@@ -28,6 +28,19 @@ or by the position-indexed `[PPL] decode step=` lines.
 | p07 | `bitset-07-facts.txt` | encyclopedic article (the transistor) | 402 | `db0251e1bc57f072f815802cd93c260d` |
 | p08 | `bitset-08-short.txt` | "List ten fruits", a short prefill | 24 | `67b657c1261c2c12022907c2117a9a54` |
 
+Two prompt lengths for the LFM2.5 table of record (P64 / P512 / P1024,
+#222 / #225; P512 is p01), cut with the same tokenizer at a token
+boundary and checked to re-encode to exactly that count:
+
+| id | file | what | tokens | md5 |
+|---|---|---|---|---|
+| P64 | `p64.txt` | p01's first 64 tokens | 64 | `c0d3e9ffb0c9565e51fa044c53ac71d7` |
+| P1024 | `p1024.txt` | p01 + p07 + p05 + p03 joined by a blank line, cut at 1024 tokens (ends inside p05) | 1024 | `2e47c5f45f538babcc7b4a7bb48a4e70` |
+
+#222's sitting made its P64 / P1024 files by the same recipe on the farm
+machine; they were not kept, so these two are rebuilt and need not be
+byte-identical to them.
+
 ## mc-40: the multiple-choice benchmark of `htp_moe_ppl` (plan 194 P3)
 
 `mc-40.tsv` holds 40 four-option general-knowledge, arithmetic and
