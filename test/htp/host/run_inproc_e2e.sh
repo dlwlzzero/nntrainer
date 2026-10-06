@@ -126,6 +126,9 @@
 #                              arena's complement in the ARM tier; the app's
 #                              load (--repack) preloads the pool; misses as
 #                              the same pool untiered, every one a tier hit)
+#   E2E tier unset lfm25 C=1: e3 tier=2 == tier=2 bit_identical=1
+#     [tier: experts=<n>], hybrid no tier ok  (#219 close-out: unset is 2
+#                              under NNTR_HTP_E2E=1, 0 on the hybrid's pool)
 #   E2E e2e pds=2 refused ok   (#211: NNTR_HTP_E2E_PDS is a guard, the
 #                              two-PD path is gone)
 #   E2E keys lfm25 prefill-moved=1 htp_fc_rows=<n> e3==e1 bit_identical=1 pool C=2
@@ -465,6 +468,12 @@ for ck in "64 2 0" "64 2 1" "25 1 0" "25 1 1" "25 1 2" "25 2 0" "25 2 1"; do
     NNTR_MOE_CACHE_EXPERTS=$2 NNTR_MOE_TIER=$3 \
     run_e2e q$1-e3tier$2k$3 "$OUT/htp$1q" htp "$OUT/dump_$1e3tier$2k$3" "$OUT/$1e3tier$2k$3.log" --max-seq $ms --repack
 done
+# [#219 close-out] NNTR_MOE_TIER unset: 2 under NNTR_HTP_E2E=1, 0 on the
+# hybrid (the same pool, no E2E)
+PROMPT=512 NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_MOE_CACHE_EXPERTS=1 \
+  run_e2e q25-e3tier1ku "$OUT/htp25q" htp "$OUT/dump_25e3tier1ku" "$OUT/25e3tier1ku.log" --max-seq 2048 --repack
+PROMPT=512 NNTR_MOE_CACHE_EXPERTS=1 \
+  run_e2e q25-hytier1ku "$OUT/htp25q" htp "$OUT/dump_25hytier1ku" "$OUT/25hytier1ku.log" --max-seq 2048 --repack
 # [plan 201 S4] the Gemma 4 MoE fixture: #4296's CPU model (QS4CX
 # experts), the HTP MoE layer alone (QS4CX_WH), the E2E token, and the
 # token with a pool of 2 of the 8 experts a layer
@@ -715,6 +724,14 @@ for d in "64 2 1 hd64" "25 1 1 lfm25" "25 1 2 lfm25" "25 2 1 lfm25"; do
     echo "E2E FAIL e3 pool tier=$3 C=$2 $4: [$ev] calls/token=${calls:-none} misses=${m1:-none} (untiered ${m0:-none}) tier_hits=${hits:-none} tier_reads=${reads:-none} [$tier]"; fail=1
   fi
 done
+ev="$($EVAL --label e3tier-lfm25-C1-unset "$OUT/dump_25e3tier1k2" "$OUT/dump_25e3tier1ku" | tail -1 || true)"
+tu="$(grep -o 'token driver: on .* tier=[0-9]*' "$OUT/25e3tier1ku.log" | grep -o 'tier=[0-9]*' || true)"
+if grep -q 'bit_identical=1' <<< "$ev" && [ "$tu" = tier=2 ] &&
+   grep -q 'tier: experts=' "$OUT/25e3tier1ku.log" && ! grep -q 'tier: experts=' "$OUT/25hytier1ku.log"; then
+  echo "E2E tier unset lfm25 C=1: e3 $tu == tier=2 bit_identical=1 [$(grep -o 'tier: experts=[0-9]*' "$OUT/25e3tier1ku.log" | tail -1)], hybrid no tier ok"
+else
+  echo "E2E FAIL tier unset lfm25 C=1: [$ev] e3 ${tu:-none}, hybrid tier lines=$(grep -c 'tier: experts=' "$OUT/25hytier1ku.log")"; fail=1
+fi
 # [plan 201 S4] the Gemma lines: the HTP MoE layer against #4296's CPU
 # model by tokens (its SNR printed: QS4CX on both, the HTP's quantizer and
 # GeGLU against the CPU's); the E2E token one call a token on both
