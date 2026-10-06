@@ -5977,15 +5977,17 @@ private:
     TierCount n;
   };
 
-  /** @brief [#219] NNTR_MOE_TIER: unset / 0 = no tier (today's reads,
-   *  slots and bytes); 1 = the arena's complement in the tier, a load is a
-   *  copy from it (8 slices on the synchronous paths, as the file read);
-   *  2 = the same with a one-thread copy (diagnostic: the uncached store
-   *  rate). */
+  /** @brief [#219] NNTR_MOE_TIER: 0 = no tier (the pre-#219 reads, slots
+   *  and bytes); 1 = the arena's complement in the tier, a load is a copy
+   *  from it (8 slices on the synchronous paths, as the file read); 2 = the
+   *  same with a one-thread copy (the faster on the S25). Unset = 2 under
+   *  NNTR_HTP_E2E=1 (user, 2026-10-06), else 0: the hybrid builds no tier. */
   static int tierKnob() {
     static const int k = [] {
       const char *v = std::getenv("NNTR_MOE_TIER");
-      return v != nullptr ? std::atoi(v) : 0;
+      if (v != nullptr)
+        return std::atoi(v);
+      return HtpBackend::e2eRequested() ? 2 : 0;
     }();
     return k;
   }
