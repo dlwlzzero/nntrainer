@@ -159,31 +159,121 @@ P64 42.81 / 49.34 / 48.49, P512 42.78 / 45.94 / 45.61, P1024 37.83 /
 43.93 / 43.52 (G 64 / 512 / 1024). #219 `=2` P512 G64: 48.47 (4 runs).
 Goal: decode ≥ 50 and above the CPU of the same cell.
 
+Read 2026-10-06 20:50–21:02 KST on `R3CY205ZMND` (SM-S938N, SM8750, v79),
+attached to the workstation, run by the agent; `MD5 OK (app, sidecar)`,
+`md5.txt` = `058b97a5…`; 14 runs, 0 BAD, 0 VOID (`expectation mismatches
+(this invocation): 0`). Decode tok/s, all tokens (prefill tok/s in brackets):
+
 | case | P | G 64 (r1 / r2) | G 512 | G 1024 |
 |---|---|---|---|---|
-| E2E one PD, tier default (Q) | 64 | | | |
-| E2E one PD, tier default (Q) | 512 | | | |
-| E2E one PD, tier default (Q) | 1024 | | | |
-| Q0 (`NNTR_MOE_TIER=0`) | 512 | | – | – |
-| hybrid B (control) | 512 | | – | – |
+| E2E one PD, tier default (Q) | 64 | **52.20 / 52.03** (281.9 / 283.2) | **54.60** (285.7) | **53.89** (287.0) |
+| E2E one PD, tier default (Q) | 512 | **48.08 / 48.05** (793.8 / 801.3) | **51.79** (802.5) | **51.65** (800.0) |
+| E2E one PD, tier default (Q) | 1024 | **44.02 / 44.14** (765.9 / 762.5) | **50.59** (773.4) | **50.78** (771.1) |
+| Q0 (`NNTR_MOE_TIER=0`) | 512 | 37.58 (750.7) | – | – |
+| hybrid B (control) | 512 | 56.44 (749.6) | – | – |
+
+Against the references (decode, all tokens; G 64 r1 / 512 / 1024):
+
+| P | vs #225 Q (no tier) | vs #225 CPU A |
+|---|---|---|
+| 64 | +21.9 % / +10.7 % / +11.1 % | −3.4 % / +3.9 % / +4.7 % |
+| 512 | +12.4 % / +12.7 % / +13.2 % | −7.7 % / +2.1 % / +4.4 % |
+| 1024 | +16.4 % / +15.2 % / +16.7 % | −7.5 % / +3.6 % / +7.1 % |
 
 | run | prefill tok/s | decode (all) | decode (last 64) | peak RSS KB | tier: experts / mib | misses, miss_wait_us/token | tier hits / waits / reads | mapped + s1_arena MiB | text |
 |---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | |
+| Q_P64_G64_r1 | 281.938 | 52.2023 | 52.2023 | 1294324 | 88 / 466.5 | 74 (1.16/tok), 157.2 | 74 / 0 / 0 | 192 + 3520 | loop (= CPU, #225) |
+| Q_P64_G64_r2 | 283.186 | 52.0325 | 52.0325 | 1275192 | 88 / 466.5 | 74 (1.16/tok), 157.5 | 74 / 0 / 0 | 192 + 3520 | == r1 |
+| Q_P64_G512_r1 | 285.714 | 54.5959 | 53.9174 | 1272920 | 88 / 466.5 | 87 (0.17/tok), 21.1 | 87 / 0 / 0 | 192 + 3520 | loop |
+| Q_P64_G1024_r1 | 286.996 | 53.8891 | 52.5452 | 1273528 | 88 / 466.5 | 88 (0.09/tok), 10.4 | 88 / 0 / 0 | 192 + 3520 | loop |
+| Q_P512_G64_r1 | 793.798 | 48.0841 | 48.0841 | 1314212 | 88 / 466.5 | 103 (1.61/tok), 330.9 | 103 / 3 / 0 | 192 + 3520 | no loop; == Q0 |
+| Q_P512_G64_r2 | 801.252 | 48.0480 | 48.0480 | 1313964 | 88 / 466.5 | 103 (1.61/tok), 317.4 | 103 / 3 / 0 | 192 + 3520 | == r1 |
+| Q_P512_G512_r1 | 802.508 | 51.7852 | 51.4883 | 1312540 | 88 / 466.5 | 120 (0.23/tok), 42.6 | 120 / 4 / 0 | 192 + 3520 | loop (L1run 17) |
+| Q_P512_G1024_r1 | 800.000 | 51.6467 | 50.7132 | 1311848 | 88 / 466.5 | 124 (0.12/tok), 21.7 | 124 / 4 / 0 | 192 + 3520 | loop (L1run 35) |
+| Q_P1024_G64_r1 | 765.894 | 44.0165 | 44.0165 | 1337108 | 88 / 466.5 | 168 (2.62/tok), 475.2 | 168 / 3 / 0 | 192 + 3520 | no loop |
+| Q_P1024_G64_r2 | 762.472 | 44.1379 | 44.1379 | 1338880 | 88 / 466.5 | 168 (2.62/tok), 472.1 | 168 / 3 / 0 | 192 + 3520 | == r1 |
+| Q_P1024_G512_r1 | 773.414 | 50.5929 | 51.0774 | 1338968 | 88 / 466.5 | 193 (0.38/tok), 64.3 | 193 / 3 / 0 | 192 + 3520 | loop |
+| Q_P1024_G1024_r1 | 771.084 | 50.7785 | 49.9220 | 1338904 | 88 / 466.5 | 199 (0.19/tok), 30.7 | 199 / 3 / 0 | 192 + 3520 | loop |
+| Q0_P512_G64_r1 | 750.733 | 37.5807 | 37.5807 | 837512 | none (`tier=0`) | 103 (1.61/tok), 5904.8 | 0 / 0 / 0 | 192 + 3520 | no loop |
+| B_P512_G64_r1 | 749.634 | 56.4374 | 56.4374 | 4977656 | none (`dspq: on`, no driver) | – | – | – | no loop |
+
+Every number above is read from the per-run `logs/<run>.log` (`prefill:`,
+`generation:`, `generation(last 64):`, the `[HTP] tier:` and `token driver:
+pool` lines) and matches `logs/speed.txt`. Per-run `[HTP] tier:` lines: three
+per Q run (24 / 56 / 88 experts, 127.2 / 296.8 / 466.5 MiB, read 56–79 ms
+each, all `direct=1`); the first one's `drop_ms` is 320–363 ms at P64 / P512
+G64 and 796–909 ms from P512 G512 on.
+
+### Gates
+
+| gate | verdict | evidence |
+|---|---|---|
+| G1 tier on by default | **PASS** | all 12 Q runs: `token driver: on … tier=2`, last tier line `experts=88 mib=466.5 … direct=1` (three `direct=1`), `tier_reads=0`, `tier_hits == misses` |
+| G2 E2E hygiene | **PASS** | `calls/token=1.00`, `fc wh … heap_kib=0 requant=0`, close clean (`timeouts=0 stale=0 id_mismatch=0`, `unmap_fail=0 detach_fail=0`), `ceiling=192+3520` ≤ 3840 on every Q / Q0 run |
+| G3 speed (Q P512 G64 ≥ #219's 48.4) | **met within drift, not a clean pass** | 48.08 / 48.05, −0.7 % below the line, inside drift (#219's `=2` sd 0.23 over 4 runs; same-boot r1/r2 spread 0.04). Not a regression of the tier: +27.9 % over this sitting's Q0 (37.58) and +12.4 % over #225's untiered Q (42.78) |
+| G4 hybrid untouched | **PASS** | B `dspq: on`, no token driver, no `tier:` line; 56.44 = #236's B P512 G64 56.49 the same evening (−0.1 %), +2.3 % over #225's 55.17 |
+| T2 texts | recorded; approval: user | Q P512 G64 text == Q0's; every G64 r2 == r1 |
+
+### Readings
+
+* At **G ≥ 512 the tiered E2E reads 50.6–54.6 tok/s, ≥ 50 at every P**, and
+  is above #225's CPU A of the same cell at every P (+2.1 % … +7.1 %).
+* At **G64 it reads 44–52 depending on P** (misses/token 1.16 / 1.61 / 2.62 at
+  P64 / P512 / P1024, `miss_wait_us/token` 157 / 317–331 / 472–475), below
+  the CPU at every P (−3.4 % / −7.7 % / −7.5 %). The residual cost at G64 is
+  the first-token pool misses, which longer G amortises (10–64 us/token at
+  G ≥ 512).
+* E2E P512 is now above the CPU's 52.07 / 50.70 / 49.47 at G512 / G1024
+  (51.79 / 51.65) and below at G64 (48.08).
+* The hybrid (56.44) stays the fastest configuration at P512 G64.
+* The tier is worth +10.7 % … +21.9 % over #225's untiered Q in every cell;
+  the largest gain is P64 G64.
+* Prefill at P512: Q 794–803 vs Q0 751 / B 750 this sitting (+6 %; #219 read
+  +1.7 %). Q0 and B ran without a cool-wait before them (see notes), so the
+  gap is not attributed to the tier here.
 
 ## Text approval (T2)
 
 | variant | generated text (G=64, run 1) | text approved (user: y/n) |
 |---|---|---|
-| Q P64 | | |
-| Q P512 | | |
-| Q P1024 | | |
-| Q0 P512 | | |
-| B P512 | | |
+| Q P64 | s in the air, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has | user |
+| Q P512 | In the same style, add more detail about its history, its people, its weather and the seasons, and do not stop until you are told to. In the same style, add more detail about its people, its weather and the seasons, and do not stop until you are told to. In the same style, add | user |
+| Q P1024 | . Thus, the final output is a JSON object with these keys: "customer_name", "email", "items", "delivery_date", "express", "total_eur". The values are to be filled from the order note. The order note does not provide explicit values for these keys, so we must infer | user |
+| Q0 P512 | In the same style, add more detail about its history, its people, its weather and the seasons, and do not stop until you are told to. In the same style, add more detail about its people, its weather and the seasons, and do not stop until you are told to. In the same style, add | user |
+| B P512 | In winter the wind comes straight off the water and the streets empty by four in the afternoon, but in summer the population nearly doubles as visitors arrive to walk the cliff paths, watch the seabirds, and eat fish and chips on the harbour wall while the gulls circle overhead hoping for scraps. The people of Ardley | user |
+
+Q P64 loops (as the CPU on this prompt, #225); Q P512 == Q0 P512
+(the tier copies the file's bytes); Q P1024 starts with `.` and a newline. Texts verbatim in `logs/texts.txt`.
 
 ## Notes from the run
 
-<unit serial, boot time / uptime at the first run, thermal, VOIDs, anything stale>
+* Unit `R3CY205ZMND` (SM-S938N, SM8750, v79), on the workstation's USB, run
+  by the agent (not the farm, not the user); `run_219t.sh R3CY205ZMND`.
+* **Deviation (rule 61):** reboot at ≈ 20:45:40, the run started 20:50:07:
+  ≈ 4.5 min idle, not 5. The runner's own uptime line reads `317.11 s` at
+  20:50:07 (kernel boot ≈ 20:44:50, 5.3 min), which does not agree with the
+  20:45:40 reboot time; recorded as the deviation either way. The G64 r1 /
+  r2 pairs agree to ≤ 0.3 % and Q0 sits in #219 A's range, so no stale-boot
+  effect is visible.
+* Thermal (`zone0`): 30.6 °C at t0; 58.9 / 59.3 / 57.4 °C at the P64 / P512
+  / P1024 block boundaries, 57.0 °C at the end. The P-blocks ran back to
+  back, but **the runner's cool-wait fired before every Q cell** (threshold
+  35 °C, 30 s × 1–2 waits each; `block start zone0` 31.0–34.9 °C), so every
+  Q run started ≤ 35 °C. Q0 and B ran directly after `Q_P512_G64_r2` with
+  no cool-wait (as the runner's order has it); their starting temperature is
+  not logged.
+* 14 runs, 0 BAD, 0 VOID, 0 STOP. Each logcat carries the usual 8 fastrpc
+  `E` lines (`open_shell … Permission denied`, `enable_kernel_optimizations`,
+  `log_config` watcher, `libdspqueue_rpc_skel` method 3, notif thread exit),
+  the same in every run including B; none affected a run.
+* Config: `device configs: ../models/q40-qs4cx-wh = the config of record
+  (pristine), generation config restored`; `do_sample false`.
+* Loops (`loop_check.py`, T2, not gated): every P64 cell (the P64 prompt
+  loops on the CPU too, #225), P512 G512 (L1run 17) / G1024 (L1run 35),
+  P1024 G512 / G1024; none at P512 G64, P1024 G64, Q0, B.
+* Logs: `/local/mnt/workspace/htp_moe/219t/logs/` (`speed.txt`, `loops.txt`,
+  `texts.txt`, `therm.log`, `config.log`, `md5_*.log`, per-run `*.log` /
+  `*.logcat`, `sitting.out`).
 
 ## Not verified here
 
