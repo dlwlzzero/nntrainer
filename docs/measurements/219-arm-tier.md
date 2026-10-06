@@ -322,6 +322,44 @@ here is a device number):
   (8-slice) on both boots: 0.45 / 0.44 vs 0.67 / 0.51 ms, decode 48.37 /
   48.45 vs B's block means 47.60 / 47.82.
 
+## Follow-up: `NNTR_MOE_TIER=2` four times (user, 2026-10-06)
+
+B2 ran once a boot above; the user asked for four. `219-b2x4-run.sh` is
+`219-arm-tier-run.sh` with the run list replaced by A / B / C interleaved
+four times at G = 64 (C = `NNTR_MOE_TIER=2`, the 4th of each profiled),
+everything else unchanged. Same unit, set, config and `MD5 OK` / `CONFIG
+OK 3848ab71…`; a fresh boot (the user's reboot seen 19:09:18, first run at
+uptime 61 s, last at 177 s). No STOP, ceiling 3840 after all 12, every
+text `same`.
+
+| run | cell | up s | prefill tok/s | decode tok/s | ms/miss | arm_ms/round | miss_wait us/tok | misses | tier hits / waits / reads | refill ms | drop ms | app pgpgin MiB | misses x 5.29 | win pgpgin MiB | win refault | win PSI io ms | win kswapd scan/s | win pswpin / pswpout | resident MiB in win (min-max) | resident after | text |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A1 | A G=64 prof=0 | 61 | 763.04 | 37.7804 | 3.98* | 6.036 | 6049.6 | 103 | 0 / 0 / 0 | 0.0 | - | 553.2 | 545 | 537 | 138475 | 169 | 139273 | 39 / 0 | 1144-1144 | 1160 | same |
+| B1 | B G=64 prof=0 | 73 | 810.127 | 47.3373 | 0.73* | 1.101 | 770.4 | 103 | 103 / 4 / 0 | 255.2 | 0.0 | 546.0 | 545 | 541 | 7 | 26 | 0 | 2 / 0 | 0-0 | 0 | same |
+| C1 | B2 G=64 prof=0 | 85 | 791.345 | 48.4115 | 0.45* | 0.677 | 321.8 | 103 | 103 / 4 / 0 | 245.5 | 0.0 | 546.0 | 545 | 530 | 81 | 28 | 0 | 5 / 0 | 0-0 | 0 | same |
+| A2 | A G=64 prof=0 | 97 | 779.3 | 29.6434 | 8.11* | 12.284 | 12669.0 | 103 | 0 / 0 / 0 | 0.0 | - | 607.2 | 545 | 602 | 140141 | 176 | 33371 | 14058 / 129790 | 2736-2736 | 2803 | same |
+| B2 | B G=64 prof=0 | 106 | 784.074 | 46.6813 | 0.80* | 1.218 | 900.3 | 103 | 103 / 4 / 0 | 261.6 | 0.0 | 558.1 | 545 | 553 | 2294 | 36 | 0 | 1169 / 0 | 0-0 | 0 | same |
+| C2 | B2 G=64 prof=0 | 115 | 784.074 | 48.1928 | 0.44* | 0.666 | 310.6 | 103 | 103 / 3 / 0 | 237.6 | 0.0 | 546.0 | 545 | 535 | 11 | 22 | 0 | 1 / 12 | 0-0 | 0 | same |
+| A3 | A G=64 prof=0 | 124 | 776.935 | 42.6099 | 2.06* | 3.125 | 2946.1 | 103 | 0 / 0 / 0 | 0.0 | - | 247.3 | 545 | 247 | 63148 | 75 | 41057 | 43 / 0 | 3136-3136 | 3106 | same |
+| B3 | B G=64 prof=0 | 133 | 797.508 | 48.3019 | 0.52* | 0.795 | 451.5 | 103 | 103 / 4 / 0 | 243.7 | 0.0 | 601.9 | 545 | 591 | 6236 | 31 | 0 | 1467 / 0 | 0-0 | 0 | same |
+| C3 | B2 G=64 prof=0 | 141 | 802.508 | 48.7433 | 0.44* | 0.659 | 307.4 | 103 | 103 / 3 / 0 | 235.2 | 0.0 | 546.9 | 545 | 536 | 57 | 26 | 0 | 168 / 0 | - | 0 | same |
+| A4 | A G=64 prof=2 | 151 | 756.278 | 38.5775 | 3.69 | 5.587 | 5574.9 | 103 | 0 / 0 / 0 | 0.0 | - | 498.8 | 545 | 494 | 126401 | 151 | 82690 | 3 / 0 | 3051-3051 | 3045 | same |
+| B4 | B G=64 prof=2 | 160 | 706.207 | 46.9208 | 0.83 | 1.256 | 934.4 | 103 | 103 / 4 / 0 | 247.4 | 0.0 | 548.3 | 545 | 554 | 0 | 21 | 0 | 2105 / 3621 | 0-0 | 0 | same |
+| C4 | B2 G=64 prof=2 | 168 | 750.733 | 48.5216 | 0.43 | 0.655 | 302.4 | 103 | 103 / 3 / 0 | 236.3 | 0.0 | 546.0 | 545 | 546 | 0 | 19 | 0 | 3 / 0 | 0-0 | 0 | same |
+
+| case (G = 64, 4 runs) | decode tok/s mean (runs) | sd | prefill tok/s mean | ms/miss (profiled; others `*`) | miss_wait us/tok | tier_waits | win refault | win pswpin / pswpout |
+|---|---|---|---|---|---|---|---|---|
+| A, no tier | 37.15 (37.78, 29.64, 42.61, 38.58) | 5.43 | 768.9 | 3.69 (2.06–8.11) | 2946–12669 | – | 63k–140k | up to 14058 / 129790 (A2) |
+| B, `=1` (8-slice copy) | 47.31 (47.34, 46.68, 48.30, 46.92) | 0.71 | 774.5 | 0.83 (0.52–0.80) | 452–934 | 4, 4, 4, 4 | 0–6236 (B2 2294, B3 6236 > 2000) | up to 2105 / 3621 (B4) |
+| C, `=2` (one-thread copy) | **48.47** (48.41, 48.19, 48.74, 48.52) | **0.23** | 782.2 | **0.43** (0.44–0.45) | **302–322** | 4, 3, 3, 3 | 0–81 | up to 168 / 12 (C2) |
+
+Reading: on four runs `=2` is faster than `=1` by 1.16 tok/s (+2.5 %),
+steadier (sd 0.23 vs 0.71), and every C run is under G1's 0.5 ms/miss
+(0.43 profiled; `=1` 0.83 profiled this boot). `=1` also went over G2's
+refault bound on two runs and swapped out on one; `=2` did not. `=2`
+still has `tier_waits` 3–4 (G2's ≤ 2) and a non-zero pswpin. Prefill:
+`=2` +1.7 % on A's block mean, `=1` +0.7 %.
+
 ## Not verified here
 
 * Every device number (G1–G4, G7): no phone on the workstation.
