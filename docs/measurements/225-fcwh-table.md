@@ -194,7 +194,7 @@ plus `run_225.sh` and `extra/` (step 2; md5s below, held by the runner).
    and comment on #225 (`state:measured`). Logs stay in
    `/local/mnt/workspace/htp_moe/225/logs/` — say on which machine.
 
-## Results (fill in)
+## Results (2026-10-06, farm `R3CY205ZMND`)
 
 Reference (other sittings, not comparable cell by cell; prefill / decode
 tok/s): #222 sitting 2026-10-02 farm `R3CY205ZMND` (S25): CPU `q40` P64
@@ -211,108 +211,216 @@ decode ≥ 50 and above the CPU of the same sitting.
 
 | case | P | G 64 | G 512 | G 1024 |
 |---|---|---|---|---|
-| CPU only (A) | 64 | | | |
-| CPU only (A) | 512 | | | |
-| CPU only (A) | 1024 | | | |
-| hybrid (B or Bfb: say which) | 64 | | | |
-| hybrid | 512 | | | |
-| hybrid | 1024 | | | |
-| E2E one PD (Q28) | 64 | | | |
-| E2E one PD | 512 | | | |
-| E2E one PD | 1024 | | | |
+| CPU only (A) | 64 | 54.05 / 257.0 | 52.54 / 255.0 | 51.48 / 252.0 |
+| CPU only (A) | 512 | 52.07 / 328.0 | 50.70 / 249.6 | 49.47 / 231.2 |
+| CPU only (A) | 1024 | 47.58 / 248.3 | 48.82 / 311.2 | 47.41 / 275.7 |
+| hybrid (B at P64 / P512; **Bfb** at P1024, B VOID there) | 64 | 59.59 / 277.1 | 58.01 / 272.3 | 54.74 / 283.2 |
+| hybrid (B) | 512 | 55.17 / 727.3 | 55.72 / 728.3 | 51.43 / 738.8 |
+| hybrid (Bfb) | 1024 | 52.03 / 663.2 | 51.51 / 650.6 | 48.74 / 649.7 |
+| E2E one PD (Q28) | 64 | 42.81 / 275.9 | 49.34 / 248.1 | 48.49 / 248.1 |
+| E2E one PD (Q28) | 512 | 42.78 / 751.8 | 45.94 / 705.2 | 45.61 / 724.2 |
+| E2E one PD (Q28) | 1024 | 37.83 / 699.0 | 43.93 / 742.0 | 43.52 / 685.4 |
 
 ### Every run
 
-| run | prefill tok/s | decode tok/s (all) | decode (last 64) | peak RSS (KB) | text vs A r1 | loop (L1 / L2) | Q: calls/token, cpu fc skipped / token | fc wh arena_kib / heap_kib | Q: heap_used_kib, mapped_mib |
+"text vs A r1" is recomputed with every `[HTP]` banner removed from the
+generated text: the `dspq: on queue=0x…` and `graph: init …` banners print
+in the middle of the text (stdout not line-terminated), and the runner's
+`gen()` kept them, so its `speed.txt` reads DIFF for every B / Bfb / Aoff /
+Q run and its `every r2 text == its r1` check reports `BAD … got '2'` (B
+P64 / P512: only the queue address differs; with the banner removed both
+r2 texts are byte-identical to r1). "1st token shifted" = one side starts
+with the prefill's token (init_seq_len, see What to expect). Loop columns
+are `logs/loops.txt` as written (banners included; one line per run).
+
+| run | prefill tok/s | decode tok/s (all) | decode (last 64) | peak RSS (KB) | text vs A r1 | loop (L1 / L2) | Q: calls/token, cpu fc skipped / token | fc wh arena_kib / heap_kib | Q: heap_used_kib, mapped_mib (fc + pool) |
 |---|---|---|---|---|---|---|---|---|---|
-| A_P64_G64_r1 | | | | | (ref) | | — | — | — |
-| B_P64_G64_r1 | | | | | | | — | | — |
-| Q_P64_G64_r1 | | | | | | | | | |
-| Q_P64_G64_r2 | | | | | | | | | |
-| B_P64_G64_r2 | | | | | | | — | | — |
-| A_P64_G512_r1 | | | | | (ref) | | — | — | — |
-| B_P64_G512_r1 | | | | | | | — | | — |
-| Q_P64_G512_r1 | | | | | | | | | |
-| A_P64_G1024_r1 | | | | | (ref) | | — | — | — |
-| B_P64_G1024_r1 | | | | | | | — | | — |
-| Q_P64_G1024_r1 | | | | | | | | | |
-| A_P512_G64_r1 | | | | | (ref) | | — | — | — |
-| B_P512_G64_r1 | | | | | | | — | | — |
-| Q_P512_G64_r1 | | | | | | | | | |
-| Q_P512_G64_r2 | | | | | | | | | |
-| B_P512_G64_r2 | | | | | | | — | | — |
-| Aoff_P512_G64_r1 | | | | | | | — | (none) | — |
-| A_P512_G512_r1 | | | | | (ref) | | — | — | — |
-| B_P512_G512_r1 | | | | | | | — | | — |
-| Q_P512_G512_r1 | | | | | | | | | |
-| Aoff_P512_G512_r1 | | | | | | | — | (none) | — |
-| A_P512_G1024_r1 | | | | | (ref) | | — | — | — |
-| B_P512_G1024_r1 | | | | | | | — | | — |
-| Q_P512_G1024_r1 | | | | | | | | | |
-| A_P1024_G64_r1 | | | | | (ref) | | — | — | — |
-| B_P1024_G64_r1 | | | | | | | — | | — |
-| Q_P1024_G64_r1 | | | | | | | | | |
-| Q_P1024_G64_r2 | | | | | | | | | |
-| B_P1024_G64_r2 | | | | | | | — | | — |
-| A_P1024_G512_r1 | | | | | (ref) | | — | — | — |
-| B_P1024_G512_r1 | | | | | | | — | | — |
-| Q_P1024_G512_r1 | | | | | | | | | |
-| A_P1024_G1024_r1 | | | | | (ref) | | — | — | — |
-| B_P1024_G1024_r1 | | | | | | | — | | — |
-| Q_P1024_G1024_r1 | | | | | | | | | |
+| A_P64_G64_r1 | 257.028 | 54.0541 | 54.0541 | 5296776 | (ref) | 1 / 1.00 loop | — | (none) | — |
+| B_P64_G64_r1 | 277.056 | 59.5903 | 59.5903 | 5272764 | DIFF (common 9 of 291 chars) | 1 / 1.00 loop | — | 145408 / 75776 | — |
+| Q_P64_G64_r1 | 275.862 | 42.8094 | 42.8094 | 816828 | DIFF (common 9 of 291 chars) | 1 / 0.72 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| Q_P64_G64_r2 | 280.702 | 49.3066 | 49.3066 | 817396 | DIFF (common 9 of 291 chars) | 1 / 0.72 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| B_P64_G64_r2 | 284.444 | 59.0951 | 59.0951 | 5066440 | DIFF (common 9 of 291 chars) | 1 / 1.00 loop | — | 145408 / 75776 | — |
+| A_P64_G512_r1 | 254.98 | 52.5398 | 51.8639 | 5906272 | (ref) | 1 / 1.00 loop | — | (none) | — |
+| B_P64_G512_r1 | 272.34 | 58.0104 | 53.6463 | 4914184 | DIFF (common 9 of 2307 chars) | 1 / 1.00 loop | — | 145408 / 75776 | — |
+| Q_P64_G512_r1 | 248.062 | 49.3446 | 49.5356 | 811348 | DIFF (common 9 of 2307 chars) | 1 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| A_P64_G1024_r1 | 251.969 | 51.4832 | 49.4973 | 5913876 | (ref) | 1 / 1.00 loop | — | (none) | — |
+| B_P64_G1024_r1 | 283.186 | 54.7359 | 50.1567 | 5269308 | DIFF (common 9 of 4607 chars) | 1 / 1.00 loop | — | 145408 / 75776 | — |
+| Q_P64_G1024_r1 | 248.062 | 48.4917 | 47.3723 | 810340 | DIFF (common 9 of 4607 chars) | 1 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| A_P512_G64_r1 | 327.995 | 52.0749 | 52.0749 | 5915348 | (ref) | 1 / 0.00 | — | (none) | — |
+| B_P512_G64_r1 | 727.273 | 55.1724 | 55.1724 | 5294312 | DIFF (common 1 of 259 chars) | 1 / 0.00 | — | 145408 / 75776 | — |
+| Q_P512_G64_r1 | 751.836 | 42.7807 | 42.7807 | 828604 | DIFF (common 2 of 259 chars, 1st token shifted) | 1 / 0.23 | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| Q_P512_G64_r2 | 752.941 | 44.4753 | 44.4753 | 828408 | DIFF (common 2 of 259 chars, 1st token shifted) | 1 / 0.23 | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| B_P512_G64_r2 | 733.524 | 55.3633 | 55.3633 | 5117268 | DIFF (common 1 of 259 chars) | 1 / 0.00 | — | 145408 / 75776 | — |
+| Aoff_P512_G64_r1 | 527.291 | 53.9629 | 53.9629 | 5005808 | DIFF (common 216 of 259 chars, 1st token shifted) | 1 / 0.00 | — | (none) | — |
+| A_P512_G512_r1 | 249.634 | 50.6981 | 49.961 | 5926536 | (ref) | 1 / 1.00 loop | — | (none) | — |
+| B_P512_G512_r1 | 728.307 | 55.7188 | 54.5145 | 5296620 | DIFF (common 1 of 2106 chars) | 1 / 0.61 loop | — | 145408 / 75776 | — |
+| Q_P512_G512_r1 | 705.234 | 45.9399 | 46.4104 | 828580 | DIFF (common 2 of 2106 chars, 1st token shifted) | 17 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| Aoff_P512_G512_r1 | 559.563 | 52.5829 | 50.3145 | 5291684 | DIFF (common 216 of 2106 chars, 1st token shifted) | 1 / 0.95 loop | — | (none) | — |
+| A_P512_G1024_r1 | 231.151 | 49.4686 | 47.7612 | 5957744 | (ref) | 1 / 1.00 loop | — | (none) | — |
+| B_P512_G1024_r1 | 738.817 | 51.4263 | 47.7612 | 5292360 | DIFF (common 1 of 4221 chars) | 1 / 1.00 loop | — | 145408 / 75776 | — |
+| Q_P512_G1024_r1 | 724.187 | 45.6064 | 44.9123 | 827448 | DIFF (common 2 of 4221 chars, 1st token shifted) | 35 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| A_P1024_G64_r1 | 248.303 | 47.5836 | 47.5836 | 5907328 | (ref) | 1 / 0.00 | — | (none) | — |
+| B_P1024_G64_r1 | VOID | | | | | | — | 145408 / 75776 | — |
+| Bfb_P1024_G64_r1 | 663.212 | 52.0325 | 52.0325 | 5294484 | DIFF (common 8 of 260 chars) | 6 / 1.00 loop | — | 139264 / 8192 | — |
+| Q_P1024_G64_r1 | 698.976 | 37.8251 | 37.8251 | 860632 | DIFF (common 3 of 260 chars) | 1 / 0.00 | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| Q_P1024_G64_r2 | 754.606 | 38.7175 | 38.7175 | 860184 | DIFF (common 3 of 260 chars) | 1 / 0.00 | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| Bfb_P1024_G64_r2 | 686.327 | 51.4469 | 51.4469 | 5354684 | DIFF (common 8 of 260 chars) | 6 / 1.00 loop | — | 139264 / 8192 | — |
+| A_P1024_G512_r1 | 311.246 | 48.8177 | 47.69 | 5905860 | (ref) | 1 / 0.16 | — | (none) | — |
+| Bfb_P1024_G512_r1 | 650.572 | 51.5091 | 47.5483 | 5304768 | DIFF (common 8 of 2319 chars) | 62 / 1.00 loop | — | 139264 / 8192 | — |
+| Q_P1024_G512_r1 | 742.029 | 43.9296 | 44.2294 | 860736 | DIFF (common 3 of 2319 chars) | 1 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
+| A_P1024_G1024_r1 | 275.714 | 47.4118 | 45.7797 | 5903956 | (ref) | 1 / 0.82 loop | — | (none) | — |
+| Bfb_P1024_G1024_r1 | 649.746 | 48.7364 | 45.2617 | 5323028 | DIFF (common 8 of 4627 chars) | 126 / 1.00 loop | — | 139264 / 8192 | — |
+| Q_P1024_G1024_r1 | 685.408 | 43.5245 | 42.0499 | 859036 | DIFF (common 3 of 4627 chars) | 1 / 1.00 loop | 1.00, 32 | 221184 / 0 | 94604, 192 + 3520 |
 
-VOID (`logs/void_*`, error line + arena / heap lines; a B VOID names its
-Bfb rows): ___
+VOID: `B_P1024_G64_r1` (`logs/void_B_P1024`), so B's P1024 cells ran as
+**Bfb** (`Bfb_P1024_G64_r1` / `_r2`, `Bfb_P1024_G512_r1`,
+`Bfb_P1024_G1024_r1`) and Bfb is the hybrid case at P1024 (user decision
+(b)); B did not die at P64 / P512, and `prof_B` is B:
 
-Device md5s (`logs/md5_device.log`, `logs/md5_models.log`): skel ___,
-`libnntrainer.so` ___, sidecar ___, `cfg_new.json` ___, `cfg_off.json`
-___, `cfg_fb.json` ___, NPU bin (both names) ___, CPU bin ___. Unit ___
-(SoC ___), `MD5 OK` line seen: ___.
+```
+[!] FATAL ERROR: nntr_hvx_mm_u8i4_layer failed: err=-2147482112 (M=1024 K=2048 N=3072 handles=3)
+    [HTP] fc wh: file=../models/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm_fcwh.bin handles=112 arena_kib=145408 heap_kib=75776 requant=0
+    [HTP] arena: chunks unmapped 15/15 mib=3840 (release rc=0x0 put=15)
+```
 
-Profile rows (`prof_B` / `prof_Bfb`, `prof_Q`: `convert to registry`,
-`M>1`, `M==1`, Q's per-kind `graph: tokens=… pcyc/token`; against #222's
-Q28 FC + DENSE_FFN + LM_HEAD 9.2 ms a token, rule 59a): <paste>
+`0x80000600` is `AEE_ERPC` (LEDGER rule 38), not #222's `AEE_ENOMEMORY`
+`0x80000402`. The failing call is M = 1024 at K = 2048, N = 3072, the
+attention qkv projection: PR 1 chunks the conv / dense / MoE prefill calls
+at 512 rows, and this FC call reached the DSP unchunked (reading of the
+log line, not checked in code). Q ran the same keys at P1024 and loaded.
+Bfb's banner: `fc wh: … arena_kib=139264 heap_kib=8192 requant=0` (conv
+images only).
+
+Device md5s (`logs/md5_device.log`, `logs/md5_models.log`): skel v79
+`5508180c…` (pushed as `libnntr_hvx_skel.so`), `libnntrainer.so`
+`701cd42e…`, sidecar `71812a91…`, `cfg_new.json` `3f6808e3…`,
+`cfg_off.json` `01b492ad…`, `cfg_fb.json` `49fcc38a…`, NPU bin (both names)
+`7b7867fa…`, CPU bin `d28f55c5…`. Unit `R3CY205ZMND` = SM-S938N (SoC
+SM8750, v79); `MD5 OK (app, extra, sidecar)` seen. The app set is a
+rebuild (see Notes), so its md5s are not the staged `dd24b4fc…` set's.
+
+Profile rows (`prof_B`, `prof_Q`, P512 G64, `NNTR_HTP_PROFILE=2`; full
+lines in `logs/prof_*.log`):
+
+```
+prof_B: 709.141 TPS 51.9903 TPS 51.9903 TPS  rss=5169748KB
+[HTP] fc wh: file=../models/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm_fcwh.bin handles=112 arena_kib=145408 heap_kib=75776 requant=0
+prof_Q: 673.684 TPS 40.9469 TPS 40.9469 TPS calls/token=1.00 rss=828296KB
+[HTP] fc wh: file=../models/q40-qs4cx-wh/nntr_lfm2_8b_a1b_q40_arm_fcwh.bin handles=112 arena_kib=221184 heap_kib=0 requant=0
+[HTP] graph: q4m1 weights=67 handles=8 feed=vtcm wh_handles=112
+[HTP] e2e: fc arena weights=67 handles=8 attach_mib=140.6 chunks=1 mapped_mib=192 feed=vtcm load_ms=432.4 lanes=6,3 s1_arena_mib=3520 s1_heap_kib=61211
+[HTP] token driver: pool misses=103 misses/token=1.61 miss_wait_us/token=549.0 rounds=68 arm_ms/round=0.933 pgpgin_mib=5.2
+[HTP] e2e: close mapped_mib=192.61 unmap_fail=0 detach_fail=0 heap_used_kib=94604 (info rc 0x0)
+prof_B M>1 rows present: conv dense FC  (B: conv dense FC; Bfb: conv)
+[HTP-PROFILE]   convert to registry:        0.0 ms  (0.00 ms/weight)
+[HTP-PROFILE] layer calls (M==1 is decode's shape)
+[HTP-PROFILE]   K=2048  N=2048  M>1        calls=23      rows=11776    host=    362.2 ms (15746.1 us/call)  dsp=14921.8 us/call (94.8%) transport=  824.3 us/call  [quant 322.9 gather 34.0 requant 98.6 swiglu(hidden) 28216.8 dequant 322.4 acc 3133.1 drain 148.1+28.5 push 46.3 scatter 69.0 alloc 148.1 stage 435.1 mm 9844.5 | rest<=291.1 (1.8% of host) blocks=1104 m1_gemv=0/23 feed=0/23 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 dense  calls=3       rows=1536     host=     31.7 ms (10556.0 us/call)  dsp=10126.7 us/call (95.9%) transport=  429.3 us/call  [quant 285.3 gather 62.0 requant 68.7 swiglu(hidden) 24628.3 dequant 357.7 acc 2085.3 drain 2.0+3.3 push 4.3 scatter 54.3 alloc 0.3 stage 392.3 mm 6633.3 | rest<=177.7 (1.7% of host) blocks=96 m1_gemv=0/3 feed=0/3 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 conv   calls=19      rows=9728     host=     96.9 ms ( 5098.6 us/call)  dsp= 4624.1 us/call (90.7%) transport=  474.6 us/call  [quant 246.1 gather 244.3 requant 0.4 swiglu(hidden) 3750.7 dequant 511.5 acc 753.6 drain 0.9+36.7 push 1.1 scatter 0.0 alloc 0.7 stage 295.9 mm 2465.2 | rest<=67.6 (1.3% of host) blocks=152 m1_gemv=0/19 feed=0/19 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 FC     calls=7       rows=3584     host=     12.0 ms ( 1719.4 us/call)  dsp= 1300.9 us/call (75.7%) transport=  418.6 us/call  [quant 433.9 gather 0.0 requant 0.0 swiglu 0.0 dequant 6.3 acc 192.7 drain 29.0+0.0 push 0.0 scatter 0.0 alloc 0.0 stage 0.0 mm 0.0 | rest<=639.0 (37.2% of host) blocks=0 m1_gemv=0/7 feed=0/7 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M==1       calls=1408    rows=1408     host=    572.3 ms (  406.5 us/call)  dsp=  395.1 us/call (97.2%) transport=   11.4 us/call  [quant 6.5 gather 0.0 requant 5.9 swiglu(hidden) 1312.1 dequant 0.0 acc 0.0 drain 0.0+0.0 push 0.0 scatter 4.2 alloc 0.1 stage 3.9 mm 371.7 | rest<=2.9 (0.7% of host) blocks=0 m1_gemv=1408/1408 feed=1408/1408 dmaq=1.00]
+[HTP-PROFILE]   K=2048  N=3072  M>1 FC     calls=6       rows=3072     host=     13.8 ms ( 2307.5 us/call)  dsp= 1780.2 us/call (77.1%) transport=  527.3 us/call  [quant 416.5 gather 0.0 requant 0.0 swiglu 0.0 dequant 6.7 acc 288.3 drain 93.7+0.0 push 0.0 scatter 0.0 alloc 0.0 stage 0.0 mm 0.0 | rest<=975.0 (42.3% of host) blocks=0 m1_gemv=0/6 feed=0/6 dmaq=0.00]
+prof_Q M>1 rows present: conv dense FC  (B: conv dense FC; Bfb: conv)
+[HTP-PROFILE]   convert to registry:      618.5 ms  (0.85 ms/weight)
+[HTP-PROFILE] layer calls (M==1 is decode's shape)
+[HTP-PROFILE]   K=2048  N=2048  M>1        calls=23      rows=11776    host=    371.5 ms (16153.2 us/call)  dsp=15053.3 us/call (93.2%) transport= 1100.0 us/call  [quant 301.7 gather 59.0 requant 137.9 swiglu(hidden) 28735.3 dequant 333.1 acc 3135.4 drain 114.6+25.3 push 47.4 scatter 70.2 alloc 134.8 stage 453.3 mm 9947.0 | rest<=293.4 (1.8% of host) blocks=1104 m1_gemv=0/23 feed=0/23 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 dense  calls=3       rows=1536     host=     33.0 ms (10987.3 us/call)  dsp=10348.3 us/call (94.2%) transport=  639.0 us/call  [quant 297.3 gather 65.0 requant 77.0 swiglu(hidden) 24654.7 dequant 357.7 acc 2095.0 drain 24.0+118.3 push 5.7 scatter 57.7 alloc 1.0 stage 400.0 mm 6672.3 | rest<=177.3 (1.6% of host) blocks=96 m1_gemv=0/3 feed=0/3 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 conv   calls=19      rows=9728     host=     98.1 ms ( 5164.0 us/call)  dsp= 4613.8 us/call (89.3%) transport=  550.2 us/call  [quant 282.7 gather 150.8 requant 0.4 swiglu(hidden) 3808.5 dequant 555.7 acc 765.7 drain 1.5+36.4 push 1.0 scatter 0.0 alloc 0.6 stage 302.9 mm 2444.9 | rest<=71.1 (1.4% of host) blocks=152 m1_gemv=0/19 feed=0/19 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=2048  M>1 FC     calls=7       rows=3584     host=     12.6 ms ( 1800.0 us/call)  dsp= 1303.7 us/call (72.4%) transport=  496.3 us/call  [quant 447.6 gather 0.0 requant 0.0 swiglu 0.0 dequant 6.7 acc 191.1 drain 10.6+0.0 push 0.0 scatter 0.0 alloc 0.0 stage 0.0 mm 0.0 | rest<=647.7 (36.0% of host) blocks=0 m1_gemv=0/7 feed=0/7 dmaq=0.00]
+[HTP-PROFILE]   K=2048  N=3072  M>1 FC     calls=6       rows=3072     host=     14.7 ms ( 2453.2 us/call)  dsp= 1819.7 us/call (74.2%) transport=  633.5 us/call  [quant 465.2 gather 0.0 requant 0.0 swiglu 0.0 dequant 5.7 acc 287.2 drain 86.3+0.0 push 0.0 scatter 0.0 alloc 0.0 stage 0.0 mm 0.0 | rest<=975.3 (39.8% of host) blocks=0 m1_gemv=0/6 feed=0/6 dmaq=0.00]
+[HTP] graph: tokens=64 pcyc/token=43973168 wait_us/token=0.0
+[HTP] graph per-kind pcyc/token: RMSNORM=690096(0.331ms) FC=7953470(3.819ms) CONV1D_GATE=995059(0.478ms) QK_NORM=195707(0.094ms) ROPE=58268(0.028ms) ATTN_M1=1291267(0.620ms) ADD=188622(0.091ms) ROUTER_TOPK=1409490(0.677ms) MOE=22798520(10.946ms) DENSE_FFN=2200554(1.057ms) LM_HEAD=6192115(2.973ms) | wall_ms/token=21.275 mhz=2083 spin_us=0
+```
 
 ## Accuracy: PPL (8 prompts, G 256; recorded, not gated: T2) and text approval
 
 Prefill PPL (`[PPL] prompt … ppl=`) and decode PPL forced on A's
 continuation (`[PPL] decode … source=file`; A's own run is `source=self`,
-its p01 forced re-run `ppl_Af_p01` is the null check). Information for
-the record and for the Gemma work; the pass / fail is the loop column and
-the user's approval.
+its p01 forced re-run `ppl_Af_p01` is the null check); top1 in brackets.
+B in this block is B (P512 loads). Pooled = exp of the token-weighted mean
+nll over the 8 prompts.
 
 | prompt | A prefill PPL | Aoff prefill PPL | B prefill PPL | Q prefill PPL | A decode PPL (self) | Aoff decode (forced) | B decode (forced) | Q decode (forced) | loops (variant loops, A does not) |
 |---|---|---|---|---|---|---|---|---|---|
-| p01 | | | | | | | | | |
-| p02 | | | | | | | | | |
-| p03 | | | | | | | | | |
-| p04 | | | | | | | | | |
-| p05 | | | | | | | | | |
-| p06 | | | | | | | | | |
-| p07 | | | | | | | | | |
-| p08 | | | | | | | | | |
-| pooled | | | | | | | | | |
+| p01 | 109.759 | 115.095 | 94.5355 | 94.5355 | 1.17242 (256/256) | 1.19862 (250/256) | 1.1753 (249/256) | 1.20026 (241/256) | none |
+| p02 | 32.6117 | 26.1919 | 30.4323 | 30.4323 | 1.13027 (256/256) | 1.13134 (253/256) | 1.15269 (251/256) | 1.17916 (248/256) | none |
+| p03 | 64.9281 | 111.365 | 183.353 | 183.353 | 1.06884 (256/256) | 1.06488 (256/256) | 1.1326 (256/256) | 1.09162 (255/256) | none |
+| p04 | 270.551 | 264.051 | 355.64 | 355.64 | 1.28385 (256/256) | 1.36414 (236/256) | 1.67123 (222/256) | 1.79102 (218/256) | none |
+| p05 | 175.76 | 167.568 | 220.315 | 220.315 | 1.13511 (256/256) | 1.20173 (246/256) | 1.34009 (231/256) | 1.26154 (240/256) | none |
+| p06 | 68.3631 | 76.4529 | 54.6975 | 54.6975 | 1.10811 (256/256) | 1.14267 (250/256) | 1.19381 (247/256) | 1.32659 (243/256) | none |
+| p07 | 29.6229 | 32.2619 | 35.0692 | 35.0692 | 1.58811 (256/256) | 1.68107 (226/256) | 1.85281 (209/256) | 1.98865 (198/256) | none |
+| p08 | 4114.37 | 4370.54 | 4704.72 | 4704.72 | 1.04105 (256/256) | 1.03717 (255/256) | 1.05043 (255/256) | 1.07486 (254/256) | none |
+| pooled (token-weighted) | 86.44 | 90.31 | 94.08 | 94.08 | 1.1809 | 1.2139 | 1.2965 | 1.3318 | none |
 
-Null check (`ppl_Af_p01` decode PPL == `ppl_A_p01`'s): ___
+Null check: `ppl_Af_p01` decode PPL 1.17242 top1 256/256 == `ppl_A_p01` 1.17242 top1 256/256: **equal**
 
-Texts (G 64, run 1; `logs/texts.txt`). T2: approve unless the text loops
-or leaves the prompt's context; differing from A is expected.
+Texts (G 64, run 1, `[HTP]` banners removed; ⏎ = newline). T2: approve
+unless the text loops or leaves the prompt's context; differing from A is
+expected. Approval column: the user's.
 
 | variant | P | generated text | text approved (user: y/n) |
 |---|---|---|---|
-| A | 64 | <paste> | (reference) |
-| B / Bfb | 64 | <paste> | |
-| Q | 64 | <paste> | |
-| A | 512 | <paste> | (reference) |
-| Aoff | 512 | <paste> | |
-| B / Bfb | 512 | <paste> | |
-| Q | 512 | <paste> | |
-| A | 1024 | <paste> | (reference) |
-| B / Bfb | 1024 | <paste> | |
-| Q | 1024 | <paste> | |
+| A | 64 | s in the early afternoon, and the smell of salt and diesel hangs in the early afternoon, and the smell of salt and diesel hangs in the early afternoon, and the smell of salt and diesel hangs in the early afternoon, and the smell of salt and diesel hangs in the early afternoon, and the smell | (reference) |
+| B | 64 | s in the air, and the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell of the smell |  |
+| Q | 64 | s in the air, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has lived by the tide, and for most of its history it has |  |
+| A | 512 |  town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum, a lifeboat station, and a lifeboat itself | (reference) |
+| Aoff | 512 |  The town has a single main street that climbs from the harbour to a stone church at the top of the hill, and along it stand a bakery, a hardware shop, two pubs, a post office that also sells fishing line, a small museum that opens only on summer weekends, and a lifeboat station |  |
+| B | 512 |  In winter the wind comes straight off the water and the streets empty by four in the afternoon, but in summer the population nearly doubles as visitors arrive to walk the cliff paths, watch the seabirds, and eat fish and chips on the harbour wall while the gulls circle overhead hoping for scraps. The people of Ardley |  |
+| Q | 512 |  In the same style, add more detail about its history, its people, its weather and the seasons, and do not stop until you are told to. In the same style, add more detail about its people, its weather and the seasons, and do not stop until you are told to. In the same style, add |  |
+| A | 1024 | . ⏎  ⏎ Now, we have a huge amount of text. The user has asked for a single JSON object with those keys. We need to extract the information from the order note below. The order note is the entire text. The keys: "customer_name" (string), "email" (string), "items" ( | (reference) |
+| Bfb | 1024 | . ⏎  ⏎ Now, I have a huge amount of data to process. I will have to do it all. I will have to do it all. I will have to do it all. I will have to do it all. I will have to do it all. I will have to do it all. I will have |  |
+| Q | 1024 | . ⏎  ⏎ Thus, the final output is a JSON object with these keys: "customer_name", "email", "items", "delivery_date", "express", "total_eur". The values are to be filled from the order note. The order note does not provide explicit values for these keys, so we must infer |  |
+
+Loops where the variant loops and A does not (`logs/loops.txt`):
+Bfb P1024 G64 (r1, r2: L1run 6), Bfb P1024 G512 (L1run 62), Q P1024 G512
+(L2 1.00; A 0.16). None at P512 G64, none in the PPL block; P64's prompt
+asks to continue without stopping and A loops there too (no variant
+fails at P64 by this rule).
 
 ## Notes from the run
 
-<machine the runner ran on, serial, uptime at start, thermal per block,
-STOPs / reboots, VOIDs and whether Bfb became the hybrid case, anything
-stale>
+* Runner on the workstation (`/local/mnt/workspace/htp_moe/225/`, logs in
+  `logs/`), unit `R3CY205ZMND` (S25 Ultra, SM8750) through the ADF SSH
+  bridge (an `adb` shim: `shell` pushed as a script and run with `sh`;
+  reboot refused by the shim). 2026-10-06 15:56:15 – 16:36:33 KST, one
+  invocation, no STOP, 1 BAD (the banner artifact above).
+* **Not 5 min idle (rule 61):** the user rebooted the unit; the runner
+  started at uptime 52 s. Q's first G64 runs read lower than their r2
+  (P64 42.81 vs 49.31, P512 42.78 vs 44.48).
+* **Set rebuilt, `md5.txt` `23000b96…` (not `dd24b4fc…`):** this
+  workstation had no staged set and no sidecar. Built from
+  `htp/225-fcwh-e2e` @ `51b2b4477` (code = `7efd22adf`) in a fresh
+  worktree: skels `HEX_ARCH=v79/v81 ./test/htp/build.sh` (SDK 6.4.0.1,
+  HexKL 6.4.0.1, `ARCH OK`, `UNDEFINED SYMBOLS OK (62 runtime imports)`),
+  `build_android.sh --htp` (`-DENABLE_HEXKL=1`), then `225-stage.sh`.
+  The sidecar was re-packed from the fp32 bin (`nntr_quantize_stream fp32
+  --fc_dtype Q4_0 --moe_dtype QS4CX_WH --embd_dtype Q4_0 --lmhead_dtype
+  Q4_0 --isa ARM --fc_wh_sidecar`): sidecar `71812a91…` and main file
+  `7b7867fa…`, both byte-identical to the files of record. The models
+  were pushed to the unit fresh (it held none). New `md5.txt`:
+
+```
+3f6808e30b6e16e1c8592fa39977814c  app/cfg_new.json
+254485ff2f016526798b4c114be91b0a  app/libcausallm_core.so
+9e7ad51b5696edd53500a6da4f24ae66  app/libccapi-nntrainer.so
+b1586b9b512712800fd36a24abac1c0a  app/libc++_shared.so
+701cd42e260f0a7612a5a5f062dbfef5  app/libnntrainer.so
+5508180c2449fdb210538acea99d4fa0  app/libnntr_hvx_skel.v79.so
+02021bd855955b73b8dedad1049747b4  app/libnntr_hvx_skel.v81.so
+0ad4e22a70e4f135bce38ad8fd1e001b  app/libsdkl.so
+2938a3c644d3754af2a4fe9d79413fb6  app/nntrainer_causallm
+fc65c1588dc66dd764c7013fe96cbb75  app/p01.txt
+7d2a17d3cc097d0567c9463c5eaeff88  app/p02.txt
+c804b037d3bb87bf09259504fcae1c79  app/p03.txt
+c5d4595b859a4e6abc3a035353aac180  app/p04.txt
+a21ecdeea9d43d1b1366bde523347a62  app/p05.txt
+6efd387197d6078366152f83a9b72a69  app/p06.txt
+db0251e1bc57f072f815802cd93c260d  app/p07.txt
+67b657c1261c2c12022907c2117a9a54  app/p08.txt
+42595651ef514e155887eb31f421b2dc  app/page_cache_evict
+71812a91d5acdbe9e026c479db8e275e  model/nntr_lfm2_8b_a1b_q40_arm_fcwh.bin
+```
+
+* Thermal (`logs/therm.log`, battery °C×10 / zone0 m°C): t0 270 / 35600,
+  after P64 325 / 59300, after P512 329 / 58100, after P1024 331 / 58100,
+  end 346 / 55800; every block started at zone0 ≤ 35 °C (`cool`).
