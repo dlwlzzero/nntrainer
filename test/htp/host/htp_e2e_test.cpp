@@ -35,7 +35,8 @@
  * path NNTR_PPL_DECODE lives on.
  * --repack calls repack_weight after the load, as the app's main does
  * (#225): the load-time FC registrations, the FC WH sidecar and the
- * warm-up calls (which the MoE dumps then hold too).
+ * warm-up calls (which the MoE dumps then hold too); (#219) the expert
+ * pool is preloaded at load, not in the first prefill.
  * Exit 0, or 1 with `E2E FAIL <reason>` on any exception.
  */
 
