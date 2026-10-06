@@ -151,35 +151,77 @@ load, the last `experts=88 … direct=1`.
 `*` = `arm_ms/round × rounds / misses` (run not profiled). `misses × 5.29`
 = the refills' expected `pgpgin`.
 
-**Fresh boot** (reboot `<time>`, first run at uptime ≈ 60 s):
+**Fresh boot** (the user's reboot seen 18:27:07 KST 2026-10-06, `boot_completed` at uptime 19 s, first run at uptime 62 s):
 
 | run | cell | up s | prefill tok/s | decode tok/s | ms/miss | arm_ms/round | miss_wait us/tok | misses | tier hits / waits / reads | refill ms | drop ms | app pgpgin MiB | misses x 5.29 | win pgpgin MiB | win refault | win PSI io ms | win kswapd scan/s | win pswpin / pswpout | resident MiB in win (min-max) | resident after | text |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| A1 | A G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| B1 | B G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| A2 | A G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| B2 | B G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| A3 | A G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| B3 | B G=64 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| A4 | A G=64 prof=2 | | | | | | | | | | | | | | | | | | | | |
-| B4 | B G=64 prof=2 | | | | | | | | | | | | | | | | | | | | |
-| B2one | B2 G=64 prof=2 | | | | | | | | | | | | | | | | | | | | |
-| A512 | A G=512 prof=2 | | | | | | | | | | | | | | | | | | | | |
-| B512 | B G=512 prof=2 | | | | | | | | | | | | | | | | | | | | |
-| A1024 | A G=1024 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| B1024 | B G=1024 prof=0 | | | | | | | | | | | | | | | | | | | | |
-| H0 | H0 G=64 prof=0 | | | | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | | |
-| H | H G=64 prof=0 | | | | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | | |
+| A1 | A G=64 prof=0 | 62 | 766.467 | 37.405 | 4.13* | 6.262 | 6289.1 | 103 | 0 / 0 / 0 | 0.0 | - | 554.0 | 545 | 554 | 143213 | 155 | 112746 | 47 / 10359 | 957-957 | 1015 | same |
+| B1 | B G=64 prof=0 | 74 | 811.41 | 47.7256 | 0.68* | 1.030 | 689.5 | 103 | 103 / 3 / 0 | 248.1 | 0.0 | 549.8 | 545 | 543 | 494 | 23 | 0 | 48 / 0 | 0-0 | 0 | same |
+| A2 | A G=64 prof=0 | 82 | 782.875 | 38.835 | 3.43* | 5.189 | 5151.3 | 103 | 0 / 0 / 0 | 0.0 | - | 544.3 | 545 | 528 | 135190 | 145 | 126459 | 62 / 0 | 2654-2654 | 2645 | same |
+| B2 | B G=64 prof=0 | 91 | 812.698 | 47.7969 | 0.64* | 0.967 | 625.2 | 103 | 103 / 4 / 0 | 248.1 | 0.0 | 549.0 | 545 | 533 | 571 | 29 | 0 | 33 / 0 | 0-0 | 0 | DIFF |
+| A3 | A G=64 prof=0 | 100 | 786.482 | 42.4403 | 2.05* | 3.099 | 2927.0 | 103 | 0 / 0 / 0 | 0.0 | - | 305.3 | 545 | 299 | 75860 | 81 | 87062 | 701 / 0 | 2906-2906 | 2893 | same |
+| B3 | B G=64 prof=0 | 110 | 787.692 | 47.3373 | 0.73* | 1.101 | 768.3 | 103 | 103 / 4 / 0 | 242.9 | 0.0 | 546.7 | 545 | 541 | 29 | 33 | 0 | 163 / 0 | 0-0 | 0 | same |
+| A4 | A G=64 prof=2 | 118 | 774.584 | 41.2637 | 2.54 | 3.850 | 3720.9 | 103 | 0 / 0 / 0 | 0.0 | - | 295.4 | 545 | 290 | 73974 | 83 | 65379 | 44 / 0 | 2857-2857 | 2862 | same |
+| B4 | B G=64 prof=2 | 127 | 763.04 | 47.5483 | 0.67 | 1.019 | 678.7 | 103 | 103 / 4 / 0 | 252.6 | 0.0 | 548.5 | 545 | 530 | 0 | 23 | 0 | 0 / 0 | 0-0 | 0 | same |
+| B2one | B2 G=64 prof=2 | 135 | 764.179 | 48.3749 | 0.45 | 0.677 | 315.9 | 103 | 103 / 3 / 0 | 236.5 | 0.0 | 546.0 | 545 | 541 | 0 | 37 | 0 | 0 / 0 | - | 0 | same |
+| A512 | A G=512 prof=2 | 145 | 767.616 | 51.1335 | 2.86 | 4.040 | 611.8 | 120 | 0 / 0 / 0 | 0.0 | - | 441.9 | 635 | 442 | 112691 | 124 | 13194 | 569 / 0 | 2838-2870 | 2845 | same |
+| B512 | B G=512 prof=2 | 163 | 758.519 | 52.7454 | 0.53 | 0.752 | 60.1 | 120 | 120 / 4 / 0 | 310.3 | 0.0 | 638.7 | 635 | 639 | 194 | 30 | 0 | 188 / 0 | 0-0 | 0 | same |
+| A1024 | A G=1024 prof=0 | 180 | 801.252 | 51.6937 | 2.62* | 3.648 | 285.7 | 124 | 0 / 0 / 0 | 0.0 | - | 420.9 | 656 | 421 | 97854 | 111 | 7266 | 5938 / 51 | 2667-2883 | 2667 | same |
+| B1024 | B G=1024 prof=0 | 208 | 757.396 | 52.2662 | 0.69* | 0.961 | 49.3 | 124 | 124 / 4 / 0 | 330.8 | 0.0 | 658.0 | 656 | 658 | 146 | 27 | 0 | 54 / 0 | 0-0 | 0 | same |
+| H0 | H0 G=64 prof=0 | 235 | 744.186 | 50.3541 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | 2068 | DIFF |
+| H | H G=64 prof=0 | 253 | 748.538 | 51.0774 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | 2083 | DIFF |
 
-**Old boot** (reboot `<time>`, idle to uptime 600 s): the same table.
+**Old boot** (the user's reboot seen 18:48:05, `boot_completed` at uptime 17 s, idle to uptime 600 s, first run at 601 s):
+
+| run | cell | up s | prefill tok/s | decode tok/s | ms/miss | arm_ms/round | miss_wait us/tok | misses | tier hits / waits / reads | refill ms | drop ms | app pgpgin MiB | misses x 5.29 | win pgpgin MiB | win refault | win PSI io ms | win kswapd scan/s | win pswpin / pswpout | resident MiB in win (min-max) | resident after | text |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A1 | A G=64 prof=0 | 601 | 821.83 | 39.072 | 3.52* | 5.331 | 5306.0 | 103 | 0 / 0 / 0 | 0.0 | - | 549.0 | 545 | 533 | 136392 | 139 | 123979 | 14 / 0 | 713-713 | 714 | same |
+| B1 | B G=64 prof=0 | 610 | 782.875 | 47.1281 | 0.75* | 1.130 | 796.4 | 103 | 103 / 4 / 0 | 241.6 | 0.0 | 551.6 | 545 | 644 | 130 | 26 | 0 | 1261 / 0 | 0-0 | 0 | same |
+| A2 | A G=64 prof=0 | 619 | 754.05 | 37.4927 | 4.02* | 6.096 | 6113.7 | 103 | 0 / 0 / 0 | 0.0 | - | 537.8 | 545 | 533 | 136304 | 146 | 89976 | 45 / 0 | 3233-3233 | 3219 | same |
+| B2 | B G=64 prof=0 | 628 | 796.267 | 48.012 | 0.56* | 0.855 | 505.7 | 103 | 103 / 4 / 0 | 246.6 | 0.0 | 546.0 | 545 | 530 | 0 | 23 | 0 | 3 / 0 | 0-0 | 0 | same |
+| A3 | A G=64 prof=0 | 636 | 788.906 | 39.8258 | 3.04* | 4.610 | 4538.7 | 103 | 0 / 0 / 0 | 0.0 | - | 424.0 | 545 | 413 | 105592 | 112 | 92966 | 2 / 0 | 3140-3140 | 3131 | same |
+| B3 | B G=64 prof=0 | 645 | 813.99 | 47.976 | 0.60* | 0.906 | 556.6 | 103 | 103 / 4 / 0 | 241.5 | 0.0 | 546.0 | 545 | 546 | 40 | 26 | 0 | 10 / 0 | 0-0 | 0 | same |
+| A4 | A G=64 prof=2 | 653 | 769.925 | 38.3923 | 3.77 | 5.715 | 5713.5 | 103 | 0 / 0 / 0 | 0.0 | - | 543.4 | 545 | 533 | 136163 | 140 | 97099 | 121 / 0 | 3120-3120 | 3112 | same |
+| B4 | B G=64 prof=2 | 662 | 768.769 | 48.1565 | 0.51 | 0.772 | 419.8 | 103 | 103 / 4 / 0 | 248.9 | 0.0 | 546.0 | 545 | 535 | 0 | 21 | 0 | 0 / 0 | 0-0 | 0 | same |
+| B2one | B2 G=64 prof=2 | 669 | 771.084 | 48.4481 | 0.44 | 0.667 | 316.9 | 103 | 103 / 4 / 0 | 239.2 | 0.0 | 546.4 | 545 | 546 | 0 | 33 | 0 | 4 / 0 | 0-0 | 0 | same |
+| A512 | A G=512 prof=2 | 679 | 766.467 | 50.5429 | 3.64 | 5.141 | 795.1 | 120 | 0 / 0 / 0 | 0.0 | - | 600.4 | 635 | 600 | 153489 | 173 | 18604 | 37 / 0 | 3023-3071 | 3023 | same |
+| B512 | B G=512 prof=2 | 697 | 758.519 | 52.7291 | 0.58 | 0.813 | 67.9 | 120 | 120 / 4 / 0 | 313.7 | 0.0 | 636.1 | 635 | 636 | 14 | 24 | 0 | 11 / 0 | 0-0 | 0 | same |
+| A1024 | A G=1024 prof=0 | 714 | 779.3 | 51.2179 | 3.15* | 4.385 | 350.1 | 124 | 0 / 0 / 0 | 0.0 | - | 523.0 | 656 | 523 | 133772 | 148 | 7840 | 222 / 0 | 3009-3058 | 3020 | same |
+| B1024 | B G=1024 prof=0 | 742 | 788.906 | 52.4161 | 0.60* | 0.841 | 38.9 | 124 | 124 / 4 / 0 | 330.7 | 0.0 | 657.8 | 656 | 658 | 172 | 25 | 0 | 55 / 0 | 0-0 | 0 | same |
+| H0 | H0 G=64 prof=0 | 769 | 754.05 | 53.5117 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | 2150 | DIFF |
+| H | H G=64 prof=0 | 787 | 764.179 | 53.9174 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | 2198 | DIFF |
+
+Text column: B2 (fresh) reads `DIFF` because a load banner's tail
+(` wh_handles=112`) interleaved onto the line after the prompt echo and
+the runner's `strip` dropped the prompt with it; with that fragment
+removed, B2's generated text is byte-identical to A1's. H0 / H read
+`DIFF` against A1 by construction on this config: the hybrid's decode
+FCs are the CPU's Q4_0 GEMV, Q28's the DSP WH GEMV (#225 PR 2). H == H0
+(both boots), fresh H0 == old H0, fresh A1 == old A1 (generated text,
+`[HTP]` banners removed). `app pgpgin` is within 7 MiB of
+`misses × 5.29` on every B run; `win pgpgin` (the sampler's window)
+is within ±11 MiB on 10 of 14 B runs (fresh B2 −12, B4 −15; old B1 +99,
+B2 −15).
 
 Block means (G = 64, four runs each; tok/s read only inside a block):
 
 | boot | prefill A → B | decode A → B | ms/miss A (range) | ms/miss B (range) | ms/miss B2 |
 |---|---|---|---|---|---|
-| fresh | | | | | |
-| old | | | | | |
-| G = 512 / 1024 (one each) | | | | | – |
+| fresh | 777.6 → 793.7 (+2.1 %) | 39.99 (37.41–42.44) → 47.60 (47.34–47.80), +19.0 % | 2.05–4.13 (A4 profiled 2.54) | 0.64–0.73 (B4 profiled 0.67) | 0.45 |
+| old | 783.7 → 790.5 (+0.9 %) | 38.70 (37.49–39.83) → 47.82 (47.13–48.16), +23.6 % | 3.04–4.02 (A4 profiled 3.77) | 0.51–0.75 (B4 profiled 0.51) | 0.44 |
+| G = 512 / 1024 (one each) | fresh 767.6 → 758.5 (−1.2 %) / 801.3 → 757.4 (−5.5 %); old 766.5 → 758.5 (−1.0 %) / 779.3 → 788.9 (+1.2 %) | fresh 51.13 → 52.75 / 51.69 → 52.27; old 50.54 → 52.73 / 51.22 → 52.42 | 2.62–3.64 | 0.53–0.69 | – |
+
+Gate reading (plan §1):
+
+| # | reading | verdict |
+|---|---|---|
+| G1 | B 0.51–0.75 ms/miss (profiled 0.67 / 0.51; G 512 0.53 / 0.58), every B run with `tier_hits = misses` and refaults ≤ 571: the 0.5–0.7 band, "the slow regime is gone, the copy is store-bound" (user's call). B2 (one-thread copy) 0.45 / 0.44 | **not ≤ 0.5** for B; B2 passes |
+| G2 | `tier_hits = misses`, `tier_reads = 0` on all 14 B runs; refault 0–571 (≤ 2000); PSI io 21–37 ms (≤ 70); pswpout 0; **`tier_waits` 3–4 on every B run (gate ≤ 2)**; **pswpin 0–1261, not 0**; app `pgpgin` = refills ± 7 MiB | **fails** on `tier_waits` and `pswpin` |
+| G3 | G 64 block means +2.1 % / +0.9 %; single pairs −1.2 / −5.5 % (fresh), −1.0 / +1.2 % (old) | pass on the block means; fresh G 1024's single pair −5.5 % |
+| G4 | B's block means 47.60 / 47.82 > A's best run of the block (42.44 / 39.83); B ≥ A at G 512 and 1024 on both boots | pass |
+| G5 | every Q run same (B2 fresh: the banner fragment, see above) | pass |
+| G6 | `calls/token=1.00`, close clean, ceiling 3840 after all 30 runs; H vs H0 +0.7 / +0.4 tok/s, text identical | pass |
+| G7 | B's `resident after` 0 MiB on all 14 (A's 0.7–3.2 GiB); last `tier:` line `experts=88 mib=466.5 direct=1`; pswpout 0 in every B window | pass |
 
 Reference (#216, `R3CY10WM83Y`, Q28, the 2026-09-21 config): A G = 64
 33.4–43.7 tok/s at 0.68–4.38 ms/miss, prefill 462–558 tok/s; #218's B
@@ -189,13 +231,13 @@ different config of record (#222) or unit, read only this sitting's A.
 
 ## Text
 
-Every run `same` (G5). For the record, A1's and B1's generated text (G =
+Every Q run `same` (G5; B2 fresh after removing the banner fragment, see Results). For the record, A1's and B1's generated text (G =
 64, fresh boot):
 
 | variant | generated text (G = 64, fresh, run 1) |
 |---|---|
-| A | <paste> |
-| B | <paste> |
+| A (Q28 one PD, no tier) |  In the same style, add more detail about its history, its people, its weather and the seasons, and do not stop until you are told to. In the same style, add more detail about its people, its weather and the seasons, and do not stop until you are told to. In the same style, add |
+| B (Q28 one PD, `NNTR_MOE_TIER=1`) |  In the same style, add more detail about its history, its people, its weather and the seasons, and do not stop until you are told to. In the same style, add more detail about its people, its weather and the seasons, and do not stop until you are told to. In the same style, add |
 
 ## Host (this branch, the workstation)
 
@@ -235,8 +277,50 @@ here is a device number):
 
 ## Notes from the run
 
-<serial, battery, warm; which config (`CONFIG OK` md5, new or 2026-09-21);
-the three `tier:` lines of one B run (drop_ms!); STOP lines; anything stale>
+* Unit `R3CY205ZMND` (S25 Ultra SM-S938N, SM8750, v79) on the ADF farm
+  through an SSH `adb` shim; the runner's `adb reboot` was answered by
+  the user rebooting by hand (the shim waits for the uptime to drop). Battery
+  not logged by this runner. Runs 18:28–18:31 (fresh) and 18:58–19:01 (old)
+  KST 2026-10-06, after #225's sitting on the same unit the same afternoon.
+  No STOP; ceiling 3840 after every run.
+* **Config:** the config of record after #225 PR 2,
+  `docs/measurements/config/q40-qs4cx-wh.nntr_config.json` (md5
+  `3f6808e3…`, `fc_wh_file_name` the FC WH sidecar `71812a91…`),
+  `CONFIG OK 3848ab71…` (without `num_to_generate`) on both boots. Not
+  the 2026-09-21 one: on #225's sitting Q28 loads on the config of record.
+* **Binaries (deviation):** the code under test is #224 (merged into
+  `htp_first_version`) **plus #225 PR 2** (#233, open), which the config
+  of record needs for Q28 to load. Built from a **local merge**
+  `8629b9392` = `htp/225-fcwh-e2e` @ `f08cccfeb` + `htp_first_version` @
+  `9f33d7d43` (conflict only in `test/htp/host/run_inproc_e2e.sh`, both
+  sides kept; not pushed). Staged `md5.txt` (device `MD5 OK` on both
+  boots): `libnntrainer.so 48545aa4…`, `libcausallm_core.so 7f2dbb0d…`,
+  `nntrainer_causallm 513f138c…`, `libccapi-nntrainer.so 618c6bc2…`,
+  skel v79 `44339c7a…` (`UNDEFINED SYMBOLS OK (62)`, `ARCH OK (V79)`),
+  `unittest_hvx_two_sessions f2e45bfb…`, `page_cache_evict 42595651…`,
+  `libc++_shared.so b1586b9b…`, `libsdkl.so 0ad4e22a…`, `prompt512.txt
+  fc65c158…`. Not the Artifacts table's set.
+* **Host gates on the merge:** `*qs4cx*` 2/2, `*Lfm2Moe*` 7/7 (none
+  skipped), `run_host_checks.sh` ALL CHECKS PASS + WORKER POOL LANES OK,
+  syntax check 0; `run_inproc_e2e.sh` prints the four tier lines
+  `bit_identical=1` (`tier_hits` 5 / 56 / 56 / 15, `tier_reads=0`,
+  `direct=1`) and #225 PR 2's `fcwh … ok`, but ends `INPROC E2E FAIL` on
+  `fwd-lfm25 min_snr_db=29.82 < floor 30` with `golden … bit_identical=0`:
+  the fixture weights were regenerated on this workstation (the lfm25
+  generator also rewrote `reference_logits.json`), and the unmerged
+  `htp/225-fcwh-e2e` with the same fixtures fails identically (29.82,
+  138.05 dB), so it is the fixtures, not the merge.
+* `tier:` lines of fresh B1 (one B run; the same on every B run within
+  a few ms):
+  ```
+  [HTP] tier: experts=24 mib=127.2 read_ms=58.5 drop_ms=451.6 direct=1
+  [HTP] tier: experts=56 mib=296.8 read_ms=74.1 drop_ms=0.0 direct=1
+  [HTP] tier: experts=88 mib=466.5 read_ms=78.5 drop_ms=0.0 direct=1
+  ```
+  The first call's whole-file `DONTNEED` costs 0.45 s at load.
+* B2 (`NNTR_MOE_TIER=2`, one-thread copy) is faster per miss than B
+  (8-slice) on both boots: 0.45 / 0.44 vs 0.67 / 0.51 ms, decode 48.37 /
+  48.45 vs B's block means 47.60 / 47.82.
 
 ## Not verified here
 
