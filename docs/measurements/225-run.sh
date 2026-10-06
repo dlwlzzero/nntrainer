@@ -62,7 +62,11 @@ pp() { [ -f $X/$1 ] && echo $X/$1 || echo $W/app/$1; } # a prompt file on the wo
 gen() { python3 - "$1" "$(pp $2)" <<'PY'
 import sys
 log = open(sys.argv[1], errors="replace").read().split("\n=====")[0]
-log = "\n".join(l for l in log.split("\n") if not l.startswith(("[HTP", "[PPL]")))
+import re
+# [HTP] banners (dspq: on queue=0x..., graph: init ...) print inside the generated
+# text (stdout not line-terminated): drop them wherever they start, not only at
+# a line start, else every text compare reads DIFF (#225 sitting, open item 35)
+log = re.sub(r"\[(HTP|PPL)[^\n]*\n?", "", log)
 p = open(sys.argv[2], errors="replace").read().rstrip("\n")
 i = log.rfind(p)
 print(log[i + len(p):].strip("\n") if i >= 0 else "<prompt echo not found>")
