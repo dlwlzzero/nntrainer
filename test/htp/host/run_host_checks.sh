@@ -34,6 +34,12 @@ cc=${CC:-gcc}
 # since #117 that matrix twice, with the arena read and with the VTCM
 # feed, whose push/wait schedule the check's scoreboard holds
 # (M1 GEMV VTCM FEED SCHEDULE OK).
+# [#258] The FC's row quantizer is the REAL hvx_q4m1_prep on hvx_emu/ (the
+# Q4 GEMV check below holds it against q8_0_quant_cpu_det), one object for
+# every check that links the MoE kernel.
+"$cc" -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -include malloc.h -I "$HERE/hvx_emu" -I "$HERE/stub" -I "$BACKEND/.." \
+  -I "$BACKEND/hvx" -c "$BACKEND/hvx/hvx_q4_gemv_f32.c" -o "$OUT/q4m1_emu.o"
 "$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
   -DMOE_TAIL_MAX_ROWS=16u \
   -I "$HERE/stub" -I "$HERE/standin" -I "$HERE/.." -I "$BACKEND/.." \
@@ -41,15 +47,15 @@ cc=${CC:-gcc}
   -o "$OUT/moe_layer_host_check" \
   "$HERE/moe_layer_host_check.c" "$HERE/standin/hvx_scalar.c" \
   "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" "$BACKEND/hmx/hexkl_dma_trace.c" \
-  "$BACKEND/hvx/hvx_expand_i2i4.c" -lm
+  "$BACKEND/hvx/hvx_expand_i2i4.c" "$OUT/q4m1_emu.o" -lm
 
 "$OUT/moe_layer_host_check"
 # [#225] Two mutants of the decode FC on WH weights (hexkl_mm_u8i4_fc_m1_run),
 # each of which must fail FC WH BIT-IDENTICAL: a lane computing a block it
-# never waited for, and the part's column offset dropped from the dequant's
-# column sums.
+# never waited for, and [#258] the part's column offset dropped from the
+# weight scales.
 for mut in 's/      if (hexkl_dma_lane_wait(\&d\[cur\]) != 0) {/      if (0) {/' \
-  's/        w->colsum_w + c0, w->w_scale + c0,/        w->colsum_w, w->w_scale + c0,/'; do
+  's/ws = w->w_scale + c0,/ws = w->w_scale,/'; do
   sed "$mut" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" > "$OUT/moe_fc_mutant.c"
   if cmp -s "$OUT/moe_fc_mutant.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c"; then
     echo "FC WH MUTATION DID NOT APPLY: $mut"; exit 1
@@ -61,7 +67,7 @@ for mut in 's/      if (hexkl_dma_lane_wait(\&d\[cur\]) != 0) {/      if (0) {/'
     -o "$OUT/moe_fc_mutant" \
     "$HERE/moe_layer_host_check.c" "$HERE/standin/hvx_scalar.c" \
     "$OUT/moe_fc_mutant.c" "$BACKEND/hmx/hexkl_dma_trace.c" \
-    "$BACKEND/hvx/hvx_expand_i2i4.c" -lm
+    "$BACKEND/hvx/hvx_expand_i2i4.c" "$OUT/q4m1_emu.o" -lm
   if MOE_CHECK_FC_WH_ONLY=1 "$OUT/moe_fc_mutant" > "$OUT/moe_fc_mutant.log"; then
     echo "FC WH MUTANT PASSED (the check is blind): $mut"; exit 1
   fi
@@ -80,7 +86,8 @@ done
   "$HERE/conv_block_host_check.c" "$HERE/hvx_scalar_stubs.c" \
   "$HERE/standin/hvx_scalar.c" \
   "$BACKEND/hmx/hexkl_conv_block.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" \
-  "$BACKEND/hmx/hexkl_dma_trace.c" "$BACKEND/hvx/hvx_expand_i2i4.c" -lm
+  "$BACKEND/hmx/hexkl_dma_trace.c" "$BACKEND/hvx/hvx_expand_i2i4.c" \
+  "$OUT/q4m1_emu.o" -lm
 
 "$OUT/conv_block_host_check"
 
@@ -215,7 +222,8 @@ if [ -f "$LIBNATIVE/lib/libnative.a" ]; then
   gemv_native() { # gemv_native <kernel.c> <exe>
     "$cc" -std=gnu99 -O1 -fno-strict-aliasing -DHVX_UVector=HEXAGON_Vect1024 \
       -I "$LIBNATIVE/include" -I "$BACKEND/hvx" -c "$1" -o "$2.k.o"
-    "$cc" -std=gnu99 -O1 -Wall -Wextra -I "$BACKEND/hvx" \
+    "$cc" -std=gnu99 -O1 -Wall -Wextra -ffp-contract=off -I "$BACKEND/hvx" \
+      -I "$HERE/standin" -I "$BACKEND/.." \
       -c "$HERE/gemv_native_check.c" -o "$2.c.o"
     g++ -pthread -o "$2" "$2.c.o" "$2.k.o" "$OUT/native_hvx_expand_i2i4.o" \
       "$OUT/native_hvx_worker_pool.o" "$LIBNATIVE/lib/libnative.a"
@@ -228,9 +236,11 @@ if [ -f "$LIBNATIVE/lib/libnative.a" ]; then
   # mutant: its row 0 is the same int32 by construction. [plan 229] And the
   # u8i2 loops' code split with the nibble mask #4410 shipped (0xF0: vlut32
   # indices past 31 read zero), which only the spec comparison catches.
+  # [#258] And the M = 1 FC column's -8 sum q start dropped.
   for mut in 's/vasr_VwR(acc, 4)/vasr_VwR(acc, 3)/' \
     's/vasr_VwR(acc0, 4)/vasr_VwR(acc0, 3)/' \
-    's/(int)0x0F0F0F0Fu/(int)0xF0F0F0F0u/'; do
+    's/(int)0x0F0F0F0Fu/(int)0xF0F0F0F0u/' \
+    's/HVX_Vector is = Q6_V_vsplat_R(a->s8\[kt\]);/HVX_Vector is = Q6_V_vzero();/'; do
     sed "$mut" "$BACKEND/hvx/hvx_gemm_u8i4_wh.c" > "$OUT/mutant.c"
     if cmp -s "$OUT/mutant.c" "$BACKEND/hvx/hvx_gemm_u8i4_wh.c"; then
       echo "HVX GEMV MUTATION DID NOT APPLY: $mut"; exit 1

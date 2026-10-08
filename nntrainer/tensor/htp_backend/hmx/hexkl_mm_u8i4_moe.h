@@ -236,11 +236,11 @@ int hexkl_mm_u8i4_moe_layer_run(
   hexkl_moe_scratch *scratch, uint32_t flags);
 
 /**
- * @brief [#225] One decode row through FC weights held as WH handles: the
- *        u8 row quantization of the MoE M=1 path, then per output column
- *        tile hvx_gemm_u8i4_wh_col and the dequant epilogue of its down
- *        stage (moe_m1_down_worker's body), the parts' outputs side by
- *        side (q | k | v, a conv in_proj's thirds).
+ * @brief [#225] One decode row through FC weights held as WH handles:
+ *        [#258] the CPU's Q8_0 quantization of the row (hvx_q4m1_prep, the
+ *        Q4M1 FC's), then per output column tile
+ *        hvx_gemm_i8i4_wh_col_m1 (test/htp/host/fc_wh_det.h), the parts'
+ *        outputs side by side (q | k | v, a conv in_proj's thirds).
  *
  * With the feed on (hexkl_moe_flags_feed, the MoE's) each pool lane
  * double-buffers its own next block of columns into its own VTCM slice on
@@ -250,7 +250,8 @@ int hexkl_mm_u8i4_moe_layer_run(
  * The output bytes are the same either way.
  *
  * @param[in] h        [n_parts] handles of K x N_p, N_p % 32 == 0
- * @param[in] act_f32  [K], K % 32 == 0 (any heap or slot buffer)
+ * @param[in] act_f32  [K], K % 64 == 0, K <= 8192 (hvx_q4m1_prep's
+ *                     limits; any heap or slot buffer)
  * @param[out] out_f32 [sum N_p]
  * @return AEE_SUCCESS; AEE_EBADITEM for a handle out of range, free, of
  *         another K or 2-bit (QS2CX_WH: refused until plan 229 S2's u8i2

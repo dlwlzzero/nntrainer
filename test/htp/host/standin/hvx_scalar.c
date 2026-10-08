@@ -13,6 +13,7 @@
 
 #include "hvx_scalar.h"
 
+#include "../fc_wh_det.h"
 #include "hexkl_micro.h"
 #include "hvx_dequant_i32.h"
 #include "hvx_expand_i2i4.h"
@@ -24,7 +25,7 @@
 #include <stddef.h>
 #include <string.h>
 
-hvx_scalar_hooks hvx_scalar_hook = {NULL, NULL, NULL, NULL};
+hvx_scalar_hooks hvx_scalar_hook = {NULL, NULL, NULL, NULL, NULL};
 
 /** @brief Reports a buffer access to a check's hook, if any. */
 static void buf(const void *p, size_t bytes, int write) {
@@ -109,6 +110,35 @@ void hvx_gemm_u8i4_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
     hvx_scalar_hook.gemv(act_ah, m, k_tiles, wh, n_col, nt, rows1, 0, out);
   else
     hvx_scalar_gemv(act_ah, m, k_tiles, wh, n_col, nt, out);
+}
+
+/* ---- [#258] the M = 1 FC column on the row's Q8_0: the spec itself ---- */
+void hvx_scalar_gemv_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                        const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                        const float *w_scale, const float *bias, float *out) {
+  buf(a->q, (size_t)k_tiles * 32u, 0);
+  for (uint32_t c = 0; c < 32u; ++c)
+    out[c] = fc_wh_m1_col_det(a->q, a->d, wh, k_tiles, n_col, nt * 32u + c,
+                              w_scale[c], bias[c]);
+  buf(out, 32u * sizeof(float), 1);
+}
+void hvx_gemm_i8i4_wh_col_m1_nopf(const hvx_q4m1_act *a, uint32_t k_tiles,
+                                  const uint8_t *wh, uint32_t n_col,
+                                  uint32_t nt, const float *w_scale,
+                                  const float *bias, float *out) {
+  if (hvx_scalar_hook.gemv_m1)
+    hvx_scalar_hook.gemv_m1(a, k_tiles, wh, n_col, nt, 1, w_scale, bias, out);
+  else
+    hvx_scalar_gemv_m1(a, k_tiles, wh, n_col, nt, w_scale, bias, out);
+}
+void hvx_gemm_i8i4_wh_col_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                             const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                             const float *w_scale, const float *bias,
+                             float *out) {
+  if (hvx_scalar_hook.gemv_m1)
+    hvx_scalar_hook.gemv_m1(a, k_tiles, wh, n_col, nt, 0, w_scale, bias, out);
+  else
+    hvx_scalar_gemv_m1(a, k_tiles, wh, n_col, nt, w_scale, bias, out);
 }
 
 static int wh2_value(const uint8_t *tile, uint32_t k, uint32_t c,

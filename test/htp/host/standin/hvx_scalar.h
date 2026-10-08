@@ -33,6 +33,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hvx_q4_gemv_f32.h" /* hvx_q4m1_act */
+
 /** @brief One int4 value of a WH weight tile (htp_wh_layout.h's byte
  *  order: byte (k/8)*128 + c*4 + k%4, low nibble for k%8 < 4). The HMX
  *  stand-in, the GEMV stand-in and the checks' references all read a tile
@@ -52,6 +54,12 @@ void hvx_scalar_gemv(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
 void hvx_scalar_gemv_i2(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                         const uint8_t *wh, uint32_t n_col, uint32_t nt,
                         const uint8_t *table, int32_t *out);
+
+/** @brief [#258] hvx_gemm_i8i4_wh_col_m1's 32 outputs by the spec
+ *  (fc_wh_det.h fc_wh_m1_col_det on @a a's q and d). */
+void hvx_scalar_gemv_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                        const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                        const float *w_scale, const float *bias, float *out);
 
 /**
  * @brief A check's instrumentation of the GEMV entry points. NULL (the
@@ -78,6 +86,11 @@ typedef struct {
    *  pack's output, the dequant's row params and output, the SwiGLU's
    *  output. moe_layer_host_check.c's dataflow scoreboard (#185). */
   void (*buf)(const void *p, size_t bytes, int write);
+  /** [#258] hvx_gemm_i8i4_wh_col_m1 (nopf = 0) and _m1_nopf (nopf = 1),
+   *  whole: the hook computes @a out, normally through hvx_scalar_gemv_m1. */
+  void (*gemv_m1)(const hvx_q4m1_act *a, uint32_t k_tiles, const uint8_t *wh,
+                  uint32_t n_col, uint32_t nt, int nopf, const float *w_scale,
+                  const float *bias, float *out);
 } hvx_scalar_hooks;
 
 extern hvx_scalar_hooks hvx_scalar_hook;

@@ -2650,12 +2650,14 @@ out:
 /* ---- [#225] The FC at M = 1 on WH weights (hexkl_mm_u8i4_fc_m1_run) ----
  *
  * The decode FC set as the prefill registered it (the FC WH sidecar's
- * handles): one u8 quantization of the row (the MoE M=1 path's scan and
- * pack), then every output column tile of every part is one unit of
- * moe_m1_down_worker's body -- hvx_gemm_u8i4_wh_col, then
- * hvx_dequant_acc_tile_to_f32 into the part's columns of the output. The
- * units are numbered across the parts (q | k | v side by side), and one
- * pool run covers the op: a lane takes a contiguous slice of them.
+ * handles): [#258] one Q8_0 quantization of the row, the CPU's and the
+ * Q4M1 FC's (hvx_q4m1_prep: int8 per 32-block, symmetric -- the per-row
+ * u8 of the MoE M=1 path cost q / k 9.5 dB under gemma64's peaked sliding
+ * softmax), then every output column tile of every part is one unit:
+ * hvx_gemm_i8i4_wh_col_m1, the int32 drained to f32 per k-tile, into the
+ * part's columns of the output. The units are numbered across the parts
+ * (q | k | v side by side), and one pool run covers the op: a lane takes a
+ * contiguous slice of them.
  *
  * THE FEED. A decode FC is one to three 2 MiB matrices read once, so the
  * MoE's whole-matrix slab schedule (one matrix ahead, a pool run per
@@ -2678,16 +2680,13 @@ out:
 #define FC_M1_BLOCKS 4u
 
 typedef struct {
-  const uint8_t *act_ah;
-  const float *act_scale;
-  const int32_t *act_zp;
+  hvx_q4m1_act act; /**< [#258] the row's Q8_0 (hvx_q4m1_prep) */
   const hexkl_weight_u8i4 *w[HEXKL_FC_M1_MAX_PARTS];
   uint32_t t0[HEXKL_FC_M1_MAX_PARTS + 1u]; /**< part p's first unit */
   uint32_t n_parts, k_tiles, n_tiles;
-  int32_t *acc; /**< n_tiles x MOE_M1_TILE_I32 */
   float *out;
   uint8_t *vtcm; /**< NULL: no feed */
-  uint32_t arena, rows1;
+  uint32_t arena;
   int bypass;
   volatile uint32_t timed_out; /**< only ever set to 1 */
 } fc_m1_ctx;
@@ -2768,20 +2767,16 @@ static void fc_m1_worker(uint32_t n_lanes, uint32_t i, void *v) {
     for (uint32_t t = b0; t < b1; ++t) {
       const uint32_t nt = t - c->t0[p];
       const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
-      int32_t *tile = c->acc + (size_t)t * MOE_M1_TILE_I32;
+      const float *ws = w->w_scale + c0, *bs = w->bias + c0;
+      float *o = c->out + (size_t)t * HEXKL_HMX_INT8_BLOCK_N_COL;
       if (feed) {
-        hvx_gemm_u8i4_wh_col_nopf(c->act_ah, 1u, c->k_tiles, buf[cur], b1 - b0,
-                                  t - b0, c->rows1, tile);
+        hvx_gemm_i8i4_wh_col_m1_nopf(&c->act, c->k_tiles, buf[cur], b1 - b0,
+                                     t - b0, ws, bs, o);
       } else {
-        hvx_gemm_u8i4_wh_col(c->act_ah, 1u, c->k_tiles, w->wh_bytes,
-                             w->N / HEXKL_HMX_INT8_BLOCK_N_COL, nt, c->rows1,
-                             tile);
+        hvx_gemm_i8i4_wh_col_m1(&c->act, c->k_tiles, w->wh_bytes,
+                                w->N / HEXKL_HMX_INT8_BLOCK_N_COL, nt, ws, bs,
+                                o);
       }
-      hvx_dequant_acc_tile_to_f32(
-        tile, HEXKL_HMX_INT8_BLOCK_N_COL, 1u, c->act_scale, c->act_zp,
-        w->colsum_w + c0, w->w_scale + c0, w->bias + c0,
-        c->out + (size_t)t * HEXKL_HMX_INT8_BLOCK_N_COL,
-        c->n_tiles * HEXKL_HMX_INT8_BLOCK_N_COL, 0);
     }
     cur ^= 1u;
     b0 = n0;
@@ -2795,14 +2790,12 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
                             const uint32_t *h, const float *act_f32,
                             float *out_f32, hvx_worker_pool *pool,
                             hexkl_moe_scratch *scratch, uint32_t flags) {
-  static const uint32_t row0[4] = {0u, 0u, 0u, 0u};
-  const uint32_t BR = HEXKL_HMX_INT8_BLOCK_N_ROW;
   fc_m1_ctx c;
   if (!tbl || !h || !act_f32 || !out_f32 || !scratch) {
     return AEE_EBADPARM;
   }
-  if (K == 0u || K % HEXKL_HMX_INT8_BLOCK_N_INNER != 0u || n_parts == 0u ||
-      n_parts > HEXKL_FC_M1_MAX_PARTS) {
+  if (K == 0u || K % 64u != 0u || K > 8192u || n_parts == 0u ||
+      n_parts > HEXKL_FC_M1_MAX_PARTS) { /* hvx_q4m1_prep's K */
     return AEE_EINVALIDFORMAT;
   }
   memset(&c, 0, sizeof(c));
@@ -2821,34 +2814,28 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
   }
   c.n_parts = n_parts;
   c.n_tiles = c.t0[n_parts];
-  /* The activation's one AH block, its row parameters (rows 1-3 repeat
-     row 0's, the M=1 path's padding rule), the accumulator tiles. */
-  const size_t sz_ah = (size_t)c.k_tiles * HEXKL_HMX_ACTIVATION_ALIGNMENT;
-  const size_t sz_rq = sizeof(float) * BR;
-  const size_t sz_acc = (size_t)c.n_tiles * MOE_M1_TILE_BYTES;
+  /* [#258] The row's Q8_0: K quants, then per 32-block s8, ma, ea, df
+     and the f16 d (hvx_q4m1_act). No accumulator tiles: the GEMV writes
+     the output's f32 itself. */
+  const size_t sz_b = sizeof(int32_t) * c.k_tiles;
   int rc = hexkl_moe_scratch_reserve(
-    scratch, ROUND_UP_SZ(sz_ah, MOE_SCRATCH_ALIGN) +
-               2u * ROUND_UP_SZ(sz_rq, MOE_SCRATCH_ALIGN) +
-               ROUND_UP_SZ(sz_acc, MOE_SCRATCH_ALIGN));
+    scratch, ROUND_UP_SZ(K, MOE_SCRATCH_ALIGN) +
+               4u * ROUND_UP_SZ(sz_b, MOE_SCRATCH_ALIGN) +
+               ROUND_UP_SZ(sizeof(uint16_t) * c.k_tiles, MOE_SCRATCH_ALIGN));
   if (rc != AEE_SUCCESS) {
     return rc;
   }
   uint8_t *cur = scratch->base;
-  uint8_t *act_ah = (uint8_t *)hexkl_moe_carve(&cur, sz_ah);
-  float *scale = (float *)hexkl_moe_carve(&cur, sz_rq);
-  int32_t *zp = (int32_t *)hexkl_moe_carve(&cur, sz_rq);
-  c.acc = (int32_t *)hexkl_moe_carve(&cur, sz_acc);
-  hvx_quant_rows_u8_params(act_f32, 1u, BR, K, scale, zp, NULL); /* 1 row */
-  for (uint32_t r = 1; r < 4u; ++r) {
-    scale[r] = scale[0];
-    zp[r] = zp[0];
-  }
-  hvx_quant_pack_u8_ah_rows(act_f32, row0, 0u, 4u, K, scale, zp, act_ah);
-  c.act_ah = act_ah;
-  c.act_scale = scale;
-  c.act_zp = zp;
+  c.act.q = (int8_t *)hexkl_moe_carve(&cur, K);
+  c.act.s8 = (int32_t *)hexkl_moe_carve(&cur, sz_b);
+  c.act.ma = (int32_t *)hexkl_moe_carve(&cur, sz_b);
+  c.act.ea = (int32_t *)hexkl_moe_carve(&cur, sz_b);
+  c.act.df = (float *)hexkl_moe_carve(&cur, sz_b);
+  c.act.d = (uint16_t *)hexkl_moe_carve(&cur, sizeof(uint16_t) * c.k_tiles);
+  /* ponytail: hvx_q4m1_prep's static scratch -- one call at a time, as
+     graph_prep's; both run on the graph's one thread */
+  hvx_q4m1_prep(act_f32, K, &c.act);
   c.out = out_f32;
-  c.rows1 = hexkl_moe_flags_rows1(flags);
   c.bypass = (flags & HEXKL_MOE_FLAG_DMA_BYPASS) != 0u;
   c.arena = vtcm_size < config_off ? vtcm_size : config_off;
   c.vtcm =

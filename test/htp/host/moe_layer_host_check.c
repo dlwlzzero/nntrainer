@@ -130,14 +130,10 @@ static score_push *score_find(const uint8_t *p) {
 
 /* @a table: NULL for a 4-bit column (512-byte tiles), the expansion table
    of a 2-bit one (256-byte tiles of QS2CX_WH codes, plan 229). */
-static void gemv_stand_in(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
-                          const uint8_t *wh, uint32_t n_col, uint32_t nt,
-                          const uint8_t *table, int32_t *out) {
-  const uint32_t tb = table ? 256u : 512u;
-  /* rows1 picks between two HVX loops that compute the same int32 sums
-     (hvx_gemm_u8i4_wh.c); the stand-in is that sum, so it is the same
-     function either way and the caller only records which loop was
-     asked for. */
+/* The feed scoreboard of one column read (tb bytes a tile): returns the
+   arena bytes it came from (wh itself off the feed). */
+static const uint8_t *score_col(const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                                uint32_t k_tiles, uint32_t tb) {
   const uint8_t *src_wh = wh;
   if (g_score_on && in_vtcm(wh)) {
     /* Every k-tile row of the column must sit in a waited push of this
@@ -180,6 +176,17 @@ static void gemv_stand_in(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
       src_wh = origin; /* the log names the expert by its arena bytes */
     }
   }
+  return src_wh;
+}
+static void gemv_stand_in(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
+                          const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                          const uint8_t *table, int32_t *out) {
+  /* rows1 picks between two HVX loops that compute the same int32 sums
+     (hvx_gemm_u8i4_wh.c); the stand-in is that sum, so it is the same
+     function either way and the caller only records which loop was
+     asked for. */
+  const uint8_t *src_wh =
+    score_col(wh, n_col, nt, k_tiles, table ? 256u : 512u);
   if (table)
     hvx_scalar_gemv_i2(act_ah, m, k_tiles, wh, n_col, nt, table, out);
   else
@@ -315,6 +322,20 @@ static void hook_gemv2(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                        uint32_t rows1, int nopf, const uint8_t *table,
                        int32_t *out) {
   hook_gemv_any(act_ah, m, k_tiles, wh, n_col, nt, rows1, nopf, table, out);
+}
+/* [#258] The FC's M = 1 columns: the arena calls counted, the feed's
+   held by the scoreboard, the outputs the spec's. */
+static void hook_gemv_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                         const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                         int nopf, const float *w_scale, const float *bias,
+                         float *out) {
+  if (!nopf)
+    ++g_col_n;
+  else
+    ++g_nopf_n;
+  if (nopf && g_score_on && in_vtcm(wh))
+    (void)score_col(wh, n_col, nt, k_tiles, 512u);
+  hvx_scalar_gemv_m1(a, k_tiles, wh, n_col, nt, w_scale, bias, out);
 }
 /* #185: the stand-ins' buffer hook (the dataflow scoreboard above). Only
    on the feed cells and inside a run or job; the caller's own accesses
@@ -1268,25 +1289,21 @@ static int run_fc_wh_case(const char *name, uint32_t K, uint32_t n_parts,
   rnd_state = 4242u + K + 31u * n_parts;
   for (uint32_t p = 0; p < n_parts; ++p) {
     make_weight(200u + p, K, Np[p], &w[p]);
-    for (uint32_t c = 0; c < Np[p]; ++c)
-      w[p].cs[c] = (int32_t)(rnd() % 4001u) - 2000; /* the zp term on */
     h[p] = 200u + p;
     N += Np[p];
   }
   float *x = (float *)malloc(sizeof(float) * K);
   float *got = (float *)malloc(sizeof(float) * N);
   float *want = (float *)malloc(sizeof(float) * N);
-  uint8_t *q = (uint8_t *)malloc(K);
+  int8_t *q = (int8_t *)malloc(K);
+  uint16_t *d = (uint16_t *)malloc(sizeof(uint16_t) * (K / 32u));
   for (uint32_t k = 0; k < K; ++k)
     x[k] = rndf() * (k % 7u == 0u ? 3.0f : 1.0f);
-  float as;
-  int32_t az;
-  fc_wh_quant_row_det(x, K, q, &as, &az);
+  q8_0_quant_cpu_det(x, K, q, d); /* [#258] the row's Q8_0 */
   for (uint32_t p = 0, o = 0; p < n_parts; o += Np[p++])
     for (uint32_t c = 0; c < Np[p]; ++c)
-      want[o + c] =
-        fc_wh_col_det(q, as, az, (const uint8_t *)w[p].nib, K / 32u,
-                      Np[p] / 32u, c, w[p].cs[c], w[p].ws[c], w[p].bias[c]);
+      want[o + c] = fc_wh_m1_col_det(q, d, (const uint8_t *)w[p].nib, K / 32u,
+                                     Np[p] / 32u, c, w[p].ws[c], w[p].bias[c]);
   memset(got, 0xA5, sizeof(float) * N);
   score_reset(1, vtcm, vtcm_bytes);
   g_own_slice_ok = 1;
@@ -1316,6 +1333,7 @@ static int run_fc_wh_case(const char *name, uint32_t K, uint32_t n_parts,
   free(got);
   free(want);
   free(q);
+  free(d);
   return fail;
 }
 
@@ -1434,6 +1452,7 @@ int main(void) {
   hvx_scalar_hook.gemv = hook_gemv;
   hvx_scalar_hook.gemv2 = hook_gemv2;
   hvx_scalar_hook.buf = hook_buf;
+  hvx_scalar_hook.gemv_m1 = hook_gemv_m1;
   static uint8_t vtcm[8u << 20];
   /* [#225] the FC cells alone: run_host_checks.sh's mutants of
      hexkl_mm_u8i4_fc_m1_run, which need nothing else */

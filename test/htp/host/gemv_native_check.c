@@ -23,17 +23,23 @@
  * Every row count 1..16 runs, so both the one-row loop (m = 1, 5, 9, 13)
  * and the four-row loop run, through the self-prefetching column call and
  * the one without its own l2fetch. Rows past m must stay untouched.
+ *
+ * [#258] The M = 1 FC column on a Q8_0 row (hvx_gemm_i8i4_wh_col_m1, f32
+ * out) against fc_wh_det.h's fc_wh_m1_col_det, every bit of every lane.
  */
 #include "hvx_expand_i2i4.h"
 #include "hvx_gemm_u8i4_wh.h"
+
+#include "fc_wh_det.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* The device's WH nibble layout (htp_wh_layout.h), the same function the
-   moe_layer_host_check stand-ins read tiles through. */
-static int wh_value(const uint8_t *tile, uint32_t k, uint32_t c) {
+   moe_layer_host_check stand-ins read tiles through (fc_wh_det.h reads it
+   too, hence not static). */
+int wh_value(const uint8_t *tile, uint32_t k, uint32_t c) {
   const uint32_t byte = (k / 8u) * 128u + c * 4u + (k % 4u);
   const int nib = (tile[byte] >> (((k / 4u) % 2u) ? 4 : 0)) & 0xF;
   return nib >= 8 ? nib - 16 : nib;
@@ -120,6 +126,36 @@ static uint32_t run_i2_case(int f, const uint8_t *act, const uint8_t *wh2,
   return bad;
 }
 
+/** [#258] One column of the M = 1 FC through _m1 (@a nopf 0) or _m1_nopf:
+ *  the lanes whose f32 bits differ from fc_wh_m1_col_det, plus a guard
+ *  word written. */
+static uint32_t run_m1_case(int nopf, const int8_t *q, const uint16_t *d,
+                            const uint8_t *wh, uint32_t k_tiles, uint32_t n_col,
+                            uint32_t nt, const float *ws, const float *bs) {
+  int32_t s8[64], g = GUARD;
+  float df[64], out[33], want;
+  for (uint32_t kt = 0; kt < k_tiles; ++kt) {
+    int32_t s = 0;
+    for (uint32_t k = 0; k < 32u; ++k)
+      s += q[kt * 32u + k];
+    s8[kt] = -8 * s;
+    df[kt] = cpu_det_f16_to_f32(d[kt]);
+  }
+  const hvx_q4m1_act a = {(int8_t *)q, s8, NULL, NULL, df, (uint16_t *)d};
+  memcpy(&out[32], &g, sizeof g);
+  if (nopf)
+    hvx_gemm_i8i4_wh_col_m1_nopf(&a, k_tiles, wh, n_col, nt, ws, bs, out);
+  else
+    hvx_gemm_i8i4_wh_col_m1(&a, k_tiles, wh, n_col, nt, ws, bs, out);
+  uint32_t bad = memcmp(&out[32], &g, sizeof g) != 0;
+  for (uint32_t c = 0; c < 32u; ++c) {
+    want =
+      fc_wh_m1_col_det(q, d, wh, k_tiles, n_col, nt * 32u + c, ws[c], bs[c]);
+    bad += memcmp(&out[c], &want, sizeof want) != 0;
+  }
+  return bad;
+}
+
 int main(void) {
   static const uint32_t kts[] = {1u, 56u, 64u};
   static const uint32_t ncs[] = {64u, 112u};
@@ -195,6 +231,48 @@ int main(void) {
   printf("HVX GEMV NATIVE u8i2 cases=%u bad=%u\n", cases2, bad2);
   bad += bad2;
   cases += cases2;
+  /* [#258] the M = 1 FC column: random quants (Q8_0's [-127, 127]), f16
+     scales of both signs over 2^-14..2^2, weights, w_scale and bias; then
+     the extremes, -127 against nibble -8 everywhere */
+  {
+    int8_t q[64u * 32u];
+    uint16_t d[64];
+    float ws[32], bs[32];
+    uint32_t bad3 = 0, cases3 = 0;
+    for (int data = 0; data < 2; ++data) {
+      for (uint32_t i = 0; i < sizeof q; ++i)
+        q[i] = data ? (int8_t)-127 : (int8_t)((int)(rnd8() % 255u) - 127);
+      for (uint32_t i = 0; i < 64u; ++i)
+        d[i] = (uint16_t)((rnd8() & 0x80u) << 8 |
+                          (0x0400u +
+                           ((uint32_t)rnd8() << 6 | rnd8() % 64u) % 0x5800u));
+      for (uint32_t c = 0; c < 32u; ++c) {
+        ws[c] = (float)(rnd8() + 1u) * 1e-4f;
+        bs[c] = ((float)rnd8() - 128.f) * 1e-2f;
+      }
+      for (size_t i = 0; i < wh_max; ++i)
+        wh[i] = data ? 0x88u : rnd8();
+      for (size_t a = 0; a < sizeof kts / sizeof kts[0]; ++a)
+        for (size_t b = 0; b < sizeof ncs / sizeof ncs[0]; ++b) {
+          const uint32_t nts[] = {0u, 1u, ncs[b] - 1u};
+          for (size_t t = 0; t < 3; ++t)
+            for (int f = 0; f < 2; ++f) {
+              const uint32_t b1 =
+                run_m1_case(f, q, d, wh, kts[a], ncs[b], nts[t], ws, bs);
+              bad3 += b1;
+              ++cases3;
+              if (b1)
+                printf("HVX GEMV NATIVE i8 m1 %s k_tiles=%u n_col=%u nt=%u "
+                       "data=%d bad=%u\n",
+                       f ? "col_m1_nopf" : "col_m1", kts[a], ncs[b], nts[t],
+                       data, b1);
+            }
+        }
+    }
+    printf("HVX GEMV NATIVE i8 m1 cases=%u bad=%u\n", cases3, bad3);
+    bad += bad3;
+    cases += cases3;
+  }
   printf("HVX GEMV NATIVE cases=%u bad=%u\n", cases, bad);
   printf(
     bad ? "HVX GEMV NATIVE DIFFERS FROM THE SCALAR SPEC\n"

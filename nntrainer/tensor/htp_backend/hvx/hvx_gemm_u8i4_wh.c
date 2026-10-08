@@ -23,6 +23,7 @@
 #include "hvx_expand_i2i4.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include <hexagon_types.h>
 #include <hvx_hexagon_protos.h>
@@ -173,6 +174,44 @@ void hvx_gemm_u8i4_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
                           uint32_t rows1, int32_t *out) {
   hvx_gemm_u8i4_wh_prefetch(wh, n_col, nt, 1u, k_tiles);
   hvx_gemm_u8i4_wh_col_nopf(act_ah, m, k_tiles, wh, n_col, nt, rows1, out);
+}
+
+void hvx_gemm_i8i4_wh_col_m1_nopf(const hvx_q4m1_act *a, uint32_t k_tiles,
+                                  const uint8_t *wh, uint32_t n_col,
+                                  uint32_t nt, const float *w_scale,
+                                  const float *bias, float *out) {
+  const uint32_t stride = n_col * WH_TILE_BYTES;
+  const uint8_t *col = wh + (size_t)nt * WH_TILE_BYTES;
+  const HVX_Vector m0f = Q6_V_vsplat_R(0x0F0F0F0F);
+  const HVX_Vector x88 = Q6_V_vsplat_R((int)0x88888888u);
+  HVX_Vector acc = Q6_V_vzero();
+  for (uint32_t kt = 0; kt < k_tiles; ++kt) {
+    const uint8_t *tile = col + (size_t)kt * stride;
+    const uint32_t *q = (const uint32_t *)(a->q + (size_t)kt * 32u);
+    int32_t d;
+    memcpy(&d, &a->df[kt], sizeof d);
+    HVX_Vector is = Q6_V_vsplat_R(a->s8[kt]);
+    for (uint32_t g = 0; g < 4u; ++g) {
+      const HVX_Vector v =
+        Q6_V_vxor_VV(*(const HVX_UVector *)(tile + g * 128u), x88);
+      is = Q6_Vw_vrmpyacc_VwVubRb(is, Q6_V_vand_VV(v, m0f), (int)q[2u * g]);
+      is = Q6_Vw_vrmpyacc_VwVubRb(is, Q6_V_vand_VV(Q6_Vuh_vlsr_VuhR(v, 4), m0f),
+                                  (int)q[2u * g + 1u]);
+    }
+    acc = Q6_Vsf_vadd_VsfVsf(
+      acc, Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_equals_Vw(is), Q6_V_vsplat_R(d)));
+  }
+  *(HVX_UVector *)out =
+    Q6_Vsf_vadd_VsfVsf(Q6_Vsf_vmpy_VsfVsf(acc, *(const HVX_UVector *)w_scale),
+                       *(const HVX_UVector *)bias);
+}
+
+void hvx_gemm_i8i4_wh_col_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                             const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                             const float *w_scale, const float *bias,
+                             float *out) {
+  hvx_gemm_u8i4_wh_prefetch(wh, n_col, nt, 1u, k_tiles);
+  hvx_gemm_i8i4_wh_col_m1_nopf(a, k_tiles, wh, n_col, nt, w_scale, bias, out);
 }
 
 /**

@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 
+#include "hvx_q4_gemv_f32.h" /* hvx_q4m1_act */
+
 /** @brief Most activation rows one call handles. The MoE kernel's tail
  *         blocks are at most this many rows (hexkl_mm_u8i4_moe.c); the
  *         HMX unit's own block is 64 and that is what a bigger block goes
@@ -121,5 +123,34 @@ void hvx_gemm_u8i2_wh_col(const uint8_t *act_ah, uint32_t m, uint32_t k_tiles,
 /** @brief l2fetch for adjacent 256-byte packed-2-bit WH tiles. */
 void hvx_gemm_u8i2_wh_prefetch(const uint8_t *wh, uint32_t n_col, uint32_t nt,
                                uint32_t n_tiles, uint32_t k_tiles);
+
+/**
+ * @brief [#258] One n-tile column of the M = 1 FC on WH weights against the
+ *        CPU's Q8_0 activation: 32 f32 outputs, test/htp/host/fc_wh_det.h's
+ *        fc_wh_col_det bit for bit.
+ *
+ * @a a is hvx_q4m1_prep's (q, s8, df per 32-block; a k-tile is one block).
+ * Per k-tile kt: the exact int32 s = sum_k q[k] w[k][c] -- each WH nibble
+ * XOR 8 is w + 8 as an unsigned byte, vrmpy against the four signed quants
+ * of the row as the scalar operand (q4m1_isum's form), started at
+ * a->s8[kt] = -8 sum q -- then acc = RN(acc + RN((float)s * df[kt]));
+ * after the last tile out = RN(RN(acc * w_scale) + bias). Every f32 step is
+ * one Vsf op (one IEEE op, LEDGER rule 24); no zero point, no column sum.
+ *
+ * @param w_scale  32 per-column weight scales (the column tile's)
+ * @param bias     32 per-column biases
+ * @param out      32 f32
+ */
+void hvx_gemm_i8i4_wh_col_m1_nopf(const hvx_q4m1_act *a, uint32_t k_tiles,
+                                  const uint8_t *wh, uint32_t n_col,
+                                  uint32_t nt, const float *w_scale,
+                                  const float *bias, float *out);
+
+/** @brief hvx_gemm_i8i4_wh_col_m1_nopf after its own l2fetch of the column
+ *         (hvx_gemm_u8i4_wh_prefetch). */
+void hvx_gemm_i8i4_wh_col_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
+                             const uint8_t *wh, uint32_t n_col, uint32_t nt,
+                             const float *w_scale, const float *bias,
+                             float *out);
 
 #endif /* __NNTRAINER_HVX_GEMM_U8I4_WH_H__ */
