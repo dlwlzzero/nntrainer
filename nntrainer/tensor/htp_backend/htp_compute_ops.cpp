@@ -1976,11 +1976,27 @@ public:
       return fcwh_fd_ >= 0;
     }();
     uint32_t wh_handles = 0;
+    // [#258] NNTR_HTP_FC_WH_SKIP=<qkv,o,dense>: those ops bind Q4M1 although
+    // the sidecar is open -- the per-kind isolation of the WH path's
+    // activation quantization and the device fallback. An FC is "qkv" when
+    // a QK_NORM follows it, else "o" (out_proj, conv in_proj / out_proj).
+    const char *skip_env = std::getenv("NNTR_HTP_FC_WH_SKIP");
+    const std::string skip = "," + std::string(skip_env ? skip_env : "") + ",";
+    auto whSkip = [&](uint32_t i) {
+      const htp_graph_op *op = graphOp(i);
+      const char *kind =
+        op->kind == HTP_OP_DENSE_FFN ? "dense"
+        : i + 1u < static_cast<uint32_t>(stretch_start_.size()) &&
+            graphOp(i + 1u)->kind == HTP_OP_QK_NORM
+          ? "qkv"
+          : "o";
+      return skip.find("," + std::string(kind) + ",") != std::string::npos;
+    };
     q4m1_left_ = 0; // [#132 Part B E3] what the FC arena chunks are sized for
     if (!wh) {
       for (const Q4Pending &p : q4_pending_)
         q4m1_left_ += q4m1_bytes(p.K, p.N) + 4096u;
-    } else { // [#225] the LM_HEAD's slices only
+    } else { // [#225] the LM_HEAD's slices only (and [#258] skipped ops)
       for (uint32_t i = 0; i < static_cast<uint32_t>(stretch_start_.size());
            ++i) {
         const htp_graph_op *op = graphOp(i);
@@ -1988,6 +2004,11 @@ public:
           q4m1_left_ +=
             q4m1_bytes(op->K, op->N) +
             4096u * ((op->N + kLmHeadSliceRows - 1u) / kLmHeadSliceRows);
+        else if (op->resident && op->kind == HTP_OP_DENSE_FFN && whSkip(i))
+          q4m1_left_ += 2u * q4m1_bytes(op->K, op->N) +
+                        q4m1_bytes(op->N, op->N_out) + 3u * 4096u;
+        else if (op->resident && op->kind == HTP_OP_FC && whSkip(i))
+          q4m1_left_ += q4m1_bytes(op->K, op->N) + 3u * 4096u;
       }
     }
     auto pending = [&](uint32_t op, uint32_t K,
@@ -2029,7 +2050,8 @@ public:
         continue;
       op->feed &= ~HTP_GRAPH_FEED_WH; // [#234 P4] a re-bind sets it anew
       uint32_t parts = 0;
-      if (wh && op->kind == HTP_OP_DENSE_FFN) {
+      const bool op_wh = wh && !whSkip(i);
+      if (op_wh && op->kind == HTP_OP_DENSE_FFN) {
         const Q4Pending &u = pending(i, op->K, op->N);
         const Q4Pending &g = pending(i, op->K, op->N);
         const Q4Pending &d = pending(i, op->N, op->N_out);
@@ -2047,7 +2069,7 @@ public:
         }
         op->feed |= HTP_GRAPH_FEED_WH;
         wh_handles += 2u * parts;
-      } else if (wh && op->kind == HTP_OP_FC) {
+      } else if (op_wh && op->kind == HTP_OP_FC) {
         uint32_t sum = 0;
         while (sum < op->N) {
           const Q4Pending &p = pending(i, op->K, 0u);
