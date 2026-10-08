@@ -632,6 +632,19 @@ change (`weight_register_u2i4_arena` exists, `nntr_hvx.idl:1055`
   from the 4-bit one's codes; no tokens / PPL column), if the files are
   late.
 
+**Status 2026-10-08 (implementer, branch `htp/229-s2-fc-2bit`).** S2.1–S2.3
+host-gated (rungs 1–3); S2.4 and S2.5 open. Two corrections to the text
+above, found in the code: (1) `quant_qs4cx_f32` spreads a column's range over
+[−8, 7], so a ternary column came out as codes {−8, 0, 7} at 2s/15 — route
+A1 of §8.2 was not lossless; the writer now stores a row whose values are
+{−s, 0, +s} (within 1e−6 s) as codes {−1, 0, +1} × s (`ternaryRowsExact`,
+QS4CX and QS4CX_WH alike), and route A2 needs no quantizer; (2) Q4_0 is lossy
+for ternary (§8.2), so `gemma64t` is quantized with QS4CX FCs only, not
+"Q4_0, QS4CX and both widths". `FCWH_FORMAT` is `QSxCX_WH/2`; the 4-bit twin
+is `fc_wh_sidecar_from_q4.py --bits4`. A 2-bit FC handle is decode-only (the
+FC prefill's layer kernel reads four bits); a keyed FC layer with a 2-bit
+image is refused at load.
+
 ### 8.4 Risks
 
 * **VTCM at M = 1, 2-bit FC**: none new. `fc_m1_worker` double-buffers
