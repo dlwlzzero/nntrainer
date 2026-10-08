@@ -31,7 +31,7 @@ int main(void) {
   y[0] = x[0] = 0.0f;
   y[1] = x[1] = -0.0f;
   y[2] = x[2] = 1e-6f;
-  int fail = hvx_softcap_f32(y, n, cap) != 0;
+  int fail = hvx_softcap_row_f32(y, n, cap) != 0;
   double worst = 0.0;
   for (uint32_t i = 0; i < n; ++i) {
     const double ref = cap * tanh((double)x[i] / cap);
@@ -40,7 +40,7 @@ int main(void) {
       worst = d;
   }
   float z[4] = {1.0f, 2.0f, 3.0f, 4.0f};
-  const int r = hvx_softcap_f32(z, 4, 0.0f);
+  const int r = hvx_softcap_row_f32(z, 4, 0.0f);
   printf("softcap n=%u cap=%g: worst |err|/cap=%g; cap 0 rejected=%d "
          "untouched=%d\n",
          n, cap, worst, r == -1, z[0] == 1.0f);

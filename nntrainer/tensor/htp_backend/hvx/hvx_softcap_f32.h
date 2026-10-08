@@ -26,6 +26,6 @@
  * @param cap  > 0
  * @return 0, or -1 for cap <= 0 or a null y (nothing written)
  */
-int hvx_softcap_f32(float *y, uint32_t n, float cap);
+int hvx_softcap_row_f32(float *y, uint32_t n, float cap);
 
 #endif /* __NNTRAINER_HVX_SOFTCAP_F32_H__ */

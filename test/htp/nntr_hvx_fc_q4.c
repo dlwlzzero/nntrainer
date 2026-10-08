@@ -448,7 +448,7 @@ int nntr_hvx_lm_head_q4m1_f32(remote_handle64 handle, float eps,
     out += s->q4m1[h[p]].N;
   }
   if (softcap > 0.0f) {
-    hvx_softcap_f32(y, (uint32_t)yLen, softcap);
+    hvx_softcap_row_f32(y, (uint32_t)yLen, softcap);
   }
   return AEE_SUCCESS;
 }

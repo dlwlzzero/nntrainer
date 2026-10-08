@@ -146,6 +146,9 @@ READELF="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-readelf"
 # __register_frame_info_bases) and libc. Anything else -- in particular a
 # hexkl_*/hvx_*/nntr_* function -- is a project file missing from SRCS; the
 # linker accepts it, the on-device loader does not (#97: 0x80000406).
+# ceil, ldexp, ldexpf, lround and _Log (#260: #4415's int8 attention,
+# hvx_softmax_q.c / hexkl_attn_q2.c) sit in the toolchain's libc.a beside
+# the sqrtf / rintf / lroundf already listed; libm.a is an empty archive.
 # rintf, sqrtf, memcmp and __truncsfhf2 (the sibling of __extendhfsf2) came in
 # with the fp16 / quantized attention kernels of nntrainer/nntrainer#4343.
 UND=$("$READELF" --dyn-syms build/libnntr_hvx_skel.so | awk '$7=="UND" && $8!="" {print $8}')
@@ -156,7 +159,7 @@ if [ -z "$UND" ]; then
     echo "Error: $READELF returned no undefined symbols; guard cannot run" >&2
     exit 1
 fi
-BAD=$(echo "$UND" | grep -Ev '^(HAP_|compute_resource_|qurt_|dspqueue_|__hexagon_|__extendhfsf2$|__cxa_finalize$|__register_frame_info_bases$|malloc$|free$|calloc$|memalign$|memcpy$|memset$|lroundf$|nearbyintf$|snprintf$|vsnprintf$|strlcpy$|rintf$|sqrtf$|memcmp$|__truncsfhf2$)' || true)
+BAD=$(echo "$UND" | grep -Ev '^(HAP_|compute_resource_|qurt_|dspqueue_|__hexagon_|__extendhfsf2$|__cxa_finalize$|__register_frame_info_bases$|malloc$|free$|calloc$|memalign$|memcpy$|memset$|lroundf$|nearbyintf$|snprintf$|vsnprintf$|strlcpy$|rintf$|sqrtf$|memcmp$|__truncsfhf2$|ceil$|ldexp$|ldexpf$|lround$|_Log$)' || true)
 if [ -n "$BAD" ]; then
     echo "Error: skel has undefined symbols the DSP image will not provide:" >&2
     echo "$BAD" | sed 's/^/  /' >&2
