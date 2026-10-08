@@ -2133,6 +2133,23 @@ public:
     return true;
   }
 
+  /** [#260] compute_ops.h: a QS4CX FC / DENSE_FFN weight of the decode
+   *  list, bound (bindQ4m1) to the WH handles get_or_register_fc /
+   *  get_or_register_dense make from its codes and scales -- the ones the
+   *  fused prefill calls use. */
+  bool add_decode_graph_qs4cx(const void *data, const float *scale, unsigned K,
+                              unsigned N) override {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    if (graph_words_.empty() || (resident_mask_ & HTP_GRAPH_KINDS_Q4M1) == 0u)
+      return false;
+    if (graph_inited_) {
+      throw std::runtime_error(
+        "add_decode_graph_qs4cx: the graph is already initialised");
+    }
+    q4_pending_.push_back({data, K, N, false, scale});
+    return true;
+  }
+
   /** [plan 201 S4] compute_ops.h: one f32 parameter of op @a op handed at
    *  load by the weight's name. The length is checked against the record
    *  now (hexkl_graph.c's graph_param_len), the pointer kept and bound
@@ -2285,7 +2302,8 @@ public:
     q4m1_left_ = 0; // [#132 Part B E3] what the FC arena chunks are sized for
     if (!wh) {
       for (const Q4Pending &p : q4_pending_)
-        q4m1_left_ += q4m1_bytes(p.K, p.N) + 4096u;
+        if (p.scale == nullptr) // [#260] a QS4CX weight binds WH handles
+          q4m1_left_ += q4m1_bytes(p.K, p.N) + 4096u;
     } else { // [#225] the LM_HEAD's slices only
       for (uint32_t i = 0; i < static_cast<uint32_t>(stretch_start_.size());
            ++i) {
@@ -2316,6 +2334,10 @@ public:
     };
     auto take = [&](uint32_t op, uint32_t K, uint32_t N) -> const uint8_t * {
       const Q4Pending &p = pending(op, K, N);
+      if (p.scale != nullptr) // [#260] no Q4M1 from QS4CX (contract s. 2)
+        throw std::runtime_error("set_decode_graph_desc: op " +
+                                 std::to_string(op) +
+                                 " takes Q4M1, its weight is QS4CX");
       const size_t bytes =
         static_cast<size_t>(p.N) * (p.K / 32u) * Q4_CPU_BLOCK_BYTES;
       if (p.canonical)
@@ -2335,12 +2357,16 @@ public:
         continue;
       op->feed &= ~HTP_GRAPH_FEED_WH; // [#234 P4] a re-bind sets it anew
       uint32_t parts = 0;
-      if (wh && op->kind == HTP_OP_DENSE_FFN) {
+      // [#260] a QS4CX weight takes the WH path with or without a sidecar
+      const bool wh_op =
+        wh || (next < q4_pending_.size() && q4_pending_[next].scale != nullptr);
+      if (wh_op && op->kind == HTP_OP_DENSE_FFN) {
         const Q4Pending &u = pending(i, op->K, op->N);
         const Q4Pending &g = pending(i, op->K, op->N);
         const Q4Pending &d = pending(i, op->N, op->N_out);
-        const DenseHandles &dh = get_or_register_dense(
-          key(u), key(g), key(d), session, op->K, op->N, op->N_out);
+        const DenseHandles &dh =
+          get_or_register_dense(key(u), key(g), key(d), session, op->K, op->N,
+                                op->N_out, u.scale, g.scale, d.scale);
         if (dh.h_gu.size() > HTP_GRAPH_WH_DENSE_MAX_CHUNKS)
           throw std::runtime_error(
             "set_decode_graph_desc: DENSE_FFN op " + std::to_string(i) +
@@ -2353,11 +2379,12 @@ public:
         }
         op->feed |= HTP_GRAPH_FEED_WH;
         wh_handles += 2u * parts;
-      } else if (wh && op->kind == HTP_OP_FC) {
+      } else if (wh_op && op->kind == HTP_OP_FC) {
         uint32_t sum = 0;
         while (sum < op->N) {
           const Q4Pending &p = pending(i, op->K, 0u);
-          const FcHandles &fh = get_or_register_fc(key(p), session, p.K, p.N);
+          const FcHandles &fh =
+            get_or_register_fc(key(p), session, p.K, p.N, p.scale);
           for (uint32_t h : fh.handles) {
             if (parts == HTP_GRAPH_MAX_PARTS)
               throw std::runtime_error("set_decode_graph_desc: FC op " +
@@ -7458,6 +7485,7 @@ private:
     const void *data;
     uint32_t K, N;
     bool canonical;
+    const float *scale = nullptr; /**< [#260] QS4CX: N scales; Q4_0: null */
   };
   std::vector<Q4Pending> q4_pending_;
   std::vector<uint32_t> q4m1_handles_;
