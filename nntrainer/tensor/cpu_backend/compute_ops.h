@@ -343,6 +343,18 @@ public:
     return false;
   }
 
+  // [plan 229 S2] add_decode_graph_q4_0 for a QS4CX FC weight (N rows of
+  // K / 2 code bytes, then N f32 scales: the main file's layout), in the
+  // same list order. The backend binds it only to its FC WH sidecar image.
+  // Returns false when it takes none.
+  virtual bool add_decode_graph_qs4cx(const void *data, unsigned K,
+                                      unsigned N) {
+    (void)data;
+    (void)K;
+    (void)N;
+    return false;
+  }
+
   // [plan 201 S4] One f32 parameter of the decode list's op @a op (which:
   // HTP_GRAPH_PARAM_*, n floats), handed by the model at load by the
   // weight's name instead of by its layer's hook order (Gemma 4 runs its

@@ -79,6 +79,7 @@
 #include <tuple>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__linux__)
@@ -1823,7 +1824,23 @@ public:
       throw std::runtime_error(
         "add_decode_graph_q4_0: the graph is already initialised");
     }
-    q4_pending_.push_back({data, K, N, canonical});
+    q4_pending_.push_back({data, K, N, canonical, false});
+    return true;
+  }
+
+  /** [plan 229 S2] compute_ops.h: a QS4CX FC weight of the decode list,
+   *  in the same order as add_decode_graph_q4_0's. bindQ4m1 binds it only
+   *  to its FC WH sidecar image; there is no Q4M1 form of it. */
+  bool add_decode_graph_qs4cx(const void *data, unsigned K,
+                              unsigned N) override {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    if (graph_words_.empty() || (resident_mask_ & HTP_GRAPH_KINDS_Q4M1) == 0u)
+      return false;
+    if (graph_inited_) {
+      throw std::runtime_error(
+        "add_decode_graph_qs4cx: the graph is already initialised");
+    }
+    q4_pending_.push_back({data, K, N, false, true});
     return true;
   }
 
@@ -1976,6 +1993,7 @@ public:
       return fcwh_fd_ >= 0;
     }();
     uint32_t wh_handles = 0;
+    size_t wh_bits2 = 0; // [plan 229 S2] of them, QS2CX_WH (2-bit) handles
     q4m1_left_ = 0; // [#132 Part B E3] what the FC arena chunks are sized for
     if (!wh) {
       for (const Q4Pending &p : q4_pending_)
@@ -2010,6 +2028,14 @@ public:
     };
     auto take = [&](uint32_t op, uint32_t K, uint32_t N) -> const uint8_t * {
       const Q4Pending &p = pending(op, K, N);
+      // [plan 229 S2] a QS4CX FC has no Q4M1 form: its decode is the
+      // sidecar's image or nothing (contract section 2: no CPU fallback)
+      if (p.qs4cx)
+        throw std::runtime_error(
+          "set_decode_graph_desc: op " + std::to_string(op) + " (" +
+          htp_graph_kind_name(graphOp(op)->kind) + ") has a QS4CX weight, " +
+          std::to_string(p.K) + " x " + std::to_string(p.N) +
+          ", and no FC WH sidecar image to bind it to (fc_wh_file_name)");
       const size_t bytes =
         static_cast<size_t>(p.N) * (p.K / 32u) * Q4_CPU_BLOCK_BYTES;
       if (p.canonical)
@@ -2033,8 +2059,12 @@ public:
         const Q4Pending &u = pending(i, op->K, op->N);
         const Q4Pending &g = pending(i, op->K, op->N);
         const Q4Pending &d = pending(i, op->N, op->N_out);
+        if (g.qs4cx != u.qs4cx || d.qs4cx != u.qs4cx)
+          throw std::runtime_error("set_decode_graph_desc: DENSE_FFN op " +
+                                   std::to_string(i) +
+                                   " mixes QS4CX and Q4_0 weights");
         const DenseHandles &dh = get_or_register_dense(
-          key(u), key(g), key(d), session, op->K, op->N, op->N_out);
+          key(u), key(g), key(d), session, op->K, op->N, op->N_out, u.qs4cx);
         if (dh.h_gu.size() > HTP_GRAPH_WH_DENSE_MAX_CHUNKS)
           throw std::runtime_error(
             "set_decode_graph_desc: DENSE_FFN op " + std::to_string(i) +
@@ -2044,6 +2074,8 @@ public:
         for (size_t c = 0; c < dh.h_gu.size(); ++c) {
           op->h_gu[parts] = dh.h_gu[c];
           op->h_dn[parts++] = dh.h_dn[c];
+          wh_bits2 +=
+            fcwh_2bit_.count(dh.h_gu[c]) + fcwh_2bit_.count(dh.h_dn[c]);
         }
         op->feed |= HTP_GRAPH_FEED_WH;
         wh_handles += 2u * parts;
@@ -2051,8 +2083,10 @@ public:
         uint32_t sum = 0;
         while (sum < op->N) {
           const Q4Pending &p = pending(i, op->K, 0u);
-          const FcHandles &fh = get_or_register_fc(key(p), session, p.K, p.N);
+          const FcHandles &fh = get_or_register_fc(key(p), session, p.K, p.N,
+                                                   p.qs4cx, /*decode=*/true);
           for (uint32_t h : fh.handles) {
+            wh_bits2 += fcwh_2bit_.count(h);
             if (parts == HTP_GRAPH_MAX_PARTS)
               throw std::runtime_error("set_decode_graph_desc: FC op " +
                                        std::to_string(i) + " has over " +
@@ -2111,6 +2145,8 @@ public:
     // the line as before)
     if (wh_handles != 0u)
       std::fprintf(stderr, " wh_handles=%u", wh_handles);
+    if (wh_bits2 != 0u) // [plan 229 S2] absent at four bits: the line as before
+      std::fprintf(stderr, " bits2=%zu", wh_bits2);
     std::fputc('\n', stderr);
   }
 
@@ -2947,18 +2983,25 @@ public:
       uint32_t vc[2] = {0, 0}; // version, count
       throwPread(preadAll(fd, magic, sizeof(magic), 0), "fc wh header");
       throwPread(preadAll(fd, vc, sizeof(vc), sizeof(magic)), "fc wh header");
-      if (std::memcmp(magic, FCWH_MAGIC, sizeof(magic)) != 0 ||
-          vc[0] != FCWH_VERSION || fcWhHeaderBytes(vc[1]) > size) {
-        throw std::runtime_error("not an FC WH sidecar of version " +
-                                 std::to_string(FCWH_VERSION));
-      }
+      if (std::memcmp(magic, FCWH_MAGIC, sizeof(magic)) != 0)
+        throw std::runtime_error("not an FC WH sidecar (no NNTRFCWH magic)");
+      if (vc[0] != FCWH_VERSION)
+        throw std::runtime_error(
+          "an FC WH sidecar of version " + std::to_string(vc[0]) +
+          ", this build reads version " + std::to_string(FCWH_VERSION) + " (" +
+          FCWH_FORMAT +
+          "); write it again with this tree's nntr_quantize_stream "
+          "--fc_wh_sidecar or tools/htp/fc_wh_sidecar_from_q4.py");
+      if (fcWhHeaderBytes(vc[1]) > size)
+        throw std::runtime_error("the index runs past the file");
       std::vector<FcWhEntry> entries(vc[1]);
       throwPread(
         preadAll(fd, entries.data(), entries.size() * sizeof(FcWhEntry), 16u),
         "fc wh index");
       for (const FcWhEntry &e : entries) {
-        const uint64_t want = whBytes(e.K, e.N) + 2u * sizeof(float) * e.N;
-        if (e.K % WH_TILE != 0 || e.N % WH_TILE != 0 || e.bytes != want ||
+        if (e.K % WH_TILE != 0 || e.N % WH_TILE != 0 ||
+            (e.bits != 4u && e.bits != 2u) ||
+            e.bytes != fcWhImageBytes(e.K, e.N, e.bits) ||
             e.off < fcWhHeaderBytes(vc[1]) || e.off > size ||
             e.bytes > size - e.off || !index.emplace(e.key, e).second) {
           throw std::runtime_error("bad index entry " +
@@ -5190,6 +5233,7 @@ private:
   struct FcHandles {
     std::vector<uint32_t> handles;
     std::vector<unsigned int> cols; /**< N of each handle */
+    bool two_bit = false; /**< [plan 229 S2] a QS2CX_WH (decode-only) handle */
   };
 
   /** @brief Columns of a K-deep weight per registered handle.
@@ -5215,9 +5259,28 @@ private:
    *  it fits fcSliceCols, else one per column slice, converted once and
    *  registered slice by slice under keys inside the weight (its data
    *  pointer plus the slice's first column -- distinct, and valid as long
-   *  as the weight is). Cached by the weight pointer like every handle. */
+   *  as the weight is). Cached by the weight pointer like every handle.
+   *  @param qs4cx  [plan 229 S2] the weight is QS4CX (the Gemma decode
+   *                hand-over), served by the sidecar only
+   *  @param decode the caller is the decode bind: a 2-bit (QS2CX_WH) image
+   *                is only for hexkl_mm_u8i4_fc_m1_run, the prefill's layer
+   *                kernel reads four bits, so any other caller is refused */
   const FcHandles &get_or_register_fc(void *matAdata, remote_handle64 session,
-                                      uint32_t K, uint32_t N) {
+                                      uint32_t K, uint32_t N,
+                                      bool qs4cx = false, bool decode = false) {
+    const FcHandles &fh = fcHandles(matAdata, session, K, N, qs4cx);
+    if (fh.two_bit && !decode)
+      throw std::runtime_error(
+        "fc_wh_file_name " + fcwh_name_ + ": the " + std::to_string(K) + "x" +
+        std::to_string(N) +
+        " FC's image is 2-bit (QS2CX_WH), which only the one-PD decode "
+        "reads; this layer's HTP prefill needs a 4-bit image -- leave its "
+        "engine key off (prefill on the CPU)");
+    return fh;
+  }
+
+  const FcHandles &fcHandles(void *matAdata, remote_handle64 session,
+                             uint32_t K, uint32_t N, bool qs4cx) {
     std::lock_guard<std::mutex> lock(handle_mutex_);
     auto it = fc_cache_.find(matAdata);
     if (it != fc_cache_.end())
@@ -5225,13 +5288,19 @@ private:
 
     FcHandles fh;
     const unsigned int cap = fcSliceCols(K);
-    if (const FcWhEntry *w = fcwhFind(matAdata, K, N)) {
+    if (const FcWhEntry *w = fcwhFind(matAdata, K, N, qs4cx)) {
       for (uint32_t c0 = 0; c0 < N; c0 += cap) {
         const uint32_t n = std::min<uint32_t>(cap, N - c0);
         fh.handles.push_back(registerFcWh(static_cast<char *>(matAdata) + c0,
                                           session, {{w, c0, n}}, 0, K));
         fh.cols.push_back(n);
+        fh.two_bit |= fcwh_2bit_.count(fh.handles.back()) != 0u;
       }
+    } else if (qs4cx) {
+      throw std::runtime_error(
+        "a " + std::to_string(K) + "x" + std::to_string(N) +
+        " QS4CX FC weight needs its FC WH sidecar image (fc_wh_file_name); "
+        "the HTP has no other form of it");
     } else if (N <= cap) {
       fh.handles.push_back(get_or_register_unlocked(matAdata, session, K, N));
       fh.cols.push_back(N);
@@ -5267,20 +5336,25 @@ private:
     return fc_cache_.emplace(matAdata, std::move(fh)).first->second;
   }
 
-  /** @brief [#225] The sidecar image of the Q4_0 weight at @a q4, or
-   *  nullptr when the model has no sidecar. A sidecar that lacks the weight
-   *  or has it at another shape is a main file re-quantized without its
-   *  sidecar, refused rather than re-quantized around. */
-  const FcWhEntry *fcwhFind(const void *q4, uint32_t K, uint32_t N) const {
+  /** @brief [#225] The sidecar image of the Q4_0 weight at @a q4 (QS4CX
+   *  when @a qs4cx: N x K / 2 code bytes then N f32 scales, plan 229 S2),
+   *  or nullptr when the model has no sidecar. A sidecar that lacks the
+   *  weight or has it at another shape is a main file re-quantized without
+   *  its sidecar, refused rather than re-quantized around. */
+  const FcWhEntry *fcwhFind(const void *q4, uint32_t K, uint32_t N,
+                            bool qs4cx = false) const {
     if (fcwh_fd_ < 0)
       return nullptr;
-    const size_t len = static_cast<size_t>(N) * (K / 32u) * Q4_CPU_BLOCK_BYTES;
+    const size_t len =
+      qs4cx ? static_cast<size_t>(N) * (K / 2u + sizeof(float))
+            : static_cast<size_t>(N) * (K / 32u) * Q4_CPU_BLOCK_BYTES;
     auto it = fcwh_.find(fcWhKey(q4, len));
     if (it == fcwh_.end() || it->second.K != K || it->second.N != N) {
       throw std::runtime_error(
         "fc_wh_file_name " + fcwh_name_ + ": no image for a " +
         std::to_string(K) + "x" + std::to_string(N) +
-        " Q4_0 weight of the model file -- the sidecar is not the one "
+        (qs4cx ? " QS4CX" : " Q4_0") +
+        " weight of the model file -- the sidecar is not the one "
         "nntr_quantize_stream --fc_wh_sidecar wrote with this model file");
     }
     return &it->second;
@@ -5304,27 +5378,48 @@ private:
    * values, which the bake packs back into the same tiles -- registerRm's
    * overflow without its conversion. NNTR_HTP_FC_WH_HEAP=1 sends every
    * handle that way (the host check of that path).
-   * ponytail: 4-bit only -- the sidecar is QS4CX_WH/1 and the ArenaEntry
-   * leaves pal empty; plan 229 S2 (2-bit FCs) bumps FCWH_FORMAT and sizes
-   * the image by its bits here (whBytes2 + the palette, as the 2-bit
-   * experts do).
+   * [plan 229 S2] At bits 2 the tiles are 256 B of whPack2 codes and the
+   * handle a QS2CX_WH one (weight_register_u2i4_arena, the image's
+   * palette): one read of half the bytes, the u8i2 GEMV's input.
+   * ponytail: the heap path expands a 2-bit image to four bits on the host
+   * (whUnpack2), so those handles take twice the bytes -- the E2E chunk is
+   * sized never to take it. Parts of one handle (a dense gate | up chunk)
+   * must agree on bits and palette, else refused; the upgrade is expanding
+   * the 2-bit part on the host as the heap path does.
    * @note Call with handle_mutex_ already held. */
   uint32_t registerFcWh(void *key, remote_handle64 session,
                         const std::vector<WhPart> &parts, uint32_t k0,
                         uint32_t kn) {
     const uint64_t t_begin = HtpProfile::nowUs();
+    const uint32_t bits = parts[0].w->bits;
+    int8_t pal[WH_PALETTE_LEVELS] = {0, 0, 0, 0};
     uint32_t cn = 0;
-    for (const WhPart &p : parts)
+    for (const WhPart &p : parts) {
       cn += p.cn;
-    const size_t len = whBytes(kn, cn);
-    const size_t row = static_cast<size_t>(cn / WH_TILE) * WH_TILE_BYTES;
+      int8_t pp[WH_PALETTE_LEVELS] = {0, 0, 0, 0};
+      if (p.w->bits == 2u)
+        throwPread(preadAll(fcwh_fd_, pp, sizeof(pp),
+                            p.w->off + whBytes2(p.w->K, p.w->N)),
+                   "fc wh palette");
+      if (&p == &parts[0])
+        std::memcpy(pal, pp, sizeof(pal));
+      if (p.w->bits != bits || std::memcmp(pp, pal, sizeof(pal)) != 0)
+        throw std::runtime_error(
+          "fc_wh_file_name " + fcwh_name_ + ": " +
+          std::string(p.w->name, strnlen(p.w->name, 64)) + " and " +
+          std::string(parts[0].w->name, strnlen(parts[0].w->name, 64)) +
+          " share a handle at different bits or palettes");
+    }
+    const size_t tile = bits == 2u ? WH_TILE2_BYTES : WH_TILE_BYTES;
+    const size_t len = whBytes(kn, cn) / WH_TILE_BYTES * tile;
+    const size_t row = static_cast<size_t>(cn / WH_TILE) * tile;
     auto read_tiles = [&](uint8_t *dst) {
       if (parts.size() == 1 && parts[0].cn == parts[0].w->N) {
         // every column: the k-tile rows are one contiguous run
         throwPread(preadAll(fcwh_fd_, dst, len,
                             parts[0].w->off + static_cast<uint64_t>(k0) /
                                                 WH_TILE * (cn / WH_TILE) *
-                                                WH_TILE_BYTES),
+                                                tile),
                    "fc wh image");
         return;
       }
@@ -5333,20 +5428,25 @@ private:
         for (const WhPart &p : parts) {
           const uint64_t n_tiles = p.w->N / WH_TILE;
           const uint64_t src =
-            p.w->off +
-            ((k0 / WH_TILE + kt) * n_tiles + p.c0 / WH_TILE) * WH_TILE_BYTES;
-          const size_t bytes =
-            static_cast<size_t>(p.cn / WH_TILE) * WH_TILE_BYTES;
+            p.w->off + ((k0 / WH_TILE + kt) * n_tiles + p.c0 / WH_TILE) * tile;
+          const size_t bytes = static_cast<size_t>(p.cn / WH_TILE) * tile;
           throwPread(preadAll(fcwh_fd_, dst + at, bytes, src), "fc wh image");
           at += bytes;
         }
       }
     };
+    // the image's codes as one int4 per int8, kn x cn row-major
+    auto unpack = [&](const uint8_t *img, int8_t *rm) {
+      if (bits == 2u)
+        whUnpack2(img, kn, cn, pal, rm);
+      else
+        whUnpack(img, kn, cn, rm);
+    };
     std::vector<float> ws(cn), cs_f(cn);
     std::vector<int32_t> cs(cn);
     for (size_t i = 0, at = 0; i < parts.size(); at += parts[i++].cn) {
       const WhPart &p = parts[i];
-      const uint64_t tail = p.w->off + whBytes(p.w->K, p.w->N);
+      const uint64_t tail = p.w->off + fcWhCodeBytes(p.w->K, p.w->N, bits);
       throwPread(preadAll(fcwh_fd_, ws.data() + at, sizeof(float) * p.cn,
                           tail + sizeof(float) * p.c0),
                  "fc wh scales");
@@ -5367,7 +5467,7 @@ private:
     } else {
       load_host();
       std::vector<int8_t> rm(static_cast<size_t>(kn) * cn);
-      whUnpack(host.data(), kn, cn, rm.data());
+      unpack(host.data(), rm.data());
       for (uint32_t r = 0; r < kn; ++r)
         for (uint32_t i = 0; i < cn; ++i)
           cs[i] += rm[static_cast<size_t>(r) * cn + i];
@@ -5400,10 +5500,14 @@ private:
       e.w_scale = ws;
       e.colsum_w = cs;
       e.bias.assign(cn, 0.0f);
+      if (bits == 2u)
+        e.pal.assign(pal, pal + WH_PALETTE_LEVELS);
       const uint32_t handle = registerFromArena(session, e, kn, cn, t_begin);
       if (handle != kNoHandle) {
         handle_cache_.emplace(key, handle);
         fcwh_arena_bytes_ += len;
+        if (bits == 2u)
+          fcwh_2bit_.insert(handle);
         return handle;
       }
     }
@@ -5411,7 +5515,7 @@ private:
     // rpcmem mapping, where whUnpack's scattered stores would crawl.
     load_host();
     std::vector<int8_t> rm(static_cast<size_t>(kn) * cn);
-    whUnpack(host.data(), kn, cn, rm.data());
+    unpack(host.data(), rm.data());
     HtpRpcBuffer buf(rm.size());
     std::memcpy(buf.data(), rm.data(), rm.size());
     fcwh_heap_bytes_ += len;
@@ -5488,10 +5592,12 @@ private:
    *  gate and up, so its column sums are the full ones; the down chunk
    *  takes a row slice, so its column sums are recomputed over those rows
    *  -- the kernel's zero-point correction is per chunk. Cached by the up
-   *  weight's pointer. */
+   *  weight's pointer. @a qs4cx: the three are QS4CX (plan 229 S2's Gemma
+   *  decode hand-over), served by the sidecar only. */
   const DenseHandles &get_or_register_dense(void *up, void *gate, void *down,
                                             remote_handle64 session, uint32_t K,
-                                            uint32_t I, uint32_t N) {
+                                            uint32_t I, uint32_t N,
+                                            bool qs4cx = false) {
     std::lock_guard<std::mutex> lock(handle_mutex_);
     auto it = dense_cache_.find(up);
     if (it != dense_cache_.end())
@@ -5505,10 +5611,11 @@ private:
     }
     DenseHandles dh;
     dh.w = w;
-    if (const FcWhEntry *wu = fcwhFind(up, K, I)) {
+    if (const FcWhEntry *wu = fcwhFind(up, K, I, qs4cx)) {
       // [#225] the same chunks from the sidecar: gate | up column slices
       // side by side, the down's row slices with their own column sums
-      const FcWhEntry *wg = fcwhFind(gate, K, I), *wd = fcwhFind(down, I, N);
+      const FcWhEntry *wg = fcwhFind(gate, K, I, qs4cx),
+                      *wd = fcwhFind(down, I, N, qs4cx);
       for (uint32_t c0 = 0; c0 < I; c0 += w) {
         dh.h_gu.push_back(registerFcWh(static_cast<char *>(gate) + c0, session,
                                        {{wg, c0, w}, {wu, c0, w}}, 0, K));
@@ -5517,6 +5624,11 @@ private:
       }
       return dense_cache_.emplace(up, std::move(dh)).first->second;
     }
+    if (qs4cx)
+      throw std::runtime_error(
+        "a QS4CX dense FFN (" + std::to_string(K) + " x " + std::to_string(I) +
+        ") needs its FC WH sidecar images (fc_wh_file_name); the HTP has no "
+        "other form of it");
     uint64_t t_begin = HtpProfile::nowUs();
     std::vector<int8_t> up_rm(static_cast<size_t>(K) * I),
       gate_rm(static_cast<size_t>(K) * I), down_rm(static_cast<size_t>(I) * N);
@@ -6813,13 +6925,17 @@ private:
   std::string fcwh_name_;
   std::unordered_map<uint64_t, FcWhEntry> fcwh_;
   size_t fcwh_arena_bytes_ = 0, fcwh_heap_bytes_ = 0;
+  /** [plan 229 S2] The sidecar's handles registered at two bits (QS2CX_WH,
+   *  decode only); like the caches, never released before the process. */
+  std::unordered_set<uint32_t> fcwh_2bit_;
   /** [#225 PR 2] WH bytes of the sidecar's images not registered yet, plus
    *  placeExistingOn's 4 KiB alignment for four handles an image (its most:
    *  a dense FFN's chunks). */
   size_t fcwhLeft() const {
     size_t all = 0;
-    for (const auto &e : fcwh_)
-      all += whBytes(e.second.K, e.second.N) + 4u * 4096u;
+    for (const auto &e : fcwh_) // [plan 229 S2] codes only: half at bits 2
+      all += whBytes(e.second.K, e.second.N) / (e.second.bits == 2u ? 2u : 1u) +
+             4u * 4096u;
     const size_t done = fcwh_arena_bytes_ + fcwh_heap_bytes_;
     return all > done ? all - done : 0u;
   }
@@ -7013,6 +7129,7 @@ private:
     const void *data;
     uint32_t K, N;
     bool canonical;
+    bool qs4cx; /**< [plan 229 S2] QS4CX codes + scales, not Q4_0 */
   };
   std::vector<Q4Pending> q4_pending_;
   std::vector<uint32_t> q4m1_handles_;

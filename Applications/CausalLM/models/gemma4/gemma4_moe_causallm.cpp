@@ -225,15 +225,21 @@ void Gemma4MoECausalLM::load_weight(const std::string &weight_path) {
   }
 
   // The Q4_0 weights of the FC / DENSE_FFN / LM_HEAD ops, in list order:
-  // q | k (| v), o; up, gate, down; the tied table.
+  // q | k (| v), o; up, gate, down; the tied table. [plan 229 S2] An FC may
+  // be QS4CX instead (the ternary checkpoint's exact form), which the
+  // backend binds to its FC WH sidecar image only.
   auto q4 = [&weight, ops](const std::string &layer, bool tied) {
     nntrainer::Tensor &t = weight(layer, 0);
-    if (t.getDataType() != ml::train::TensorDim::DataType::Q4_0)
+    const auto dt = t.getDataType();
+    const bool qs4cx = !tied && dt == ml::train::TensorDim::DataType::QS4CX;
+    if (dt != ml::train::TensorDim::DataType::Q4_0 && !qs4cx)
       throw std::runtime_error("[Gemma4MoE] NNTR_HTP_E2E: " + layer +
-                               " is not Q4_0 (the resident FC kinds' type)");
+                               " is not Q4_0 or (an FC) QS4CX, the resident "
+                               "FC kinds' types");
     const unsigned K = tied ? t.width() : t.height();
     const unsigned N = tied ? t.height() : t.width();
-    if (!ops->add_decode_graph_q4_0(t.getData<char>(), K, N, tied))
+    if (qs4cx ? !ops->add_decode_graph_qs4cx(t.getData<char>(), K, N)
+              : !ops->add_decode_graph_q4_0(t.getData<char>(), K, N, tied))
       throw std::runtime_error(
         "[Gemma4MoE] NNTR_HTP_E2E: the backend took no Q4_0 weight");
   };

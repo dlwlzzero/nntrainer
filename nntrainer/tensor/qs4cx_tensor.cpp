@@ -70,6 +70,15 @@ void QS4CX_Tensor::pack() {
   if (packed_data) {
     return;
   }
+#if !(defined(__aarch64__) || defined(__ARM_ARCH_7A__) ||                      \
+      defined(__ANDROID__) || defined(__arm__) || defined(_M_ARM) ||           \
+      defined(_M_ARM64))
+  // Only FloatTensor::dot's ARM branch reads the KleidiAI-packed copy; the
+  // other branch runs gemm_qai8dxp_qsi4cxp_rhs_unpacked on getData(), and
+  // the fallback has no packer (its size query is NYI), so a QS4CX FC on
+  // the x86 host (plan 229 S2's gemma64t fixture) loads with nothing packed.
+  return;
+#endif
 
   size_t opt_kernel_idx = 8;
   /**
