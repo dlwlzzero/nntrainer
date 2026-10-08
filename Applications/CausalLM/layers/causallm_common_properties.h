@@ -119,6 +119,86 @@ public:
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "gamma_initializer";
 };
+/**
+ * @brief in_norm: the layer owns the RMSNorm gamma of its input (hidden
+ *        wide, FP32, the first weight in the file) and applies that norm
+ *        itself -- on an accelerator inside the same call as its matmuls.
+ */
+class InNorm : public nntrainer::Property<bool> {
+public:
+  InNorm(bool val = false) : nntrainer::Property<bool>(val) {}
+  using prop_tag = nntrainer::bool_prop_tag;
+  static constexpr const char *key = "in_norm";
+};
+
+/**
+ * @brief use_weight: the layer's scalar comes from the weight file (one
+ *        float), not from a property. scalar_multiply's, shared with
+ *        residual_add, which folds the block's scalar into its add.
+ */
+class UseWeight : public nntrainer::Property<bool> {
+public:
+  static constexpr const char *key = "use_weight"; /**< unique key to access */
+  using prop_tag = nntrainer::bool_prop_tag;       /**< property type */
+  UseWeight(bool value = false) { set(value); }
+};
+
+/**
+ * @brief RopeTheta
+ */
+class RopeTheta : public nntrainer::Property<unsigned int> {
+public:
+  RopeTheta(unsigned int value = 500000) { set(value); };
+  static constexpr const char *key = "rope_theta"; /**< unique key to access */
+  using prop_tag = nntrainer::uint_prop_tag;       /**< property type */
+};
+
+/**
+ * @brief RopeScalingType
+ * - default
+ * - yarn
+ */
+class RopeScalingType : public nntrainer::Property<std::string> {
+public:
+  RopeScalingType(std::string value = "default") { set(value); };
+  static constexpr const char *key =
+    "rope_scaling_type";                    /**< unique key to access */
+  using prop_tag = nntrainer::str_prop_tag; /**< property type */
+};
+
+/**
+ * @brief RopePartialRotaryFactor
+ */
+class RopePartialRotaryFactor : public nntrainer::Property<float> {
+public:
+  RopePartialRotaryFactor(float value = 1.0f) { set(value); };
+  static constexpr const char *key =
+    "rope_partial_rotary_factor";             /**< unique key to access */
+  using prop_tag = nntrainer::float_prop_tag; /**< property type */
+};
+
+/**
+ * @brief softcap: y = softcap * tanh(y / softcap) on a layer's output (the
+ *        final logit softcap, folded into the tied lm_head); 0 for none.
+ */
+class Softcap : public nntrainer::Property<float> {
+public:
+  Softcap(float val = 0.0f) : nntrainer::Property<float>(val) {}
+  using prop_tag = nntrainer::float_prop_tag;
+  static constexpr const char *key = "softcap";
+};
+
+/**
+ * @brief out_norm: likewise the RMSNorm of the layer's output (its gamma
+ *        is the last weight in the file).
+ */
+class OutNorm : public nntrainer::Property<bool> {
+public:
+  OutNorm(bool val = false) : nntrainer::Property<bool>(val) {}
+  using prop_tag = nntrainer::bool_prop_tag;
+  static constexpr const char *key = "out_norm";
+};
+
 }; // namespace props
 
 WIN_EXPORT enum RMSParams { gamma };

@@ -445,6 +445,57 @@ if "$OUT/geglu_mutant" > "$OUT/geglu_mutant.log"; then
 fi
 echo "GEGLU MUTANT CAUGHT: gelu replaced by silu ($(grep -o 'geglu bit-exact [0-9/]*' "$OUT/geglu_mutant.log"))"
 
+# The prefill-shape RMSNorm rows (doc 57 section 5 step 4): the real HVX
+# source on the lane emulation against a double reference, at the hidden
+# width, per head, gamma-less and in place (RMSNORM ROWS OK).
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/rmsnorm_rows_host_check" \
+  "$HERE/rmsnorm_rows_host_check.c" "$BACKEND/hvx/hvx_rmsnorm_rows_f32.c" -lm
+
+"$OUT/rmsnorm_rows_host_check"
+
+# The prefill-shape router logits (doc 57 section 5 step 5): the real HVX
+# source on the lane emulation against a double reference, at the softmax
+# router's width, the sigmoid one's, and a K that is not a chunk multiple
+# (ROUTER ROWS OK).
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/router_rows_host_check" \
+  "$HERE/router_rows_host_check.c" "$BACKEND/hvx/hvx_router_rows_f32.c" \
+  "$BACKEND/hvx/hvx_softmax_f32.c" -lm
+
+"$OUT/router_rows_host_check"
+
+# The prefill-shape RoPE (doc 57 section 5 step 4): the real HVX source on
+# the lane emulation against the CPU kernel's own operation order, bit for
+# bit, at head dims 256, 512 (partial rotary) and 64 (ROPE ROWS OK).
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/rope_rows_host_check" \
+  "$HERE/rope_rows_host_check.c" "$BACKEND/hvx/hvx_rope_rows_f32.c" -lm
+
+"$OUT/rope_rows_host_check"
+
+# The final logit softcap the lm_head call applies (doc 57 section 9.7):
+# the real HVX source on the lane emulation against cap * tanh(x / cap) in
+# double over a 262 144-wide row with a scalar tail (SOFTCAP OK).
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/softcap_host_check" \
+  "$HERE/softcap_host_check.c" "$BACKEND/hvx/hvx_softcap_f32.c" -lm
+
+"$OUT/softcap_host_check"
+
+# Attention's K^T tile builder (doc 57 section 9.10): the vshuff network
+# on the lane emulation against the word-transpose definition, bit for
+# bit, at the model's head dims (TILE F16 OK).
+"$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off \
+  -I "$HERE/hvx_emu" -I "$BACKEND/.." -I "$BACKEND/hvx" \
+  -o "$OUT/tile_f16_host_check" "$HERE/tile_f16_host_check.c" -lm
+
+"$OUT/tile_f16_host_check"
+
 # The CPU-order Q4_0 FC (#132 PR 2): the spec q4_gemv_cpu_det.h against an
 # independent model of the Android CPU's quantizer and fused chain, six
 # mutants (Q4 GEMV CPU-ORDER OK), and the REAL DSP source hvx_q4_gemv_f32.c

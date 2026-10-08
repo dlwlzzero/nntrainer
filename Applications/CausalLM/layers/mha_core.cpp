@@ -24,8 +24,11 @@
 
 static std::mutex rope_init_mtx;
 
+#include <chrono>
+#include <cstdlib>
 #include <fp16.h>
 #include <layer_context.h>
+
 #include <mha_core.h>
 
 #include "htp_decode_hook.h"
@@ -415,7 +418,18 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
     nntrainer::Tensor output_step = output.getSharedDataTensor(
       output_step_dim, batch * output_dim.getFeatureLen(), true);
 
-    if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+    // The accelerated paths take the f32 query and write f32 output, and
+    // the cache write converts the f32 rows itself, so the fp16 staging
+    // below (four step-sized tensors and five element-wise conversions a
+    // layer) only costs: ~36 ms of a 1023-row step beside a 41 ms call
+    // (doc 57 section 9.16). If the call still fails, the CPU computes
+    // from the f32 query as the non-Android build always does.
+    const bool accelerated = compute_ops_ && is_causal &&
+                             (compute_ops_->supports_sdpa_fp16_kvcache() ||
+                              (kv_cache_quant_kind >= 0 && !q_cache_failed &&
+                               compute_ops_->supports_kv_cache_q()));
+    if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+        !accelerated) {
 #if ENABLE_FP16 && defined(__ANDROID__)
       nntrainer::TensorDim Q_step_dim = query_step_dim;
       nntrainer::TensorDim K_step_dim = key_step_dim;
@@ -460,6 +474,11 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
           cache_value_dim, cache_value_step_dim);
       }
 #endif
+    } else if (use_sink) {
+      one_batch_incremental_forwarding(
+        batch, from, from, to, query_step, key_step, value_step, output_step,
+        cache_key, cache_value, cache_key_dim, cache_key_step_dim,
+        cache_value_dim, cache_value_step_dim, sink);
     } else {
       one_batch_incremental_forwarding(
         batch, from, from, to, query_step, key_step, value_step, output_step,
@@ -890,11 +909,37 @@ namespace {
 struct AccelF32Io {
   const float *q = nullptr;
   float *out = nullptr;
+  const float *sinks = nullptr; /**< n_head_q f32, or nullptr */
 
+  /**
+   * @param sink  the per-head sink weight, or nullptr when the layer has
+   *              none; fp16 sinks are widened here (the weight is fp16 on
+   *              Android with fp16 enabled, whatever the activation type)
+   */
   bool prepare(nntrainer::Tensor &query_step,
-               nntrainer::Tensor &attention_output_step) {
+               nntrainer::Tensor &attention_output_step,
+               const nntrainer::Tensor *sink) {
     const auto qt = query_step.getDataType();
     const auto ot = attention_output_step.getDataType();
+    if (sink && !sink->empty()) {
+      const auto st = sink->getDataType();
+      if (st == ml::train::TensorDim::DataType::FP32) {
+        sinks = sink->getData<float>();
+      }
+#ifdef ENABLE_FP16
+      else if (st == ml::train::TensorDim::DataType::FP16) {
+        const _FP16 *src = sink->getData<_FP16>();
+        sink_scratch.resize(sink->size());
+        for (size_t i = 0; i < sink_scratch.size(); ++i) {
+          sink_scratch[i] = static_cast<float>(src[i]);
+        }
+        sinks = sink_scratch.data();
+      }
+#endif
+      else {
+        return false;
+      }
+    }
     if (qt == ml::train::TensorDim::DataType::FP32) {
       q = query_step.getData<float>();
     }
@@ -940,7 +985,7 @@ struct AccelF32Io {
   }
 
 private:
-  std::vector<float> q_scratch, out_scratch;
+  std::vector<float> q_scratch, out_scratch, sink_scratch;
 };
 
 } // namespace
@@ -948,7 +993,8 @@ private:
 bool MHACoreLayer::try_accelerated_attention(
   nntrainer::Tensor &query_step, nntrainer::Tensor &cached_key,
   nntrainer::Tensor &cached_value, nntrainer::Tensor &attention_output_step,
-  unsigned int cache_from, unsigned int cache_to, const float *sinks) {
+  unsigned int cache_from, unsigned int cache_to,
+  const nntrainer::Tensor *sink) {
   if (!compute_ops_ || !compute_ops_->supports_sdpa_fp16_kvcache()) {
     return false;
   }
@@ -960,7 +1006,7 @@ bool MHACoreLayer::try_accelerated_attention(
     return false;
   }
   AccelF32Io io;
-  if (!io.prepare(query_step, attention_output_step)) {
+  if (!io.prepare(query_step, attention_output_step, sink)) {
     return false;
   }
   const uint16_t *k_bits = nullptr;
@@ -991,7 +1037,7 @@ bool MHACoreLayer::try_accelerated_attention(
   if (!compute_ops_->sdpa_fp16_kvcache(
         io.q, q_stride, k_bits, v_bits, kv_stride, n_q, cache_from, cache_to,
         num_heads_Q, num_heads_KV, head_dim, window, attn_logit_softcapping,
-        sinks, io.out, q_stride)) {
+        io.sinks, io.out, q_stride)) {
     return false;
   }
   io.commit(attention_output_step);
@@ -1012,6 +1058,57 @@ void MHACoreLayer::release_quantized_cache() {
   }
   q_cache_handles.clear();
   q_cache_synced.clear();
+  q2_scales_set.clear();
+}
+
+/**
+ * @brief Scales for the fixed-scale int8 path from the rows at hand: K per
+ *        KV head and V per (KV head, dim) over fp16 cache rows [0, n_rows),
+ *        Q per query head over this step's f32 rows. max / 127, 1 for an
+ *        all-zero tensor.
+ */
+void MHACoreLayer::calibrate_q2_scales(const uint16_t *k_rows,
+                                       const uint16_t *v_rows,
+                                       unsigned int n_rows,
+                                       unsigned int kv_stride, const float *q,
+                                       unsigned int q_stride,
+                                       unsigned int n_q) {
+  q2_scale_k.assign(num_heads_KV, 0.0f);
+  q2_scale_v.assign(static_cast<size_t>(num_heads_KV) * head_dim, 0.0f);
+  q2_scale_q.assign(num_heads_Q, 0.0f);
+  for (unsigned int r = 0; r < n_rows; ++r) {
+    const uint16_t *kr = k_rows + static_cast<size_t>(r) * kv_stride;
+    const uint16_t *vr = v_rows + static_cast<size_t>(r) * kv_stride;
+    for (unsigned int n = 0; n < num_heads_KV; ++n) {
+      float &sk = q2_scale_k[n];
+      for (unsigned int d = 0; d < head_dim; ++d) {
+        const unsigned int i = n * head_dim + d;
+        sk = std::max(sk, std::fabs(nntrainer::compute_fp16_to_fp32(kr[i])));
+        q2_scale_v[i] = std::max(
+          q2_scale_v[i], std::fabs(nntrainer::compute_fp16_to_fp32(vr[i])));
+      }
+    }
+  }
+  for (unsigned int r = 0; r < n_q; ++r) {
+    const float *qr = q + static_cast<size_t>(r) * q_stride;
+    for (unsigned int h = 0; h < num_heads_Q; ++h) {
+      float &sq = q2_scale_q[h];
+      for (unsigned int d = 0; d < head_dim; ++d) {
+        sq = std::max(sq, std::fabs(qr[h * head_dim + d]));
+      }
+    }
+  }
+  auto finish = [](float &x) { x = x > 0.0f ? x / 127.0f : 1.0f; };
+  for (auto &x : q2_scale_k) {
+    finish(x);
+  }
+  for (auto &x : q2_scale_v) {
+    finish(x);
+  }
+  for (auto &x : q2_scale_q) {
+    finish(x);
+  }
+  q2_calibrated = true;
 }
 
 bool MHACoreLayer::try_quantized_attention(
@@ -1019,13 +1116,13 @@ bool MHACoreLayer::try_quantized_attention(
   nntrainer::Tensor &cache_key, nntrainer::Tensor &cache_value,
   const ml::train::TensorDim &cache_key_dim,
   nntrainer::Tensor &attention_output_step, unsigned int cache_from,
-  unsigned int cache_to, const float *sinks) {
+  unsigned int cache_to, const nntrainer::Tensor *sink) {
   if (kv_cache_quant_kind < 0 || q_cache_failed || !compute_ops_ ||
       !compute_ops_->supports_kv_cache_q() || !is_causal) {
     return false;
   }
   AccelF32Io io;
-  if (!io.prepare(query_step, attention_output_step)) {
+  if (!io.prepare(query_step, attention_output_step, sink)) {
     return false;
   }
   const uint16_t *k_base = nullptr;
@@ -1062,9 +1159,18 @@ bool MHACoreLayer::try_quantized_attention(
   if (q_cache_handles.size() <= batch) {
     q_cache_handles.resize(batch + 1, -1);
     q_cache_synced.resize(batch + 1, 0);
+    q2_scales_set.resize(batch + 1, 0);
   }
   int &handle = q_cache_handles[batch];
   unsigned int &synced = q_cache_synced[batch];
+  // int8 with the row-blocked kernel when the backend has it: fixed scales,
+  // no softcap, no sinks, head_dim up to 512.
+  const bool use_q2 = kv_cache_quant_kind == 0 &&
+                      compute_ops_->supports_kv_cache_q2() &&
+                      attn_logit_softcapping <= 0.0f && io.sinks == nullptr;
+  if (!use_q2 && head_dim > 256) {
+    return false;
+  }
   if (handle < 0) {
     handle = compute_ops_->kv_cache_q_register(
       static_cast<unsigned int>(kv_cache_quant_kind), max_rows, num_heads_KV,
@@ -1073,6 +1179,7 @@ bool MHACoreLayer::try_quantized_attention(
       return fail("register");
     }
     synced = 0;
+    q2_scales_set[batch] = 0;
   }
   // Rows past cache_from may have been rewritten (a rewound session, a
   // loaded cache); re-append from the first row that could differ.
@@ -1092,10 +1199,31 @@ bool MHACoreLayer::try_quantized_attention(
     (local_window_size == 0 || local_window_size >= cache_to)
       ? 0u
       : static_cast<unsigned int>(local_window_size);
-  if (!compute_ops_->sdpa_q_kvcache(
-        handle, append_row0, append_rows, width, k_base + off, v_base + off,
-        io.q, q_stride, n_q, cache_from, cache_to, num_heads_Q, num_heads_KV,
-        head_dim, window, attn_logit_softcapping, sinks, io.out, q_stride)) {
+  if (use_q2) {
+    if (!q2_calibrated) {
+      // The rows about to be appended are the first this layer sees.
+      calibrate_q2_scales(k_base + off, v_base + off, append_rows, width, io.q,
+                          q_stride, n_q);
+    }
+    if (!q2_scales_set[batch]) {
+      if (!compute_ops_->kv_cache_q_set_fixed_scales(
+            handle, num_heads_KV, head_dim, q2_scale_k.data(),
+            q2_scale_v.data())) {
+        return fail("fixed scales");
+      }
+      q2_scales_set[batch] = 1;
+    }
+    if (!compute_ops_->sdpa_q2_kvcache(
+          handle, append_row0, append_rows, width, k_base + off, v_base + off,
+          io.q, q2_scale_q.data(), q_stride, n_q, cache_from, cache_to,
+          num_heads_Q, num_heads_KV, head_dim, window, io.out, q_stride)) {
+      return fail("attention");
+    }
+  } else if (!compute_ops_->sdpa_q_kvcache(
+               handle, append_row0, append_rows, width, k_base + off,
+               v_base + off, io.q, q_stride, n_q, cache_from, cache_to,
+               num_heads_Q, num_heads_KV, head_dim, window,
+               attn_logit_softcapping, io.sinks, io.out, q_stride)) {
     return fail("attention");
   }
   synced = cache_to;
@@ -1103,8 +1231,9 @@ bool MHACoreLayer::try_quantized_attention(
   if (!accel_logged_) {
     accel_logged_ = true;
     ml_logi("mha_core: attention over the %s quantized KV cache on the "
-            "accelerator",
-            kv_cache_quant_kind == 0 ? "int8" : "int4");
+            "accelerator%s",
+            kv_cache_quant_kind == 0 ? "int8" : "int4",
+            use_q2 ? " (row-blocked, fixed scales)" : "");
   }
   return true;
 }
@@ -1140,6 +1269,21 @@ void MHACoreLayer::one_batch_incremental_forwarding(
                                       cache_index * cache_value_dim.width(),
                                     true);
 
+  // NNTR_HTP_ATTN_TRACE: the host's own share of this node beside the
+  // accelerator call's (htp_compute_ops' attn trace), per step, to logcat.
+  // The profile build counted ~40 ms a sliding layer outside a 40 ms call
+  // at 1023 rows (doc 57 section 9.13).
+  static const bool host_trace = [] {
+    const char *e = std::getenv("NNTR_HTP_ATTN_TRACE");
+    return e && *e && *e != '0';
+  }();
+  auto now_us = [] {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+  };
+  const long long t_kv0 = host_trace ? now_us() : 0;
+
   // append kcache with or without rotary embedding
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, cache_index,
                              !use_rope);
@@ -1155,6 +1299,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     NNTR_THROW_IF(true, std::invalid_argument) << "enable-fp16 is not set!";
 #endif
   }
+  const long long t_kv1 = host_trace ? now_us() : 0;
 
   unsigned int step_size = to - from;
   bool is_prefill = !from || step_size > 1;
@@ -1197,6 +1342,10 @@ void MHACoreLayer::one_batch_incremental_forwarding(
       try_accelerated_attention(query_step, b_cached_key, b_cached_value,
                                 attention_output_step, cache_from, cache_to,
                                 nullptr)) {
+    if (host_trace && step_size > 1) {
+      ml_logi("mha_core trace: rows=%u kv_write_us=%lld accel_call_us=%lld",
+              step_size, t_kv1 - t_kv0, now_us() - t_kv1);
+    }
     return;
   }
 
@@ -1302,12 +1451,13 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
 
+  // The sink weight goes as a tensor: it is fp16 on Android with fp16
+  // enabled, and the accelerated paths take f32 (staged inside).
   if (try_quantized_attention(batch, query_step, cache_key, cache_value,
                               cache_key_dim, attention_output_step, from, to,
-                              sink_step.getData<float>()) ||
+                              &sink_step) ||
       try_accelerated_attention(query_step, b_cached_key, b_cached_value,
-                                attention_output_step, from, to,
-                                sink_step.getData<float>())) {
+                                attention_output_step, from, to, &sink_step)) {
     return;
   }
 

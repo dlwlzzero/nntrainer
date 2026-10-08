@@ -157,7 +157,12 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
     IS_CAUSAL = cfg["is_causal"].get<bool>();
   } else if (cfg.contains("use_bidirectional_attention") &&
              !cfg["use_bidirectional_attention"].is_null()) {
-    IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
+    // Gemma-4 writes a string here: "all" is bidirectional, "vision" means
+    // only the vision tokens are (Gemma4TextAttention: is_causal = value !=
+    // "all"), so text stays causal. Older configs write a bool.
+    const auto &bidir = cfg["use_bidirectional_attention"];
+    IS_CAUSAL = bidir.is_string() ? bidir.get<std::string>() != "all"
+                                  : !bidir.get<bool>();
   } else if (nntr_cfg.contains("model_type") &&
              strToModelType(nntr_cfg["model_type"].get<std::string>()) ==
                ModelType::EMBEDDING &&
@@ -380,12 +385,14 @@ void Transformer::repack_weight() {
   struct PendingFc {
     nntrainer::ComputeOps *ops;
     void *data;
+    const float *scale; ///< QS4CX per-channel scales; null for Q4_0
     unsigned int K, N;
   };
   std::vector<PendingFc> fc_pending;
   struct PendingDense {
     nntrainer::ComputeOps *ops;
     void *up, *gate, *down;
+    const float *up_s, *gate_s, *down_s; /**< QS4CX scales; null for Q4_0 */
     unsigned int K, I, N;
   };
   std::vector<PendingDense> dense_pending;
@@ -410,17 +417,28 @@ void Transformer::repack_weight() {
     unsigned int w_bits = 0u; /**< 0 QS4CX, 4 QS4CX_WH, 2 QS2CX_WH */
   } moe_warm;
 
+  // The tied lm_head, prepared after the walk: on its accelerator it is
+  // placed in the arena, which must come after every other weight (the
+  // chunk-boundary note above), else its blocked CPU twin is built. Both
+  // at load, with every weight loaded, rather than on the first lm_head
+  // call inside the first prefill. The context is the node's own and
+  // outlives the walk.
+  struct PendingTie {
+    TieWordEmbedding *layer = nullptr;
+    nntrainer::RunLayerContext *context = nullptr;
+  } tie_pending;
+
   std::function<void(ml::train::Layer &, nntrainer::RunLayerContext &, void *)>
-    fn = [&fc_pending, &dense_pending, &conv_pending, &moe_warm](
+    fn = [&fc_pending, &dense_pending, &conv_pending, &moe_warm, &tie_pending](
            ml::train::Layer &l, nntrainer::RunLayerContext &context, void *) {
-      // The tied lm_head's blocked twin (tie_word_embedding.h) is built
-      // here, with every weight loaded, rather than on the first lm_head
-      // call inside the first prefill. forEachLayer hands out LayerNodes.
+      // forEachLayer hands out LayerNodes.
       if (l.getType() == TieWordEmbedding::type) {
         auto *tw = dynamic_cast<TieWordEmbedding *>(
           static_cast<nntrainer::LayerNode &>(l).getLayer());
-        if (tw)
-          tw->prepareLmhead(context);
+        if (tw) {
+          tie_pending.layer = tw;
+          tie_pending.context = &context;
+        }
         return;
       }
       // repack FC and MoE FFN layers -- both can hold QS4CX weights.
@@ -436,17 +454,41 @@ void Transformer::repack_weight() {
       // fused set (doc 51), after the walk like the FCs below -- not as
       // three FC weights, which the loop below would otherwise do.
       if (l.getType() == "dense_ffn") {
-        auto weights = context.getWeights();
-        if (weights.size() == 3 && context.getComputeOps()) {
-          auto &up = weights[0]->getVariableRef();
-          auto &gate = weights[1]->getVariableRef();
-          auto &down = weights[2]->getVariableRef();
-          if (up.getDataType() == ml::train::TensorDim::DataType::Q4_0 &&
-              gate.getDataType() == ml::train::TensorDim::DataType::Q4_0 &&
-              down.getDataType() == ml::train::TensorDim::DataType::Q4_0) {
+        // By name: with its norms folded in (in_norm / out_norm) the layer
+        // also holds two FP32 gammas, and gate_first swaps the first two.
+        // Matched on the weight order of a size()==3 test, the folded
+        // layer skipped this and registered inside the first prefill: a
+        // whole scalar Q4_0 -> QS4CX conversion per layer under the
+        // prefill timer (doc 57 section 9.10).
+        nntrainer::Tensor *up_p = nullptr, *gate_p = nullptr, *down_p = nullptr;
+        for (auto *w : context.getWeights()) {
+          const std::string &name = w->getName();
+          auto ends_with = [&name](const char *tail) {
+            const size_t n = std::strlen(tail);
+            return name.size() >= n &&
+                   name.compare(name.size() - n, n, tail) == 0;
+          };
+          if (ends_with(":up"))
+            up_p = &w->getVariableRef();
+          else if (ends_with(":gate"))
+            gate_p = &w->getVariableRef();
+          else if (ends_with(":down"))
+            down_p = &w->getVariableRef();
+        }
+        if (up_p && gate_p && down_p && context.getComputeOps()) {
+          auto &up = *up_p;
+          auto &gate = *gate_p;
+          auto &down = *down_p;
+          const auto wtype = up.getDataType();
+          const bool qs4cx = wtype == ml::train::TensorDim::DataType::QS4CX;
+          if ((wtype == ml::train::TensorDim::DataType::Q4_0 || qs4cx) &&
+              gate.getDataType() == wtype && down.getDataType() == wtype) {
             dense_pending.push_back({context.getComputeOps(),
                                      up.getData<char>(), gate.getData<char>(),
                                      down.getData<char>(),
+                                     qs4cx ? up.getScale<float>() : nullptr,
+                                     qs4cx ? gate.getScale<float>() : nullptr,
+                                     qs4cx ? down.getScale<float>() : nullptr,
                                      static_cast<unsigned int>(up.height()),
                                      static_cast<unsigned int>(up.width()),
                                      static_cast<unsigned int>(down.width())});
@@ -505,8 +547,15 @@ void Transformer::repack_weight() {
         if (dtype == ml::train::TensorDim::DataType::QS4CX && !t.isVirtual()) {
           t.pack();
         }
-        if (fc_ops && dtype == ml::train::TensorDim::DataType::Q4_0) {
+        // A QS4CX FC weight (quantized offline, no Q4_0 detour) is
+        // registered here too, through the key gemm_qs4cx_accel_fp32 looks
+        // up: the weight's own data pointer and scales.
+        if (fc_ops && (dtype == ml::train::TensorDim::DataType::Q4_0 ||
+                       (dtype == ml::train::TensorDim::DataType::QS4CX &&
+                        !t.isVirtual()))) {
+          const bool qs4cx = dtype == ml::train::TensorDim::DataType::QS4CX;
           fc_pending.push_back({fc_ops, t.getData<char>(),
+                                qs4cx ? t.getScale<float>() : nullptr,
                                 static_cast<unsigned int>(t.height()),
                                 static_cast<unsigned int>(t.width())});
         }
@@ -642,17 +691,30 @@ void Transformer::repack_weight() {
     // touches every page of them inside the first prefill. In graph order
     // that first weight is a conv in_proj (the widest N) whenever those are
     // routed, so one call at M=512 covers every later shape's buffers.
+    // A QS4CX weight has no register-only entry that slices it the way
+    // the FC call does (register_qs4cx_weight is the one-handle expert
+    // form), so its call registers it: 64 rows, one row block, for every
+    // weight but the warm-up one.
     bool fc_warmed = false;
     for (const auto &p : fc_pending) {
-      if (!p.ops->register_q4_0_weight(p.data, p.K, p.N))
+      const bool qs4cx = p.scale != nullptr;
+      if (qs4cx ? !p.ops->supports_gemm_qs4cx_accel_fp32()
+                : !p.ops->register_q4_0_weight(p.data, p.K, p.N))
         continue;
-      if (fc_warmed || !p.ops->supports_gemm_q4_0_accel_fp32())
+      if (fc_warmed && !qs4cx)
         continue;
+      if (!qs4cx && !p.ops->supports_gemm_q4_0_accel_fp32())
+        continue;
+      const unsigned int M = fc_warmed ? 64 : 512;
       fc_warmed = true;
-      const unsigned int M = 512;
       std::vector<float> act(static_cast<size_t>(M) * p.K, 0.0f);
       std::vector<float> out(static_cast<size_t>(M) * p.N, 0.0f);
-      p.ops->gemm_q4_0_accel_fp32(p.data, act.data(), out.data(), M, p.N, p.K);
+      if (qs4cx)
+        p.ops->gemm_qs4cx_accel_fp32(p.data, const_cast<float *>(p.scale),
+                                     act.data(), out.data(), M, p.N, p.K);
+      else
+        p.ops->gemm_q4_0_accel_fp32(p.data, act.data(), out.data(), M, p.N,
+                                    p.K);
       ml_logd("FC HTP kernel warmed up at load (M=%u, K=%u, N=%u)", M, p.K,
               p.N);
     }
@@ -661,7 +723,8 @@ void Transformer::repack_weight() {
     // MoE layer kernel's scratch to this shape's row count.
     bool dense_warmed = false;
     for (const auto &p : dense_pending) {
-      if (!p.ops->register_q4_0_dense_ffn(p.up, p.gate, p.down, p.K, p.I, p.N))
+      if (!p.ops->register_q4_0_dense_ffn(p.up, p.gate, p.down, p.K, p.I, p.N,
+                                          p.up_s, p.gate_s, p.down_s))
         continue;
       if (dense_warmed || !p.ops->supports_gemm_q4_0_dense_ffn_fp32())
         continue;
@@ -670,7 +733,9 @@ void Transformer::repack_weight() {
       std::vector<float> act(static_cast<size_t>(M) * p.K, 0.0f);
       std::vector<float> out(static_cast<size_t>(M) * p.N, 0.0f);
       p.ops->gemm_q4_0_dense_ffn_fp32(p.up, p.gate, p.down, act.data(),
-                                      out.data(), M, p.K, p.I, p.N);
+                                      out.data(), M, p.K, p.I, p.N, false,
+                                      nullptr, nullptr, 0.0f, p.up_s, p.gate_s,
+                                      p.down_s);
       ml_logd("dense FFN HTP kernel warmed up at load (M=%u, K=%u, I=%u, N=%u)",
               M, p.K, p.I, p.N);
     }
@@ -696,6 +761,9 @@ void Transformer::repack_weight() {
         "conv block HTP kernel warmed up at load (M=%u, K=%u, C=%u, N=%u)", M,
         p.K, p.C, p.N);
     }
+    if (tie_pending.layer != nullptr &&
+        !tie_pending.layer->placeLmheadOnAccelerator(*tie_pending.context))
+      tie_pending.layer->prepareLmhead(*tie_pending.context);
     ml_logd("QS4CX weights repacked successfully");
   } catch (const std::exception &e) {
     throw std::runtime_error("Failed to repack weights: " +

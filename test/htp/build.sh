@@ -105,7 +105,8 @@ SRCS="$SRCS $BACKEND/hmx/hexkl_attn_dtype.c $BACKEND/hmx/hexkl_attn_u8.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_quant_u8.c $BACKEND/hvx/hvx_dequant_i32.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_swiglu_f32.c $BACKEND/hvx/hvx_conv_gate_f32.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_m1_ops_f32.c $BACKEND/hvx/hvx_attn_m1_f32.c"
-SRCS="$SRCS $BACKEND/hvx/hvx_scale_add_f32.c"
+SRCS="$SRCS $BACKEND/hvx/hvx_scale_add_f32.c $BACKEND/hvx/hvx_rmsnorm_rows_f32.c"
+SRCS="$SRCS $BACKEND/hvx/hvx_router_rows_f32.c $BACKEND/hvx/hvx_rope_rows_f32.c $BACKEND/hvx/hvx_softcap_f32.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_gather_ah_u8.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_softmax_f32.c $BACKEND/hvx/hvx_softmax_blocked_f32.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_worker_pool.c $BACKEND/hvx/hvx_gemm_u8i4_wh.c"
@@ -118,9 +119,10 @@ SRCS="$SRCS $BACKEND/hmx/hexkl_attn_f16.c $BACKEND/hmx/hexkl_kv_tiles_f16.c"
 SRCS="$SRCS $BACKEND/hmx/hexkl_attn_q.c $BACKEND/hmx/hexkl_kv_q.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_attn_decode_f16.c $BACKEND/hvx/hvx_attn_decode_q.c"
 SRCS="$SRCS $BACKEND/hvx/hvx_kv_quant.c"
+SRCS="$SRCS $BACKEND/hvx/hvx_softmax_q.c $BACKEND/hmx/hexkl_attn_q2.c"
 
 "$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-clang" \
-    -m"$HEX_ARCH" -mhvx -mhvx-length=128B -G0 -O3 -fPIC -shared \
+    -m"$HEX_ARCH" -mhvx -mhvx-length=128B -mhmx -G0 -O3 -fPIC -shared \
     -Wall -Werror \
     ${HEX_EXTRA_CFLAGS:-} \
     -I generated \

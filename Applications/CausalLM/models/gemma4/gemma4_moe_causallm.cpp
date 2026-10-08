@@ -277,25 +277,7 @@ void Gemma4MoECausalLM::repack_weight() {
 #endif
 }
 
-Tensor Gemma4MoECausalLM::createFeedForwardBlock(const int layer_id,
-                                                 Tensor post_attention,
-                                                 bool is_kv_shared_layer) {
-  std::vector<std::string> pre_ffn_norm_props = {
-    withKey("name", "layer" + std::to_string(layer_id) + "_pre_ffn_norm"),
-    withKey("epsilon", std::to_string(NORM_EPS)), withKey("packed", "false")};
-  appendSkipPrefillIfNeeded(pre_ffn_norm_props, is_kv_shared_layer);
-  LayerHandle pre_ffn_norm(createLayer("rms_norm", pre_ffn_norm_props));
-  Tensor dense_input = pre_ffn_norm(post_attention);
-  Tensor dense_output =
-    createMlp(layer_id, DIM, INTERMEDIATE_SIZE, dense_input);
-
-  LayerHandle post_dense_norm(createLayer(
-    "rms_norm",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_post_ffn_norm_1"),
-     withKey("epsilon", std::to_string(NORM_EPS)),
-     withKey("packed", "false")}));
-  Tensor post_dense = post_dense_norm(dense_output);
-
+Tensor Gemma4MoECausalLM::createMoe(const int layer_id, Tensor post_attention) {
   LayerHandle pre_sparse_norm(createLayer(
     "rms_norm",
     {withKey("name", "layer" + std::to_string(layer_id) + "_pre_ffn_norm_2"),
@@ -337,18 +319,7 @@ Tensor Gemma4MoECausalLM::createFeedForwardBlock(const int layer_id,
     {withKey("name", "layer" + std::to_string(layer_id) + "_post_ffn_norm_2"),
      withKey("epsilon", std::to_string(NORM_EPS)),
      withKey("packed", "false")}));
-  Tensor post_sparse = post_sparse_norm(sparse_output);
-  LayerHandle combine_ffn(createLayer(
-    "addition",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_combine_ffn")}));
-  Tensor combined_ffn = combine_ffn({post_dense, post_sparse});
-
-  LayerHandle post_combined_norm(createLayer(
-    "rms_norm",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_post_ffn_norm"),
-     withKey("epsilon", std::to_string(NORM_EPS)),
-     withKey("packed", "false")}));
-  return post_combined_norm(combined_ffn);
+  return post_sparse_norm(sparse_output);
 }
 
 void Gemma4MoECausalLM::registerCustomLayers() {

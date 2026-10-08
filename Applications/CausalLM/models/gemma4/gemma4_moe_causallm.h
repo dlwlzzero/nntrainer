@@ -50,8 +50,9 @@ public:
   void repack_weight() override;
 
 protected:
-  Tensor createFeedForwardBlock(const int layer_id, Tensor post_attention,
-                                bool is_kv_shared_layer) override;
+  /** [#260] The MoE branch of #4415's block: pre_ffn_norm_2, the expert
+   *  layer, post_ffn_norm_2; the block sums it with the dense MLP's. */
+  Tensor createMoe(const int layer_id, Tensor post_attention) override;
 
 private:
   unsigned int num_experts = 0;

@@ -418,6 +418,10 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
  *        the bytes of every run before it.
  */
 #define HEXKL_MOE_FLAG_GEGLU 0x200000u
+/** @brief [#260] #4415's name for the same bit: its skel ORs it in from
+ *         the IDL's act argument. Their 0x80000 would alias the DMA_Q
+ *         field above (bits 19-20, #177). */
+#define HEXKL_MOE_FLAG_GELU_TANH HEXKL_MOE_FLAG_GEGLU
 
 /** @brief Every bit this build understands; moe_set_opts keeps these and
  *         drops the rest, which is what makes the echo a version check. */
