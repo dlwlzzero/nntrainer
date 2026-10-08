@@ -235,7 +235,7 @@ int main(void) {
      scales of both signs over 2^-14..2^2, weights, w_scale and bias; then
      the extremes, -127 against nibble -8 everywhere */
   {
-    int8_t q[64u * 32u];
+    int8_t q[64u * 32u] __attribute__((aligned(128))); /* read as words */
     uint16_t d[64];
     float ws[32], bs[32];
     uint32_t bad3 = 0, cases3 = 0;

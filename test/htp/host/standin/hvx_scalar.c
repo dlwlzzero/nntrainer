@@ -117,9 +117,20 @@ void hvx_scalar_gemv_m1(const hvx_q4m1_act *a, uint32_t k_tiles,
                         const uint8_t *wh, uint32_t n_col, uint32_t nt,
                         const float *w_scale, const float *bias, float *out) {
   buf(a->q, (size_t)k_tiles * 32u, 0);
+  /* the HVX column reads s8 and df, the spec q and d: a prep whose s8 or
+     df disagree with its q and d makes every output NaN */
+  int bad = 0;
+  for (uint32_t kt = 0; kt < k_tiles; ++kt) {
+    int32_t s = 0;
+    for (uint32_t k = 0; k < 32u; ++k)
+      s += a->q[kt * 32u + k];
+    const float df = cpu_det_f16_to_f32(a->d[kt]);
+    bad |= a->s8[kt] != -8 * s || memcmp(&a->df[kt], &df, sizeof df) != 0;
+  }
   for (uint32_t c = 0; c < 32u; ++c)
-    out[c] = fc_wh_m1_col_det(a->q, a->d, wh, k_tiles, n_col, nt * 32u + c,
-                              w_scale[c], bias[c]);
+    out[c] = bad ? NAN
+                 : fc_wh_m1_col_det(a->q, a->d, wh, k_tiles, n_col,
+                                    nt * 32u + c, w_scale[c], bias[c]);
   buf(out, 32u * sizeof(float), 1);
 }
 void hvx_gemm_i8i4_wh_col_m1_nopf(const hvx_q4m1_act *a, uint32_t k_tiles,

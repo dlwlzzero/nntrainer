@@ -1424,15 +1424,26 @@ static int run_fc_wh_cases(uint8_t *vtcm, size_t vtcm_bytes,
                                            (uint32_t)vtcm_bytes, 64u, 1u, &hh,
                                            x, y, NULL, scratch, 0u);
     g_tbl.slots[200].bits = 4u;
+    /* [#258] a K the Q8_0 row cannot take: K % 64 != 0, K > 8192 */
+    g_tbl.slots[200].K = 96u;
+    const int r4 = hexkl_mm_u8i4_fc_m1_run(&g_tbl, vtcm, (uint32_t)vtcm_bytes,
+                                           (uint32_t)vtcm_bytes, 96u, 1u, &hh,
+                                           x, y, NULL, scratch, 0u);
+    g_tbl.slots[200].K = 8256u;
+    const int r5 = hexkl_mm_u8i4_fc_m1_run(&g_tbl, vtcm, (uint32_t)vtcm_bytes,
+                                           (uint32_t)vtcm_bytes, 8256u, 1u, &hh,
+                                           x, y, NULL, scratch, 0u);
+    g_tbl.slots[200].K = 64u;
     g_tbl.slots[200].in_use = 0;
     free(w.nib);
     free(w.ws);
     free(w.cs);
     free(w.bias);
     printf("FC WH refusals: other K rc=%d, free handle rc=%d, 2-bit rc=%d "
-           "(want %d)\n",
-           r1, r2, r3, AEE_EBADITEM);
-    fail |= r1 != AEE_EBADITEM || r2 != AEE_EBADITEM || r3 != AEE_EBADITEM;
+           "(want %d); K 96 rc=%d, K 8256 rc=%d (want %d)\n",
+           r1, r2, r3, AEE_EBADITEM, r4, r5, AEE_EINVALIDFORMAT);
+    fail |= r1 != AEE_EBADITEM || r2 != AEE_EBADITEM || r3 != AEE_EBADITEM ||
+            r4 != AEE_EINVALIDFORMAT || r5 != AEE_EINVALIDFORMAT;
   }
   if (!fail)
     printf("FC WH BIT-IDENTICAL: hexkl_mm_u8i4_fc_m1_run vs fc_wh_det.h, %d "

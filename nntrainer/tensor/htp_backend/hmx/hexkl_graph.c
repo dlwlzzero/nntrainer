@@ -657,10 +657,11 @@ static int graph_check_wh(const htp_graph_op *op,
   for (p = 0; p < op->n_experts; ++p) {
     const uint32_t h = op->h_gu[p];
     /* [#234 P4] 4-bit only: hexkl_mm_u8i4_fc_m1_run refuses a 2-bit
-       handle on every token, so it is refused here, once */
+       handle on every token, so it is refused here, once; [#258] the
+       same for a K its Q8_0 row cannot take (hvx_q4m1_prep's) */
     if (h >= HEXKL_MM_U8I4_MAX_WEIGHTS || !tbl->slots[h].in_use ||
-        tbl->slots[h].K != op->K || tbl->slots[h].N % 32u != 0u ||
-        tbl->slots[h].bits == 2u) {
+        op->K % 64u != 0u || op->K > 8192u || tbl->slots[h].K != op->K ||
+        tbl->slots[h].N % 32u != 0u || tbl->slots[h].bits == 2u) {
       return AEE_EINVHANDLE;
     }
     sum += tbl->slots[h].N;
