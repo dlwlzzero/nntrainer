@@ -190,6 +190,7 @@
 #   E2E tokens gemma64x-fcwh==q4m1 8/8 expected_mismatch=0
 #   E2E eval gemma64x0-fcwh-<all|qkv|o|dense>-vs-q4m1 ... min_snr_db=<x>
 #   E2E tokens gemma64x0-fcwh==q4m1 <n>/8 expected_mismatch=<m>
+#   E2E fc-wh-skip refused: 'out' rc=<n>   (an unknown kind stops the bind)
 #                              (#258 step 1, printed: the fixture's own
 #                              gammas, every FC kind on WH or one alone,
 #                              NNTR_HTP_FC_WH_SKIP the others)
@@ -521,6 +522,10 @@ G_ARGS=--repack run_gemma g64x0e3w-dense g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E
 rm -f "$OUT/gx.ids"
 G_ARGS="--repack --run" run_gemma g64x0ppl g64x0 htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
 G_ARGS="--repack --run" run_gemma g64x0wppl g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
+rc_skip=0 # a kind the knob does not know is refused at the bind
+NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,out "$E2E" --model "$OUT/g64x0w" \
+  --tokenizer "$FIXG/tokenizer.json" --prompt $PROMPT --steps $STEPS \
+  --moe-engine htp --max-seq 32 --repack > "$OUT/g64x0skipbad.log" 2>&1 || rc_skip=$?
 # [plan 229] QS2CX_WH experts and their 4-bit palette twin (header above)
 "$Q" "$FIX25" -o "$OUT/htp25q2" --fc_dtype Q4_0 --moe_dtype QS2CX_WH \
   --embd_dtype Q4_0 > "$OUT/q_htp25q2.log"
@@ -781,6 +786,11 @@ for k in all:17 qkv:8 o:3 dense:6; do
   $EVAL --label "gemma64x0-fcwh-${k%:*}-vs-q4m1" --allow-diff "$OUT/ref_g64x0e3" "$OUT/ref_g64x0e3w-${k%:*}" | tail -1 || true
 done
 $EVAL --label 'gemma64x0-fcwh==q4m1' --tokens-policy "$OUT/ref_g64x0e3" "$OUT/ref_g64x0e3w-all" | tail -1 || true
+if [ $rc_skip != 0 ] && grep -q "NNTR_HTP_FC_WH_SKIP: 'out' is not qkv, o or dense" "$OUT/g64x0skipbad.log"; then
+  echo "E2E fc-wh-skip refused: 'out' rc=$rc_skip"
+else
+  echo "E2E FAIL fc-wh-skip 'out' not refused (rc=$rc_skip)"; tail -2 "$OUT/g64x0skipbad.log"; fail=1
+fi
 mkdir -p "$OUT/moe_g64e3r" "$OUT/moe_g64e3w"
 for d in g64e3r g64e3w; do
   find "$OUT/dump_$d" -maxdepth 1 -type f ! -name 'logits_*' -exec cp {} "$OUT/moe_$d/" \;

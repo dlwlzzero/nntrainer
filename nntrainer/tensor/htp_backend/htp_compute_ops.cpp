@@ -1982,6 +1982,12 @@ public:
     // a QK_NORM follows it, else "o" (out_proj, conv in_proj / out_proj).
     const char *skip_env = std::getenv("NNTR_HTP_FC_WH_SKIP");
     const std::string skip = "," + std::string(skip_env ? skip_env : "") + ",";
+    for (size_t a = 1; a < skip.size(); a = skip.find(',', a) + 1) {
+      const std::string t = skip.substr(a, skip.find(',', a) - a);
+      if (!t.empty() && t != "qkv" && t != "o" && t != "dense")
+        throw std::invalid_argument("NNTR_HTP_FC_WH_SKIP: '" + t +
+                                    "' is not qkv, o or dense");
+    }
     auto whSkip = [&](uint32_t i) {
       const htp_graph_op *op = graphOp(i);
       const char *kind =
