@@ -1258,19 +1258,31 @@ static int run_m1_cases(uint8_t *vtcm, size_t vtcm_bytes,
    two columns a lane (the arena read again), and on the feed cells the
    scoreboard: every block read only after its own lane's wait, no push
    onto a block not read whole, every push read whole by the end. Then a
-   lane wait past its guard must fail the call. */
+   lane wait past its guard must fail the call.
+   [plan 229 S2] bits2: the same cells on QS2CX_WH parts (make_weight_pal:
+   one palette a part, all different, so a part read through another's
+   LUT shows), against fc_wh_det.h's fc_wh_col2_det AND byte for byte
+   against the same call on the 4-bit handles of the same codes; bits2 = 2
+   leaves part 1 at four bits (the widths mixed in one call). */
 static int run_fc_wh_case(const char *name, uint32_t K, uint32_t n_parts,
                           const uint32_t *Np, uint8_t *vtcm, size_t vtcm_bytes,
                           hexkl_moe_scratch *scratch, uint32_t flags,
-                          int *pushed) {
+                          int *pushed, int bits2) {
+  static const int8_t pals[4][4] = {
+    {-3, -1, 0, 2}, {-2, 0, 1, 5}, {-8, -1, 1, 7}, {-1, 0, 1, 0}};
   W w[4];
-  uint32_t h[4], N = 0;
+  uint32_t h[4], h4[4], N = 0;
   rnd_state = 4242u + K + 31u * n_parts;
   for (uint32_t p = 0; p < n_parts; ++p) {
-    make_weight(200u + p, K, Np[p], &w[p]);
+    if (bits2) {
+      make_weight_pal(200u + p, 210u + p, K, Np[p], pals[p], &w[p]);
+      g_tbl.slots[210u + p].borrowed = 1; /* arena-backed, as the sidecar's */
+    } else
+      make_weight(200u + p, K, Np[p], &w[p]);
     for (uint32_t c = 0; c < Np[p]; ++c)
       w[p].cs[c] = (int32_t)(rnd() % 4001u) - 2000; /* the zp term on */
-    h[p] = 200u + p;
+    h4[p] = 200u + p;
+    h[p] = bits2 && !(bits2 == 2 && p == 1u) ? 210u + p : 200u + p;
     N += Np[p];
   }
   float *x = (float *)malloc(sizeof(float) * K);
@@ -1285,8 +1297,12 @@ static int run_fc_wh_case(const char *name, uint32_t K, uint32_t n_parts,
   for (uint32_t p = 0, o = 0; p < n_parts; o += Np[p++])
     for (uint32_t c = 0; c < Np[p]; ++c)
       want[o + c] =
-        fc_wh_col_det(q, as, az, (const uint8_t *)w[p].nib, K / 32u,
-                      Np[p] / 32u, c, w[p].cs[c], w[p].ws[c], w[p].bias[c]);
+        h[p] >= 210u
+          ? fc_wh_col2_det(q, as, az, g_tbl.slots[h[p]].wh_bytes, pals[p],
+                           K / 32u, Np[p] / 32u, c, w[p].cs[c], w[p].ws[c],
+                           w[p].bias[c])
+          : fc_wh_col_det(q, as, az, (const uint8_t *)w[p].nib, K / 32u,
+                          Np[p] / 32u, c, w[p].cs[c], w[p].ws[c], w[p].bias[c]);
   memset(got, 0xA5, sizeof(float) * N);
   score_reset(1, vtcm, vtcm_bytes);
   g_own_slice_ok = 1;
@@ -1298,14 +1314,38 @@ static int run_fc_wh_case(const char *name, uint32_t K, uint32_t n_parts,
   for (uint32_t k = 0; k < g_score_n; ++k)
     unread += g_score[k].reads != g_score[k].row_size / 256u; /* 256 B units */
   const int same = memcmp(got, want, sizeof(float) * N) == 0;
-  const int fail = rc != AEE_SUCCESS || !same || g_score_bad != 0u || unread;
+  int fail = rc != AEE_SUCCESS || !same || g_score_bad != 0u || unread;
   *pushed = (int)g_score_n;
-  printf("FC WH %s K=%u parts=%u N=%u flags=0x%x: rc=%d bit_identical=%d "
-         "pushes=%u lane_waits=%u vtcm_reads=%u unread=%u bad=%u%s\n",
-         name, K, n_parts, N, flags, rc, same, g_score_n, g_lane_waits,
-         g_score_vtcm_reads, unread, g_score_bad, fail ? "  FAIL" : "");
+  const uint32_t n_pushes = g_score_n, n_waits = g_lane_waits,
+                 n_reads = g_score_vtcm_reads, n_bad = g_score_bad;
   g_score_on = 0;
+  uint32_t mism = 0;
+  if (bits2) { /* the 4-bit handles of the same codes: the same floats */
+    float *four = (float *)malloc(sizeof(float) * N);
+    const int rc4 = hexkl_mm_u8i4_fc_m1_run(&g_tbl, vtcm, (uint32_t)vtcm_bytes,
+                                            (uint32_t)vtcm_bytes, K, n_parts,
+                                            h4, x, four, NULL, scratch, flags);
+    for (uint32_t i = 0; i < N; ++i)
+      mism += memcmp(&four[i], &got[i], sizeof(float)) != 0;
+    fail |= rc4 != AEE_SUCCESS || mism != 0u;
+    free(four);
+  }
+  printf("FC WH %s K=%u parts=%u N=%u flags=0x%x%s: rc=%d "
+         "bit_identical=%d pushes=%u lane_waits=%u vtcm_reads=%u unread=%u "
+         "bad=%u%s%s\n",
+         name, K, n_parts, N, flags,
+         bits2 == 1 ? " bits=2"
+         : bits2    ? " bits=2|4"
+                    : "",
+         rc, same, n_pushes, n_waits, n_reads, unread, n_bad,
+         bits2 ? (mism ? " vs-4bit MISMATCH" : " vs-4bit bitwise mismatches=0")
+               : "",
+         fail ? "  FAIL" : "");
   for (uint32_t p = 0; p < n_parts; ++p) {
+    if (bits2) {
+      free(g_tbl.slots[210u + p].wh_bytes);
+      g_tbl.slots[210u + p].in_use = 0;
+    }
     free(w[p].nib);
     free(w[p].ws);
     free(w[p].cs);
@@ -1342,26 +1382,42 @@ static int run_fc_wh_cases(uint8_t *vtcm, size_t vtcm_bytes,
     feed_on | HEXKL_MOE_FLAG_GEMV_ROWS1_SET | HEXKL_MOE_FLAG_GEMV_ROWS1,
     feed_on | HEXKL_MOE_FLAG_DMA_BYPASS};
   int fail = 0, pushed = 0, fed_cells = 0, small_ok = 1, cells = 0;
-  for (uint32_t s = 0; s < 4u; ++s)
-    for (uint32_t c = 0; c < 5u; ++c) {
-      fail |=
-        run_fc_wh_case(shapes[s].name, shapes[s].K, shapes[s].n, shapes[s].N,
-                       vtcm, vtcm_bytes, scratch, cfgs[c], &pushed);
-      ++cells;
-      /* the feed cells must feed, the arena cells must not */
-      if ((c >= 2u) != (pushed != 0)) {
-        printf("FC WH %s cfg %u: pushes=%d, want %s\n", shapes[s].name, c,
-               pushed, c >= 2u ? ">0" : "0");
-        fail = 1;
+  int fail2 = 0, cells2 = 0;
+  for (int b2 = 0; b2 < 3; ++b2)
+    for (uint32_t s = 0; s < 4u; ++s)
+      for (uint32_t c = 0; c < 5u; ++c) {
+        if (b2 == 2 && shapes[s].n < 2u)
+          continue; /* a mix needs two parts */
+        const int f =
+          run_fc_wh_case(shapes[s].name, shapes[s].K, shapes[s].n, shapes[s].N,
+                         vtcm, vtcm_bytes, scratch, cfgs[c], &pushed, b2);
+        /* the feed cells must feed, the arena cells must not */
+        const int feed_wrong = (c >= 2u) != (pushed != 0);
+        if (feed_wrong)
+          printf("FC WH %s cfg %u: pushes=%d, want %s\n", shapes[s].name, c,
+                 pushed, c >= 2u ? ">0" : "0");
+        if (b2) {
+          fail2 |= f || feed_wrong;
+          ++cells2;
+        } else {
+          fail |= f || feed_wrong;
+          ++cells;
+          fed_cells += pushed != 0;
+        }
       }
-      fed_cells += pushed != 0;
-    }
   /* VTCM for less than two columns a lane: the arena read, same bytes */
-  fail |= run_fc_wh_case("q|k|v small-vtcm", 2048, 3, qkv, vtcm,
-                         2u * 6u * 2048u * 16u - 1u, scratch, feed_on, &pushed);
+  fail |=
+    run_fc_wh_case("q|k|v small-vtcm", 2048, 3, qkv, vtcm,
+                   2u * 6u * 2048u * 16u - 1u, scratch, feed_on, &pushed, 0);
   small_ok = pushed == 0;
   fail |= !small_ok;
   ++cells;
+  /* ...which at two bits is room for one column a lane twice: fed */
+  fail2 |=
+    run_fc_wh_case("q|k|v small-vtcm", 2048, 3, qkv, vtcm,
+                   2u * 6u * 2048u * 16u - 1u, scratch, feed_on, &pushed, 1);
+  fail2 |= pushed == 0;
+  ++cells2;
   printf("-- injected lane timeout (the line below is expected to fail):\n");
   g_lane_timeout = 1;
   {
@@ -1400,8 +1456,8 @@ static int run_fc_wh_cases(uint8_t *vtcm, size_t vtcm_bytes,
     const int r2 = hexkl_mm_u8i4_fc_m1_run(&g_tbl, vtcm, (uint32_t)vtcm_bytes,
                                            (uint32_t)vtcm_bytes, 64u, 1u,
                                            &free_h, x, y, NULL, scratch, 0u);
-    /* [#234 P4] a 2-bit handle: refused until plan 229 S2 */
-    g_tbl.slots[200].bits = 2u;
+    /* [plan 229 S2] a handle of neither width (2-bit ones run above) */
+    g_tbl.slots[200].bits = 3u;
     const int r3 = hexkl_mm_u8i4_fc_m1_run(&g_tbl, vtcm, (uint32_t)vtcm_bytes,
                                            (uint32_t)vtcm_bytes, 64u, 1u, &hh,
                                            x, y, NULL, scratch, 0u);
@@ -1411,7 +1467,7 @@ static int run_fc_wh_cases(uint8_t *vtcm, size_t vtcm_bytes,
     free(w.ws);
     free(w.cs);
     free(w.bias);
-    printf("FC WH refusals: other K rc=%d, free handle rc=%d, 2-bit rc=%d "
+    printf("FC WH refusals: other K rc=%d, free handle rc=%d, 3-bit rc=%d "
            "(want %d)\n",
            r1, r2, r3, AEE_EBADITEM);
     fail |= r1 != AEE_EBADITEM || r2 != AEE_EBADITEM || r3 != AEE_EBADITEM;
@@ -1425,7 +1481,16 @@ static int run_fc_wh_cases(uint8_t *vtcm, size_t vtcm_bytes,
            cells, fed_cells);
   else
     printf("FC WH DIFFERS FROM fc_wh_det.h\n");
-  return fail;
+  if (!fail2)
+    printf("FC WH 2BIT BIT-IDENTICAL: hexkl_mm_u8i4_fc_m1_run on QS2CX_WH "
+           "parts vs fc_wh_det.h's fc_wh_col2_det and byte for byte vs the "
+           "4-bit handles of the same codes, %d cells (all 2-bit and 2|4 "
+           "mixed parts, a palette a part; arena x rows4/rows1, VTCM feed x "
+           "rows4/rows1/bypass, the 4-bit-short VTCM fed at 2 bits)\n",
+           cells2);
+  else
+    printf("FC WH 2BIT DIFFERS\n");
+  return fail | fail2;
 }
 
 int main(void) {

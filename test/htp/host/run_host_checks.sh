@@ -67,6 +67,30 @@ for mut in 's/      if (hexkl_dma_lane_wait(\&d\[cur\]) != 0) {/      if (0) {/'
   fi
   echo "FC WH MUTANT CAUGHT: $mut ($(grep -c 'FAIL$' "$OUT/moe_fc_mutant.log") failed cells)"
 done
+# [plan 229 S2] Two mutants of its u8i2 column branch, each of which must
+# fail FC WH 2BIT BIT-IDENTICAL: every part read through part 0's LUT (the
+# palettes differ by part), and a fed 2-bit block read from the arena
+# instead of its lane's buffer (pushed, never read).
+for mut in 's/      const uint8_t \*lut = c->lut + (size_t)p \* HVX_EXPAND_TABLE_BYTES;/      const uint8_t *lut = c->lut;/' \
+  's/      if (w->bits == 2u \&\& feed) {/      if (0) {/'; do
+  sed "$mut" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c" > "$OUT/moe_fc2_mutant.c"
+  if cmp -s "$OUT/moe_fc2_mutant.c" "$BACKEND/hmx/hexkl_mm_u8i4_moe.c"; then
+    echo "FC WH 2BIT MUTATION DID NOT APPLY: $mut"; exit 1
+  fi
+  "$cc" -std=c99 -O2 -Wall -Wextra -Wno-unused-parameter \
+    -DMOE_TAIL_MAX_ROWS=16u \
+    -I "$HERE/stub" -I "$HERE/standin" -I "$HERE/.." -I "$BACKEND/.." \
+    -I "$BACKEND/hmx" -I "$BACKEND/hvx" \
+    -o "$OUT/moe_fc2_mutant" \
+    "$HERE/moe_layer_host_check.c" "$HERE/standin/hvx_scalar.c" \
+    "$OUT/moe_fc2_mutant.c" "$BACKEND/hmx/hexkl_dma_trace.c" \
+    "$BACKEND/hvx/hvx_expand_i2i4.c" -lm
+  if MOE_CHECK_FC_WH_ONLY=1 "$OUT/moe_fc2_mutant" > "$OUT/moe_fc2_mutant.log" ||
+     ! grep -q '^FC WH 2BIT DIFFERS' "$OUT/moe_fc2_mutant.log"; then
+    echo "FC WH 2BIT MUTANT PASSED (the check is blind): $mut"; exit 1
+  fi
+  echo "FC WH 2BIT MUTANT CAUGHT: $mut ($(grep 'bits=2' "$OUT/moe_fc2_mutant.log" | grep -c 'FAIL$') failed cells)"
+done
 
 # The conv block kernel (doc 51 section 2) on the same stand-ins. It is
 # built on the MoE kernel's exported helpers, so that file links in too.

@@ -1851,7 +1851,7 @@ static void check_wh(void) {
   err |= rc != HTP_GRAPH_E_INVALIDFORMAT;
   op->feed = 0u;
   /* init: a part of another K, parts short of N, a down of another shape,
-     no chunk, a free part handle, a 2-bit part */
+     no chunk, a free part handle; a 2-bit part is taken (plan 229 S2) */
   op = htp_graph_op_at(w, fc_qkv);
   register_weight(op->h_gu[1], 64u, 64u);
   rc = (uint32_t)hexkl_graph_init(w, n, &g_tbl, g_qs, Q_SLOTS, &g);
@@ -1874,13 +1874,17 @@ static void check_wh(void) {
   rc = (uint32_t)hexkl_graph_init(w, n, &g_tbl, g_qs, Q_SLOTS, &g);
   err |= rc != HTP_GRAPH_E_INVHANDLE || g != NULL;
   g_tbl.slots[htp_graph_op_cat(w, fc_qkv)->h_gu[2]].in_use = 1;
-  /* [#234 P4] a 2-bit FC part: the kernel refuses it, so init does */
+  /* [plan 229 S2] a 2-bit FC part: hexkl_mm_u8i4_fc_m1_run's u8i2 column
+     branch takes it, so init does (it refused it until S2, #234 P4) */
   {
     hexkl_weight_u8i4 *s2 = &g_tbl.slots[htp_graph_op_cat(w, fc_qkv)->h_gu[2]];
     const uint32_t bits = s2->bits;
     s2->bits = 2u;
     rc = (uint32_t)hexkl_graph_init(w, n, &g_tbl, g_qs, Q_SLOTS, &g);
-    err |= rc != HTP_GRAPH_E_INVHANDLE || g != NULL;
+    err |= rc != 0u || g == NULL;
+    if (g != NULL)
+      hexkl_graph_free(g);
+    g = NULL;
     s2->bits = bits;
   }
   CHECK(err == 0, "WH init refusals");
@@ -1944,12 +1948,13 @@ static void check_wh(void) {
   for (i = 100u; i < 104u; ++i)
     g_tbl.slots[i].in_use = 0;
   if (err == 0)
-    printf("GRAPH FC WH OK: FC q|k|v (3 WH parts, one call, L2 bit = arena "
-           "read) and DENSE_FFN (2 chunks as experts of weight 1, M = 1) hand "
-           "the kernels the prefill's handles; WH LM_HEAD refused; init "
-           "refuses another K / short parts / a bad down / no chunk / a free "
-           "handle / a 2-bit part; uses_handle sees WH ops, uses_q4m1 skips "
-           "them\n");
+    printf(
+      "GRAPH FC WH OK: FC q|k|v (3 WH parts, one call, L2 bit = arena "
+      "read) and DENSE_FFN (2 chunks as experts of weight 1, M = 1) hand "
+      "the kernels the prefill's handles; WH LM_HEAD refused; init "
+      "refuses another K / short parts / a bad down / no chunk / a free "
+      "handle and takes a 2-bit part; uses_handle sees WH ops, uses_q4m1 skips "
+      "them\n");
 }
 
 /* ---- [plan 201 S4] Gemma 4's attention shapes -------------------------- */

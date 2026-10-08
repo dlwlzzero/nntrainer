@@ -2672,6 +2672,15 @@ out:
  * ponytail: FC_M1_BLOCKS blocks a lane, so its first block's transfer
  * (about a quarter of its slice) is exposed; the knob and the queue count
  * are what the device profile of plan 225 step 7 reads.
+ *
+ * [plan 229 S2] A part may be QS2CX_WH (bits 2, the ternary FCs): its tiles
+ * are 256 B of whPack2 codes, pushed packed (half the row, half the
+ * stride -- moe_m1_push's pattern) and read by hvx_gemm_u8i2_wh_col*
+ * through the part's own 128 B LUT (hvx_expand_i2i4_table of its palette,
+ * built once a call in the scratch). Same int32 sums as the 4-bit image of
+ * the same codes (fc_wh_det.h's fc_wh_col2_det), so the same output. Parts
+ * may mix widths; a lane's buffer is sized for the widest part, so at all
+ * two bits twice the columns fit.
  */
 #define FC_M1_MAX_LANES 8u
 /** @brief Blocks a lane cuts its slice into (fewer when VTCM is short). */
@@ -2684,7 +2693,9 @@ typedef struct {
   const hexkl_weight_u8i4 *w[HEXKL_FC_M1_MAX_PARTS];
   uint32_t t0[HEXKL_FC_M1_MAX_PARTS + 1u]; /**< part p's first unit */
   uint32_t n_parts, k_tiles, n_tiles;
-  int32_t *acc; /**< n_tiles x MOE_M1_TILE_I32 */
+  uint32_t tile_max;  /**< bytes of the widest part's tile: 512, or 256 */
+  const uint8_t *lut; /**< [plan 229 S2] part p's u8i2 LUT at p * 128 */
+  int32_t *acc;       /**< n_tiles x MOE_M1_TILE_I32 */
   float *out;
   uint8_t *vtcm; /**< NULL: no feed */
   uint32_t arena, rows1;
@@ -2721,17 +2732,19 @@ static void fc_m1_push(const fc_m1_ctx *c, hexkl_dma_desc2d *d, uint8_t *dst,
                        uint32_t b0, uint32_t b1) {
   const uint32_t p = fc_m1_part(c, b0);
   const hexkl_weight_u8i4 *w = c->w[p];
-  const uint32_t row = (b1 - b0) * WEIGHT_TILE_BYTES_U8I4;
-  hexkl_dma_lane_push2d(
-    d, NULL, dst,
-    w->wh_bytes + (size_t)(b0 - c->t0[p]) * WEIGHT_TILE_BYTES_U8I4, row,
-    (w->N / HEXKL_HMX_INT8_BLOCK_N_COL) * WEIGHT_TILE_BYTES_U8I4, row,
-    c->k_tiles, moe_weight_src_bypass(w, c->bypass), /*dst_vtcm=*/1);
+  /* at two bits a tile is 256 B of codes: rows land packed */
+  const uint32_t tb = WEIGHT_TILE_BYTES_U8I4 / (w->bits == 2u ? 2u : 1u);
+  const uint32_t row = (b1 - b0) * tb;
+  hexkl_dma_lane_push2d(d, NULL, dst,
+                        w->wh_bytes + (size_t)(b0 - c->t0[p]) * tb, row,
+                        (w->N / HEXKL_HMX_INT8_BLOCK_N_COL) * tb, row,
+                        c->k_tiles, moe_weight_src_bypass(w, c->bypass),
+                        /*dst_vtcm=*/1);
 }
 
 static void fc_m1_worker(uint32_t n_lanes, uint32_t i, void *v) {
   fc_m1_ctx *c = (fc_m1_ctx *)v;
-  const uint32_t col_bytes = c->k_tiles * WEIGHT_TILE_BYTES_U8I4;
+  const uint32_t col_bytes = c->k_tiles * c->tile_max;
   const uint32_t per_lane = (c->arena / n_lanes) & ~127u;
   const uint32_t fit = per_lane / (2u * col_bytes);
   const int feed = c->vtcm != NULL && fit != 0u;
@@ -2769,7 +2782,15 @@ static void fc_m1_worker(uint32_t n_lanes, uint32_t i, void *v) {
       const uint32_t nt = t - c->t0[p];
       const uint32_t c0 = nt * HEXKL_HMX_INT8_BLOCK_N_COL;
       int32_t *tile = c->acc + (size_t)t * MOE_M1_TILE_I32;
-      if (feed) {
+      const uint8_t *lut = c->lut + (size_t)p * HVX_EXPAND_TABLE_BYTES;
+      if (w->bits == 2u && feed) {
+        hvx_gemm_u8i2_wh_col_nopf(c->act_ah, 1u, c->k_tiles, buf[cur], b1 - b0,
+                                  t - b0, c->rows1, lut, tile);
+      } else if (w->bits == 2u) {
+        hvx_gemm_u8i2_wh_col(c->act_ah, 1u, c->k_tiles, w->wh_bytes,
+                             w->N / HEXKL_HMX_INT8_BLOCK_N_COL, nt, c->rows1,
+                             lut, tile);
+      } else if (feed) {
         hvx_gemm_u8i4_wh_col_nopf(c->act_ah, 1u, c->k_tiles, buf[cur], b1 - b0,
                                   t - b0, c->rows1, tile);
       } else {
@@ -2807,14 +2828,17 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
   }
   memset(&c, 0, sizeof(c));
   c.k_tiles = K / HEXKL_HMX_INT8_BLOCK_N_INNER;
+  c.tile_max = WEIGHT_TILE_BYTES_U8I4 / 2u;
   for (uint32_t p = 0; p < n_parts; ++p) {
     const hexkl_weight_u8i4 *w =
       h[p] < HEXKL_MM_U8I4_MAX_WEIGHTS ? &tbl->slots[h[p]] : NULL;
-    /* ponytail: four bits only; a 2-bit handle (plan 229 S2's u8i2 FC
-       column branch) is refused until that branch exists */
     if (w == NULL || !w->in_use || w->K != K || w->N == 0u ||
-        w->N % HEXKL_HMX_INT8_BLOCK_N_COL != 0u || w->bits == 2u) {
+        w->N % HEXKL_HMX_INT8_BLOCK_N_COL != 0u ||
+        (w->bits != 2u && w->bits != 4u)) {
       return AEE_EBADITEM;
+    }
+    if (w->bits == 4u) {
+      c.tile_max = WEIGHT_TILE_BYTES_U8I4;
     }
     c.w[p] = w;
     c.t0[p + 1u] = c.t0[p] + w->N / HEXKL_HMX_INT8_BLOCK_N_COL;
@@ -2826,10 +2850,12 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
   const size_t sz_ah = (size_t)c.k_tiles * HEXKL_HMX_ACTIVATION_ALIGNMENT;
   const size_t sz_rq = sizeof(float) * BR;
   const size_t sz_acc = (size_t)c.n_tiles * MOE_M1_TILE_BYTES;
+  const size_t sz_lut = (size_t)n_parts * HVX_EXPAND_TABLE_BYTES;
   int rc = hexkl_moe_scratch_reserve(
     scratch, ROUND_UP_SZ(sz_ah, MOE_SCRATCH_ALIGN) +
                2u * ROUND_UP_SZ(sz_rq, MOE_SCRATCH_ALIGN) +
-               ROUND_UP_SZ(sz_acc, MOE_SCRATCH_ALIGN));
+               ROUND_UP_SZ(sz_acc, MOE_SCRATCH_ALIGN) +
+               ROUND_UP_SZ(sz_lut, MOE_SCRATCH_ALIGN));
   if (rc != AEE_SUCCESS) {
     return rc;
   }
@@ -2838,6 +2864,16 @@ int hexkl_mm_u8i4_fc_m1_run(const hexkl_weight_u8i4_table *tbl,
   float *scale = (float *)hexkl_moe_carve(&cur, sz_rq);
   int32_t *zp = (int32_t *)hexkl_moe_carve(&cur, sz_rq);
   c.acc = (int32_t *)hexkl_moe_carve(&cur, sz_acc);
+  {
+    uint8_t *lut = (uint8_t *)hexkl_moe_carve(&cur, sz_lut);
+    for (uint32_t p = 0; p < n_parts; ++p) {
+      if (c.w[p]->bits == 2u) {
+        hvx_expand_i2i4_table(c.w[p]->pal,
+                              lut + (size_t)p * HVX_EXPAND_TABLE_BYTES);
+      }
+    }
+    c.lut = lut;
+  }
   hvx_quant_rows_u8_params(act_f32, 1u, BR, K, scale, zp, NULL); /* 1 row */
   for (uint32_t r = 1; r < 4u; ++r) {
     scale[r] = scale[0];

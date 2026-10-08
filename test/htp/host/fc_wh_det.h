@@ -30,7 +30,8 @@
 #include <math.h>
 #include <stdint.h>
 
-#include "hvx_scalar.h" /* wh_value */
+#include "hvx_expand_i2i4.h" /* whCodeByte2 / whCodeShift2 */
+#include "hvx_scalar.h"      /* wh_value */
 
 /** @brief One row of @a k floats to u8 with its scale and zero point. */
 static inline void fc_wh_quant_row_det(const float *x, uint32_t k, uint8_t *q,
@@ -74,6 +75,29 @@ static inline float fc_wh_col_det(const uint8_t *q, float scale, int32_t zp,
     for (uint32_t k = 0; k < 32u; ++k)
       s += (int32_t)q[kt * 32u + k] *
            wh_value(wh + ((size_t)kt * n_tiles + nt) * 512u, k, c);
+  return ((float)(s - zp * colsum)) * scale * w_scale + bias;
+}
+
+/** @brief [plan 229 S2] fc_wh_col_det on a QS2CX_WH weight: the column's
+ *  2-bit codes (whPack2 order, 256 B a tile) named through the palette,
+ *  then the same int32 sum in the same order and the same dequant -- so a
+ *  2-bit image and the 4-bit image of the same codes give the same float. */
+static inline float fc_wh_col2_det(const uint8_t *q, float scale, int32_t zp,
+                                   const uint8_t *codes, const int8_t *pal,
+                                   uint32_t k_tiles, uint32_t n_tiles,
+                                   uint32_t col, int32_t colsum, float w_scale,
+                                   float bias) {
+  const uint32_t nt = col / 32u, c = col % 32u;
+  int32_t s = 0;
+  for (uint32_t kt = 0; kt < k_tiles; ++kt) {
+    const uint8_t *tile = codes + ((size_t)kt * n_tiles + nt) * 256u;
+    for (uint32_t k = 0; k < 32u; ++k) {
+      const uint32_t sl =
+        (k / 8u) * 256u + c * 8u + (k % 4u) * 2u + ((k / 4u) % 2u);
+      s += (int32_t)q[kt * 32u + k] *
+           pal[(tile[whCodeByte2(sl)] >> whCodeShift2(sl)) & 3u];
+    }
+  }
   return ((float)(s - zp * colsum)) * scale * w_scale + bias;
 }
 
