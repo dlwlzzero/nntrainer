@@ -70,8 +70,20 @@ template <typename Gemma4Model>
 void setupGemma4DeterministicWeights(Gemma4Model &model) {
   model.forEachLayer(
     [](ml::train::Layer &layer, nntrainer::RunLayerContext &context, void *) {
-      if (layer.getName() == "output_of_causallm")
+      // [#260] #4415's fused layers hold their norms' gammas (and the
+      // block's scalar) beside their projections: 1 by name, the rest 0.
+      // The tied head's other weight is the embedding's.
+      auto is_one = [&context](unsigned int i) {
+        const std::string &n = context.getWeightName(i);
+        return (n.size() >= 5 && n.compare(n.size() - 5, 5, "gamma") == 0) ||
+               n.find("scalar_multiplier") != std::string::npos;
+      };
+      if (layer.getName() == "output_of_causallm") {
+        for (unsigned int i = 0; i < context.getNumWeights(); ++i)
+          if (is_one(i))
+            context.getWeight(i).setValue(1.0f);
         return;
+      }
 
       if (layer.getType() == "gemma4_moe") {
         // Keep routing deterministic while expert projections remain zero.
@@ -96,7 +108,7 @@ void setupGemma4DeterministicWeights(Gemma4Model &model) {
           continue;
 
         weight.setValue(0.0f);
-        if (layer.getType() == "rms_norm" ||
+        if (is_one(i) || layer.getType() == "rms_norm" ||
             layer.getType() == "reshaped_rms_norm") {
           weight.setValue(1.0f);
         } else if (layer.getName() == "embedding0") {
@@ -183,9 +195,14 @@ std::set<std::string> getGemma4LayerNames(causallm::json model_cfg,
   model.initializeModel();
 
   std::set<std::string> layer_names;
-  model.forEachLayer(
-    [&layer_names](ml::train::Layer &layer, nntrainer::RunLayerContext &,
-                   void *) { layer_names.insert(layer.getName()); });
+  // the layers and, since #4415's fused layers (#260), their weights
+  model.forEachLayer([&layer_names](ml::train::Layer &layer,
+                                    nntrainer::RunLayerContext &context,
+                                    void *) {
+    layer_names.insert(layer.getName());
+    for (unsigned int i = 0; i < context.getNumWeights(); ++i)
+      layer_names.insert(context.getWeightName(i));
+  });
   return layer_names;
 }
 
@@ -207,9 +224,14 @@ std::set<std::string> getGemma4MoELayerNames(causallm::json model_cfg,
   model.initializeModel();
 
   std::set<std::string> layer_names;
-  model.forEachLayer(
-    [&layer_names](ml::train::Layer &layer, nntrainer::RunLayerContext &,
-                   void *) { layer_names.insert(layer.getName()); });
+  // the layers and, since #4415's fused layers (#260), their weights
+  model.forEachLayer([&layer_names](ml::train::Layer &layer,
+                                    nntrainer::RunLayerContext &context,
+                                    void *) {
+    layer_names.insert(layer.getName());
+    for (unsigned int i = 0; i < context.getNumWeights(); ++i)
+      layer_names.insert(context.getWeightName(i));
+  });
   return layer_names;
 }
 
@@ -242,6 +264,9 @@ makeGemma4LayerDtypeMap(const causallm_test::TinyCausalLMDataType &data_type) {
       dtype_map[prefix + "_ffn_up"] = dtype;
       dtype_map[prefix + "_ffn_down"] = dtype;
       dtype_map[prefix + "_sparse_moe"] = dtype;
+      // [#260] #4415's fused projections (their gammas stay FP32)
+      dtype_map[prefix + "_qkv"] = dtype;
+      dtype_map[prefix + "_ffn"] = dtype;
       // Gemma4-specific per-layer FC weights
       // hidden_size_per_layer_input=32 ensures width is divisible by 32
       dtype_map[prefix + "_per_layer_input_gate"] = dtype;
@@ -348,10 +373,11 @@ TEST(Gemma4GraphTest, FullAttentionCanShareKeyAndValueProjection) {
   cfg["text_config"]["num_global_key_value_heads"] = 4;
 
   const auto layer_names = getGemma4LayerNames(cfg, "AttentionKEqV");
-  EXPECT_EQ(layer_names.count("layer0_wv"), 1u);
-  EXPECT_EQ(layer_names.count("layer1_wv"), 0u);
-  EXPECT_EQ(layer_names.count("layer0_v_norm"), 1u);
-  EXPECT_EQ(layer_names.count("layer1_v_norm"), 1u);
+  // [#260] q, k, v and their norms are one qkv_layer (#4415); v_from_k
+  // leaves the full layer without a v weight
+  EXPECT_EQ(layer_names.count("layer0_qkv:vweight"), 1u);
+  EXPECT_EQ(layer_names.count("layer1_qkv:vweight"), 0u);
+  EXPECT_EQ(layer_names.count("layer1_qkv:kweight"), 1u);
 }
 
 /**
@@ -368,12 +394,14 @@ TEST(Gemma4GraphTest, MoEUsesDenseAndSparseBranches) {
   const auto layer_names = getGemma4MoELayerNames(cfg, "MoEDenseSparse");
   for (int layer = 0; layer < tiny_gemma4_num_layers; ++layer) {
     const std::string prefix = "layer" + std::to_string(layer);
-    EXPECT_EQ(layer_names.count(prefix + "_ffn_down"), 1u);
+    // [#260] the dense branch is one dense_ffn with its norms (#4415); the
+    // branch sum, post_ffn_norm and the residual are one residual_add
+    EXPECT_EQ(layer_names.count(prefix + "_ffn:down"), 1u);
     EXPECT_EQ(layer_names.count(prefix + "_sparse_moe"), 1u);
-    EXPECT_EQ(layer_names.count(prefix + "_post_ffn_norm_1"), 1u);
+    EXPECT_EQ(layer_names.count(prefix + "_ffn:out_norm_gamma"), 1u);
     EXPECT_EQ(layer_names.count(prefix + "_pre_ffn_norm_2"), 1u);
     EXPECT_EQ(layer_names.count(prefix + "_post_ffn_norm_2"), 1u);
-    EXPECT_EQ(layer_names.count(prefix + "_combine_ffn"), 1u);
+    EXPECT_EQ(layer_names.count(prefix + "_post_ffn_norm"), 1u);
   }
 }
 
