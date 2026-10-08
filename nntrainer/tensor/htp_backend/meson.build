@@ -2,12 +2,14 @@ htp_backend_sources = [
   'htp_backend.cpp',
   'htp_compute_ops.cpp',
   'htp_trace.cpp',
+  'htp_thermal.cpp',
 ]
 
 htp_backend_headers = [
   'htp_backend.h',
   'htp_rpcmem.h',
   'htp_trace.h',
+  'htp_thermal.h',
 ]
 
 foreach s : htp_backend_sources

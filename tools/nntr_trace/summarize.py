@@ -58,6 +58,7 @@ def parse_events(doc):
 
   tmin, tmax = math.inf, -math.inf
   stacks, asyncs = {}, {}
+  counters = {}  # (pid, name) -> {"pid", "name", "pts": [[ts, value], ...]}
 
   def push(th, x):
     nonlocal tmin, tmax
@@ -95,8 +96,16 @@ def parse_events(doc):
       elif e.get("id") in am:
         b = am.pop(e["id"])
         push(th, Ev(dict(b, ph="X", dur=e["ts"] - b["ts"])))
+    elif ph == "C":
+      c = counters.setdefault((e["pid"], e["name"]),
+                              {"pid": e["pid"], "name": e["name"], "pts": []})
+      c["pts"].append([e["ts"], float(next(iter((e.get("args") or {}).values()), 0))])
   if not math.isfinite(tmin):
     tmin = 0.0
+  for c in counters.values():
+    for p in c["pts"]:
+      p[0] -= tmin
+    c["pts"].sort(key=lambda p: p[0])
   plist = sorted(procs.values(), key=lambda p: p["sort"])
   for p in plist:
     p["tlist"] = sorted(p["threads"].values(), key=lambda t: t["sort"])
@@ -121,7 +130,39 @@ def parse_events(doc):
                   key=lambda e: e["ts"])
   return {"procs": plist, "tmin": 0.0, "tmax": tmax - tmin, "all": all_ev,
           "md": (doc.get("metadata") if isinstance(doc, dict) else None) or {},
-          "phases": phases}
+          "phases": phases, "counters": list(counters.values())}
+
+
+# ---------- thermal counters (htp_thermal.h, pid 3) ----------
+def thermal(model, r, tok):
+  """Per-source first/max/last/delta inside the range, and the first moment a
+  cooling device left state 0 with the mean decode-token wall before/after it.
+  Temperature is a proxy for which block works and when the kernel throttles;
+  it is not energy. None when the trace carries no counters."""
+  srcs = []
+  throttle = None
+  for c in model.get("counters", []):
+    if not c["name"].startswith(("temp ", "throttle ")):
+      continue
+    pts = [p for p in c["pts"] if r["t0"] <= p[0] <= r["t1"]]
+    if not pts:
+      continue
+    vals = [p[1] for p in pts]
+    srcs.append({"name": c["name"], "samples": len(pts), "first": vals[0],
+                 "max": max(vals), "last": vals[-1], "delta": vals[-1] - vals[0]})
+    if c["name"].startswith("throttle "):
+      hit = next((p for p in pts if p[1] > 0), None)
+      if hit and (throttle is None or hit[0] < throttle["t_us"]):
+        throttle = {"name": c["name"], "t_us": hit[0], "state": hit[1]}
+  if not srcs:
+    return None
+  if throttle:
+    dec = [x for x in tok if x["phase"] == "decode"]
+    before = [x["wall"] for x in dec if x["e"]["ts"] + x["e"]["dur"] <= throttle["t_us"]]
+    after = [x["wall"] for x in dec if x["e"]["ts"] >= throttle["t_us"]]
+    throttle["decode_wall_us_before"] = sum(before) / len(before) if before else None
+    throttle["decode_wall_us_after"] = sum(after) / len(after) if after else None
+  return {"sources": srcs, "throttle": throttle}
 
 
 # ---------- interval math (same as the viewer) ----------
@@ -424,6 +465,7 @@ def metrics_json(model, r):
                    "worst_tail": g["worst"]["tail"], "min_units": g["min_units"],
                    "few_units": g["few_units"]} for g in pool_tail(r, all_ev, md)["groups"]],
     "hmx_peak_tops": md.get("hmx_peak_tops"),
+    "thermal": thermal(model, r, tok),
   }
 
 

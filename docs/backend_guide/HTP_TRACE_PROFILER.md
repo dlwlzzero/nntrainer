@@ -76,6 +76,12 @@ probe point and changes only what it writes.
    visible span on the host with `args.fallback="htp_disabled"`, never a
    silent flat line.
 7. Works for CPU-only, QNN-layer and HTP-layer models with the same file.
+8. Thermal counters: while the trace is on, `/sys/class/thermal` zones and
+   cooling-device states are sampled on a background thread and written as
+   pid 3 counter tracks (`htp_thermal.{h,cpp}`); the only block-level signal a
+   production phone gives a shell user. Not energy: a proxy for which block
+   works and when the kernel throttles. `summarize.py` reports per-source
+   rise and the first throttle moment per range.
 
 ## 3. Architecture
 

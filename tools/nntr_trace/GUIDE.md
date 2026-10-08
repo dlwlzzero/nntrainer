@@ -148,6 +148,30 @@ python3 tools/nntr_trace/qnn_optrace_to_nntr.py qnn_opTrace.json -o qnn.json --t
 
 ---
 
+### 3.4 온도 트랙 (`NNTR_TRACE`가 켜지면 자동)
+
+production 폰은 shell 권한으로 전력(rail) 카운터를 주지 않지만, 온도 센서와
+쓰로틀링 상태는 전부 읽힙니다. `NNTR_TRACE`가 켜져 있으면 별도 스레드가
+`/sys/class/thermal`을 200 ms마다 읽어 `trace.json`에 **pid 3 "thermal (sysfs)"**
+카운터 트랙으로 같이 씁니다. 뷰어에서는 토큰 구간 아래 선 그래프로 보이고,
+`summarize.py` 출력의 `thermal` 절에 구간별 시작/최고/마지막/상승량과, cooling
+device가 처음 0을 벗어난 시각 및 그 전후 decode 토큰 평균 시간이 나옵니다.
+
+```bash
+# 기본: nsphmx-*, nsphvx-* (NPU HMX/HVX), cpuss-*, gpuss-0, ddr, battery 온도와
+#       cdsp, cdsp_sw_hmx, cdsp_sw_hvx, cpu-cluster*, cpufreq-cpu*, gpu 쓰로틀 단계
+NNTR_TRACE=/data/local/tmp/trace.json ./nntrainer_causallm ./models/<model>
+# 센서 고르기 (fnmatch 패턴, 쉼표 구분; `*`는 전부), 주기 바꾸기
+NNTR_TRACE_THERMAL='nsphmx-*,cpuss-*' NNTR_TRACE_THERMAL_MS=100 NNTR_TRACE=... ./nntrainer_causallm ...
+# 긴 실행: 호출 기록은 NNTR_TRACE_MAX_CALLS(기본 200000, 약 40 MB)에서 멈추고
+# phase 구간과 온도 카운터만 계속 쌓입니다. 잘린 수는 metadata.dropped.host.
+```
+
+- 온도는 발열과 방열의 결과라 에너지(µJ)로 환산할 수 없습니다. 같은 시작 온도에서
+  설정 A/B를 비교하는 용도이고, "언제부터 NPU가 쓰로틀되는가"는 직접 답합니다.
+- 배터리 전류는 프로세스가 읽을 권한이 없어 넣지 않았습니다(`htp_thermal.h` 상단 주석).
+- 카운터 이름은 `temp <type>`(°C), `throttle <type>`(cooling cur_state)입니다.
+
 ## 4. 뷰어 사용법
 
 ### 조작

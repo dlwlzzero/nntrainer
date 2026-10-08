@@ -82,3 +82,21 @@ class HtpTraceSelftest(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class ThermalCounters(unittest.TestCase):
+  """The self-test driver runs with NNTR_TRACE_THERMAL=* on the build host, so
+  the fixture carries that host's /sys/class/thermal zones as pid-3 counters."""
+
+  def test_counters_and_summary(self):
+    m, model = metrics_of(os.path.join(DATA, "htp_trace_selftest.json"))
+    ctr = [c for c in model["counters"] if c["pid"] == 3]
+    self.assertTrue(ctr, "no pid-3 counters in the fixture")
+    self.assertTrue(all(c["name"].startswith(("temp ", "throttle ")) for c in ctr))
+    th = m["thermal"]
+    self.assertEqual(len(th["sources"]), len(ctr))
+    s = th["sources"][0]
+    for k in ("name", "first", "max", "last", "delta", "samples"):
+      self.assertIn(k, s)
+    self.assertGreaterEqual(s["samples"], 2)
+    self.assertIn("throttle", th)  # None when no cooling device left state 0

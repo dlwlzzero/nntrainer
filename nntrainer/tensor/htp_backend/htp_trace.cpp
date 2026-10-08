@@ -32,6 +32,7 @@ namespace {
  *  (DMA 256, HVX 512.., HMX 768) so the viewer lines the two up. */
 constexpr int PID_HOST = 1;
 constexpr int PID_DSP = 2;
+constexpr int PID_THERMAL = 3; /**< htp_thermal.h counters */
 constexpr uint32_t TID_SEAM = 20;
 constexpr uint32_t TID_REGISTER = 30;
 constexpr uint32_t TID_DSP_MAIN = 1;
@@ -175,8 +176,14 @@ HtpTrace::HtpTrace() {
   const char *comma = std::strchr(env, ',');
   path_ = comma ? std::string(env, comma - env) : std::string(env);
   enabled_ = !path_.empty();
+  if (!enabled_)
+    return;
   epoch_us_ = nowUs();
+  const char *cap = std::getenv("NNTR_TRACE_MAX_CALLS");
+  if (cap && std::atol(cap) > 0)
+    max_calls_ = static_cast<size_t>(std::atol(cap));
   calls_.reserve(1 << 14);
+  thermal_.start();
 }
 
 HtpTrace::~HtpTrace() { write(); }
@@ -228,6 +235,10 @@ void HtpTrace::call(Kind kind, unsigned M, unsigned K, unsigned N,
     std::memcpy(c.stage, stage_us, n_stages * sizeof(uint32_t));
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (calls_.size() >= max_calls_) {
+    ++dropped_calls_;
+    return;
+  }
   calls_.push_back(c);
 }
 
@@ -348,6 +359,7 @@ void HtpTrace::write() {
   if (!enabled_ || written_)
     return;
   written_ = true;
+  thermal_.stop();
   FILE *f = std::fopen(path_.c_str(), "w");
   if (f == nullptr) {
     std::fprintf(stderr, "[HTP-TRACE] cannot open %s for writing\n",
@@ -461,8 +473,10 @@ void HtpTrace::write() {
     w.argU("bytes", c.bytes_in);
     w.end();
     std::snprintf(name, sizeof(name), "return %s", L.entry);
+    // transport is already clamped at 0 when the DSP reports more time than
+    // the host saw; without this the unsigned subtraction wraps to ~2^64 us.
     w.begin(PID_HOST, TID_SEAM, name, "host.rpc", c.t0 + half + dsp,
-            c.host_us - half - dsp);
+            c.host_us > half + dsp ? c.host_us - half - dsp : 0);
     w.argS("op", L.op);
     w.argU("bytes", c.bytes_out);
     w.end();
@@ -485,21 +499,28 @@ void HtpTrace::write() {
                      "lane overlap at this level)");
     w.end();
 
-    // stages back to back on their lanes
+    // stages back to back on their lanes, clamped to the entry span: the
+    // probes can overlap (a stage timed inside another), so their sum may
+    // exceed dsp_total and the sequential layout would otherwise run past
+    // the call. The raw value stays in args.
+    const uint64_t d_end = d0 + dsp;
     uint64_t t = d0, sum = 0;
     uint64_t under_t0 = d0, under_us = 0; /**< where under_slot landed */
     for (unsigned i = 0; i < L.n_stages; ++i) {
       const StageDesc &s = L.stages[i];
       if (s.slot >= c.n_stages)
         continue;
-      const uint64_t us = c.stage[s.slot];
-      if (us == 0)
+      const uint64_t raw_us = c.stage[s.slot];
+      if (raw_us == 0 || t >= d_end)
         continue;
+      const uint64_t us = raw_us < d_end - t ? raw_us : d_end - t;
       const LaneInfo &lane = kLane[s.lane];
       w.begin(PID_DSP, lane.tid, s.name, lane.cat, t, us);
       w.argS("op", L.op);
       w.argS("stage", s.name);
       w.argS("class", s.cls);
+      if (us != raw_us)
+        w.argU("clamped_from_us", raw_us);
       if (lane.engine)
         w.argS("engine", lane.engine);
       const uint64_t e = elemsOf(s.elems, c.M, c.K, c.N, c.n_handles);
@@ -574,6 +595,31 @@ void HtpTrace::write() {
     }
   }
 
+  // --- thermal counters (pid 3): one C event per sample; the viewer and
+  // summarize.py read the first args value ---
+  const auto &tsrc = thermal_.sources();
+  const auto &tsmp = thermal_.samples();
+  if (!tsmp.empty()) {
+    w.meta(PID_THERMAL, -1, "process_name", "thermal (sysfs)", 2);
+    for (const HtpThermal::Sample &s : tsmp) {
+      const HtpThermal::Source &src = tsrc[s.src];
+      w.sep();
+      if (src.is_temp)
+        std::fprintf(f,
+                     "{\"ph\":\"C\",\"pid\":%d,\"name\":\"%s\",\"ts\":%.3f,"
+                     "\"args\":{\"C\":%.3f}}",
+                     PID_THERMAL, src.name.c_str(),
+                     Writer::rel(s.t_us, epoch_us_),
+                     static_cast<double>(s.value) / 1000.0);
+      else
+        std::fprintf(f,
+                     "{\"ph\":\"C\",\"pid\":%d,\"name\":\"%s\",\"ts\":%.3f,"
+                     "\"args\":{\"state\":%d}}",
+                     PID_THERMAL, src.name.c_str(),
+                     Writer::rel(s.t_us, epoch_us_), static_cast<int>(s.value));
+    }
+  }
+
   std::fprintf(
     f,
     "\n],\"metadata\":{\"tool\":\"htp_trace (host per-call timing; DSP stage "
@@ -583,22 +629,34 @@ void HtpTrace::write() {
     "\"dsp_clock_mhz\":1200,\"dsp_clock_mhz_note\":\"assumed for "
     "cycles/element; no PMU cycles at this level\","
     "\"hvx_threads\":6,\"budgets\":{\"VTCM "
-    "(KB)\":8192},\"dropped\":{\"host\":0,\"dsp\":0},"
+    "(KB)\":8192},\"dropped\":{\"host\":%llu,\"dsp\":0},"
     "\"clock_sync\":{\"method\":\"host clock only; DSP spans placed inside "
     "their host call\",\"offset_us\":0,\"rtt_us\":0,\"violations\":0},"
-    "\"calls\":%llu,\"untimed_calls\":%llu}}\n",
-    profile_level_, qos_mode_, static_cast<unsigned long long>(calls_.size()),
+    "\"calls\":%llu,\"untimed_calls\":%llu,\"max_calls\":%llu,"
+    "\"thermal\":{\"sources\":%llu,\"samples\":%llu,\"interval_ms\":%u,"
+    "\"dropped\":%llu}}}\n",
+    profile_level_, qos_mode_, static_cast<unsigned long long>(dropped_calls_),
+    static_cast<unsigned long long>(calls_.size()),
     static_cast<unsigned long long>([&] {
       uint64_t n = 0;
       for (const Call &c : calls_)
         if (!c.timed)
           ++n;
       return n;
-    }()));
+    }()),
+    static_cast<unsigned long long>(max_calls_),
+    static_cast<unsigned long long>(tsrc.size()),
+    static_cast<unsigned long long>(tsmp.size()), thermal_.intervalMs(),
+    static_cast<unsigned long long>(thermal_.dropped()));
   std::fclose(f);
-  std::fprintf(stderr, "[HTP-TRACE] wrote %s: %llu calls, %llu spans\n",
+  std::fprintf(stderr,
+               "[HTP-TRACE] wrote %s: %llu calls (%llu dropped past the cap), "
+               "%llu spans, %llu thermal samples from %llu sources\n",
                path_.c_str(), static_cast<unsigned long long>(calls_.size()),
-               static_cast<unsigned long long>(spans_.size()));
+               static_cast<unsigned long long>(dropped_calls_),
+               static_cast<unsigned long long>(spans_.size()),
+               static_cast<unsigned long long>(tsmp.size()),
+               static_cast<unsigned long long>(tsrc.size()));
 }
 
 } // namespace nntrainer

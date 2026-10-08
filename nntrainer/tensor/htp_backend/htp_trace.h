@@ -40,7 +40,11 @@
  *
  * Cost when off: one static bool test per call. When on: one 200-byte record
  * appended under a mutex per call (a decode token is ~140 calls), written
- * once at exit.
+ * once at exit. NNTR_TRACE_MAX_CALLS (default 200000, ~40 MB of JSON) caps
+ * the call records so a long run keeps its phase spans and thermal counters
+ * instead of growing without bound; calls past the cap are counted in
+ * metadata.dropped.host. Thermal counters (htp_thermal.h) ride along as
+ * pid 3 whenever the trace is on.
  */
 
 #ifndef __HTP_TRACE_H__
@@ -52,6 +56,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "htp_thermal.h"
 
 namespace nntrainer {
 
@@ -146,8 +152,11 @@ private:
   int profile_level_ = 0;
   int qos_mode_ = 0;
   uint64_t epoch_us_ = 0; /**< nowUs() at construction; ts are relative */
+  size_t max_calls_ = 200000;
+  uint64_t dropped_calls_ = 0;
   std::vector<Call> calls_;
   std::vector<Span> spans_;
+  HtpThermal thermal_; /**< owned here so it outlives nothing it needs */
 };
 
 } // namespace nntrainer
