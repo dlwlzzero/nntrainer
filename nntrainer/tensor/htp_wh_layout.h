@@ -125,32 +125,47 @@ inline void whUnpack(const uint8_t *wh, uint32_t K, uint32_t N, int8_t *rm) {
 }
 
 /**
- * @brief The FC WH sidecar (#225): the Q4_0 model's FC weights quantized a
- *        second time, from the same f32, as QS4CX_WH images, so the HTP
- *        prefill reads them into the arena instead of re-quantizing the
- *        Q4_0 bytes at load.
+ * @brief The FC WH sidecar (#225): the model's FC weights as QS4CX_WH images
+ *        (bits 4) or QS2CX_WH images (bits 2, plan 229 S2), so the HTP reads
+ *        them into the arena instead of re-quantizing the main file's bytes
+ *        at load.
  *
  * File: FCWH_MAGIC, uint32 version (FCWH_VERSION), uint32 count, count
- * FcWhEntry, zero padding to 4 KiB, then the images back to back, each a
- * QS4CX_WH tensor as nntr_quantize_stream writes it: whBytes(K, N) of
- * nibbles, N f32 scales, N f32 column sums. Little-endian, as written.
- * The packer writes nntr_config.json's fc_wh_format = FCWH_FORMAT; a
- * change to any of this bumps both.
+ * FcWhEntry, zero padding to 4 KiB, then the images back to back, each the
+ * tensor nntr_quantize_stream writes for that dtype: at bits 4 whBytes(K, N)
+ * of nibbles, at bits 2 whBytes(K, N) / 2 of whPack2 codes and the four
+ * int8 palette entries; then N f32 scales, N f32 column sums. Little-endian,
+ * as written. The packer writes nntr_config.json's fc_wh_format =
+ * FCWH_FORMAT; a change to any of this bumps both (version 1 had no bits
+ * field and 104-byte entries, and is refused).
  */
 constexpr char FCWH_MAGIC[8] = {'N', 'N', 'T', 'R', 'F', 'C', 'W', 'H'};
-constexpr uint32_t FCWH_VERSION = 1u;
-constexpr const char *FCWH_FORMAT = "QS4CX_WH/1";
+constexpr uint32_t FCWH_VERSION = 2u;
+constexpr const char *FCWH_FORMAT = "QSxCX_WH/2";
 
 /** @brief One sidecar index entry. */
 struct FcWhEntry {
-  char name[64];   /**< the packer's tensor name, NUL-padded */
-  uint32_t K, N;   /**< the weight as the matmul sees it, [K x N] */
-  uint64_t key;    /**< fcWhKey of the weight's Q4_0 bytes in the main file */
-  uint64_t q4_off; /**< where those Q4_0 bytes start in the main file */
-  uint64_t off;    /**< where the image starts in this file */
-  uint64_t bytes;  /**< the image's length */
+  char name[64];     /**< the packer's tensor name, NUL-padded */
+  uint32_t K, N;     /**< the weight as the matmul sees it, [K x N] */
+  uint32_t bits;     /**< 4 (QS4CX_WH image) or 2 (QS2CX_WH image) */
+  uint32_t reserved; /**< 0 */
+  uint64_t key;      /**< fcWhKey of the weight's bytes in the main file */
+  uint64_t q4_off;   /**< where those bytes start in the main file */
+  uint64_t off;      /**< where the image starts in this file */
+  uint64_t bytes;    /**< the image's length, fcWhImageBytes */
 };
-static_assert(sizeof(FcWhEntry) == 104, "FcWhEntry is a file layout");
+static_assert(sizeof(FcWhEntry) == 112, "FcWhEntry is a file layout");
+
+/** @brief Bytes of an image's codes, palette included (bits 2: four int8
+ *  after the codes); its N scales and N column sums follow. */
+inline uint64_t fcWhCodeBytes(uint32_t K, uint32_t N, uint32_t bits) {
+  return bits == 2u ? whBytes(K, N) / 2u + 4u : whBytes(K, N);
+}
+
+/** @brief An image's whole length at @a bits. */
+inline uint64_t fcWhImageBytes(uint32_t K, uint32_t N, uint32_t bits) {
+  return fcWhCodeBytes(K, N, bits) + 8u * static_cast<uint64_t>(N);
+}
 
 /** @brief Byte offset of the first image: the index rounded up to 4 KiB. */
 inline uint64_t fcWhHeaderBytes(uint32_t count) {
@@ -159,7 +174,8 @@ inline uint64_t fcWhHeaderBytes(uint32_t count) {
 }
 
 /**
- * @brief Names a Q4_0 weight by its bytes: FNV-1a 64 over the length and
+ * @brief Names a main-file weight (Q4_0, or QS4CX codes + scales) by its
+ *        bytes: FNV-1a 64 over the length and
  *        the first and last 4 KiB.
  *
  * The loader finds a weight's image by this, with no layer or tensor names

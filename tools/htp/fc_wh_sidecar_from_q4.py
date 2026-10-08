@@ -2,24 +2,32 @@
 # SPDX-License-Identifier: Apache-2.0
 ##
 # @file    fc_wh_sidecar_from_q4.py
-# @brief   Write the FC WH sidecar (#225, QS4CX_WH/1) of a Gemma 4 MoE .bin
-#          whose FC weights exist only as Q4_0 (no f32 source)
+# @brief   Write the FC WH sidecar (#225, QSxCX_WH/2) of a Gemma 4 MoE .bin
+#          whose FC weights exist only as Q4_0 or QS4CX (no f32 source)
 # @author  dlwlzzero <dlwlzzero@gmail.com>
 #
 # nntr_quantize_stream --fc_wh_sidecar writes the sidecar from the f32
-# source. The 26B dummy (#250's repack) has no f32 source: its FCs are the
-# external converter's ARM Q4_0 (q4_0x4). This tool reads those bytes and
-# re-quantizes them per column, through htp_qs4cx_from_q4_0x4 -- the same
-# function the HTP backend runs at load when no sidecar serves a weight
-# (qs4cxFromModelQ4_0) -- then whPack, so each image is the one the requant
-# path would build in memory. The index (names, K, N, fcWhKey of the Q4_0
-# bytes, offsets) is the one quantize_stream writes for the same main file.
-# The main file is only read.
+# source. A main file with no f32 source beside it takes this tool:
+#   QS4CX FCs (plan 229 S2 option A, the ternary checkpoint): a REPACK,
+#     lossless -- the codes and scales the main file holds, whPack'ed;
+#   ARM Q4_0 FCs (q4_0x4, the 26B dummy of #250): a RE-QUANTIZATION, LOSSY
+#     -- per-32-block fp16 scales to per-column int4 through
+#     htp_qs4cx_from_q4_0x4, the function the HTP backend runs at load when
+#     no sidecar serves a weight (qs4cxFromModelQ4_0), so the image is the
+#     one that requant path would build; a second rounding on top of Q4_0's
+#     own (LEDGER rule 73, the P4 sitting's accuracy flag).
+# Each image goes out at two bits (QS2CX_WH, palette {-1, 0, +1, 0}) when
+# every code of the weight is in {-1, 0, +1}, else at four -- the writer's
+# rule; --bits4 writes every image at four bits (the 2-bit images' twin).
+# The index (names, K, N, bits, fcWhKey of the main file's bytes, offsets)
+# is the one quantize_stream writes for the same main file. The main file
+# is only read.
 #
 #   fc_wh_sidecar_from_q4.py <model dir> <out sidecar.bin> [--lib <dir>]
-#                            [--check <quantize_stream's sidecar>]
+#                            [--bits4] [--check <quantize_stream's sidecar>]
 #
-# <model dir> holds nntr_config.json (fc_layer_dtype Q4_0) and config.json.
+# <model dir> holds nntr_config.json (fc_layer_dtype Q4_0 or QS4CX) and
+# config.json.
 # --lib: the host build's nntrainer/ (libnntrainer.so), default build/.
 # --check: compare with a sidecar quantize_stream wrote from the f32 source
 # for the same main file (the gemma64 fixture quantized with --isa arm):
@@ -30,7 +38,7 @@
 # fc_wh_format, the build's FCWH_FORMAT); the model's config is not edited.
 #
 # ponytail: text-only Gemma 4 MoE (writeGemma4Moe's order, tied head, no
-# per-layer input), ARM Q4_0 FCs, QS4CX_WH / QS2CX_WH experts. Anything else
+# per-layer input), ARM Q4_0 or QS4CX FCs, QS4CX_WH / QS2CX_WH experts. Anything else
 # stops here or fails the size check. Upgrade: a --fc_wh_from_q4 mode in
 # nntr_quantize_stream's own walk.
 
@@ -42,7 +50,8 @@ import sys
 import tempfile
 
 
-FC_BYTES = {"Q4_0": lambda k, n: k * n // 32 * 18, "FP32": lambda k, n: 4 * k * n}
+FC_BYTES = {"Q4_0": lambda k, n: k * n // 32 * 18, "FP32": lambda k, n: 4 * k * n,
+            "QS4CX": lambda k, n: k * n // 2 + 4 * n}
 
 
 def expert(k, n, dtype):
@@ -111,14 +120,17 @@ def main():
     p.add_argument("output")
     p.add_argument("--lib", default=os.path.join(root, "build", "nntrainer"))
     p.add_argument("--check")
+    p.add_argument("--bits4", action="store_true",
+                   help="every image at four bits (the 2-bit images' twin)")
     a = p.parse_args()
     with open(os.path.join(a.model_dir, "nntr_config.json")) as f:
         nntr = json.load(f)
     with open(os.path.join(a.model_dir, "config.json")) as f:
         cfg = json.load(f)
     main_bin = os.path.join(a.model_dir, nntr["model_file_name"])
-    if nntr["fc_layer_dtype"] != "Q4_0" or nntr["embedding_dtype"] != "Q4_0":
-        sys.exit("fc_layer_dtype and embedding_dtype must be Q4_0")
+    if nntr["fc_layer_dtype"] not in ("Q4_0", "QS4CX") or \
+            nntr["embedding_dtype"] != "Q4_0":
+        sys.exit("fc_layer_dtype must be Q4_0 or QS4CX, embedding_dtype Q4_0")
     rows, size = fcs(cfg, nntr)
     if os.path.getsize(main_bin) != size:
         sys.exit(f"{main_bin} is {os.path.getsize(main_bin)} B, the layout says {size}")
@@ -131,7 +143,10 @@ def main():
                         os.path.join(here, "fc_wh_sidecar_from_q4.cc"),
                         "-L", a.lib, "-lnntrainer", "-Wl,-rpath," + os.path.abspath(a.lib)],
                        check=True)
-        cmd = [exe, main_bin, tab, a.output] + ([a.check] if a.check else [])
+        cmd = [exe, main_bin, tab, a.output]
+        cmd += ["--qs4cx"] if nntr["fc_layer_dtype"] == "QS4CX" else []
+        cmd += ["--bits4"] if a.bits4 else []
+        cmd += [a.check] if a.check else []
         return subprocess.run(cmd).returncode
 
 

@@ -164,6 +164,9 @@ TEST(Lfm2MoeDifferentialTest, FcWhSidecarMatchesWhQuantize) {
       << x.name;
     EXPECT_EQ(x.key, nntrainer::fcWhKey(q4.data() + x.q4_off, q4_len))
       << x.name;
+    // [plan 229 S2] no LFM FC is ternary: every image stays at four bits
+    EXPECT_EQ(x.bits, 4u) << x.name;
+    EXPECT_EQ(x.bytes, nntrainer::fcWhImageBytes(x.K, x.N, 4u)) << x.name;
     q = x.q4_off + q4_len;
     w += x.bytes;
   }

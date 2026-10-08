@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -440,6 +441,48 @@ const char *isaName(ml::train::ISA isa) {
 /** @brief Packed int4 bytes for one QS4CX output channel of @a columns */
 size_t qs4cxRowBytes(size_t columns) { return (columns + 1) / 2; }
 
+/**
+ * @brief [plan 229 S2] A ternary row stored exactly: codes {-1, 0, +1} and
+ *        the row's magnitude as its scale, in place of quant_qs4cx_f32's.
+ *
+ * quant_qs4cx_f32 maps a row's range onto [-8, 7], so a ternary row
+ * {-a, 0, +a} comes out as codes {-8, 0, 7} at scale 2a / 15 -- +a read
+ * back as 0.93a. A row whose values are {-a, 0, +a} (any subset, a > 0,
+ * each within 1e-6 a) gets codes sign(x) and scale a instead: lossless
+ * for a ternary x scale source (option A1, plan 229 section 8.2), and the codes
+ * the FC WH sidecar's 2-bit rule looks for. Every other row is left as
+ * the quantizer wrote it, so a non-ternary tensor is byte-identical.
+ *
+ * @param src     rows x columns f32, row-major (the transposed weight)
+ * @param nibbles rows x qs4cxRowBytes(columns), code + 8, even k low
+ * @param scales  rows f32 dequant multipliers (quant_qs4cx_f32's)
+ */
+void ternaryRowsExact(const float *src, size_t rows, size_t columns,
+                      uint8_t *nibbles, float *scales) {
+  const size_t stride = qs4cxRowBytes(columns);
+  for (size_t n = 0; n < rows; ++n) {
+    const float *x = src + n * columns;
+    float a = 0.0f;
+    for (size_t k = 0; k < columns; ++k)
+      a = std::max(a, std::fabs(x[k]));
+    bool ternary = a > 0.0f;
+    // within 1e-6 of a: an f32 "ternary x scale" product from a bf16 or
+    // f64 source can differ from a in the last bits
+    const float tol = a * 1e-6f;
+    for (size_t k = 0; k < columns && ternary; ++k)
+      ternary = std::fabs(x[k]) <= tol || std::fabs(std::fabs(x[k]) - a) <= tol;
+    if (!ternary)
+      continue;
+    uint8_t *row = nibbles + n * stride;
+    std::fill(row, row + stride, uint8_t{0});
+    for (size_t k = 0; k < columns; ++k) {
+      const uint8_t code = x[k] > tol ? 9u : x[k] < -tol ? 7u : 8u;
+      row[k >> 1] |= static_cast<uint8_t>(code << ((k & 1u) ? 4 : 0));
+    }
+    scales[n] = a;
+  }
+}
+
 size_t quantizedSize(DType dtype, size_t rows, size_t columns, bool repack,
                      const std::string &name) {
   switch (dtype) {
@@ -862,10 +905,17 @@ private:
     e.q4_off = static_cast<uint64_t>(main_off);
     e.off = static_cast<uint64_t>(sidecar_->tellp());
     out_ = sidecar_;
+    fcwh_image_ = true;
     writeQuantized(transposed, N, K, DType::QS4CX_WH, true, name);
+    fcwh_image_ = false;
     flushQs4cxScales(DType::QS4CX_WH, name);
     out_ = &output_;
+    e.bits = fcwh_bits_;
     e.bytes = static_cast<uint64_t>(sidecar_->tellp()) - e.off;
+    if (e.bytes != nntrainer::fcWhImageBytes(e.K, e.N, e.bits))
+      throw std::runtime_error(name + ": FC WH image of " +
+                               std::to_string(e.bytes) + " bytes at bits " +
+                               std::to_string(e.bits));
     fcwh_.push_back(e);
   }
 
@@ -997,6 +1047,9 @@ private:
         rows, columns, const_cast<float *>(source.data()), nibbles.data(),
         pending_scales_.data() + scale_begin,
         /*is_nxk=*/true);
+      ternaryRowsExact(source.data(), rows, columns,
+                       reinterpret_cast<uint8_t *>(nibbles.data()),
+                       pending_scales_.data() + scale_begin);
       writeBytes(nibbles.data(), nibbles.size(), name);
       return;
     } else if (dtype == DType::QS4CX_WH || dtype == DType::QS2CX_WH) {
@@ -1012,6 +1065,9 @@ private:
         rows, columns, const_cast<float *>(source.data()), nibbles.data(),
         pending_scales_.data() + scale_begin,
         /*is_nxk=*/true);
+      ternaryRowsExact(source.data(), rows, columns,
+                       reinterpret_cast<uint8_t *>(nibbles.data()),
+                       pending_scales_.data() + scale_begin);
 
       // Unpack to one sign-extended int8 per value in K x N row-major, which
       // is what whPack takes and what htp_qs4cx_from_packed builds at load
@@ -1090,7 +1146,20 @@ private:
         pending_colsums_[colsum_begin + n] = static_cast<float>(sum);
       }
 
-      if (two_bit) {
+      // [plan 229 S2] An FC WH sidecar image goes out at two bits when every
+      // code is ternary: palette {-1, 0, +1, 0} names them all, so the
+      // 2-bit image holds exactly the values the 4-bit one would. Anything
+      // else stays four bits (every LFM FC).
+      fcwh_bits_ = 4u;
+      if (fcwh_image_ && std::all_of(rm.begin(), rm.end(), [](int8_t v) {
+            return v >= -1 && v <= 1;
+          })) {
+        static const int8_t ternary[nntrainer::WH_PALETTE_LEVELS] = {-1, 0, 1,
+                                                                     0};
+        pal.assign(ternary, ternary + nntrainer::WH_PALETTE_LEVELS);
+        fcwh_bits_ = 2u;
+      }
+      if (two_bit || fcwh_bits_ == 2u) {
         // Codes then the four palette bytes, so the tensor reads back as
         // [codes][palette][scales][colsums] -- QS2CX_WH_Tensor::size().
         std::vector<uint8_t> wh(nntrainer::whBytes2(K, N));
@@ -1224,6 +1293,9 @@ private:
   std::ofstream *sidecar_ = nullptr;
   std::vector<nntrainer::FcWhEntry> fcwh_;
   uint32_t fcwh_count_ = 0;
+  /** [plan 229 S2] writeFcWh's image in flight, and the bits it went at */
+  bool fcwh_image_ = false;
+  uint32_t fcwh_bits_ = 4u;
 };
 
 void validateSourceConfig(const json &nntr_cfg) {
@@ -1611,12 +1683,13 @@ void writeOutputConfig(const std::filesystem::path &model_dir,
 }
 
 /**
- * @brief [#225] Closes the sidecar: each entry's key from its Q4_0 bytes in
- *        the finished main file, then the header into the room enableFcWh
- *        reserved, then the size check.
+ * @brief [#225] Closes the sidecar: each entry's key from its bytes in the
+ *        finished main file (@a main_dtype, Q4_0 or QS4CX), then the header
+ *        into the room enableFcWh reserved, then the size check.
  */
 void finishFcWh(std::vector<nntrainer::FcWhEntry> &entries, uint32_t count,
-                const std::filesystem::path &main_path, std::ofstream &sidecar,
+                DType main_dtype, const std::filesystem::path &main_path,
+                std::ofstream &sidecar,
                 const std::filesystem::path &sidecar_path) {
   if (entries.size() != count) {
     throw std::runtime_error(
@@ -1625,7 +1698,7 @@ void finishFcWh(std::vector<nntrainer::FcWhEntry> &entries, uint32_t count,
   }
   std::ifstream main(main_path, std::ios::binary);
   for (auto &e : entries) {
-    std::vector<char> q4(quantizedSize(DType::Q4_0, e.N, e.K, true, e.name));
+    std::vector<char> q4(quantizedSize(main_dtype, e.N, e.K, true, e.name));
     main.seekg(static_cast<std::streamoff>(e.q4_off));
     main.read(q4.data(), static_cast<std::streamsize>(q4.size()));
     if (!main)
@@ -1648,8 +1721,12 @@ void finishFcWh(std::vector<nntrainer::FcWhEntry> &entries, uint32_t count,
   if (!sidecar || std::filesystem::file_size(sidecar_path) != end) {
     throw std::runtime_error("Failed to finalize " + sidecar_path.string());
   }
+  const auto bits2 =
+    std::count_if(entries.begin(), entries.end(),
+                  [](const nntrainer::FcWhEntry &e) { return e.bits == 2u; });
   std::cout << "  FC WH sidecar: " << sidecar_path << " (" << count
-            << " weights, " << (end >> 20) << " MiB)\n";
+            << " weights, " << bits2 << " at 2 bits, " << (end >> 20)
+            << " MiB)\n";
 }
 
 void printUsage(const char *program) {
@@ -1682,10 +1759,11 @@ void printUsage(const char *program) {
     << "  --moe_palette_refit <b>  on (default) or off -- least-squares "
        "w_scale for\n"
     << "                        the restricted codes\n"
-    << "  --fc_wh_sidecar       LFM2-MoE / Gemma4-MoE, --fc_dtype Q4_0: "
-       "also write\n"
-    << "                        the FC weights as QS4CX_WH images into <bin "
-       "stem>_fcwh.bin\n"
+    << "  --fc_wh_sidecar       LFM2-MoE / Gemma4-MoE, --fc_dtype Q4_0 (or "
+       "QS4CX, Gemma4):\n"
+    << "                        also write the FC weights as QS4CX_WH images "
+       "into <bin stem>_fcwh.bin\n"
+    << "                        (QS2CX_WH when every code is in {-1, 0, +1})\n"
     << "                        (the HTP reads them; fc_wh_file_name in "
        "nntr_config)\n"
     << "  -h, --help            Show this help\n\n"
@@ -1855,18 +1933,24 @@ int run(int argc, char **argv) {
     throw std::invalid_argument(
       "A tied model requires matching embedding and LM head dtypes");
   }
+  // [plan 229 S2] QS4CX: per-column int4, exact for a ternary checkpoint
+  // (ternaryRowsExact), the FC format the Gemma decode hand-over takes.
   if (is_gemma4_moe && quant.fc_dtype != DType::FP32 &&
-      quant.fc_dtype != DType::Q4_0) {
+      quant.fc_dtype != DType::Q4_0 && quant.fc_dtype != DType::QS4CX) {
     throw std::invalid_argument(
-      "Gemma4 MoE FC/expert dtype must be FP32 or Q4_0");
+      "Gemma4 MoE FC/expert dtype must be FP32, Q4_0 or QS4CX");
   }
-  // [#225] The sidecar is the HTP prefill's copy of the CPU's Q4_0 FCs: it
-  // is keyed by those Q4_0 bytes, and only the LFM2 and Gemma4 MoE walks
-  // mark their FCs.
-  if (fc_wh_sidecar &&
-      ((!is_lfm2_moe && !is_gemma4_moe) || quant.fc_dtype != DType::Q4_0)) {
-    throw std::invalid_argument("--fc_wh_sidecar needs Lfm2MoeForCausalLM or "
-                                "a Gemma4 MoE, and --fc_dtype Q4_0");
+  // [#225] The sidecar is the HTP's copy of the CPU's FCs, keyed by their
+  // bytes in the main file, and only the LFM2 and Gemma4 MoE walks mark
+  // their FCs. Q4_0 FCs for both; QS4CX only for the Gemma4 MoE, whose
+  // decode hand-over is the one reader of a QS4CX key (the LFM prefill
+  // keys are Q4_0 calls).
+  if (fc_wh_sidecar && ((!is_lfm2_moe && !is_gemma4_moe) ||
+                        (quant.fc_dtype != DType::Q4_0 &&
+                         !(is_gemma4_moe && quant.fc_dtype == DType::QS4CX)))) {
+    throw std::invalid_argument(
+      "--fc_wh_sidecar needs Lfm2MoeForCausalLM or a Gemma4 MoE with "
+      "--fc_dtype Q4_0, or a Gemma4 MoE with --fc_dtype QS4CX");
   }
   const std::string input_bin =
     nntr_cfg.at("model_file_name").get<std::string>();
@@ -2059,8 +2143,8 @@ int run(int argc, char **argv) {
   if (!output)
     throw std::runtime_error("Failed to finalize " + output_path.string());
   if (fc_wh_sidecar)
-    finishFcWh(writer.fcWhEntries(), probe.fcWhCount(), output_path, sidecar,
-               output_dir / fc_wh_bin);
+    finishFcWh(writer.fcWhEntries(), probe.fcWhCount(), quant.fc_dtype,
+               output_path, sidecar, output_dir / fc_wh_bin);
 
   if (!std::filesystem::equivalent(model_dir, output_dir))
     copyAuxiliaryFiles(model_dir, output_dir);
