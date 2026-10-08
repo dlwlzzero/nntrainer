@@ -175,9 +175,10 @@
 #   E2E tokens e3fcwh==off-lfm25 8/8 expected_mismatch=0
 #   E2E ppl-decode e3fcwh-lfm25 off=<ppl> wh=<ppl> delta=<%> top1=7/7
 #   E2E ppl-decode e3fcwh-lfm25-skipqkv off=<ppl> wh=<ppl> delta=<%> top1=<n>/7
-#   E2E ppl-decode gemma64x0-fcwh q4m1=<ppl> wh=<ppl> delta=<%> top1=<n>/7
-#                              (#258 step 1, printed: q|k|v back on Q4M1;
-#                              gemma64x0's WH token forced on its Q4M1 one)
+#   E2E ppl-decode gemma64x-fcwh q4m1=<ppl> wh=<ppl> delta=<%> top1=<n>/7
+#                              (#258: lfm25's q|k|v back on Q4M1, printed;
+#                              gemma64x's WH token forced on its Q4M1 one,
+#                              |delta| <= 2 % gated)
 #                              (#225 PR 2: the one-PD token's FC and dense
 #                              FFN on the sidecar's WH handles, the lm_head
 #                              alone Q4M1; NNTR_PPL_DECODE forced on the
@@ -188,12 +189,10 @@
 #   E2E tokens gemma64-fcwh==off <n>/8 expected_mismatch=<m>   (the policy)
 #   E2E eval gemma64x-fcwh-vs-q4m1 ... min_snr_db=<x>  (x >= 20 gated)
 #   E2E tokens gemma64x-fcwh==q4m1 8/8 expected_mismatch=0
-#   E2E eval gemma64x0-fcwh-<all|qkv|o|dense>-vs-q4m1 ... min_snr_db=<x>
-#   E2E tokens gemma64x0-fcwh==q4m1 <n>/8 expected_mismatch=<m>
-#   E2E fc-wh-skip refused: 'out' rc=<n>   (an unknown kind stops the bind)
-#                              (#258 step 1, printed: the fixture's own
-#                              gammas, every FC kind on WH or one alone,
+#   E2E eval gemma64x-fcwh-<qkv|o|dense>-vs-q4m1 ... min_snr_db=<x>
+#                              (#258, printed: one FC kind alone on WH,
 #                              NNTR_HTP_FC_WH_SKIP the others)
+#   E2E fc-wh-skip refused: 'out' rc=<n>   (an unknown kind stops the bind)
 #   E2E e3 pool C=2 gemma64-fcwh == e3 bit_identical=1 misses=<n> ...
 #     moe_dumps==sidecar-less files=<n> bit_identical=1
 #                              (#234 P4: the Gemma 4 sidecar model's one-PD
@@ -460,17 +459,15 @@ G_ARGS=--repack run_gemma g64e3w g64htpw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
 G_ARGS=--repack run_gemma g64e3wpool2 g64htpw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_MOE_CACHE_EXPERTS=2
 # and gemma64x, the bind check's fixture: every FC weight int4-exact (per
 # column q * 2^e, each 32-row block holding a -8 and the column a 7, so
-# Q4_0 and the sidecar's QS4CX_WH hold the same values) and the q / k norm
-# gammas at 0.3. The plain fixture's two quantizations read -4 dB apart
-# (Q4_0 against f32 FCs reads the same), and its peaked sliding softmax
-# turns the WH path's u8 row quantization of q and k into 9.5 dB even on
-# int4-exact weights; at 0.3 the WH token reads 31 dB against the Q4M1 one
-# [#258] make_g64x <dst> <gamma>: gamma "own" keeps the fixture's q / k
-# norm gammas (gemma64x0, where the u8 row quantization shows alone)
-make_g64x() {
-python3 - "$ROOT/tools/htp" "$FIXG" "$1" "$2" <<'PY'
+# Q4_0 and the sidecar's QS4CX_WH hold the same values), the fixture's own
+# q / k norm gammas. The plain fixture's two quantizations read -4 dB apart
+# (Q4_0 against f32 FCs reads the same). [#258] The WH FC's row is the
+# Q4M1 FC's Q8_0, so both tokens hold the same activation bytes too; the
+# per-row u8 it replaced read 9.6 dB here (q|k under the peaked sliding
+# softmax), which is why the gammas were lowered to 0.3 before
+python3 - "$ROOT/tools/htp" "$FIXG" "$OUT/fixg_x" <<'PY'
 import json, math, os, shutil, struct, sys
-tools, src, dst, gamma = sys.argv[1:5]
+tools, src, dst = sys.argv[1:4]
 sys.path.insert(0, tools)
 from fc_wh_sidecar_from_q4 import fcs
 shutil.copytree(src, dst)
@@ -490,42 +487,27 @@ for name, o, K, N in rows:
         for k in range(K):
             q = -8 if k % 32 == 0 else 7 if k == 1 else round(w[k * N + n] / s)
             w[k * N + n] = max(-8, min(7, q)) * s
-    if name.endswith(("_wq", "_wk")) and gamma != "own":  # q_norm / k_norm follow
-        hd = c["head_dim"] if c["layer_types"][int(name[5:name.index("_")])] \
-            == "sliding_attention" else c["global_head_dim"]
-        w += [float(gamma)] * hd
     f.seek(o)
     f.write(struct.pack("<%df" % len(w), *w))
 PY
-}
-make_g64x "$OUT/fixg_x" 0.3
-make_g64x "$OUT/fixg_x0" own
 "$Q" "$OUT/fixg_x" -o "$OUT/g64x" --fc_dtype Q4_0 --moe_dtype QS4CX_WH \
   --embd_dtype Q4_0 > "$OUT/q_g64x.log"
 "$Q" "$OUT/fixg_x" -o "$OUT/g64xw" --fc_dtype Q4_0 --moe_dtype QS4CX_WH \
   --embd_dtype Q4_0 --fc_wh_sidecar > "$OUT/q_g64xw.log"
 G_ARGS=--repack run_gemma g64xe3 g64x htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
 G_ARGS=--repack run_gemma g64xe3w g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
-# [#258 step 1] gemma64x0 (the fixture's own gammas): the WH token against
-# the Q4M1 token with every FC kind on WH and with one kind alone
-# (NNTR_HTP_FC_WH_SKIP the other two); then the WH token forced on the
-# Q4M1 token's continuation (NNTR_PPL_DECODE)
-"$Q" "$OUT/fixg_x0" -o "$OUT/g64x0" --fc_dtype Q4_0 --moe_dtype QS4CX_WH \
-  --embd_dtype Q4_0 > "$OUT/q_g64x0.log"
-"$Q" "$OUT/fixg_x0" -o "$OUT/g64x0w" --fc_dtype Q4_0 --moe_dtype QS4CX_WH \
-  --embd_dtype Q4_0 --fc_wh_sidecar > "$OUT/q_g64x0w.log"
-G_ARGS=--repack run_gemma g64x0e3 g64x0 htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
-G_ARGS=--repack run_gemma g64x0e3w-all g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
-G_ARGS=--repack run_gemma g64x0e3w-qkv g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=o,dense
-G_ARGS=--repack run_gemma g64x0e3w-o g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,dense
-G_ARGS=--repack run_gemma g64x0e3w-dense g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,o
+# [#258] the WH token with one FC kind alone on WH (NNTR_HTP_FC_WH_SKIP
+# the other two), and forced on the Q4M1 token's continuation
+G_ARGS=--repack run_gemma g64xe3w-qkv g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=o,dense
+G_ARGS=--repack run_gemma g64xe3w-o g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,dense
+G_ARGS=--repack run_gemma g64xe3w-dense g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,o
 rm -f "$OUT/gx.ids"
-G_ARGS="--repack --run" run_gemma g64x0ppl g64x0 htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
-G_ARGS="--repack --run" run_gemma g64x0wppl g64x0w htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
+G_ARGS="--repack --run" run_gemma g64xppl g64x htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
+G_ARGS="--repack --run" run_gemma g64xwppl g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_PPL_DECODE="$OUT/gx.ids"
 rc_skip=0 # a kind the knob does not know is refused at the bind
-NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,out "$E2E" --model "$OUT/g64x0w" \
+NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_HTP_FC_WH_SKIP=qkv,out "$E2E" --model "$OUT/g64xw" \
   --tokenizer "$FIXG/tokenizer.json" --prompt $PROMPT --steps $STEPS \
-  --moe-engine htp --max-seq 32 --repack > "$OUT/g64x0skipbad.log" 2>&1 || rc_skip=$?
+  --moe-engine htp --max-seq 32 --repack > "$OUT/g64xskipbad.log" 2>&1 || rc_skip=$?
 # [plan 229] QS2CX_WH experts and their 4-bit palette twin (header above)
 "$Q" "$FIX25" -o "$OUT/htp25q2" --fc_dtype Q4_0 --moe_dtype QS2CX_WH \
   --embd_dtype Q4_0 > "$OUT/q_htp25q2.log"
@@ -775,21 +757,18 @@ $EVAL --label gemma64-fcwh-vs-cpu --allow-diff "$OUT/ref_g64cpu" "$OUT/ref_g64e3
 $EVAL --label 'gemma64-fcwh==off' --tokens-policy "$OUT/ref_g64off" "$OUT/ref_g64e3w" | tail -1 || fail=1
 $EVAL --label gemma64x-fcwh-vs-q4m1 --allow-diff --snr-floor 20 "$OUT/ref_g64xe3" "$OUT/ref_g64xe3w" | tail -1 || fail=1
 $EVAL --label 'gemma64x-fcwh==q4m1' --tokens-policy "$OUT/ref_g64xe3" "$OUT/ref_g64xe3w" | tail -1 || fail=1
-# [#258 step 1] the u8 row quantization alone, per kind, at the fixture's
-# own gammas (int4-exact FCs: both tokens hold the same weights); the bind
-# banner's wh_handles proves the skip (17 = qkv 8 + o 3 + dense 6)
-logits_only "$OUT/dump_g64x0e3" "$OUT/ref_g64x0e3"
-for k in all:17 qkv:8 o:3 dense:6; do
-  logits_only "$OUT/dump_g64x0e3w-${k%:*}" "$OUT/ref_g64x0e3w-${k%:*}"
-  n="$(sed -n 's/^\[HTP\] graph: q4m1 weights=.* wh_handles=\([0-9]*\)$/\1/p' "$OUT/g64x0e3w-${k%:*}.log")"
-  [ "$n" = "${k#*:}" ] || { echo "E2E FAIL gemma64x0 skip ${k%:*}: wh_handles=${n:-none}, want ${k#*:}"; fail=1; }
-  $EVAL --label "gemma64x0-fcwh-${k%:*}-vs-q4m1" --allow-diff "$OUT/ref_g64x0e3" "$OUT/ref_g64x0e3w-${k%:*}" | tail -1 || true
+# [#258] each FC kind alone on WH, printed; the bind banner's wh_handles
+# proves the skip (17 = qkv 8 + o 3 + dense 6)
+for k in qkv:8 o:3 dense:6; do
+  logits_only "$OUT/dump_g64xe3w-${k%:*}" "$OUT/ref_g64xe3w-${k%:*}"
+  n="$(sed -n 's/^\[HTP\] graph: q4m1 weights=.* wh_handles=\([0-9]*\)$/\1/p' "$OUT/g64xe3w-${k%:*}.log")"
+  [ "$n" = "${k#*:}" ] || { echo "E2E FAIL gemma64x skip ${k%:*}: wh_handles=${n:-none}, want ${k#*:}"; fail=1; }
+  $EVAL --label "gemma64x-fcwh-${k%:*}-vs-q4m1" --allow-diff "$OUT/ref_g64xe3" "$OUT/ref_g64xe3w-${k%:*}" | tail -1 || true
 done
-$EVAL --label 'gemma64x0-fcwh==q4m1' --tokens-policy "$OUT/ref_g64x0e3" "$OUT/ref_g64x0e3w-all" | tail -1 || true
-if [ $rc_skip != 0 ] && grep -q "NNTR_HTP_FC_WH_SKIP: 'out' is not qkv, o or dense" "$OUT/g64x0skipbad.log"; then
+if [ $rc_skip != 0 ] && grep -q "NNTR_HTP_FC_WH_SKIP: 'out' is not qkv, o or dense" "$OUT/g64xskipbad.log"; then
   echo "E2E fc-wh-skip refused: 'out' rc=$rc_skip"
 else
-  echo "E2E FAIL fc-wh-skip 'out' not refused (rc=$rc_skip)"; tail -2 "$OUT/g64x0skipbad.log"; fail=1
+  echo "E2E FAIL fc-wh-skip 'out' not refused (rc=$rc_skip)"; tail -2 "$OUT/g64xskipbad.log"; fail=1
 fi
 mkdir -p "$OUT/moe_g64e3r" "$OUT/moe_g64e3w"
 for d in g64e3r g64e3w; do
@@ -1315,20 +1294,21 @@ if [ "$(dec_field "$OUT/25woffppl.log" source)" = self ] &&
 else
   echo "E2E FAIL $line (not finite, or not forced)"; fail=1
 fi
-# [#258 step 1] the lfm25 line with skip=qkv, and gemma64x0's WH token
-# forced on its Q4M1 token's continuation: printed
-ppl_line() { # ppl_line <label> <self log> <forced log> <a name> <b name>
+# [#258] the lfm25 line with skip=qkv (printed), and gemma64x's WH token
+# forced on its Q4M1 token's continuation (|delta| <= 2 %, the device's
+# PPL rule, gated)
+ppl_line() { # ppl_line <label> <self log> <forced log> <a name> <b name> [max |delta| %]
   local a b
   a="$(dec_field "$2" ppl)"; b="$(dec_field "$3" ppl)"
   if [ "$(dec_field "$2" source)" = self ] && [ "$(dec_field "$3" source)" = file ] &&
-    awk -v a="$a" -v b="$b" 'BEGIN{exit !(a + 0 > 0 && b + 0 > 0 && a + 0 < 1e30 && b + 0 < 1e30)}'; then
+    awk -v a="$a" -v b="$b" -v m="${6:-1e30}" 'BEGIN{d = (b / a - 1) * 100; exit !(a + 0 > 0 && b + 0 > 0 && a + 0 < 1e30 && b + 0 < 1e30 && d <= m + 0 && -d <= m + 0)}'; then
     echo "E2E ppl-decode $1 $4=$a $5=$b delta=$(awk -v a="$a" -v b="$b" 'BEGIN{printf "%+.3f%%", (b / a - 1) * 100}') top1=$(dec_field "$3" top1)"
   else
-    echo "E2E FAIL ppl-decode $1 $4=${a:-none} $5=${b:-none} (not finite, or not forced)"; fail=1
+    echo "E2E FAIL ppl-decode $1 $4=${a:-none} $5=${b:-none} (not finite, not forced, or |delta| over ${6:-inf} %)"; fail=1
   fi
 }
 ppl_line e3fcwh-lfm25-skipqkv "$OUT/25woffppl.log" "$OUT/25we3pplskip.log" off wh
-ppl_line gemma64x0-fcwh "$OUT/g64x0ppl.log" "$OUT/g64x0wppl.log" q4m1 wh
+ppl_line gemma64x-fcwh "$OUT/g64xppl.log" "$OUT/g64xwppl.log" q4m1 wh 2
 
 # (j) [#194 S1] lever L1: the hd64 PPL forced on E1's path against E0's
 # (the unset run, q64-e3ppl), lfm25's logits against E0's by SNR (and not
