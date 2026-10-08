@@ -14,6 +14,12 @@
  * neighbours because whPack2 is a C++ header; the kernel comes in through
  * its extern "C" declarations.
  *
+ * [plan 229 S2] With two FC WH sidecars as arguments (one written at two
+ * bits where it could, its --bits4 twin), the same property on every image
+ * of a real file: expand(codes, palette) == the twin's whPack bytes, the
+ * scales and column sums byte-equal, the index the same but for bits and
+ * offsets.
+ *
  * What this does NOT check: the HVX path. On the host, hvx_expand_i2i4
  * compiles to its scalar twin. The vlut32 form is gated by the device test
  * HvxExpandI2I4.MatchesScalarBitExact instead -- see hvx_expand_i2i4.h.
@@ -35,6 +41,9 @@ void hvx_worker_pool_destroy(hvx_worker_pool *pool);
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <vector>
 
@@ -102,9 +111,78 @@ void roundTrip(uint32_t K, uint32_t N, unsigned seed, const char *label,
   check(pooled == back, what);
 }
 
+/* [plan 229 S2] The sidecar pair; returns the process's exit code. */
+int sidecars(const char *a_path, const char *b_path) {
+  auto read = [](const char *p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(f),
+                                std::istreambuf_iterator<char>());
+  };
+  const std::vector<uint8_t> a = read(a_path), b = read(b_path);
+  auto index = [](const std::vector<uint8_t> &f,
+                  std::vector<nntrainer::FcWhEntry> &e) {
+    uint32_t vc[2] = {0, 0};
+    if (f.size() < 16u || std::memcmp(f.data(), nntrainer::FCWH_MAGIC, 8) != 0)
+      return false;
+    std::memcpy(vc, f.data() + 8, sizeof vc);
+    if (vc[0] != nntrainer::FCWH_VERSION ||
+        16u + vc[1] * sizeof(nntrainer::FcWhEntry) > f.size())
+      return false;
+    e.resize(vc[1]);
+    std::memcpy(e.data(), f.data() + 16, e.size() * sizeof(e[0]));
+    for (const auto &x : e)
+      if (x.off + x.bytes > f.size())
+        return false;
+    return true;
+  };
+  std::vector<nntrainer::FcWhEntry> ea, eb;
+  if (!index(a, ea) || !index(b, eb) || ea.size() != eb.size()) {
+    std::printf("FC WH SIDECAR EXPAND: unreadable index in %s or %s\n", a_path,
+                b_path);
+    return 1;
+  }
+  uint32_t bits2 = 0, bad = 0;
+  for (size_t i = 0; i < ea.size(); ++i) {
+    const nntrainer::FcWhEntry *two = &ea[i], *four = &eb[i];
+    const std::vector<uint8_t> *f2 = &a, *f4 = &b;
+    if (two->bits != 2u) {
+      std::swap(two, four);
+      std::swap(f2, f4);
+    }
+    const uint32_t K = four->K, N = four->N;
+    bool ok = std::strncmp(two->name, four->name, 64) == 0 && two->K == K &&
+              two->N == N && two->key == four->key && four->bits == 4u &&
+              (two->bits == 2u || two->bits == 4u);
+    const uint8_t *c4 = f4->data() + four->off, *c2 = f2->data() + two->off;
+    if (ok && two->bits == 2u) {
+      ++bits2;
+      std::vector<uint8_t> table(HVX_EXPAND_TABLE_BYTES),
+        back(nntrainer::whBytes(K, N), 0xAA);
+      hvx_expand_i2i4_table(
+        reinterpret_cast<const int8_t *>(c2 + nntrainer::whBytes2(K, N)),
+        table.data());
+      hvx_expand_i2i4(c2, static_cast<uint32_t>(nntrainer::whBytes2(K, N)),
+                      table.data(), back.data());
+      ok = std::memcmp(back.data(), c4, back.size()) == 0;
+    } else if (ok) {
+      ok = std::memcmp(c2, c4, nntrainer::whBytes(K, N)) == 0;
+    }
+    ok = ok && std::memcmp(c2 + nntrainer::fcWhCodeBytes(K, N, two->bits),
+                           c4 + nntrainer::whBytes(K, N), 8u * N) == 0;
+    if (!ok)
+      std::printf("FC WH SIDECAR EXPAND: %.64s differs\n", four->name);
+    bad += !ok;
+  }
+  std::printf("FC WH SIDECAR EXPAND == WHPACK images=%zu bits2=%u bad=%u%s\n",
+              ea.size(), bits2, bad, bad ? "  FAIL" : " ok");
+  return bad ? 1 : 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 3)
+    return sidecars(argv[1], argv[2]);
   /* Three workers plus the caller, the same shape worker_pool_host_check
      uses, so the split is exercised rather than assumed. */
   hvx_worker_pool *pool = hvx_worker_pool_create(4);

@@ -190,6 +190,21 @@
 #                              token, opened for the bind with no keyed FC;
 #                              gemma64x: the same fixture with int4-exact
 #                              FCs, so both sides hold the same weights)
+# and, since plan 229 S2 (2-bit FCs), gemma64t: every FC ternary, the main
+# file QS4CX (option A, the writer's ternary-exact codes), its sidecar at
+# two bits (QSxCX_WH/2) and that sidecar's 4-bit twin (fc_wh_sidecar_from_q4
+# --bits4); the one-PD token's FC / DENSE_FFN on the u8i2 column branch:
+#   E2E quant fcwh-gemma64t main=same images=20 bits2=20 codes_ternary=1
+#     expand==whpack(--bits4 twin) tool==writer ok
+#   E2E fwd gemma64t fcwh kinds=all calls/token=1.00 attn_caches=2
+#     q4m1_handles=1 wh_handles=17 bits2=17 ok
+#   E2E eval gemma64t fcwh2==fcwh4 ... bit_identical=1
+#   E2E tokens gemma64t-fcwh2==fcwh4 8/8 expected_mismatch=0
+#   E2E eval gemma64t-fcwh-vs-off ... min_snr_db=<x>  (x >= 20 gated, vs the
+#                              hybrid run's CPU QS4CX FCs)
+#   E2E tokens gemma64t-fcwh==off 8/8 expected_mismatch=0
+#   E2E e3 pool C=2 gemma64t-fcwh == e3 bit_identical=1 misses=<n> ...
+#   E2E fcwh refusals qs4cx-no-sidecar=1 v1-config=1 v1-file=1 ok
 # and, since #194 S1 (htp_moe_ppl), the same token with lever
 # L1 (NNTR_HTP_PPL_LEVERS=2: the native FC / DENSE_FFN / LM_HEAD kernels,
 # q4_gemv_native_det.h), forced on E1's hd64 path, and on lfm25:
@@ -490,6 +505,70 @@ PY
   --embd_dtype Q4_0 --fc_wh_sidecar > "$OUT/q_g64xw.log"
 G_ARGS=--repack run_gemma g64xe3 g64x htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
 G_ARGS=--repack run_gemma g64xe3w g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
+# [plan 229 S2] gemma64t: every FC ternary at f32 (per column s x {-1, 0,
+# +1}, s the column's mean |w|; q / k norm gammas 0.3 as gemma64x's),
+# quantized as QS4CX (option A: the writer's
+# ternary-exact path, codes {-1, 0, +1} x s), its sidecar at two bits; the
+# 4-bit twin of that sidecar (fc_wh_sidecar_from_q4.py --bits4, a repack of
+# the same main file) and the tool's own 2-bit one beside it
+python3 - "$ROOT/tools/htp" "$FIXG" "$OUT/fixg_t" <<'PY'
+import json, os, shutil, struct, sys
+tools, src, dst = sys.argv[1:4]
+sys.path.insert(0, tools)
+from fc_wh_sidecar_from_q4 import fcs
+shutil.copytree(src, dst)
+cfg = json.load(open(src + "/config.json"))
+c = cfg.get("text_config", cfg)
+b = dst + "/" + json.load(open(src + "/nntr_config.json"))["model_file_name"]
+rows, size = fcs(cfg, dict.fromkeys(
+    ("fc_layer_dtype", "embedding_dtype", "moe_layer_dtype"), "FP32"))
+if os.path.getsize(b) not in (size, size + 4 * c["vocab_size"] * c["hidden_size"]):
+    sys.exit("gemma64t: the f32 layout walk disagrees with the file size")
+f = open(b, "r+b")
+for name, o, K, N in rows:
+    f.seek(o)
+    w = list(struct.unpack("<%df" % (K * N), f.read(4 * K * N)))
+    for n in range(N):
+        col = [w[k * N + n] for k in range(K)]
+        s = struct.unpack("<f", struct.pack("<f", sum(map(abs, col)) / K))[0]
+        for k in range(K):
+            v = col[k]
+            w[k * N + n] = 0.0 if abs(v) < 0.5 * s else (s if v > 0 else -s)
+    if name.endswith(("_wq", "_wk")):  # q_norm / k_norm follow: gemma64x's
+        hd = c["head_dim"] if c["layer_types"][int(name[5:name.index("_")])] \
+            == "sliding_attention" else c["global_head_dim"]
+        w += [0.3] * hd
+    f.seek(o)
+    f.write(struct.pack("<%df" % len(w), *w))
+PY
+"$Q" "$OUT/fixg_t" -o "$OUT/g64t" --fc_dtype QS4CX --moe_dtype QS4CX_WH \
+  --embd_dtype Q4_0 > "$OUT/q_g64t.log"
+"$Q" "$OUT/fixg_t" -o "$OUT/g64tw" --fc_dtype QS4CX --moe_dtype QS4CX_WH \
+  --embd_dtype Q4_0 --fc_wh_sidecar > "$OUT/q_g64tw.log"
+tw_side="$(sed -n 's/.*"fc_wh_file_name": "\(.*\)".*/\1/p' "$OUT/g64tw/nntr_config.json")"
+cp -a "$OUT/g64tw" "$OUT/g64tw4"
+python3 "$ROOT/tools/htp/fc_wh_sidecar_from_q4.py" "$OUT/g64tw" "$OUT/g64tw4/$tw_side" \
+  --lib "$B/nntrainer" --bits4 > "$OUT/tool_g64tw4.log" 2>&1
+python3 "$ROOT/tools/htp/fc_wh_sidecar_from_q4.py" "$OUT/g64tw" "$OUT/g64t_tool2.bin" \
+  --lib "$B/nntrainer" --check "$OUT/g64tw/$tw_side" > "$OUT/tool_g64tw2.log" 2>&1 || true
+G_ARGS=--repack run_gemma g64toff g64tw htp
+G_ARGS=--repack run_gemma g64te3w g64tw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
+G_ARGS=--repack run_gemma g64te3w4 g64tw4 htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
+G_ARGS=--repack run_gemma g64te3wpool2 g64tw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 NNTR_MOE_CACHE_EXPERTS=2
+# refusals: a QS4CX FC with no sidecar on the one-PD path (no Q4M1 / CPU
+# fallback), a version-1 config tag, a version-1 file
+cp -a "$OUT/g64tw" "$OUT/g64tv1c"; cp -a "$OUT/g64tw" "$OUT/g64tv1f"
+sed -i 's/"fc_wh_format": "[^"]*"/"fc_wh_format": "QS4CX_WH\/1"/' "$OUT/g64tv1c/nntr_config.json"
+printf '\001' | dd of="$OUT/g64tv1f/$tw_side" bs=1 seek=8 conv=notrunc status=none
+t_refused=""
+for m in g64t g64tv1c g64tv1f; do
+  if env NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1 "$E2E" --model "$OUT/$m" \
+       --tokenizer "$FIXG/tokenizer.json" --prompt $PROMPT --steps $STEPS \
+       --moe-engine htp --dump "$OUT/dump_$m" --max-seq 32 --repack \
+       > "$OUT/$m.log" 2>&1; then
+    t_refused="$t_refused $m=ran"
+  fi
+done
 # [plan 229] QS2CX_WH experts and their 4-bit palette twin (header above)
 "$Q" "$FIX25" -o "$OUT/htp25q2" --fc_dtype Q4_0 --moe_dtype QS2CX_WH \
   --embd_dtype Q4_0 > "$OUT/q_htp25q2.log"
@@ -753,6 +832,102 @@ if grep -q 'bit_identical=1' <<< "$ev" && grep -q 'bit_identical=1' <<< "$em" &&
 else
   echo "E2E FAIL e3 pool C=2 gemma64-fcwh: pool=[$ev] moe=[$em] calls/token=${calls:-none} misses=${misses:-none} close=[$close]"; fail=1
 fi
+# [plan 229 S2] gemma64t: the writer's codes ternary in the main file and
+# the sidecar all at two bits (main file the flagless run's), each 2-bit
+# image expanded == its --bits4 twin's whPack bytes (expand_i2i4_host_check
+# on the two files), the tool's own sidecar of the QS4CX file
+# byte-identical to the writer's; the one-PD token on the 2-bit sidecar
+# (17 handles, all 2-bit) against the same on the 4-bit twin: every dumped
+# file and token the same; against the hybrid run of the same file (the
+# CPU's QS4CX FCs, option A's reference) above 20 dB and its tokens by the
+# policy; its pool of 2 against it; the refusals
+gt="$(python3 - "$OUT/g64t" "$OUT/g64tw" "$FIXG/config.json" <<'PY'
+import filecmp, json, struct, sys
+a, b, cfg = sys.argv[1:4]
+ca, cb = (json.load(open(d + "/nntr_config.json")) for d in (a, b))
+main = b + "/" + cb["model_file_name"]
+same = filecmp.cmp(a + "/" + ca["model_file_name"], main, shallow=False)
+c = json.load(open(cfg))
+c = c.get("text_config", c)
+kv = c.get("attention_k_eq_v", False)
+want = []
+for i, t in enumerate(c["layer_types"]):
+    sfx = ["wq", "wk"] + ([] if kv and t == "full_attention" else ["wv"])
+    sfx += ["attention_out", "ffn_gate", "ffn_up", "ffn_down"]
+    want += ["layer%d_%s" % (i, s) for s in sfx]
+f = open(b + "/" + cb["fc_wh_file_name"], "rb").read()
+m = open(main, "rb").read()
+n = struct.unpack_from("<I", f, 12)[0]
+names, bits2, ternary = [], 0, True
+for i in range(n):
+    name, K, N, bits, _, key, q_off, off, nbytes = struct.unpack_from(
+        "<64s4I4Q", f, 16 + 112 * i)
+    names.append(name.rstrip(b"\0").decode())
+    bits2 += bits == 2
+    codes = m[q_off:q_off + N * K // 2]  # QS4CX: code + 8, two a byte
+    ternary &= all(x & 15 in (7, 8, 9) and x >> 4 in (7, 8, 9) for x in codes)
+ok = (f[:8] == b"NNTRFCWH" and struct.unpack_from("<I", f, 8)[0] == 2
+      and cb.get("fc_wh_format") == "QSxCX_WH/2" and ternary
+      and "fc_wh_file_name" not in ca and sorted(names) == sorted(want))
+print("main=%s images=%d bits2=%d codes_ternary=%d want=%d %s" % (
+    "same" if same else "differs", n, bits2, ternary, len(want),
+    "ok" if same and ok and bits2 == n else "bad"))
+PY
+)" || gt="error"
+for k in hvx_expand_i2i4 hvx_worker_pool; do
+  "${CC:-gcc}" -std=c11 -O1 -pthread -c -I "$HERE/stub" \
+    -I "$ROOT/nntrainer/tensor/htp_backend/hvx" -o "$OUT/$k.o" \
+    "$ROOT/nntrainer/tensor/htp_backend/hvx/$k.c"
+done
+"${CXX:-g++}" -std=c++17 -O1 -pthread -I "$HERE/stub" \
+  -I "$ROOT/nntrainer/tensor/htp_backend/hvx" -I "$ROOT/nntrainer/tensor" \
+  -o "$OUT/expand_i2i4_host_check" "$HERE/expand_i2i4_host_check.cc" \
+  "$OUT/hvx_expand_i2i4.o" "$OUT/hvx_worker_pool.o"
+gx="$("$OUT/expand_i2i4_host_check" "$OUT/g64tw/$tw_side" "$OUT/g64tw4/$tw_side" | tail -1 || true)"
+tool_same=0
+cmp -s "$OUT/g64t_tool2.bin" "$OUT/g64tw/$tw_side" &&
+  grep -q 'index_identical=1 .*min_snr_db=inf' "$OUT/tool_g64tw2.log" && tool_same=1
+if [ "${gt##* }" = ok ] && grep -q ' bad=0 ok$' <<< "$gx" && [ "$tool_same" = 1 ] &&
+   grep -q ' bits2=0 ' "$OUT/tool_g64tw4.log"; then
+  echo "E2E quant fcwh-gemma64t ${gt% want=* ok} expand==whpack(--bits4 twin) tool==writer ok"
+else
+  echo "E2E FAIL quant fcwh-gemma64t: [$gt] expand=[$gx] tool_same=$tool_same"; fail=1
+fi
+for d in g64toff g64te3w g64te3w4 g64te3wpool2; do logits_only "$OUT/dump_$d" "$OUT/ref_$d"; done
+gq="$(sed -n 's/^\[HTP\] graph: q4m1 weights=[0-9]* handles=\([0-9]*\) feed=[a-z0-9]* wh_handles=\([0-9]*\) bits2=\([0-9]*\)$/\1 \2 \3/p' "$OUT/g64te3w.log")"
+read -r t_q4m1 t_wh t_b2 <<< "${gq:-x x x}"
+calls="$(calls_per_token "$OUT/g64te3w.log")"
+caches="$(grep -c '^\[HTP\] attn_m1: registered ' "$OUT/g64te3w.log" || true)"
+close="$(grep -o 'token driver: close .*' "$OUT/g64te3w.log")"
+if [ "$t_q4m1" = 1 ] && [ "$t_wh" = 17 ] && [ "$t_b2" = 17 ] && [ "$calls" = 1.00 ] &&
+   [ "$caches" = 2 ] && grep -q ' timeouts=0 stale=0 ' <<< "$close" &&
+   grep -q ' wh_handles=17$' "$OUT/g64te3w4.log"; then
+  echo "E2E fwd gemma64t fcwh kinds=all calls/token=1.00 attn_caches=2 q4m1_handles=$t_q4m1 wh_handles=$t_wh bits2=$t_b2 ok"
+else
+  echo "E2E FAIL fwd gemma64t fcwh: bind=[${gq:-none}] calls/token=${calls:-none} attn_caches=$caches close=[$close]"; fail=1
+fi
+$EVAL --label 'gemma64t fcwh2==fcwh4' "$OUT/dump_g64te3w4" "$OUT/dump_g64te3w" | tail -1 || fail=1
+$EVAL --label 'gemma64t-fcwh2==fcwh4' --tokens-policy "$OUT/dump_g64te3w4" "$OUT/dump_g64te3w" | tail -1 || fail=1
+$EVAL --label gemma64t-fcwh-vs-off --allow-diff --snr-floor 20 "$OUT/ref_g64toff" "$OUT/ref_g64te3w" | tail -1 || fail=1
+$EVAL --label 'gemma64t-fcwh==off' --tokens-policy "$OUT/ref_g64toff" "$OUT/ref_g64te3w" | tail -1 || fail=1
+ev="$($EVAL --label e3pool-gemma64t-fcwh-C2 "$OUT/ref_g64te3w" "$OUT/ref_g64te3wpool2" | tail -1 || true)"
+calls="$(calls_per_token "$OUT/g64te3wpool2.log")"
+close="$(grep -o 'token driver: close .*' "$OUT/g64te3wpool2.log")"
+misses="$(sed -n 's/.*token driver: pool misses=\([0-9]*\) .*/\1/p' "$OUT/g64te3wpool2.log")"
+if grep -q 'bit_identical=1' <<< "$ev" && [ "$calls" = 1.00 ] &&
+   grep -q ' timeouts=0 stale=0 ' <<< "$close" && [ "${misses:-0}" -gt 0 ]; then
+  echo "E2E e3 pool C=2 gemma64t-fcwh == e3 bit_identical=1 misses=$misses calls/token=1.00 timeouts=0"
+else
+  echo "E2E FAIL e3 pool C=2 gemma64t-fcwh: [$ev] calls/token=${calls:-none} misses=${misses:-none} close=[$close]"; fail=1
+fi
+if [ -z "$t_refused" ] &&
+   grep -q 'QS4CX weight, .* and no FC WH sidecar image' "$OUT/g64t.log" &&
+   grep -q 'this build reads "QSxCX_WH/2"' "$OUT/g64tv1c.log" &&
+   grep -q 'sidecar of version 1, this build reads version 2' "$OUT/g64tv1f.log"; then
+  echo "E2E fcwh refusals qs4cx-no-sidecar=1 v1-config=1 v1-file=1 ok"
+else
+  echo "E2E FAIL fcwh refusals:$t_refused"; for m in g64t g64tv1c g64tv1f; do tail -2 "$OUT/$m.log"; done; fail=1
+fi
 # [plan 229] the 2-bit lines: every dumped file (the prefill MoE calls'
 # inputs and outputs, the logits) of the 2-bit token equals its palette
 # twin's, one call a token, no timeout; the pool's logits equal the
@@ -890,9 +1065,9 @@ for i, t in enumerate(c["layer_types"]):
     want += ["layer%d_%s" % (i, s) for s in sfx]
 f = open(b + "/" + cb["fc_wh_file_name"], "rb").read()
 n = struct.unpack_from("<I", f, 12)[0]
-names = [f[16 + 104 * i:16 + 104 * i + 64].rstrip(b"\0").decode()
+names = [f[16 + 112 * i:16 + 112 * i + 64].rstrip(b"\0").decode()
          for i in range(n)]
-ok = (f[:8] == b"NNTRFCWH" and cb.get("fc_wh_format") == "QS4CX_WH/1"
+ok = (f[:8] == b"NNTRFCWH" and cb.get("fc_wh_format") == "QSxCX_WH/2"
       and "fc_wh_file_name" not in ca and sorted(names) == sorted(want))
 print("main=%s images=%d want=%d %s" % ("same" if same else "differs", n,
                                          len(want), "ok" if same and ok else "bad"))
