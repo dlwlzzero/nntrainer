@@ -92,15 +92,21 @@ void Gemma4MoECausalLM::load_weight(const std::string &weight_path) {
 #ifdef ENABLE_HEXKL
   if (!htp_e2e)
     return;
-  // The weights by their own names, "<layer>:<weight>" (#4415's fused
-  // layers hold several each: qkv's gammas and projections, dense_ffn's
-  // gate / up / down and its two gammas, residual_add's gamma and the
-  // block's scalar), never by index.
+  // The weights by name, "<layer>:<weight>" (#4415's fused layers hold
+  // several each: qkv's gammas and projections, dense_ffn's gate / up /
+  // down and its two gammas, residual_add's gamma and the block's scalar),
+  // never by index. Keyed under the owning layer too: a shared_from layer
+  // (the tied head) names its own weights after the layer it shares with.
   std::map<std::string, nntrainer::Tensor *> w;
   model->forEachLayer(
-    [&w](ml::train::Layer &, nntrainer::RunLayerContext &rc, void *) {
-      for (auto *t : rc.getWeights())
-        w[t->getName()] = &t->getVariableRef();
+    [&w](ml::train::Layer &l, nntrainer::RunLayerContext &rc, void *) {
+      for (auto *t : rc.getWeights()) {
+        const std::string &n = t->getName();
+        w[n] = &t->getVariableRef();
+        const size_t colon = n.rfind(':');
+        if (colon != std::string::npos)
+          w.emplace(l.getName() + n.substr(colon), &t->getVariableRef());
+      }
     },
     nullptr);
   auto weight = [&w](const std::string &name) -> nntrainer::Tensor & {
