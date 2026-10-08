@@ -190,14 +190,15 @@
 #                              token, opened for the bind with no keyed FC;
 #                              gemma64x: the same fixture with int4-exact
 #                              FCs, so both sides hold the same weights)
-# and, since plan 229 S2 (2-bit FCs), gemma64t: every FC ternary, the main
+# and, since plan 229 S2 (2-bit FCs), gemma64t: its FCs ternary, the main
 # file QS4CX (option A, the writer's ternary-exact codes), its sidecar at
 # two bits (QSxCX_WH/2) and that sidecar's 4-bit twin (fc_wh_sidecar_from_q4
 # --bits4); the one-PD token's FC / DENSE_FFN on the u8i2 column branch:
-#   E2E quant fcwh-gemma64t main=same images=20 bits2=20 codes_ternary=1
+#   E2E quant fcwh-gemma64t main=same images=20 bits2=19 codes_ternary=1
 #     expand==whpack(--bits4 twin) tool==writer ok
 #   E2E fwd gemma64t fcwh kinds=all calls/token=1.00 attn_caches=2
-#     q4m1_handles=1 wh_handles=17 bits2=17 ok
+#     q4m1_handles=1 wh_handles=17 bits2=16 ok   (layer 0's gate | up a
+#                              2-bit gate beside a 4-bit up: one 4-bit handle)
 #   E2E eval gemma64t fcwh2==fcwh4 ... bit_identical=1
 #   E2E tokens gemma64t-fcwh2==fcwh4 8/8 expected_mismatch=0
 #   E2E eval gemma64t-fcwh-vs-off ... min_snr_db=<x>  (x >= 20 gated, vs the
@@ -505,8 +506,10 @@ PY
   --embd_dtype Q4_0 --fc_wh_sidecar > "$OUT/q_g64xw.log"
 G_ARGS=--repack run_gemma g64xe3 g64x htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
 G_ARGS=--repack run_gemma g64xe3w g64xw htp NNTR_HTP_DSPQ=1 NNTR_HTP_E2E=1
-# [plan 229 S2] gemma64t: every FC ternary at f32 (per column s x {-1, 0,
-# +1}, s the column's mean |w|; q / k norm gammas 0.3 as gemma64x's),
+# [plan 229 S2] gemma64t: every FC but layer0_ffn_up ternary at f32 (per
+# column s x {-1, 0, +1}, s the column's mean |w|; q / k norm gammas 0.3
+# as gemma64x's; the one 4-bit up makes layer 0's gate | up chunk a mixed
+# pair, registered at four bits),
 # quantized as QS4CX (option A: the writer's
 # ternary-exact path, codes {-1, 0, +1} x s), its sidecar at two bits; the
 # 4-bit twin of that sidecar (fc_wh_sidecar_from_q4.py --bits4, a repack of
@@ -528,7 +531,7 @@ f = open(b, "r+b")
 for name, o, K, N in rows:
     f.seek(o)
     w = list(struct.unpack("<%df" % (K * N), f.read(4 * K * N)))
-    for n in range(N):
+    for n in range(N if name != "layer0_ffn_up" else 0):
         col = [w[k * N + n] for k in range(K)]
         s = struct.unpack("<f", struct.pack("<f", sum(map(abs, col)) / K))[0]
         for k in range(K):
@@ -837,8 +840,9 @@ fi
 # image expanded == its --bits4 twin's whPack bytes (expand_i2i4_host_check
 # on the two files), the tool's own sidecar of the QS4CX file
 # byte-identical to the writer's; the one-PD token on the 2-bit sidecar
-# (17 handles, all 2-bit) against the same on the 4-bit twin: every dumped
-# file and token the same; against the hybrid run of the same file (the
+# (17 handles) against the same on the 4-bit twin: every dumped
+# file and token the same (16 handles 2-bit: layer 0's gate | up is the
+# mixed pair, at four bits); against the hybrid run of the same file (the
 # CPU's QS4CX FCs, option A's reference) above 20 dB and its tokens by the
 # policy; its pool of 2 against it; the refusals
 gt="$(python3 - "$OUT/g64t" "$OUT/g64tw" "$FIXG/config.json" <<'PY'
@@ -865,13 +869,15 @@ for i in range(n):
     names.append(name.rstrip(b"\0").decode())
     bits2 += bits == 2
     codes = m[q_off:q_off + N * K // 2]  # QS4CX: code + 8, two a byte
-    ternary &= all(x & 15 in (7, 8, 9) and x >> 4 in (7, 8, 9) for x in codes)
+    if name.rstrip(b"\0") != b"layer0_ffn_up":
+        ternary &= bits == 2 and all(
+            x & 15 in (7, 8, 9) and x >> 4 in (7, 8, 9) for x in codes)
 ok = (f[:8] == b"NNTRFCWH" and struct.unpack_from("<I", f, 8)[0] == 2
       and cb.get("fc_wh_format") == "QSxCX_WH/2" and ternary
       and "fc_wh_file_name" not in ca and sorted(names) == sorted(want))
 print("main=%s images=%d bits2=%d codes_ternary=%d want=%d %s" % (
     "same" if same else "differs", n, bits2, ternary, len(want),
-    "ok" if same and ok and bits2 == n else "bad"))
+    "ok" if same and ok and bits2 == n - 1 else "bad"))
 PY
 )" || gt="error"
 for k in hvx_expand_i2i4 hvx_worker_pool; do
@@ -899,7 +905,7 @@ read -r t_q4m1 t_wh t_b2 <<< "${gq:-x x x}"
 calls="$(calls_per_token "$OUT/g64te3w.log")"
 caches="$(grep -c '^\[HTP\] attn_m1: registered ' "$OUT/g64te3w.log" || true)"
 close="$(grep -o 'token driver: close .*' "$OUT/g64te3w.log")"
-if [ "$t_q4m1" = 1 ] && [ "$t_wh" = 17 ] && [ "$t_b2" = 17 ] && [ "$calls" = 1.00 ] &&
+if [ "$t_q4m1" = 1 ] && [ "$t_wh" = 17 ] && [ "$t_b2" = 16 ] && [ "$calls" = 1.00 ] &&
    [ "$caches" = 2 ] && grep -q ' timeouts=0 stale=0 ' <<< "$close" &&
    grep -q ' wh_handles=17$' "$OUT/g64te3w4.log"; then
   echo "E2E fwd gemma64t fcwh kinds=all calls/token=1.00 attn_caches=2 q4m1_handles=$t_q4m1 wh_handles=$t_wh bits2=$t_b2 ok"

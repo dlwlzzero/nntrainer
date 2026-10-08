@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     const bool ternary =
       !bits4 && std::all_of(rm.begin(), rm.end(),
                             [](int8_t v) { return v >= -1 && v <= 1; });
-    static const int8_t pal[nntrainer::WH_PALETTE_LEVELS] = {-1, 0, 1, 0};
+    const int8_t *pal = nntrainer::WH_TERNARY_PALETTE;
     std::vector<uint8_t> img;
     if (ternary) {
       img.resize(nntrainer::whBytes2(r.K, r.N));

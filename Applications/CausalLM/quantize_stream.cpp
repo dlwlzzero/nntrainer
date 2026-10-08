@@ -1154,9 +1154,9 @@ private:
       if (fcwh_image_ && std::all_of(rm.begin(), rm.end(), [](int8_t v) {
             return v >= -1 && v <= 1;
           })) {
-        static const int8_t ternary[nntrainer::WH_PALETTE_LEVELS] = {-1, 0, 1,
-                                                                     0};
-        pal.assign(ternary, ternary + nntrainer::WH_PALETTE_LEVELS);
+        pal.assign(nntrainer::WH_TERNARY_PALETTE,
+                   nntrainer::WH_TERNARY_PALETTE +
+                     nntrainer::WH_PALETTE_LEVELS);
         fcwh_bits_ = 2u;
       }
       if (two_bit || fcwh_bits_ == 2u) {

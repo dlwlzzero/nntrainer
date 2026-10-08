@@ -249,12 +249,16 @@ int hexkl_mm_u8i4_moe_layer_run(
  * too small for two columns, reads the arena behind the GEMV's l2fetch.
  * The output bytes are the same either way.
  *
+ * [plan 229 S2] A part may be QS2CX_WH: its codes are pushed packed and
+ * read by hvx_gemm_u8i2_wh_col* through its palette's LUT, with the same
+ * output as the 4-bit image of the same codes; parts may mix widths.
+ *
  * @param[in] h        [n_parts] handles of K x N_p, N_p % 32 == 0
  * @param[in] act_f32  [K], K % 32 == 0 (any heap or slot buffer)
  * @param[out] out_f32 [sum N_p]
  * @return AEE_SUCCESS; AEE_EBADITEM for a handle out of range, free, of
- *         another K or 2-bit (QS2CX_WH: refused until plan 229 S2's u8i2
- *         column branch); AEE_EINVALIDFORMAT for a shape; AEE_EFAILED when a
+ *         another K or of neither 4 nor 2 bits; AEE_EINVALIDFORMAT for a
+ *         shape; AEE_EFAILED when a
  *         lane's DMA wait ran out of its guard (the output is void); the
  *         scratch's AEE_ENOMEMORY
  */

@@ -60,6 +60,7 @@
 #include <thread_manager.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -2035,7 +2036,10 @@ public:
           "set_decode_graph_desc: op " + std::to_string(op) + " (" +
           htp_graph_kind_name(graphOp(op)->kind) + ") has a QS4CX weight, " +
           std::to_string(p.K) + " x " + std::to_string(p.N) +
-          ", and no FC WH sidecar image to bind it to (fc_wh_file_name)");
+          (native ? ", which the native-kernel lever (NNTR_HTP_PPL_LEVERS) "
+                    "has no form of"
+                  : ", and no FC WH sidecar image to bind it to "
+                    "(fc_wh_file_name)"));
       const size_t bytes =
         static_cast<size_t>(p.N) * (p.K / 32u) * Q4_CPU_BLOCK_BYTES;
       if (p.canonical)
@@ -5384,32 +5388,29 @@ private:
    * ponytail: the heap path expands a 2-bit image to four bits on the host
    * (whUnpack2), so those handles take twice the bytes -- the E2E chunk is
    * sized never to take it. Parts of one handle (a dense gate | up chunk)
-   * must agree on bits and palette, else refused; the upgrade is expanding
-   * the 2-bit part on the host as the heap path does.
+   * at different bits or palettes are expanded on the host and registered
+   * as one 4-bit handle (whUnpack2 + whPack: the same values, a host pass
+   * at load, the 4-bit bytes).
    * @note Call with handle_mutex_ already held. */
   uint32_t registerFcWh(void *key, remote_handle64 session,
                         const std::vector<WhPart> &parts, uint32_t k0,
                         uint32_t kn) {
     const uint64_t t_begin = HtpProfile::nowUs();
-    const uint32_t bits = parts[0].w->bits;
-    int8_t pal[WH_PALETTE_LEVELS] = {0, 0, 0, 0};
+    std::vector<std::array<int8_t, WH_PALETTE_LEVELS>> pals(parts.size());
+    bool mixed = false;
     uint32_t cn = 0;
-    for (const WhPart &p : parts) {
+    for (size_t i = 0; i < parts.size(); ++i) {
+      const WhPart &p = parts[i];
       cn += p.cn;
-      int8_t pp[WH_PALETTE_LEVELS] = {0, 0, 0, 0};
+      pals[i].fill(0);
       if (p.w->bits == 2u)
-        throwPread(preadAll(fcwh_fd_, pp, sizeof(pp),
+        throwPread(preadAll(fcwh_fd_, pals[i].data(), WH_PALETTE_LEVELS,
                             p.w->off + whBytes2(p.w->K, p.w->N)),
                    "fc wh palette");
-      if (&p == &parts[0])
-        std::memcpy(pal, pp, sizeof(pal));
-      if (p.w->bits != bits || std::memcmp(pp, pal, sizeof(pal)) != 0)
-        throw std::runtime_error(
-          "fc_wh_file_name " + fcwh_name_ + ": " +
-          std::string(p.w->name, strnlen(p.w->name, 64)) + " and " +
-          std::string(parts[0].w->name, strnlen(parts[0].w->name, 64)) +
-          " share a handle at different bits or palettes");
+      mixed |= p.w->bits != parts[0].w->bits || pals[i] != pals[0];
     }
+    const uint32_t bits = mixed ? 4u : parts[0].w->bits;
+    const int8_t *pal = pals[0].data();
     const size_t tile = bits == 2u ? WH_TILE2_BYTES : WH_TILE_BYTES;
     const size_t len = whBytes(kn, cn) / WH_TILE_BYTES * tile;
     const size_t row = static_cast<size_t>(cn / WH_TILE) * tile;
@@ -5442,11 +5443,38 @@ private:
       else
         whUnpack(img, kn, cn, rm);
     };
+    std::vector<uint8_t> host;
+    if (mixed) { // each part's values at its own width, packed at four bits
+      std::vector<int8_t> rm(static_cast<size_t>(kn) * cn);
+      for (size_t i = 0, at = 0; i < parts.size(); at += parts[i++].cn) {
+        const WhPart &p = parts[i];
+        const size_t pt = p.w->bits == 2u ? WH_TILE2_BYTES : WH_TILE_BYTES;
+        const size_t prow = static_cast<size_t>(p.cn / WH_TILE) * pt;
+        std::vector<uint8_t> img(prow * (kn / WH_TILE));
+        for (uint32_t kt = 0; kt < kn / WH_TILE; ++kt)
+          throwPread(
+            preadAll(fcwh_fd_, img.data() + kt * prow, prow,
+                     p.w->off + ((k0 / WH_TILE + kt) * (p.w->N / WH_TILE) +
+                                 p.c0 / WH_TILE) *
+                                  pt),
+            "fc wh image");
+        std::vector<int8_t> part(static_cast<size_t>(kn) * p.cn);
+        if (p.w->bits == 2u)
+          whUnpack2(img.data(), kn, p.cn, pals[i].data(), part.data());
+        else
+          whUnpack(img.data(), kn, p.cn, part.data());
+        for (uint32_t r = 0; r < kn; ++r)
+          std::memcpy(rm.data() + static_cast<size_t>(r) * cn + at,
+                      part.data() + static_cast<size_t>(r) * p.cn, p.cn);
+      }
+      host.resize(len);
+      whPack(rm.data(), kn, cn, host.data());
+    }
     std::vector<float> ws(cn), cs_f(cn);
     std::vector<int32_t> cs(cn);
     for (size_t i = 0, at = 0; i < parts.size(); at += parts[i++].cn) {
       const WhPart &p = parts[i];
-      const uint64_t tail = p.w->off + fcWhCodeBytes(p.w->K, p.w->N, bits);
+      const uint64_t tail = p.w->off + fcWhCodeBytes(p.w->K, p.w->N, p.w->bits);
       throwPread(preadAll(fcwh_fd_, ws.data() + at, sizeof(float) * p.cn,
                           tail + sizeof(float) * p.c0),
                  "fc wh scales");
@@ -5454,7 +5482,6 @@ private:
                           tail + sizeof(float) * (p.w->N + p.c0)),
                  "fc wh column sums");
     }
-    std::vector<uint8_t> host;
     auto load_host = [&] {
       if (host.empty()) {
         host.resize(len);
@@ -6494,6 +6521,19 @@ private:
                                  remote_handle64 session, uint32_t K,
                                  uint32_t N) {
     std::lock_guard<std::mutex> lock(handle_mutex_);
+    // [plan 229 S2] A QS4CX FC with an FC WH sidecar image is the Gemma
+    // decode's (registerFcWh keys its handle by this pointer too, and may
+    // have made it 2-bit, which the layer kernel cannot read); its HTP
+    // prefill is not wired, rather than a second, 4-bit copy of it here.
+    if (fcwh_fd_ >= 0 &&
+        fcwh_.count(fcWhKey(matAdata, static_cast<size_t>(N) *
+                                        (K / 2u + sizeof(float)))) != 0u)
+      throw std::runtime_error(
+        "fc_wh_file_name " + fcwh_name_ + ": a " + std::to_string(K) + "x" +
+        std::to_string(N) +
+        " QS4CX FC with a sidecar image serves the one-PD decode only; its "
+        "HTP prefill is not wired -- leave this layer's engine key off "
+        "(prefill on the CPU)");
     auto it = handle_cache_.find(matAdata);
     if (it != handle_cache_.end())
       return it->second;

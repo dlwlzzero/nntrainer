@@ -241,7 +241,8 @@ void Gemma4MoECausalLM::load_weight(const std::string &weight_path) {
     if (qs4cx ? !ops->add_decode_graph_qs4cx(t.getData<char>(), K, N)
               : !ops->add_decode_graph_q4_0(t.getData<char>(), K, N, tied))
       throw std::runtime_error(
-        "[Gemma4MoE] NNTR_HTP_E2E: the backend took no Q4_0 weight");
+        std::string("[Gemma4MoE] NNTR_HTP_E2E: the backend took no ") +
+        (qs4cx ? "QS4CX" : "Q4_0") + " weight");
   };
   layer = HTP_GRAPH_NO_OP;
   uint32_t fc = 0;

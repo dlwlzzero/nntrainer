@@ -59,6 +59,9 @@ namespace nntrainer {
 
 /** @brief Levels a 2-bit code can name. */
 constexpr uint32_t WH_PALETTE_LEVELS = 4u;
+/** @brief [plan 229 S2] The palette of a 2-bit FC WH image: a ternary
+ *  weight's codes {-1, 0, +1}, the fourth entry unused. */
+constexpr int8_t WH_TERNARY_PALETTE[4] = {-1, 0, 1, 0};
 /** @brief Distinct int4 codes, [-8, 7]. */
 constexpr uint32_t WH_PALETTE_CODES = 16u;
 
