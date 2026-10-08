@@ -1208,6 +1208,27 @@ weights, prompt 447, C = 16; lever cells — PR #257 merged `47b887058` in cycle
 * **Load (F16 G64):** `[HTP] fc wh: file=…_fcwh.bin handles=0` (the banner before the bind), `graph: q4m1 weights=206 handles=16 feed=vtcm wh_handles=435`, `e2e: fc arena weights=206 handles=16 attach_mib=396.0 chunks=2 mapped_mib=448 feed=vtcm load_ms=2426.8 lanes=6,3 s1_arena_mib=704 s1_heap_kib=81619`, two `attn_m1` caches (25 × hd256 400 MiB + 5 × hd512 40 MiB), `arena: chunks unmapped 7/7 mib=1536`, close `heap_used_kib=603370`, `calls/token=1.00`; S1 ceiling 3840 after all 13 runs; `/data` 191 GB free; the device keeps `models/gemma4_26b/config.json` = the original (`config.4096.json` / `config.orig.json` beside it) and `models/gemma4_26b_fcwh/` (sidecar + symlinks) for the next sitting.
 * **Page cache:** run `pgpgin` F 7.7–7.8 GB vs E 7.0–7.1 (the sidecar's 0.8 GB on top of the 7.2 GB bin, neither stays cached); decode-window `pgpgin` F 257–351 MiB vs E 336–439.
 
+#258 host split (no device, no timing: `run_inproc_e2e.sh` runs the DSP
+sources in-process on the host stand-ins; 8 tokens, 7 forced; 2026-10-08,
+`htp/258-fcwh-q8-act` and the parked kernel branch
+`htp/258-fcwh-q8-act-step2`). gemma64x0 = gemma64 with int4-exact FC weights
+(Q4_0 and QS4CX_WH hold the same values) at the fixture's **own** q / k norm
+gammas, so the WH token against the Q4M1 token is cause (b) alone; "alone" =
+that kind on WH, `NNTR_HTP_FC_WH_SKIP` the other two. Cause (a), the dummy's
+from-Q4_0 sidecar, is not split on the host (the tool reads ARM `q4_0x4`, the
+host fixture's Q4_0 is x86) and is closed for the real file (㊸ answered A).
+
+| WH row quantization | all kinds | q\|k\|v alone | o alone | dense alone | tokens | forced PPL, Q4M1 → WH |
+|---|---|---|---|---|---|---|
+| per-row u8 (`htp_decode`) | 9.61 dB | 9.58 dB | 31.09 dB | 29.55 dB | 8 / 8 | 16.0849 → 15.902 (−1.137 %) |
+| Q8_0 per 32 (step-2 branch) | 29.55 dB | bit-identical | bit-identical | 29.55 dB (MoE path, unchanged) | 8 / 8 | 16.0849 → 16.1169 (+0.199 %) |
+
+lfm25 (WH against the hybrid's CPU Q4_0 decode: weight format and (b) mixed;
+printed): forced PPL +5.347 % (q|k|v back on Q4M1 +3.092 %), SNR 9.48 dB with
+the u8 row; +5.468 % (+3.951 %), 9.27 dB with the Q8_0 row. The Q8_0 row does
+not shrink lfm25's gap, so that gap is the per-column int4 weights against
+Q4_0 (plan 229 §8.2's A′), not the row quantization.
+
 
 ## Artifacts
 
