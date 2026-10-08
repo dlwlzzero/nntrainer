@@ -148,9 +148,10 @@ inline float geglu_det_ref(float g, float u) { return geglu_det_one(g, u); }
 inline float dadd(float a, float b) { return swiglu_det_add(a, b); }
 inline float dsub(float a, float b) { return swiglu_det_sub(a, b); }
 inline float dmul(float a, float b) { return swiglu_det_mul(a, b); }
-/** t = g (C0 + C1 g^2), as both geglu_det_one and the skel compute it */
-inline float geglu_t_ref(float g) {
-  return dmul(g, dadd(GEGLU_DET_C0, dmul(GEGLU_DET_C1, dmul(g, g))));
+/** the exp's argument w = -1.595769121 (g + 0.044715 g^3), in
+ *  geglu_det_one's (and the skel's) operation order */
+inline float geglu_w_ref(float g) {
+  return dmul(-1.595769121f, dadd(g, dmul(0.044715f, dmul(g, dmul(g, g)))));
 }
 
 inline int32_t bits_of(float f) {
@@ -338,7 +339,7 @@ TEST_F(HvxExpandI2I4, MatchesScalarBitExact) {
 /**
  * @brief The GeGLU twin of the gate above (doc 55: Gemma-4's experts):
  *        hvx_geglu_det_sf against geglu_det_one, bit for bit, with the
- *        exp and reciprocal of t = g (C0 + C1 g^2) reported the same way.
+ *        exp and reciprocal of its sigmoid reported the same way.
  */
 TEST_F(HvxSwigluDet, GegluMatchesScalarBitExact) {
   const int n = 8192;
@@ -360,8 +361,7 @@ TEST_F(HvxSwigluDet, GegluMatchesScalarBitExact) {
 
   int bad_exp = 0, bad_recip = 0, bad_out = 0, first_bad = -1;
   for (int i = 0; i < n; ++i) {
-    const float t = geglu_t_ref(g[i]);
-    const float ref_e = exp_det_ref(dsub(0.0f, t));
+    const float ref_e = exp_det_ref(geglu_w_ref(g[i]));
     const float ref_r = recip_det_ref(dadd(1.0f, ref_e));
     const float ref_o = geglu_det_ref(g[i], u[i]);
     const bool de = bits_of(e[i]) != bits_of(ref_e);

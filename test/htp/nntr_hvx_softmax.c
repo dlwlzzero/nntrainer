@@ -100,15 +100,17 @@ int nntr_hvx_swiglu_det_f32(remote_handle64 handle, uint32 act,
     // a variant of it that returns its own intermediates would be a second
     // implementation to keep in step with the first.
     const HVX_Vector g = vg[i];
-    HVX_Vector t = g;
-    if (act == 1u) { /* GeGLU: the sigmoid's argument is g (C0 + C1 g^2) */
-      const HVX_Vector g2 = Q6_Vsf_vmpy_VsfVsf(g, g);
-      t = Q6_Vsf_vmpy_VsfVsf(
-        g,
-        Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(GEGLU_DET_C0),
-                           Q6_Vsf_vmpy_VsfVsf(hvx_splat_sf(GEGLU_DET_C1), g2)));
+    /* the exp's argument: -g, or for GeGLU hvx_geglu_det_sf's
+       w = -1.595769121 (g + 0.044715 g^3), in its operation order */
+    HVX_Vector w = Q6_Vsf_vsub_VsfVsf(Q6_V_vzero(), g);
+    if (act == 1u) {
+      const HVX_Vector cube = Q6_Vsf_vmpy_VsfVsf(g, Q6_Vsf_vmpy_VsfVsf(g, g));
+      w = Q6_Vsf_vmpy_VsfVsf(
+        hvx_splat_sf(-1.595769121f),
+        Q6_Vsf_vadd_VsfVsf(g,
+                           Q6_Vsf_vmpy_VsfVsf(hvx_splat_sf(0.044715f), cube)));
     }
-    const HVX_Vector e = hvx_exp_det_sf(Q6_Vsf_vsub_VsfVsf(Q6_V_vzero(), t));
+    const HVX_Vector e = hvx_exp_det_sf(w);
     ve[i] = e;
     vr[i] = hvx_recip_det_sf(Q6_Vsf_vadd_VsfVsf(hvx_splat_sf(1.0f), e));
     vo[i] =
