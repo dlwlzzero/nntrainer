@@ -5145,6 +5145,12 @@ private:
             ? static_cast<double>(e.pool_read_us) / 1000.0 / e.pool_rounds
             : 0.0,
           static_cast<double>(vmstatPgpginKib() - e.pgpgin0) / 1024.0);
+      if (e.moe_calls != 0)
+        std::fprintf(stderr,
+                     "[HTP] token driver: moe calls/token=%.2f "
+                     "(one-at-a-time %.2f)\n",
+                     static_cast<double>(e.moe_calls) / n,
+                     static_cast<double>(e.moe_calls_1x) / n);
       std::fprintf(
         stderr,
         "[HTP] token driver: close tokens=%llu hops/token=%.2f "
@@ -5358,6 +5364,8 @@ private:
       e.kind_us[k] += r.kind_us[k];
     }
     e.miss_pcyc += r.miss_pcyc;
+    e.moe_calls += r.moe_calls;
+    e.moe_calls_1x += r.moe_calls_1x;
     e.token_us += us;
     e.hop_us += r.hop_us;
     e.disp_us += static_cast<int32_t>(r.t_in_us - c0);
@@ -7952,6 +7960,8 @@ private:
     uint64_t kind[HTP_OP_KIND_N] = {0};
     /** [#267 L0] the ops' wall us per kind, the pcycles over the waits */
     uint64_t kind_us[HTP_OP_KIND_N] = {0}, miss_pcyc = 0;
+    /** [#267 L3] MOE kernel calls, and the one-at-a-time form's count */
+    uint64_t moe_calls = 0, moe_calls_1x = 0;
     uint32_t moe_ops = 0, spin_us = 0;
     /** [plan 201 S1] the pool: experts S1 loaded and its waits, the miss
      *  rounds served and the ARM's time on them */

@@ -105,6 +105,9 @@ typedef struct htp_dspq_token_resp_s {
                                            its guess at the next one's
                                            routing, count then ids, best
                                            first (hexkl_graph.h pred_log) */
+  /** [#267 L3] MOE kernel calls this token, and the calls the miss path's
+   *  one-expert-at-a-time form would have made (hexkl_graph moe_calls*) */
+  uint32_t moe_calls, moe_calls_1x;
 } htp_dspq_token_resp;
 
 /** @brief [plan 201 S1] The token driver's mailbox page (hexkl_token.h):
