@@ -1,0 +1,18 @@
+{
+  "model_type": "CausalLM",
+  "batch_size": 1,
+  "embedding_dtype": "Q4_0",
+  "fc_layer_dtype": "Q4_0",
+  "lmhead_dtype": "Q4_0",
+  "moe_layer_dtype": "QS2CX_WH",
+  "moe_engine": "htp",
+  "moe_cache_experts": 16,
+  "model_tensor_type": "Q4_0-FP32",
+  "init_seq_len": 1024,
+  "max_seq_len": 2048,
+  "num_to_generate": 256,
+  "skip_prefill": true,
+  "model_file_name": "nntr_gemma4_26b_a4b_qs2cx_wh.bin",
+  "tokenizer_file": "tokenizer.json",
+  "sample_input": "<bos><|turn>user\nThe capital of Korea is<turn|>\n<|turn>model\n"
+}
