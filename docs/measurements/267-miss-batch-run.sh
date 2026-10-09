@@ -9,9 +9,8 @@
 # ceiling); the variant is L, the binaries live in s267m/.
 #
 # usage:
-#   267-miss-batch-run.sh install <app dir> <v79 skel>   (lock held)
+#   267-miss-batch-run.sh install <app dir> <v79 skel>   (device go from the coordinator)
 #   267-miss-batch-run.sh one <log dir> <prompt> <G> [suffix] [extra env]
-#   267-miss-batch-run.sh release
 #   267-miss-batch-run.sh sum <log dir> <ref log dir>   text vs the ref's
 #                         E_p*_g*_D.log (267 sitting 1, ids == 260 r2 E)
 set -u -o pipefail
@@ -82,7 +81,6 @@ PY
 case "${1:-}" in
 install) shift; install_m "$@" ;;
 one) shift; L=${1:?log dir}; mkdir -p "$L/done"; CLADDER=16 v L "$2" "$3" "${4:-}" "${5:-}" ;;
-release) (cd "$ROOT" && tools/htp/sitting_lock.sh release $SER) ;;
 sum) shift; sum_m "$@" ;;
 *) sed -n '2,18p' "$0"; exit 1 ;;
 esac
