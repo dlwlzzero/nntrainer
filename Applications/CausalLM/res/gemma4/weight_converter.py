@@ -220,7 +220,7 @@ def iter_gemma4_weight_specs(params, config):
     release it before moving on. The tied lm head (output_of_causallm) is
     intentionally excluded here; the two output paths handle it themselves.
     """
-    text_config = config.text_config
+    text_config = getattr(config, "text_config", config)
     n_layers = text_config.num_hidden_layers
     num_kv_shared_layers = text_config.num_kv_shared_layers
     first_kv_shared_layer_idx = n_layers - num_kv_shared_layers
@@ -495,7 +495,7 @@ def main():
     params, source = load_model_state(args.model_path)
     print(f"Weight source: {source}")
 
-    text_config = config.text_config
+    text_config = getattr(config, "text_config", config)
     tie_word_embeddings = get_tie_word_embeddings(text_config, config)
 
     print("\nModel configuration:")
