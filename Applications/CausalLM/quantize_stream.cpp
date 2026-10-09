@@ -1043,7 +1043,7 @@ private:
       const bool two_bit = (dtype == DType::QS2CX_WH);
       const uint32_t pal_g = two_bit ? UINT32_MAX : palette_.group_k;
       const bool pal_percol = two_bit ? false : palette_.per_column;
-      const bool pal_refit = two_bit ? true : palette_.refit_scale;
+      const bool pal_refit = palette_.refit_scale;
       std::vector<int8_t> pal;
       if (two_bit || palette_.appliesTo(name)) {
         pal.resize(nntrainer::whPaletteEntries(static_cast<uint32_t>(K),
