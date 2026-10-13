@@ -1,0 +1,44 @@
+name: probe
+on:
+  push:
+    branches: [ ci/msvc-probe ]
+jobs:
+  msvc:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: cl debug (meson's flags)
+        shell: cmd
+        run: |
+          cl /nologo /std:c11 /Od /Zi /MDd /RTC1 /W3 /I nntrainer\tensor\htp_backend\hvx /c nntrainer\tensor\htp_backend\hvx\hvx_softmax_q.c /Fo:ref_dbg.obj
+          cl /nologo /std:c++17 /Od /Zi /MDd /RTC1 /EHsc /I nntrainer\tensor\htp_backend\hvx probe\exp2_probe.cpp ref_dbg.obj /Fe:probe_dbg.exe
+          probe_dbg.exe
+      - name: cl release
+        shell: cmd
+        run: |
+          cl /nologo /std:c11 /O2 /MD /I nntrainer\tensor\htp_backend\hvx /c nntrainer\tensor\htp_backend\hvx\hvx_softmax_q.c /Fo:ref_rel.obj
+          cl /nologo /std:c++17 /O2 /MD /EHsc /I nntrainer\tensor\htp_backend\hvx probe\exp2_probe.cpp ref_rel.obj /Fe:probe_rel.exe
+          probe_rel.exe
+      - name: cl debug without /std:c11
+        shell: cmd
+        run: |
+          cl /nologo /Od /Zi /MDd /RTC1 /W3 /I nntrainer\tensor\htp_backend\hvx /c nntrainer\tensor\htp_backend\hvx\hvx_softmax_q.c /Fo:ref_dbg2.obj
+          cl /nologo /std:c++17 /Od /Zi /MDd /RTC1 /EHsc /I nntrainer\tensor\htp_backend\hvx probe\exp2_probe.cpp ref_dbg2.obj /Fe:probe_dbg2.exe
+          probe_dbg2.exe
+  gcc-aarch64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: the Tizen flag order on the file with the pragma
+        run: |
+          set -x
+          aarch64-linux-gnu-g++ --version | head -1
+          aarch64-linux-gnu-g++ -std=c++17 -O2 -Wall -Werror -march=armv8.2-a+dotprod+i8mm -D__ARM_FEATURE_DOTPROD=1 -D__ARM_FEATURE_MATMUL_INT8=1 -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a57.cortex-a53 -fsyntax-only -I nntrainer/tensor/cpu_backend -I nntrainer/tensor/htp_backend/hmx -I nntrainer/utils -I nntrainer -I nntrainer/tensor -I api/ccapi/include nntrainer/tensor/cpu_backend/cpu_kv_q_attention.cpp && echo "pragma file: OK"
+          git show HEAD~0:nntrainer/tensor/cpu_backend/cpu_kv_q_attention.cpp | grep -c "pragma GCC target"
+          # and the same file without the pragma must fail as on Tizen
+          sed '/#pragma GCC target/d' nntrainer/tensor/cpu_backend/cpu_kv_q_attention.cpp > /tmp/nopragma.cpp
+          aarch64-linux-gnu-g++ -std=c++17 -O2 -Wall -march=armv8.2-a+dotprod+i8mm -D__ARM_FEATURE_DOTPROD=1 -D__ARM_FEATURE_MATMUL_INT8=1 -march=armv8-a+fp+simd+crc+crypto -c -o /tmp/nopragma.o -I nntrainer/tensor/cpu_backend -I nntrainer/tensor/htp_backend/hmx -I nntrainer/utils -I nntrainer -I nntrainer/tensor -I api/ccapi/include /tmp/nopragma.cpp 2>&1 | grep -m1 "target specific option mismatch" && echo "without pragma: fails as on Tizen (expected)"
+          # full object with the pragma
+          aarch64-linux-gnu-g++ -std=c++17 -O2 -Wall -Werror -march=armv8.2-a+dotprod+i8mm -D__ARM_FEATURE_DOTPROD=1 -D__ARM_FEATURE_MATMUL_INT8=1 -march=armv8-a+fp+simd+crc+crypto -c -o /tmp/pragma.o -I nntrainer/tensor/cpu_backend -I nntrainer/tensor/htp_backend/hmx -I nntrainer/utils -I nntrainer -I nntrainer/tensor -I api/ccapi/include nntrainer/tensor/cpu_backend/cpu_kv_q_attention.cpp && aarch64-linux-gnu-objdump -d /tmp/pragma.o | grep -c "udot" 
