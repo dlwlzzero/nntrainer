@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -30,6 +31,26 @@ namespace {
 
 constexpr uint32_t kRows = HVX_SOFTMAX_Q_ROWS;
 constexpr uint32_t kTile = HVX_SOFTMAX_Q_TILE;
+
+/** @brief Draws that are the same on every platform. std::mt19937 is
+ *         specified bit for bit, the standard distributions are not:
+ *         libstdc++, libc++ and the MSVC STL each consume the engine
+ *         differently, and the Windows ARM64 CI then runs data the Linux
+ *         CI never saw. */
+float uniform01(std::mt19937 &rng) {
+  return static_cast<float>(rng() >> 8) * (1.0f / 16777216.0f);
+}
+
+int uniform_int(std::mt19937 &rng, int lo, int hi) {
+  return lo + static_cast<int>(rng() % static_cast<uint32_t>(hi - lo + 1));
+}
+
+/** @brief Box-Muller normal of the given sigma. */
+float normal(std::mt19937 &rng, float sigma) {
+  const float u1 = std::max(uniform01(rng), 1.0f / 16777216.0f);
+  const float u2 = uniform01(rng);
+  return sigma * std::sqrt(-2.0f * std::log(u1)) * std::cos(6.283185307f * u2);
+}
 
 struct Case {
   uint32_t ct, col0, n_cols, row0, n_rows, window;
@@ -50,22 +71,25 @@ Built build(const Case &c, std::mt19937 &rng) {
   Built b;
   EXPECT_EQ(hvx_softmax_q_scale(c.alpha, c.F, &b.k, &b.rho_q15), 0);
   const double cvt = std::ldexp(1.0, b.k) / 512.0;
-  std::normal_distribution<float> logit(0.0f, 4.0f);
-  std::uniform_int_distribution<int> colsum(-4000, 4000);
   b.s.assign(static_cast<size_t>(c.ct) * kTile, 0);
   b.corr.assign(static_cast<size_t>(c.ct) * 32, 0);
   b.L.assign(b.s.size(), 0.0f);
   for (uint32_t t = 0; t < c.ct; ++t) {
     for (uint32_t j = 0; j < 32; ++j) {
-      const int cs = colsum(rng);
+      const int cs = uniform_int(rng, -4000, 4000);
       const double zp = static_cast<double>(c.zq) * cs;
       b.corr[t * 32 + j] = static_cast<int16_t>(static_cast<uint16_t>(
         static_cast<int64_t>(std::lround(zp * cvt)) & 0xffff));
       for (uint32_t r = 0; r < kRows; ++r) {
-        float Lv = logit(rng);
+        float Lv = normal(rng, 4.0f);
         if ((r * 7 + j) % 53 == 0) {
           Lv += 20.0f; // an outlier the row max must track
         }
+        // The kernel's contract: a corrected score fits int16, at alpha =
+        // 1/2000 that is |L| < 32.7. A 3.2 sigma draw under the outlier
+        // crossed it on the Windows ARM64 CI, wrapped, and that row's max
+        // was another column's.
+        Lv = std::min(std::max(Lv, -30.0f), 30.0f);
         const int32_t acc = static_cast<int32_t>(std::lround(Lv / c.alpha));
         // The logit the integer path can represent: acc * alpha exactly.
         b.L[t * kTile + r * 32 + j] =
@@ -119,9 +143,8 @@ Snr run(const Case &c, std::mt19937 &rng, bool check_masks) {
   // comparison: O = sum_c P[c] V[c].
   constexpr uint32_t kDims = 16;
   std::vector<float> V(static_cast<size_t>(c.ct) * 32 * kDims);
-  std::normal_distribution<float> vdist(0.0f, 1.0f);
   for (auto &x : V) {
-    x = vdist(rng);
+    x = normal(rng, 1.0f);
   }
   double sig = 0.0, err = 0.0, err_ideal = 0.0, o_sig = 0.0, o_err = 0.0;
   for (uint32_t r = 0; r < kRows; ++r) {
@@ -234,9 +257,8 @@ Snr16 run16(const Case &c, std::mt19937 &rng, bool check_masks) {
 
   constexpr uint32_t kDims = 16;
   std::vector<float> V(static_cast<size_t>(c.ct) * 32 * kDims);
-  std::normal_distribution<float> vdist(0.0f, 1.0f);
   for (auto &x : V) {
-    x = vdist(rng);
+    x = normal(rng, 1.0f);
   }
   double sig = 0.0, err = 0.0, err_ideal = 0.0, o_sig = 0.0, o_err = 0.0;
   for (uint32_t r = 0; r < kRows; ++r) {
