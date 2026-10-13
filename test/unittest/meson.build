@@ -252,7 +252,6 @@ unittest_hexkl_kv_tiles_f16_exe = executable(
   include_directories: include_directories(
     '../../nntrainer/tensor/htp_backend/hmx'),
   dependencies: nntrainer_test_main_deps,
-  c_args: ['-Wno-missing-include-dirs'],
   # The DSP sources are C11 (hexagon-clang builds them so); the project's
   # default C standard predates for-loop declarations.
   override_options: ['c_std=c11'],
@@ -275,7 +274,6 @@ unittest_hexkl_kv_q_exe = executable(
   include_directories: include_directories(
     '../../nntrainer/tensor/htp_backend/hmx'),
   dependencies: nntrainer_test_main_deps,
-  c_args: ['-Wno-missing-include-dirs'],
   override_options: ['c_std=c11'],
   install: get_option('enable-test'),
   install_dir: application_install_dir
