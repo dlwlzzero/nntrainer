@@ -112,6 +112,7 @@ class ChatController(
     fun removeDraftImage(index: Int) = update { copy(draftImages = draftImages.filterIndexed { i, _ -> i != index }) }
     fun setRawJson(text: String) = update { copy(rawJson = text) }
     fun resetRawJson() = update { copy(rawJson = examples.rawJsonFor(descriptor)) }
+    fun clearRuns() = update { copy(runs = emptyList(), lastMetrics = null) }
     fun setScreen(screen: Screen) = update { copy(screen = screen) }
     fun setTheme(theme: ThemeMode) = update { copy(theme = theme) }
     fun splashDone() = update { copy(splashShown = true) }

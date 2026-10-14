@@ -315,4 +315,16 @@ class ChatControllerTest {
         c.loadJsonFile("bad.json", "{")
         assertTrue(c.state.value.notice!!.startsWith("bad.json is not valid JSON"))
     }
+
+    @Test
+    fun clearRunsEmptiesHistoryAndLastMetrics() {
+        val c = controller().loadedHtp()
+        c.setDraft("go"); c.send(); c.awaitIdle()
+        assertEquals(1, c.state.value.runs.size)
+        c.clearRuns()
+        assertTrue(c.state.value.runs.isEmpty())
+        assertEquals(null, c.state.value.lastMetrics)
+        c.setDraft("again"); c.send(); c.awaitIdle()
+        assertEquals(2, c.state.value.runs.single().index)        // indices stay unique after a clear
+    }
 }
