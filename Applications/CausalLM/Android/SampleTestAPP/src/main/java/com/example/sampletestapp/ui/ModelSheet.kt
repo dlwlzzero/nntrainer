@@ -50,6 +50,7 @@ import com.example.sampletestapp.DEFAULT_BASE_PATH
 import com.example.sampletestapp.Examples
 import com.example.sampletestapp.LoadState
 import com.example.sampletestapp.R
+import com.example.sampletestapp.SessionSettings
 import com.example.sampletestapp.ThinkingChoice
 import com.example.sampletestapp.UiState
 import java.io.File
@@ -102,9 +103,10 @@ fun ModelSheet(state: UiState, controller: ChatController, onDismiss: () -> Unit
             }
 
             Label("BASE PATH")
+            var basePath by rememberLocalText(Unit) { controller.state.value.selection.basePath }
             OutlinedTextField(
-                value = state.selection.basePath,
-                onValueChange = controller::setBasePath,
+                value = basePath,
+                onValueChange = { basePath = it; controller.setBasePath(it) },
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 modifier = Modifier.fillMaxWidth().testTag(Tags.BASE_PATH),
@@ -207,19 +209,26 @@ private fun FamilyDropdown(state: UiState, controller: ChatController) {
 @Composable
 private fun SessionSettingsFields(state: UiState, controller: ChatController) {
     val s = state.session
+    // Each edit copies the controller's latest settings, never this composition's snapshot.
+    fun edit(change: SessionSettings.() -> SessionSettings) = controller.setSession(controller.state.value.session.change())
+    var system by rememberLocalText(Unit) { controller.state.value.session.systemPrompt }
+    var temperature by rememberLocalText(Unit) { controller.state.value.session.temperature }
+    var topK by rememberLocalText(Unit) { controller.state.value.session.topK }
+    var topP by rememberLocalText(Unit) { controller.state.value.session.topP }
+    var seed by rememberLocalText(Unit) { controller.state.value.session.seed }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(value = s.systemPrompt, onValueChange = { controller.setSession(s.copy(systemPrompt = it)) },
+        OutlinedTextField(value = system, onValueChange = { system = it; edit { copy(systemPrompt = it) } },
             label = { Text("System prompt") }, minLines = 2, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = s.temperature, onValueChange = { controller.setSession(s.copy(temperature = it)) },
+            OutlinedTextField(value = temperature, onValueChange = { temperature = it; edit { copy(temperature = it) } },
                 label = { Text("temperature") }, singleLine = true, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = s.topK, onValueChange = { controller.setSession(s.copy(topK = it)) },
+            OutlinedTextField(value = topK, onValueChange = { topK = it; edit { copy(topK = it) } },
                 label = { Text("top_k") }, singleLine = true, modifier = Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = s.topP, onValueChange = { controller.setSession(s.copy(topP = it)) },
+            OutlinedTextField(value = topP, onValueChange = { topP = it; edit { copy(topP = it) } },
                 label = { Text("top_p") }, singleLine = true, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = s.seed, onValueChange = { controller.setSession(s.copy(seed = it)) },
+            OutlinedTextField(value = seed, onValueChange = { seed = it; edit { copy(seed = it) } },
                 label = { Text("seed") }, singleLine = true, modifier = Modifier.weight(1f))
         }
         Label("THINKING")
@@ -227,7 +236,7 @@ private fun SessionSettingsFields(state: UiState, controller: ChatController) {
             ThinkingChoice.entries.forEach { choice ->
                 FilterChip(
                     selected = choice == s.thinking,
-                    onClick = { controller.setSession(s.copy(thinking = choice)) },
+                    onClick = { edit { copy(thinking = choice) } },
                     label = { Text(choice.name.lowercase()) },
                 )
             }

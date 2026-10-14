@@ -101,6 +101,10 @@ data class UiState(
     val notice: String? = null,
     val liveTokens: Int = 0,
     val liveElapsedMs: Long = 0,
+    /** Bumped when the controller rewrites [draft] / [rawJson] itself (seed, file, send, reset),
+     *  never on typing: the text fields keep their own text and resync only on these. */
+    val draftRevision: Int = 0,
+    val rawRevision: Int = 0,
 ) {
     val descriptor: ModelDescriptor?
         get() = catalog.firstOrNull {

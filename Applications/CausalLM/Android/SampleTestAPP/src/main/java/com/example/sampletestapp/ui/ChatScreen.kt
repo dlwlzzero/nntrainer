@@ -209,6 +209,7 @@ private fun AssistantBubble(turn: ChatTurn) {
 
 @Composable
 private fun Composer(state: UiState, controller: ChatController, onAttach: () -> Unit) {
+    var draft by rememberLocalText(state.draftRevision) { controller.state.value.draft }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (state.draftImages.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
@@ -238,8 +239,8 @@ private fun Composer(state: UiState, controller: ChatController, onAttach: () ->
             }
             Spacer(Modifier.width(8.dp))
             TextField(
-                value = state.draft,
-                onValueChange = controller::setDraft,
+                value = draft,
+                onValueChange = { draft = it; controller.setDraft(it) },
                 placeholder = { Text("Type a message…") },
                 maxLines = 6,
                 shape = RoundedCornerShape(24.dp),
@@ -263,7 +264,7 @@ private fun Composer(state: UiState, controller: ChatController, onAttach: () ->
             } else {
                 FilledIconButton(
                     onClick = controller::send,
-                    enabled = !state.busy && (state.draft.isNotBlank() || state.draftImages.isNotEmpty()),
+                    enabled = !state.busy && (draft.isNotBlank() || state.draftImages.isNotEmpty()),
                     modifier = Modifier.size(48.dp).testTag(Tags.SEND),
                 ) { Icon(painterResource(R.drawable.ic_send), contentDescription = "Send") }
             }

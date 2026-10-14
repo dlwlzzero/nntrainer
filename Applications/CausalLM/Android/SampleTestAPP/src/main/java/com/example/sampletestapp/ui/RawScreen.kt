@@ -21,7 +21,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -37,7 +39,8 @@ import com.example.sampletestapp.UiState
 
 @Composable
 fun RawScreen(state: UiState, controller: ChatController, onLoadJson: () -> Unit, modifier: Modifier = Modifier) {
-    val parsed = remember(state.rawJson) { RawRequest.parse(state.rawJson) }
+    var raw by rememberLocalText(state.rawRevision) { controller.state.value.rawJson }
+    val parsed = remember(raw) { RawRequest.parse(raw) }
     Column(modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Raw request", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
@@ -51,8 +54,8 @@ fun RawScreen(state: UiState, controller: ChatController, onLoadJson: () -> Unit
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
-            value = state.rawJson,
-            onValueChange = controller::setRawJson,
+            value = raw,
+            onValueChange = { raw = it; controller.setRawJson(it) },
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             modifier = Modifier.weight(1f).fillMaxWidth().testTag(Tags.RAW_JSON),
         )

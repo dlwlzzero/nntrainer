@@ -102,7 +102,7 @@ class ChatController(
 
     /** Like the View sample: a model pick resets the Raw example and leaves the draft alone. */
     private fun seedDefaults() {
-        update { copy(rawJson = examples.rawJsonFor(state.value.descriptor)) }
+        update { copy(rawJson = examples.rawJsonFor(state.value.descriptor), rawRevision = rawRevision + 1) }
     }
 
     // ----- plain UI state --------------------------------------------------
@@ -111,7 +111,7 @@ class ChatController(
     fun addDraftImages(images: List<ByteArray>) = update { copy(draftImages = draftImages + images) }
     fun removeDraftImage(index: Int) = update { copy(draftImages = draftImages.filterIndexed { i, _ -> i != index }) }
     fun setRawJson(text: String) = update { copy(rawJson = text) }
-    fun resetRawJson() = update { copy(rawJson = examples.rawJsonFor(descriptor)) }
+    fun resetRawJson() = update { copy(rawJson = examples.rawJsonFor(descriptor), rawRevision = rawRevision + 1) }
     fun clearRuns() = update { copy(runs = emptyList(), lastMetrics = null) }
     fun setScreen(screen: Screen) = update { copy(screen = screen) }
     fun setTheme(theme: ThemeMode) = update { copy(theme = theme) }
@@ -176,6 +176,12 @@ class ChatController(
             update { copy(status = "Load failed: model folder not found: $required", notice = "Model folder not found: $required") }
             return null
         }
+        if (current != null && state.value.streaming) {
+            // Spec §5: cancel first; the run finishes (its partial turn marked stopped) before the swap.
+            cancelRequested = true
+            current.cancel()
+            current.chatCancel()
+        }
         update { copy(load = LoadState.Loading(req.modelKey), status = "Loading ${req.modelKey}…") }
         return withContext(engineDispatcher) {
             current?.let { runCatching { it.close() } }
@@ -188,7 +194,7 @@ class ChatController(
                         copy(
                             load = LoadState.Loaded(req, e.kind, e.architecture),
                             status = "Loaded ${req.modelKey} (${e.kind}, arch=${e.architecture ?: "?"})",
-                            turns = if (current != null) emptyList() else turns,
+                            turns = if (current != null) turns + ChatTurn(nextId(), TurnRole.NOTE, "Loaded ${req.modelKey}") else turns,
                         )
                     }
                     e
@@ -210,8 +216,17 @@ class ChatController(
         if (text.isEmpty() && s.draftImages.isEmpty()) { setStatus("Message is empty."); return }
         if (s.busy) { setStatus("Busy."); return }
         val images = s.draftImages
-        update { copy(draft = "", draftImages = emptyList()) }
-        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images), mode = "chat") { e, d, sink ->
+        val sent = s.draft
+        val onStarted = {
+            update {
+                copy(
+                    draft = if (draft == sent) "" else draft,
+                    draftRevision = if (draft == sent) draftRevision + 1 else draftRevision,
+                    draftImages = if (draftImages == images) emptyList() else draftImages,
+                )
+            }
+        }
+        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images), mode = "chat", onStarted) { e, d, sink ->
             if (d.runtime == RuntimeKind.LITERT) sendLiteRt(e, text, images, sink)
             else sendNative(e, sink)
         }
@@ -225,8 +240,11 @@ class ChatController(
         if (parsed is RawRequest.Parsed.Invalid) { setStatus("Invalid JSON: ${parsed.reason}"); return }
         if (s.busy) { setStatus("Busy."); return }
         val images = s.draftImages
-        update { copy(draftImages = emptyList(), screen = Screen.CHAT) }
-        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images, raw = true), mode = "raw") { e, d, sink ->
+        update { copy(screen = Screen.CHAT) }
+        val onStarted = { update { copy(draftImages = if (draftImages == images) emptyList() else draftImages) } }
+        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images, raw = true), mode = "raw", onStarted) { e, d, sink ->
+            // The flat calls below need LiteRT's own conversation, which an open chat session replaces.
+            if (e.chatSessionId != null) e.closeChatSession()
             when {
                 images.isNotEmpty() && parsed is RawRequest.Parsed.Messages ->
                     e.runMultimodalHandleWithMessagesStreaming(RawRequest.withImages(parsed.messages, images), sink)
@@ -271,6 +289,7 @@ class ChatController(
         update {
             copy(
                 draft = if (draft.isEmpty()) body else draft + body,
+                draftRevision = draftRevision + 1,
                 notice = "$name inserted into the message (${body.length} chars)",
             )
         }
@@ -279,7 +298,10 @@ class ChatController(
     fun loadJsonFile(name: String, text: String) {
         when (val p = RawRequest.parse(text)) {
             is RawRequest.Parsed.Messages ->
-                update { copy(rawJson = text, screen = Screen.RAW, notice = "$name loaded into Raw (${p.messages.size} messages)") }
+                update {
+                    copy(rawJson = text, rawRevision = rawRevision + 1, screen = Screen.RAW,
+                        notice = "$name loaded into Raw (${p.messages.size} messages)")
+                }
             is RawRequest.Parsed.Other -> insertTextFile(name, text)
             is RawRequest.Parsed.Invalid -> update { copy(notice = "$name is not valid JSON: ${p.reason}") }
         }
@@ -288,11 +310,14 @@ class ChatController(
     private fun runGeneration(
         userTurn: ChatTurn,
         mode: String,
+        onStarted: () -> Unit,
         invoke: (QuickDotAI, ModelDescriptor, StreamSink) -> BackendResult<*>,
     ) {
         scope.launch {
+            // A failed load returns here with the draft and images untouched.
             val e = loadInternal(buildRequest(), force = false) ?: return@launch
             val d = state.value.descriptor ?: return@launch
+            onStarted()
             val assistantId = nextId()
             cancelRequested = false
             update {
@@ -308,16 +333,19 @@ class ChatController(
             }
             collector.flush()
             val metrics = withContext(engineDispatcher) { (e.metrics() as? BackendResult.Ok)?.value }
-            finishTurn(assistantId, result, collector.error, metrics, mode, startedMs, d)
+            finishTurn(e, assistantId, result, collector.error, metrics, mode, startedMs, d)
         }
     }
 
     private fun sendNative(e: QuickDotAI, sink: StreamSink): BackendResult<Unit> {
         val history = state.value.turns.filter { !it.raw && !it.streaming && it.role != TurnRole.NOTE }
-        val messages = history.map { t ->
+        val lastUser = history.indexOfLast { it.role == TurnRole.USER }
+        val messages = history.mapIndexed { i, t ->
             val role = if (t.role == TurnRole.USER) QuickAiChatRole.USER else QuickAiChatRole.ASSISTANT
             val text = if (t.role == TurnRole.ASSISTANT) t.text.removeSuffix("<turn|>").trimEnd() else t.text
-            QuickAiChatMessage(role, t.images.map { PromptPart.ImageBytes(it) } + listOf(PromptPart.Text(text)))
+            // Earlier turns' images are not resent: the vision path takes the current turn's only.
+            val images = if (i == lastUser) t.images.map { PromptPart.ImageBytes(it) } else emptyList()
+            QuickAiChatMessage(role, images + listOf(PromptPart.Text(text)))
         }
         val hasImages = messages.lastOrNull()?.parts?.any { it is PromptPart.ImageBytes } == true
         return if (hasImages) e.runMultimodalHandleWithMessagesStreaming(messages, sink)
@@ -352,7 +380,7 @@ class ChatController(
     }
 
     private fun finishTurn(
-        turnId: Long, result: BackendResult<*>, sinkError: String?, metrics: PerformanceMetrics?,
+        ran: QuickDotAI, turnId: Long, result: BackendResult<*>, sinkError: String?, metrics: PerformanceMetrics?,
         mode: String, startedMs: Long, d: ModelDescriptor,
     ) {
         val stopped = cancelRequested
@@ -371,14 +399,14 @@ class ChatController(
         }
         val note = error?.let { ChatTurn(nextId(), TurnRole.NOTE, "Error: $it") }
         val index = runIndex.incrementAndGet()
-        val unloaded = engine == null
+        val replaced = engine !== ran
         update {
             val text = turns.firstOrNull { it.id == turnId }?.text ?: ""
             copy(
                 turns = turns.map { if (it.id == turnId) it.copy(streaming = false, stopped = stopped, metrics = turnMetrics) else it } + listOfNotNull(note),
                 streaming = false,
-                // An unload that raced the run already wrote "Unloaded."; keep it.
-                status = when { error != null -> "Failed: $error"; unloaded -> status; else -> "Done." },
+                // An unload or reload that raced the run already wrote its status; keep it.
+                status = when { error != null -> "Failed: $error"; replaced -> status; else -> "Done." },
                 lastMetrics = metrics ?: lastMetrics,
                 runs = (runs + RunRecord(
                     index = index, modelId = d.id, mode = mode,

@@ -56,8 +56,12 @@ class ChatControllerTest {
         while (!cond()) { if (System.currentTimeMillis() > end) fail("timeout: $label"); Thread.sleep(5) }
     }
     fun ChatController.awaitIdle() {
-        await("idle") { !state.value.busy }
-        executor.submit {}.get()                                   // queued engine work finished too
+        // busy is briefly false between a finished load and the generation it
+        // hands off to, so drain the engine queue and re-check until it stays idle.
+        do {
+            await("idle") { !state.value.busy }
+            executor.submit {}.get()                               // queued engine work finished too
+        } while (state.value.busy)
     }
     fun ChatController.selectNpu() { selectFamily("fake-npu"); setBasePath("/m") }
 
@@ -326,5 +330,77 @@ class ChatControllerTest {
         assertEquals(null, c.state.value.lastMetrics)
         c.setDraft("again"); c.send(); c.awaitIdle()
         assertEquals(2, c.state.value.runs.single().index)        // indices stay unique after a clear
+    }
+
+    // ----- final-review findings -------------------------------------------
+
+    @Test
+    fun rawAfterLiteRtChatClosesTheSessionFirst() {
+        val c = controller(); c.selectFamily("gemma4"); c.setBasePath("/m")
+        c.setDraft("hi"); c.send(); c.awaitIdle()
+        c.setRawJson("""[{"role":"user","content":"u"}]"""); c.sendRaw(); c.awaitIdle()
+        val calls = engines.single().calls.toList()
+        val close = calls.indexOf("closeSession")
+        assertTrue("session must close before the flat messages call: $calls",
+            close >= 0 && close < calls.indexOf("messages:1"))
+    }
+
+    @Test
+    fun loadFailureKeepsTheDraftAndImages() {
+        existing.remove("/m/fake-npu")
+        val c = controller(); c.selectNpu()
+        c.setDraft("hello"); c.addDraftImages(listOf(byteArrayOf(1)))
+        c.send(); c.awaitIdle()
+        assertTrue(c.state.value.status, c.state.value.status.startsWith("Load failed:"))
+        assertEquals("hello", c.state.value.draft)
+        assertEquals(1, c.state.value.draftImages.size)
+        assertTrue(c.state.value.turns.isEmpty())
+    }
+
+    @Test
+    fun reloadWhileStreamingCancelsAndKeepsThePartialTurn() {
+        val c = controller().loadedNpu()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("go"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        c.load(force = true); c.awaitIdle()
+        assertTrue(e.cancelled)
+        val partial = c.state.value.turns.single { it.role == TurnRole.ASSISTANT }
+        assertTrue(partial.stopped)
+        assertEquals("Hello", partial.text)
+        assertTrue(c.state.value.status, c.state.value.status.startsWith("Loaded "))
+        assertEquals(2, engines.size)
+    }
+
+    @Test
+    fun nativeHistorySendsOnlyTheLastTurnsImages() {
+        val c = controller().loadedNpu()
+        val x = byteArrayOf(1); val y = byteArrayOf(2)
+        c.setDraft("a"); c.addDraftImages(listOf(x)); c.send(); c.awaitIdle()
+        c.setDraft("b"); c.addDraftImages(listOf(y)); c.send(); c.awaitIdle()
+        val msgs = engines.single().lastMessages!!
+        assertEquals(1, msgs.sumOf { m -> m.parts.count { it is PromptPart.ImageBytes } })
+        assertEquals(PromptPart.ImageBytes(y), msgs.last().parts.first())
+    }
+
+    /** The composables keep their own text and resync only when these move (typing must not move them). */
+    @Test
+    fun textRevisionsMoveOnExternalWritesOnly() {
+        val c = controller().loadedNpu()
+        val d0 = c.state.value.draftRevision
+        c.setDraft("typed")
+        assertEquals(d0, c.state.value.draftRevision)
+        c.insertTextFile("a.txt", "x")
+        val d1 = c.state.value.draftRevision
+        assertTrue(d1 > d0)
+        c.send(); c.awaitIdle()
+        assertEquals("", c.state.value.draft)
+        assertTrue(c.state.value.draftRevision > d1)
+        val r0 = c.state.value.rawRevision
+        c.setRawJson("[]")
+        assertEquals(r0, c.state.value.rawRevision)
+        c.resetRawJson()
+        assertTrue(c.state.value.rawRevision > r0)
     }
 }
