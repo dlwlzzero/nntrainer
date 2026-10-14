@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -15,18 +16,19 @@ android {
         applicationId = "com.example.sampletestapp"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // SampleTestAPP hosts the QuickDotAI AAR directly (no remote
-            // :remote process) so it packages the AAR's arm64-v8a
-            // jniLibs. Restrict to the matching ABI to avoid empty
-            // armv7/x86_64 slices.
+            // The AAR ships arm64-v8a prebuilts only.
             abiFilters += listOf("arm64-v8a")
         }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     buildTypes {
@@ -44,30 +46,34 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
-        // LiteRT-LM 0.10.0 (the version our mirror serves) was compiled
-        // with Kotlin 2.3.0 but our compiler is 2.2.21; the flag tells
-        // kotlinc to accept the newer metadata stamp on transitive
-        // artifacts. See libs.versions.toml for the full story.
+        // LiteRT-LM 0.10.0 was compiled with Kotlin 2.3.0; see libs.versions.toml.
         freeCompilerArgs += "-Xskip-metadata-version-check"
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
 dependencies {
-    // The whole point of SampleTestAPP: depend on the :QuickDotAI AAR
-    // directly and drive LiteRTLm / NativeQuickDotAI in-process, without
-    // QuickAIService. The AAR re-exports kotlinx-serialization-json and
-    // the LiteRT-LM Kotlin runtime as `api` dependencies so we get them
-    // transitively.
     implementation(project(":QuickDotAI"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity)
-    implementation(libs.material)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.kotlinx.coroutines.android)
 
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
