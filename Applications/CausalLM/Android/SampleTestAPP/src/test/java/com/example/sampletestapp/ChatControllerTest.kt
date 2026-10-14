@@ -318,7 +318,7 @@ class ChatControllerTest {
 
     @Test
     fun clearRunsEmptiesHistoryAndLastMetrics() {
-        val c = controller().loadedHtp()
+        val c = controller().loadedNpu()
         c.setDraft("go"); c.send(); c.awaitIdle()
         assertEquals(1, c.state.value.runs.size)
         c.clearRuns()
