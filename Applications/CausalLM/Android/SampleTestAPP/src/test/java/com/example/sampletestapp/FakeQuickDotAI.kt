@@ -18,7 +18,7 @@ class FakeQuickDotAI(
     var deltas: List<String> = listOf("Hello", " world", "<turn|>"),
     var loadResult: BackendResult<Unit> = BackendResult.Ok(Unit),
 ) : QuickDotAI {
-    override var architecture: String? = "gemma4-26b-a4b-htp"
+    override var architecture: String? = "fake-arch"
     val calls: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
     @Volatile var cancelled = false
     @Volatile var closed = false

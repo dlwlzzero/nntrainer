@@ -12,9 +12,18 @@ import com.example.quickdotai.BackendType
 import com.example.quickdotai.Capability
 import com.example.quickdotai.LoadModelRequest
 import com.example.quickdotai.ModelDescriptor
+import com.example.quickdotai.PerformanceMetrics
+import com.example.quickdotai.PromptPart
 import com.example.quickdotai.QuantizationType
+import com.example.quickdotai.QuickAiChatMessage
+import com.example.quickdotai.QuickAiChatRole
+import com.example.quickdotai.QuickAiChatSamplingConfig
+import com.example.quickdotai.QuickAiChatSessionConfig
+import com.example.quickdotai.QuickAiChatTemplateKwargs
+import com.example.quickdotai.QuickAiError
 import com.example.quickdotai.QuickDotAI
 import com.example.quickdotai.RuntimeKind
+import com.example.quickdotai.StreamSink
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -188,6 +197,222 @@ class ChatController(
                     update { copy(load = LoadState.Idle, status = "Load failed: [${r.error.name}] ${r.message ?: ""}") }
                     null
                 }
+            }
+        }
+    }
+
+    // ----- generation ------------------------------------------------------
+
+    fun send() {
+        val s = state.value
+        val text = s.draft.trim()
+        if (text.isEmpty() && s.draftImages.isEmpty()) { setStatus("Message is empty."); return }
+        if (s.busy) { setStatus("Busy."); return }
+        val images = s.draftImages
+        update { copy(draft = "", draftImages = emptyList()) }
+        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images), mode = "chat") { e, d, sink ->
+            if (d.runtime == RuntimeKind.LITERT) sendLiteRt(e, text, images, sink)
+            else sendNative(e, sink)
+        }
+    }
+
+    fun sendRaw() {
+        val s = state.value
+        val text = s.rawJson.trim()
+        if (text.isEmpty()) { setStatus("Messages JSON is empty."); return }
+        val parsed = RawRequest.parse(text)
+        if (parsed is RawRequest.Parsed.Invalid) { setStatus("Invalid JSON: ${parsed.reason}"); return }
+        if (s.busy) { setStatus("Busy."); return }
+        val images = s.draftImages
+        update { copy(draftImages = emptyList(), screen = Screen.CHAT) }
+        runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images, raw = true), mode = "raw") { e, d, sink ->
+            when {
+                images.isNotEmpty() && parsed is RawRequest.Parsed.Messages ->
+                    e.runMultimodalHandleWithMessagesStreaming(RawRequest.withImages(parsed.messages, images), sink)
+                parsed is RawRequest.Parsed.Messages &&
+                    (Capability.MESSAGES_API in d.capabilities || d.runtime == RuntimeKind.LITERT) ->
+                    e.runModelHandleWithMessagesStreaming(parsed.messages, sink)
+                else -> e.runModelHandleWithJsonStreaming(text, sink)   // the only path that forwards tools
+            }
+        }
+    }
+
+    /** From the main thread: never waits for the engine. */
+    fun cancel() {
+        val e = engine ?: return
+        if (!state.value.streaming) return
+        cancelRequested = true
+        // Status first: once the engine is signalled it may finish and write "Done." at once.
+        setStatus("Stopping…")
+        e.cancel()
+        e.chatCancel()
+    }
+
+    fun clearConversation() {
+        update { copy(turns = emptyList()) }
+        val e = engine ?: return
+        scope.launch {
+            withContext(engineDispatcher) { if (e.chatSessionId != null) runCatching { e.chatRebuild(emptyList()) } }
+        }
+    }
+
+    /** LiteRT reads the session config when the session opens, so a change closes the current one. */
+    fun setSession(settings: SessionSettings) {
+        update { copy(session = settings) }
+        val e = engine ?: return
+        scope.launch {
+            withContext(engineDispatcher) { if (e.chatSessionId != null) runCatching { e.closeChatSession() } }
+        }
+    }
+
+    fun insertTextFile(name: String, text: String) {
+        val body = text.removePrefix("﻿")
+        update {
+            copy(
+                draft = if (draft.isEmpty()) body else draft + body,
+                notice = "$name inserted into the message (${body.length} chars)",
+            )
+        }
+    }
+
+    fun loadJsonFile(name: String, text: String) {
+        when (val p = RawRequest.parse(text)) {
+            is RawRequest.Parsed.Messages ->
+                update { copy(rawJson = text, screen = Screen.RAW, notice = "$name loaded into Raw (${p.messages.size} messages)") }
+            is RawRequest.Parsed.Other -> insertTextFile(name, text)
+            is RawRequest.Parsed.Invalid -> update { copy(notice = "$name is not valid JSON: ${p.reason}") }
+        }
+    }
+
+    private fun runGeneration(
+        userTurn: ChatTurn,
+        mode: String,
+        invoke: (QuickDotAI, ModelDescriptor, StreamSink) -> BackendResult<*>,
+    ) {
+        scope.launch {
+            val e = loadInternal(buildRequest(), force = false) ?: return@launch
+            val d = state.value.descriptor ?: return@launch
+            val assistantId = nextId()
+            cancelRequested = false
+            update {
+                copy(
+                    turns = turns + userTurn + ChatTurn(assistantId, TurnRole.ASSISTANT, "", streaming = true, raw = userTurn.raw),
+                    streaming = true, status = "Generating…", liveTokens = 0, liveElapsedMs = 0,
+                )
+            }
+            val startedMs = now()
+            val collector = StreamCollector(assistantId, startedMs)
+            val result: BackendResult<*> = withContext(engineDispatcher) {
+                try { invoke(e, d, collector) } catch (t: Throwable) { BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message) }
+            }
+            collector.flush()
+            val metrics = withContext(engineDispatcher) { (e.metrics() as? BackendResult.Ok)?.value }
+            finishTurn(assistantId, result, collector.error, metrics, mode, startedMs, d)
+        }
+    }
+
+    private fun sendNative(e: QuickDotAI, sink: StreamSink): BackendResult<Unit> {
+        val history = state.value.turns.filter { !it.raw && !it.streaming && it.role != TurnRole.NOTE }
+        val messages = history.map { t ->
+            val role = if (t.role == TurnRole.USER) QuickAiChatRole.USER else QuickAiChatRole.ASSISTANT
+            val text = if (t.role == TurnRole.ASSISTANT) t.text.removeSuffix("<turn|>").trimEnd() else t.text
+            QuickAiChatMessage(role, t.images.map { PromptPart.ImageBytes(it) } + listOf(PromptPart.Text(text)))
+        }
+        val hasImages = messages.lastOrNull()?.parts?.any { it is PromptPart.ImageBytes } == true
+        return if (hasImages) e.runMultimodalHandleWithMessagesStreaming(messages, sink)
+        else e.runModelHandleWithMessagesStreaming(messages, sink)
+    }
+
+    private fun sendLiteRt(e: QuickDotAI, text: String, images: List<ByteArray>, sink: StreamSink): BackendResult<*> {
+        if (e.chatSessionId == null) {
+            val opened = e.openChatSession(sessionConfig())
+            if (opened is BackendResult.Err) return opened
+        }
+        return if (images.isEmpty()) e.runChatModelHandleStreaming(text, sink)
+        else e.runChatMultimodalHandleStreaming(images.map { PromptPart.ImageBytes(it) } + PromptPart.Text(text), sink)
+    }
+
+    private fun sessionConfig(): QuickAiChatSessionConfig? {
+        val s = state.value.session
+        val system = s.systemPrompt.trim().ifEmpty { null }
+        val temperature = s.temperature.trim().toDoubleOrNull()
+        val topK = s.topK.trim().toIntOrNull()
+        val topP = s.topP.trim().toDoubleOrNull()
+        val seed = s.seed.trim().toIntOrNull()
+        val sampling = if (temperature != null || topK != null || topP != null || seed != null)
+            QuickAiChatSamplingConfig(temperature = temperature, topK = topK, topP = topP, seed = seed) else null
+        val kwargs = when (s.thinking) {
+            ThinkingChoice.ON -> QuickAiChatTemplateKwargs(enableThinking = true)
+            ThinkingChoice.OFF -> QuickAiChatTemplateKwargs(enableThinking = false)
+            ThinkingChoice.DEFAULT -> null
+        }
+        return if (system != null || sampling != null || kwargs != null)
+            QuickAiChatSessionConfig(systemInstruction = system, sampling = sampling, chatTemplateKwargs = kwargs) else null
+    }
+
+    private fun finishTurn(
+        turnId: Long, result: BackendResult<*>, sinkError: String?, metrics: PerformanceMetrics?,
+        mode: String, startedMs: Long, d: ModelDescriptor,
+    ) {
+        val stopped = cancelRequested
+        cancelRequested = false
+        val error = (result as? BackendResult.Err)?.let { "[${it.error.name}] ${it.message ?: ""}" } ?: sinkError
+        val wallMs = (now() - startedMs).toDouble()
+        val turnMetrics = metrics?.let {
+            TurnMetrics(
+                ttftMs = it.ttftMs,
+                tokensPerSec = if (it.generationDurationMs > 0) it.generationTokens * 1000.0 / it.generationDurationMs else 0.0,
+                generationTokens = it.generationTokens,
+                prefillTokens = it.prefillTokens,
+                totalMs = if (it.totalDurationMs > 0) it.totalDurationMs else wallMs,
+                engineLabel = Examples.runtimeLabel(d.runtime),
+            )
+        }
+        val note = error?.let { ChatTurn(nextId(), TurnRole.NOTE, "Error: $it") }
+        val index = runIndex.incrementAndGet()
+        val unloaded = engine == null
+        update {
+            val text = turns.firstOrNull { it.id == turnId }?.text ?: ""
+            copy(
+                turns = turns.map { if (it.id == turnId) it.copy(streaming = false, stopped = stopped, metrics = turnMetrics) else it } + listOfNotNull(note),
+                streaming = false,
+                // An unload that raced the run already wrote "Unloaded."; keep it.
+                status = when { error != null -> "Failed: $error"; unloaded -> status; else -> "Done." },
+                lastMetrics = metrics ?: lastMetrics,
+                runs = (runs + RunRecord(
+                    index = index, modelId = d.id, mode = mode,
+                    prefillTokens = metrics?.prefillTokens ?: 0, generationTokens = metrics?.generationTokens ?: 0,
+                    ttftMs = metrics?.ttftMs ?: 0.0, tokensPerSec = turnMetrics?.tokensPerSec ?: 0.0,
+                    totalMs = wallMs, output = text,
+                )).takeLast(20),
+            )
+        }
+    }
+
+    /** Accumulates deltas on the engine thread and publishes at most every [publishIntervalMs]. */
+    private inner class StreamCollector(private val turnId: Long, private val startedMs: Long) : StreamSink {
+        private val buffer = StringBuilder()
+        private var tokens = 0
+        private var lastPublishMs = startedMs
+        @Volatile var error: String? = null
+
+        @Synchronized override fun onDelta(text: String) {
+            buffer.append(text)
+            tokens++
+            val t = now()
+            if (t - lastPublishMs >= publishIntervalMs) publish(t)
+        }
+        override fun onDone() {}
+        override fun onError(error: QuickAiError, message: String?) { this.error = "[${error.name}] ${message ?: ""}" }
+        @Synchronized fun flush() = publish(now())
+
+        private fun publish(t: Long) {
+            lastPublishMs = t
+            val snapshot = buffer.toString()
+            val n = tokens
+            update {
+                copy(turns = turns.map { if (it.id == turnId) it.copy(text = snapshot) else it },
+                    liveTokens = n, liveElapsedMs = t - startedMs)
             }
         }
     }

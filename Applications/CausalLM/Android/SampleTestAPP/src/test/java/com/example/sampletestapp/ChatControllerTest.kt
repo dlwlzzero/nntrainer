@@ -6,6 +6,8 @@ import com.example.quickdotai.BackendType
 import com.example.quickdotai.Capability
 import com.example.quickdotai.ModelDescriptor
 import com.example.quickdotai.ModelIds
+import com.example.quickdotai.PromptPart
+import com.example.quickdotai.QuickAiChatRole
 import com.example.quickdotai.QuickAiError
 import com.example.quickdotai.RuntimeKind
 import kotlinx.coroutines.CoroutineScope
@@ -17,7 +19,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class ChatControllerTest {
     val npu = ModelDescriptor("fake-npu", "fake-npu", "Fake NPU",
@@ -127,5 +131,188 @@ class ChatControllerTest {
         assertEquals(2, engines.size)
         assertEquals("load:qwen3-0.6b", engines[1].calls.first())
         assertTrue(engines[0].closed)
+    }
+
+    fun ChatController.loadedNpu(): ChatController { selectNpu(); load(); awaitIdle(); return this }
+
+    @Test
+    fun sendBuildsMessagesFromHistoryForNative() {
+        val c = controller().loadedNpu()
+        c.setDraft("first"); c.send(); c.awaitIdle()
+        val e = engines.single()
+        assertEquals(listOf("first"), e.lastMessages!!.map { (it.parts.single() as PromptPart.Text).text })
+        assertEquals("Hello world<turn|>", c.state.value.lastAssistantText)
+        assertEquals("Done.", c.state.value.status)
+        c.setDraft("second"); c.send(); c.awaitIdle()
+        val history = e.lastMessages!!.map { it.role to (it.parts.single() as PromptPart.Text).text }
+        assertEquals(listOf(QuickAiChatRole.USER to "first", QuickAiChatRole.ASSISTANT to "Hello world",
+            QuickAiChatRole.USER to "second"), history)   // the end-of-turn marker is not echoed back
+        assertEquals(4, c.state.value.turns.size)
+        assertEquals("", c.state.value.draft)
+    }
+
+    @Test
+    fun sendWithImagesUsesTheMultimodalPath() {
+        val c = controller().loadedNpu()
+        c.setDraft("look"); c.addDraftImages(listOf(byteArrayOf(9)))
+        c.send(); c.awaitIdle()
+        assertEquals("multimodal:1", engines.single().calls.last { it.startsWith("multimodal") || it.startsWith("messages") })
+        assertTrue(engines.single().lastMessages!!.single().parts.first() is PromptPart.ImageBytes)
+        assertTrue(c.state.value.draftImages.isEmpty())
+    }
+
+    @Test
+    fun sendUsesSessionForLiteRt() {
+        val c = controller(); c.selectFamily("gemma4"); c.setBasePath("/m")
+        c.setSession(SessionSettings(systemPrompt = "Be brief", temperature = "0.5", thinking = ThinkingChoice.OFF))
+        c.setDraft("hi"); c.send(); c.awaitIdle()
+        val e = engines.single()
+        assertEquals(listOf("load:gemma4", "open", "chat:hi"), e.calls.toList())
+        assertEquals("Be brief", e.lastSessionConfig!!.systemInstruction)
+        assertEquals(0.5, e.lastSessionConfig!!.sampling!!.temperature!!, 1e-9)
+        assertEquals(false, e.lastSessionConfig!!.chatTemplateKwargs!!.enableThinking)
+        c.setDraft("again"); c.send(); c.awaitIdle()
+        assertEquals("chat:again", e.calls.last())                 // the session is reused
+        c.setSession(SessionSettings(systemPrompt = "Other")); c.awaitIdle()
+        assertEquals("closeSession", e.calls.last())               // settings change closes it
+        c.setDraft("x"); c.send(); c.awaitIdle()
+        assertEquals(listOf("open", "chat:x"), e.calls.takeLast(2))
+        c.clearConversation(); c.awaitIdle()
+        assertEquals("rebuild", e.calls.last())
+        assertTrue(c.state.value.turns.isEmpty())
+    }
+
+    @Test
+    fun rawRoutesByCapability() {
+        val c = controller(); c.selectFamily("qwen3-0.6b"); c.setBasePath("/m")
+        c.setRawJson("""{"messages":[{"role":"user","content":"u"}],"tools":[]}""")
+        c.sendRaw(); c.awaitIdle()
+        assertEquals("json", engines[0].calls.last { it != "load:qwen3-0.6b" })
+        assertTrue(c.state.value.turns.first().raw)
+        assertEquals(Screen.CHAT, c.state.value.screen)
+        c.selectFamily("fake-npu")
+        c.setRawJson("""[{"role":"user","content":"u"}]""")
+        c.sendRaw(); c.awaitIdle()
+        assertEquals("messages:1", engines[1].calls.last())
+        c.setRawJson("not json"); c.sendRaw()
+        assertTrue(c.state.value.status.startsWith("Invalid JSON"))
+    }
+
+    @Test
+    fun rawWithNoUserMessageStillRuns() {
+        val c = controller().loadedNpu()
+        c.setRawJson("""[{"role":"system","content":"only"}]""")
+        c.sendRaw(); c.awaitIdle()
+        assertEquals("messages:1", engines.single().calls.last())
+        assertEquals("Done.", c.state.value.status)
+    }
+
+    @Test
+    fun rawTurnsStayOutOfChatHistory() {
+        val c = controller().loadedNpu()
+        c.setRawJson("""[{"role":"user","content":"raw"}]"""); c.sendRaw(); c.awaitIdle()
+        c.setDraft("chat"); c.send(); c.awaitIdle()
+        assertEquals(listOf("chat"), engines.single().lastMessages!!.map { (it.parts.single() as PromptPart.Text).text })
+    }
+
+    @Test
+    fun cancelMarksTurnStopped() {
+        val c = controller().loadedNpu()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("go"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        assertTrue(c.state.value.streaming)
+        c.cancel()
+        c.awaitIdle()
+        val turn = c.state.value.turns.last()
+        assertTrue(turn.stopped); assertFalse(turn.streaming)
+        assertEquals("Hello", turn.text)
+        assertEquals("Done.", c.state.value.status)
+    }
+
+    @Test
+    fun sendWhileBusyIsIgnored() {
+        val c = controller().loadedNpu()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("one"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        c.setDraft("two"); c.send()
+        assertEquals("Busy.", c.state.value.status)
+        e.gate!!.countDown(); c.awaitIdle()
+        assertEquals(1, e.calls.count { it.startsWith("messages") })
+        assertEquals("two", c.state.value.draft)                   // nothing was consumed
+    }
+
+    @Test
+    fun unloadDuringStreamCancelsThenReleases() {
+        val c = controller().loadedNpu()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("go"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        c.unload(); c.awaitIdle()
+        await("unloaded") { c.state.value.status == "Unloaded." }
+        assertTrue(e.cancelled)
+        assertTrue(c.state.value.turns.last().stopped)
+        assertEquals("Hello", c.state.value.turns.last().text)
+        assertTrue(e.calls.indexOf("unload") > e.calls.indexOfFirst { it.startsWith("messages") })
+        c.load(); c.awaitIdle()
+        assertTrue(c.state.value.status.startsWith("Loaded "))
+    }
+
+    @Test
+    fun streamingPublishesInBatches() {
+        publishInterval = 50
+        val c = controller().loadedNpu()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("go"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        assertEquals("", c.state.value.lastAssistantText)         // 0 ms elapsed: not published yet
+        clockMs = 60
+        e.gate!!.countDown(); c.awaitIdle()
+        assertEquals("Hello world<turn|>", c.state.value.lastAssistantText)
+        assertEquals(3, c.state.value.liveTokens)
+    }
+
+    @Test
+    fun metricsFillTurnAndRuns() {
+        val c = controller().loadedNpu()
+        c.setDraft("go"); c.send(); c.awaitIdle()
+        val m = c.state.value.turns.last().metrics!!
+        assertEquals(120.0, m.ttftMs, 1e-9)
+        assertEquals(10.0, m.tokensPerSec, 1e-9)
+        assertEquals(3, m.generationTokens)
+        assertEquals("Quick.AI", m.engineLabel)
+        val run = c.state.value.runs.single()
+        assertEquals("chat", run.mode); assertEquals(10, run.prefillTokens); assertEquals("Hello world<turn|>", run.output)
+        assertEquals(120.0, c.state.value.lastMetrics!!.ttftMs, 1e-9)
+    }
+
+    @Test
+    fun insertTextFileKeepsNewlinesAndStripsBom() {
+        val c = controller()
+        c.setDraft("")
+        c.insertTextFile("a.txt", "\uFEFFline1\r\nline2\n")
+        assertEquals("line1\r\nline2\n", c.state.value.draft)
+        assertEquals("a.txt inserted into the message (13 chars)", c.state.value.notice)
+        c.insertTextFile("b.txt", "more")
+        assertEquals("line1\r\nline2\nmore", c.state.value.draft)
+    }
+
+    @Test
+    fun loadJsonFileRoutes() {
+        val c = controller()
+        c.loadJsonFile("req.json", """{"messages":[{"role":"user","content":"u"}]}""")
+        assertEquals(Screen.RAW, c.state.value.screen)
+        assertTrue(c.state.value.rawJson.contains("\"messages\""))
+        assertEquals("req.json loaded into Raw (1 messages)", c.state.value.notice)
+        c.setDraft("")
+        c.loadJsonFile("other.json", """{"a":1}""")
+        assertEquals("""{"a":1}""", c.state.value.draft)
+        c.loadJsonFile("bad.json", "{")
+        assertTrue(c.state.value.notice!!.startsWith("bad.json is not valid JSON"))
     }
 }
