@@ -137,17 +137,7 @@ class NativeQuickDotAI(
             if (m.errorCode != 0) {
                 BackendResult.Err(QuickAiError.fromNativeCode(m.errorCode))
             } else {
-                BackendResult.Ok(
-                    PerformanceMetrics(
-                        prefillTokens = m.prefillTokens,
-                        prefillDurationMs = m.prefillDurationMs,
-                        generationTokens = m.generationTokens,
-                        generationDurationMs = m.generationDurationMs,
-                        totalDurationMs = m.totalDurationMs,
-                        initializationDurationMs = m.initializationDurationMs,
-                        peakMemoryKb = m.peakMemoryKb
-                    )
-                )
+                BackendResult.Ok(m.toPerformanceMetrics())
             }
         } catch (t: Throwable) {
             Log.e(TAG, "getPerformanceMetricsHandleNative threw", t)
