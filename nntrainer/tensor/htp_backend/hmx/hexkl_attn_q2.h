@@ -23,6 +23,10 @@
  *      (s from the longest row) and combined in f32
  *   4. epilogue: o * 2^s * s_v[d] / (l * s_o) + zp -> u16 rows in DDR
  *
+ * A decode row (n_q == 1) folds each kv head's G query heads into one
+ * block, a head per tile row (Q quantized to an encoding shared by the
+ * G heads), so the kv head's K/V are read once rather than G times.
+ *
  * Q arrives as the model's 16-bit asymmetric tensor (per-head scale and
  * zero point, q = s_q (u - zp)); the zero-point term zp * colsum_k is a
  * per-column int16 constant the softmax subtracts. The cache must be in

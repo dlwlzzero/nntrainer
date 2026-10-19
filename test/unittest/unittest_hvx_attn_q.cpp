@@ -366,7 +366,9 @@ const char *const kQ2StatNames[kQ2StatCount] = {
  */
 class HvxAttnQ2 : public hvx_test::SessionTest {
 protected:
-  void RunShape(const AttnShape &s, double min_snr_db, bool report = false) {
+  /** @param n_blocks the call's items (stats n_blocks), when non-null */
+  void RunShape(const AttnShape &s, double min_snr_db, bool report = false,
+                uint32_t *n_blocks = nullptr) {
     SCOPED_TRACE(
       "n_q=" + std::to_string(s.n_q) + " from=" + std::to_string(s.cache_from) +
       " to=" + std::to_string(s.cache_to) + " hq=" +
@@ -478,6 +480,9 @@ protected:
       static_cast<int>(out_u16.size()), stats.data(), kQ2StatCount);
     EXPECT_EQ(nntr_hvx_kv_release_q(handle_, h), AEE_SUCCESS);
     ASSERT_EQ(err, AEE_SUCCESS) << "attn_q2_prefill failed: " << hex(err);
+    if (n_blocks) {
+      *n_blocks = stats[7];
+    }
     std::vector<float> got(q_elems, 0.0f);
     for (uint32_t r = 0; r < s.n_q; ++r) {
       for (uint32_t hh = 0; hh < s.n_head_q; ++hh) {
@@ -544,6 +549,40 @@ TEST_F(HvxAttnQ2, ReportGlobal8192Chunk) {
   // sum of 65535 a flat row held 8 per column here and the context lost
   // ~6 dB per doubling. P' unnormalized keeps it above kSnrQ2.
   RunShape({256, 7936, 8192, 8, 1, 512, 0, 0, 0}, kSnrQ2, true);
+}
+
+TEST_F(HvxAttnQ2, ReportGlobal8704DecodeFolds) {
+  // The same layer's decode row at the end of the generation graph's
+  // context (8703 cached rows plus the token): 272 column tiles, so the
+  // call runs in column segments, and the eight query heads fold into one
+  // item a segment. Segments are at least 32 tiles, so folded the call has
+  // at most 9 items; unfolded it would have at least 3 x 8 = 24.
+  uint32_t items = 0;
+  RunShape({1, 8703, 8704, 8, 1, 512, 0, 0, 0}, kSnrQ2, true, &items);
+  EXPECT_LE(items, 9u) << "the eight query heads should fold, one item a "
+                          "segment";
+}
+
+/** @brief Decode rows fold a kv head's query heads into one item: a full
+ *         layer, a sliding one (whose window must hold for every folded
+ *         row), two kv heads (their items alternate the per-head constant
+ *         slots), and G = 1 as the unfolded control. */
+TEST_F(HvxAttnQ2, DecodeFoldsQueryHeads) {
+  struct {
+    AttnShape s;
+    uint32_t items;
+  } cases[] = {
+    {{1, 1023, 1024, 8, 1, 512, 0, 0, 0}, 1},
+    {{1, 4095, 4096, 8, 1, 256, 512, 0, 0}, 1},
+    {{1, 2047, 2048, 8, 2, 128, 0, 0, 0}, 2},
+    {{1, 1023, 1024, 4, 4, 128, 0, 0, 0}, 4},
+  };
+  for (const auto &c : cases) {
+    uint32_t items = 0;
+    RunShape(c.s, kSnrQ2, true, &items);
+    EXPECT_EQ(items, c.items)
+      << "hq=" << c.s.n_head_q << " hkv=" << c.s.n_head_kv;
+  }
 }
 
 /**
@@ -933,6 +972,7 @@ TEST_F(HvxAttnQ, ConvertPlanesAreLow16BitsOfScaledAccumulator) {
 struct SoftmaxCase {
   const char *name;
   uint32_t ct, col0, n_cols, row0, n_rows, window;
+  uint32_t same_row; /**< every row at row0 (GQA-folded decode) */
 };
 
 /**
@@ -946,6 +986,9 @@ TEST_F(HvxAttnQ, SoftmaxQ16MatchesReferenceBitExact) {
     {"window", 36, 992, 1152, 2048, 64, 1024},
     {"padding", 3, 0, 70, 30, 40, 0},
     {"dense4096", 128, 0, 4096, 4032, 64, 0},
+    // folded decode rows: a 512 window cutting tile 109, and a full row
+    {"same_row_window", 17, 3488, 513, 4000, 64, 512, 1},
+    {"same_row_full", 128, 0, 4096, 4095, 64, 0, 1},
   };
   const uint32_t F = 9;
   int k = 0;
@@ -975,6 +1018,7 @@ TEST_F(HvxAttnQ, SoftmaxQ16MatchesReferenceBitExact) {
     b.window = c.window;
     b.rho_q15 = rho;
     b.frac_bits = static_cast<uint8_t>(F);
+    b.same_row = static_cast<uint8_t>(c.same_row);
     std::vector<uint8_t> lo_ref(n, 0xAA), hi_ref(n, 0xAA), lo_dsp(n, 0x55),
       hi_dsp(n, 0x55);
     std::vector<int32_t> rs_ref(HVX_SOFTMAX_Q_ROWSUM_WORDS, -1),
@@ -983,8 +1027,8 @@ TEST_F(HvxAttnQ, SoftmaxQ16MatchesReferenceBitExact) {
                         rs_ref.data());
     std::vector<uint32_t> st(5, 0);
     const int err = nntr_hvx_probe_softmax_q16(
-      handle_, c.ct, c.col0, c.n_cols, c.row0, c.n_rows, c.window, rho, F,
-      s.data(), static_cast<int>(s.size()), corr.data(),
+      handle_, c.ct, c.col0, c.n_cols, c.row0, c.n_rows, c.same_row, c.window,
+      rho, F, s.data(), static_cast<int>(s.size()), corr.data(),
       static_cast<int>(corr.size()), lo_dsp.data(), static_cast<int>(n),
       hi_dsp.data(), static_cast<int>(n), rs_dsp.data(),
       static_cast<int>(rs_dsp.size()), st.data(), 5);

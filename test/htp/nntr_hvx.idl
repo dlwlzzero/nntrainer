@@ -1239,9 +1239,11 @@ interface nntr_hvx : remote_handle64 {
 
    // The same for the 16-bit P of the a16 contract (hvx_softmax_q16):
    // P16 leaves as its low and high byte tiles, rowsum holds the P' sums.
+   // same_row: every row at row0 (hvx_softmax_q_block.same_row).
    AEEResult probe_softmax_q16(in uint32 n_col_tiles, in uint32 col0,
                                in uint32 n_cols, in uint32 row0,
-                               in uint32 n_rows, in uint32 window,
+                               in uint32 n_rows, in uint32 same_row,
+                               in uint32 window,
                                in uint32 rho_q15, in uint32 frac_bits,
                                in sequence<int16> s_tiles,
                                in sequence<int16> corr,
