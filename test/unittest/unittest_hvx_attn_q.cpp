@@ -537,6 +537,15 @@ TEST_F(HvxAttnQ2, ReportGlobal4096Chunk) {
   RunShape({512, 3584, 4096, 16, 2, 512, 0, 0, 0}, kSnrQ2, true);
 }
 
+TEST_F(HvxAttnQ2, ReportGlobal8192Chunk) {
+  // Gemma-4 E2B's full layers at the end of an 8192 prefill: the last
+  // 256-row chunk, eight query heads on one KV head of 512. Past 4096
+  // columns the call runs in column segments; with P normalized to a row
+  // sum of 65535 a flat row held 8 per column here and the context lost
+  // ~6 dB per doubling. P' unnormalized keeps it above kSnrQ2.
+  RunShape({256, 7936, 8192, 8, 1, 512, 0, 0, 0}, kSnrQ2, true);
+}
+
 /**
  * @brief Absolute floors, from the CPU model on this test's uniform random
  *        data: every int8 term sits at its theoretical 48 dB and the u8 P

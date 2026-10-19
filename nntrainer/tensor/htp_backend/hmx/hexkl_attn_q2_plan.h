@@ -45,8 +45,18 @@ extern "C" {
 #define HEXKL_ATTN_Q2_ROWS 64u
 /** @brief Bytes of one uint8 tile (Q, P', convert plane). */
 #define HEXKL_ATTN_Q2_TILE 2048u
-/** @brief Bytes of one int16 tile (scores, O). */
+/** @brief Bytes of one int16 tile (scores). */
 #define HEXKL_ATTN_Q2_TILE16 4096u
+/** @brief Bytes of one f32 tile (O, unnormalized). */
+#define HEXKL_ATTN_Q2_TILE32 8192u
+/** @brief Bytes of one block's P' row sums (HVX_SOFTMAX_Q_ROWSUM_WORDS). */
+#define HEXKL_ATTN_Q2_RS_BYTES 2048u
+/** @brief Convert planes: two sweeps of the QK readout (int16, 2 + 2) or of
+ *         the PV readout (int24, 3 + 3). */
+#define HEXKL_ATTN_Q2_PLANES 6u
+/** @brief Largest PV readout shift: its third convert scale, 2^(-7 - s),
+ *         must stay an fp16 normal. */
+#define HEXKL_ATTN_Q2_PV_SHIFT_MAX 7u
 /** @brief Largest head_dim / 32. */
 #define HEXKL_ATTN_Q2_MAX_DT 16u
 /** @brief Q tile slots and block slots of the pipeline. */
@@ -94,18 +104,25 @@ typedef struct {
   uint32_t q_u16;      /**< [2][64][hd] Q rows staged by DMA, u16 or f32 */
   uint32_t q_ah;       /**< [3][2][dt] uint8 Q tiles: low bytes, high bytes */
   uint32_t s16;        /**< [2][n_blk][64][32] int16 scores */
-  uint32_t planes;     /**< 4 convert planes, 2 KiB each (HMX thread only) */
-  uint32_t p_ah;       /**< [2][2][n_blk] uint8 P16 tiles: low, high bytes */
-  uint32_t o16;        /**< [2][dt][64][32] int16 output */
+  uint32_t planes;     /**< HEXKL_ATTN_Q2_PLANES convert planes, 2 KiB each
+                            (HMX thread only) */
+  uint32_t p_ah;       /**< [2][2][n_blk] uint8 P' tiles: low, high bytes */
+  uint32_t o32;        /**< [2][dt][64][32] f32 output, sum_j P'_j V_j */
+  uint32_t rs;         /**< [3][HVX_SOFTMAX_Q_ROWSUM_WORDS] int32 P' row
+                            sums, by Q slot: softmax(i + 1) shares a job
+                            with epilogue(i - 1) */
   uint32_t corr;       /**< [2][n_res + 1][32] int16 zero-point correction */
   uint32_t corr_bytes; /**< bytes of one corr slot */
   uint32_t cvt;        /**< bias blocks: QK 2^(k+8), 2^k, 2^(k-8) x 2 slots,
-                            PV 2^9, 2^1, 2^-7 (HEXKL_ATTN_Q2_CVT_BLOCKS) */
+                            PV 2^(9-s), 2^(1-s), 2^(-7-s)
+                            (HEXKL_ATTN_Q2_CVT_BLOCKS) */
   uint32_t smx;        /**< [HEXKL_ATTN_Q2_SMX_PARTS] softmax scratches */
   uint32_t total;      /**< first byte past the last region */
   uint32_t n_res;      /**< resident column tiles */
   uint32_t n_blk;      /**< most column tiles one block sees */
   uint32_t dt;         /**< head_dim / 32 */
+  uint32_t pv_shift;   /**< s: the PV readout is floor(acc / 2^s) as int24,
+                            so 127 * 255 * 32 n_blk >> s fits */
 } hexkl_attn_q2_layout;
 
 /** @brief Bias blocks in the cvt region: 3 QK blocks per head parity and
@@ -181,6 +198,17 @@ static inline int hexkl_attn_q2_plan_n(const hexkl_attn_f16_shape *s,
   if (n_blk > HVX_SOFTMAX_Q_MAX_TILES) {
     return HEXKL_ATTN_EBADPARM;
   }
+  /* One PV sweep sums u8 x i8 over the block's columns: |acc| <=
+     127 * 255 * 32 n_blk, read out as floor(acc / 2^s) in 24 bits. */
+  const uint64_t acc_max = 127ull * 255ull * 32ull * n_blk;
+  uint32_t shift = 0;
+  while ((acc_max >> shift) >= (1ull << 23)) {
+    ++shift;
+  }
+  if (shift > HEXKL_ATTN_Q2_PV_SHIFT_MAX) {
+    return HEXKL_ATTN_EBADPARM;
+  }
+  L->pv_shift = shift;
   L->n_res = n_res;
   L->n_blk = n_blk;
   L->dt = dt;
@@ -202,11 +230,13 @@ static inline int hexkl_attn_q2_plan_n(const hexkl_attn_f16_shape *s,
     L->s16 = off;
     off += HEXKL_ATTN_Q2_SLOTS * n_blk * HEXKL_ATTN_Q2_TILE16;
     L->planes = off;
-    off += 4u * HEXKL_CVT_PLANE_BYTES;
+    off += HEXKL_ATTN_Q2_PLANES * HEXKL_CVT_PLANE_BYTES;
     L->p_ah = off;
     off += HEXKL_ATTN_Q2_SLOTS * 2u * n_blk * TB;
-    L->o16 = off;
-    off += HEXKL_ATTN_Q2_SLOTS * dt * HEXKL_ATTN_Q2_TILE16;
+    L->o32 = off;
+    off += HEXKL_ATTN_Q2_SLOTS * dt * HEXKL_ATTN_Q2_TILE32;
+    L->rs = off;
+    off += HEXKL_ATTN_Q2_Q_SLOTS * HEXKL_ATTN_Q2_RS_BYTES;
     L->corr = off;
     off += 2u * L->corr_bytes;
     L->cvt = off;

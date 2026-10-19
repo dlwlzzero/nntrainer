@@ -33,14 +33,22 @@
  * old one (try_qk) and the pipeline drains at the boundary.
  *
  * 16-bit activations on a u8 x i8 array. A = 256 A_hi + A_lo, so
- * A . W = 256 (A_hi . W) + (A_lo . W): two accumulations, each read out as
- * int16 through two convert passes (exact at power-of-two scales, D9) and
- * added modulo 2^16. The combined value is made to fit int16 by the choice
- * of scale: for QK through 2^k from hvx_softmax_q_scale_k (k in [-6, 7] so
- * 2^(k-8) is still an fp16 normal), for PV by the normalized P, whose row
- * sum is at most 65535 + n/2, so |acc| <= 127 * 67584 and floor(acc / 512)
- * stays below 2^15 with a factor of two to spare (2^kv = 2^0; 2^1 would
- * give the output one more bit but overflow on a pathological row).
+ * A . W = 256 (A_hi . W) + (A_lo . W): two accumulations, each read out
+ * through the convert unit (exact at power-of-two scales, D9). For QK the
+ * combined value is made to fit int16 by the choice of scale, 2^k from
+ * hvx_softmax_q_scale_k (k in [-6, 7] so 2^(k-8) is still an fp16 normal),
+ * and the two int16 readouts add modulo 2^16.
+ *
+ * PV takes P' as the softmax leaves it, unnormalized (65535 at each row's
+ * maximum), and the row sum l separately: the output is sum_j P'_j V_j / l,
+ * with the division in the epilogue. A P normalized to sum 65535 before
+ * P.V would hold 65535 / n per column on a flat row -- 8 at n = 8192, its
+ * rounding the error -- where P' keeps 16 bits per column at any length.
+ * The price is the readout's range: a sweep's |acc| reaches 127 * 255 * n,
+ * so each sweep is read as floor(acc / 2^s), 24 bits in three passes, with
+ * the plan's s making the call's longest row fit, and the two sweeps
+ * combine in f32. PV is 16 converts a block against QK's 4 per column tile,
+ * so the third pass is cheap.
  */
 
 #include "hexkl_attn_q2.h"
@@ -69,8 +77,6 @@
 /** QK convert exponent range: 2^(k-8) and 2^(k+8) must be fp16 normals. */
 #define QK_K_MIN (-6)
 #define QK_K_MAX 7
-/** PV convert exponent (see the file comment). */
-#define PV_KV 0
 
 static inline uint64_t now_us(void) { return HAP_perf_get_time_us(); }
 
@@ -194,8 +200,13 @@ static inline uint8_t *p_tiles_lo(ctx *c, uint32_t slot) {
 static inline uint8_t *p_tiles_hi(ctx *c, uint32_t slot) {
   return p_tiles_lo(c, slot) + c->L.n_blk * HEXKL_ATTN_Q2_TILE;
 }
-static inline uint8_t *o16_tiles(ctx *c, uint32_t slot) {
-  return c->vb + c->L.o16 + slot * c->dt * HEXKL_ATTN_Q2_TILE16;
+/** @brief f32 output tiles of a slot: [dt][64][32]. */
+static inline float *o32_tiles(ctx *c, uint32_t slot) {
+  return (float *)(c->vb + c->L.o32 + slot * c->dt * HEXKL_ATTN_Q2_TILE32);
+}
+/** @brief P' row sums of a Q slot, hvx_softmax_q_rowsum_index order. */
+static inline int32_t *rs_buf(ctx *c, uint32_t qslot) {
+  return (int32_t *)(c->vb + c->L.rs + qslot * HEXKL_ATTN_Q2_RS_BYTES);
 }
 static inline int16_t *corr_v(ctx *c, uint32_t h) {
   return (int16_t *)(c->vb + c->L.corr + (h & 1u) * c->L.corr_bytes);
@@ -204,7 +215,7 @@ static inline int16_t *corr_v(ctx *c, uint32_t h) {
 static inline uint8_t *cvt_qk(ctx *c, uint32_t h) {
   return c->vb + c->L.cvt + (h & 1u) * 3u * HEXKL_CVT_BLOCK_BYTES;
 }
-/** @brief The three PV bias blocks: 2^(kv+8), 2^kv, 2^(kv-8). */
+/** @brief The three PV bias blocks: bytes 0, 1, 2 of floor(acc / 2^s). */
 static inline uint8_t *cvt_pv(ctx *c) {
   return c->vb + c->L.cvt + 6u * HEXKL_CVT_BLOCK_BYTES;
 }
@@ -417,180 +428,104 @@ static void stage_softmax(ctx *c, item_t *it, job_t *j, uint32_t idx,
   hvx_softmax_q16_part_max(&b, s16, corr, c0, c1, mine);
   job_barrier(j, 0, n);
   hvx_softmax_q16_merge_max(mine, parts, n);
-  const int stats = c->seg != NULL && idx == 0;
   int16_t rmax[HVX_SOFTMAX_Q_ROWS];
-  int32_t rsum[HVX_SOFTMAX_Q_ROWSUM_WORDS] __attribute__((aligned(128)));
-  if (stats) {
+  if (c->seg != NULL && idx == 0) {
     hvx_softmax_q16_row_max(mine, rmax); /* merge_sum reuses the vectors */
   }
   hvx_softmax_q16_part_exp(&b, s16, c0, c1, plo, phi, mine);
   job_barrier(j, 1, n);
-  hvx_softmax_q16_merge_sum(mine, parts, n, stats ? rsum : NULL);
-  hvx_softmax_q16_part_norm(&b, c0, c1, plo, phi, mine);
-  if (stats) {
-    seg_weights(c, it, rmax, rsum);
-  }
+  // P' stays unnormalized: its row sums go to the epilogue, which divides
+  // (and, over segments, to the merge weights)
   if (idx == 0) {
+    int32_t *rs = rs_buf(c, it->qslot);
+    hvx_softmax_q16_merge_sum(mine, parts, n, rs);
+    if (c->seg) {
+      seg_weights(c, it, rmax, rs);
+    }
     it->us_softmax = (uint32_t)(now_us() - t0);
   }
 }
 
 /**
- * @brief Stage 4: out = sat_u16(round(o16 * c[d] + zp_o)) with
- *        c[d] = 512 / 2^kv * s_v[d] / (65535 * s_o), rows [r_lo, r_hi) of
- *        the block, two dim tiles (64 u16, one vector) per store.
+ * @brief Stage 4: rows [r_lo, r_hi) of the block, two dim tiles (64 u16,
+ *        one vector) per store. ctx = o32 2^s s_v[d] / (l_r s_o), l_r row
+ *        r's P' sum (0 for a row with nothing visible: ctx = 0). One pass:
+ *        out = sat_u16(round(ctx + zp_o)). A pass over a column segment
+ *        merges into what the earlier segments left, out <- sat_u16(round(
+ *        wb ctx + wa (out - zp_o) + zp_o)): a row with wb = 0 is left
+ *        alone, one with wa = 0 (its first segment) is written without
+ *        reading the buffer.
  */
 static void stage_epilogue(ctx *c, item_t *it, uint32_t r_lo, uint32_t r_hi) {
   const uint64_t t0 = now_us();
-  const float s_o = c->io->out_enc[2u * it->h];
-  const float zp_o = c->io->out_enc[2u * it->h + 1u];
-  const float back =
-    ldexpf(512.0f, -PV_KV) / (65535.0f * (s_o > 0.0f ? s_o : 1.0f));
-  const HVX_Vector vback = hvx_splat_sf(back);
-  const HVX_Vector vzp = hvx_splat_sf(zp_o);
+  // o32 is in units of 2^s (the PV readout's floor(acc / 2^s))
+  const float unit = ldexpf(1.0f, (int)c->L.pv_shift);
   const float *sv = c->io->kv->fs_v + (size_t)it->n * c->hd;
-  const uint8_t *o16 = o16_tiles(c, it->slot);
-  const uint32_t r_end = r_hi < it->n_rows ? r_hi : it->n_rows;
-  for (uint32_t d = 0; d < c->dt; d += 2u) {
-    const int two = d + 1u < c->dt;
-    const HVX_Vector c0 =
-      Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * d), vback);
-    const HVX_Vector c1 =
-      two ? Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * (d + 1u)), vback)
-          : c0;
-    const HVX_Vector *o0 =
-      (const HVX_Vector *)(o16 + (size_t)d * HEXKL_ATTN_Q2_TILE16);
-    const HVX_Vector *o1 = o0 + (two ? HEXKL_ATTN_Q2_TILE16 / 128u : 0u);
-    for (uint32_t v = r_lo / 2u; 2u * v < r_end; ++v) {
-      const uint32_t r0 = 2u * v;
-      /* Row-pair vectors -> words by halves: lo_W row r0, hi_W row r0+1. */
-      const HVX_VectorPair w0 = Q6_Ww_vunpack_Vh(o0[v]);
-      const HVX_VectorPair w1 = Q6_Ww_vunpack_Vh(o1[v]);
-      for (uint32_t i = 0; i < 2u && r0 + i < r_end; ++i) {
-        HVX_Vector f0 =
-          Q6_Vsf_equals_Vw(i == 0 ? Q6_V_lo_W(w0) : Q6_V_hi_W(w0));
-        HVX_Vector f1 =
-          Q6_Vsf_equals_Vw(i == 0 ? Q6_V_lo_W(w1) : Q6_V_hi_W(w1));
-        f0 = Q6_Vsf_vadd_VsfVsf(Q6_Vsf_vmpy_VsfVsf(f0, c0), vzp);
-        f1 = Q6_Vsf_vadd_VsfVsf(Q6_Vsf_vmpy_VsfVsf(f1, c1), vzp);
-        const HVX_Vector u =
-          Q6_Vuh_vpack_VwVw_sat(hvx_sf_to_w_rne(f1), hvx_sf_to_w_rne(f0));
-        uint16_t *dst = c->io->out +
-                        (size_t)(it->q0 + r0 + i) * c->io->out_stride +
-                        it->h * c->hd + 32u * d;
-        if (two) {
-          *(HVX_UVector *)dst = u;
-        } else {
-          /* A lone last tile: its 32 values are the low half. */
-          HVX_Vector tmp[1] __attribute__((aligned(128)));
-          tmp[0] = u;
-          memcpy(dst, tmp, 64u);
-        }
-      }
-    }
-  }
-  if (r_lo == 0) {
-    it->us_epi = (uint32_t)(now_us() - t0);
-  }
-}
-
-/**
- * @brief stage_epilogue for a pass over a column segment: the segment's
- *        context merged into the output rows by the pass's weights,
- *        out <- sat_u16(round(wb ctx + wa (out - zp_o) + zp_o)) with ctx =
- *        o16 * c[d] as stage_epilogue forms it. A row with wb = 0 is left
- *        alone; one with wa = 0 (its first segment) is written without
- *        reading what the buffer holds.
- */
-static void stage_epilogue_seg(ctx *c, item_t *it, uint32_t r_lo,
-                               uint32_t r_hi) {
-  const uint64_t t0 = now_us();
-  const float s_o = c->io->out_enc[2u * it->h];
-  const float zp_o = c->io->out_enc[2u * it->h + 1u];
-  const float back =
-    ldexpf(512.0f, -PV_KV) / (65535.0f * (s_o > 0.0f ? s_o : 1.0f));
-  const HVX_Vector vback = hvx_splat_sf(back);
-  const HVX_Vector vzp = hvx_splat_sf(zp_o);
-  const float *sv = c->io->kv->fs_v + (size_t)it->n * c->hd;
-  const uint8_t *o16 = o16_tiles(c, it->slot);
+  const float *o32 = o32_tiles(c, it->slot);
+  const int32_t *rs = rs_buf(c, it->qslot);
   const uint32_t r_end = r_hi < it->n_rows ? r_hi : it->n_rows;
   const size_t wi = (size_t)(it - c->items) * HEXKL_ATTN_Q2_ROWS;
-  for (uint32_t d = 0; d < c->dt; d += 2u) {
-    const int two = d + 1u < c->dt;
-    const HVX_Vector c0 =
-      Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * d), vback);
-    const HVX_Vector c1 =
-      two ? Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * (d + 1u)), vback)
-          : c0;
-    const HVX_Vector *o0 =
-      (const HVX_Vector *)(o16 + (size_t)d * HEXKL_ATTN_Q2_TILE16);
-    const HVX_Vector *o1 = o0 + (two ? HEXKL_ATTN_Q2_TILE16 / 128u : 0u);
-    for (uint32_t v = r_lo / 2u; 2u * v < r_end; ++v) {
-      const uint32_t r0 = 2u * v;
-      const HVX_VectorPair w0 = Q6_Ww_vunpack_Vh(o0[v]);
-      const HVX_VectorPair w1 = Q6_Ww_vunpack_Vh(o1[v]);
-      for (uint32_t i = 0; i < 2u && r0 + i < r_end; ++i) {
-        const float wa = c->seg->wa[wi + r0 + i];
-        const float wb = c->seg->wb[wi + r0 + i];
-        if (wb == 0.0f) {
-          continue;
-        }
-        uint16_t *dst = c->io->out +
-                        (size_t)(it->q0 + r0 + i) * c->io->out_stride +
-                        it->h * c->hd + 32u * d;
-        const HVX_Vector vb = hvx_splat_sf(wb);
-        HVX_Vector f0 =
-          Q6_Vsf_equals_Vw(i == 0 ? Q6_V_lo_W(w0) : Q6_V_hi_W(w0));
-        HVX_Vector f1 =
-          Q6_Vsf_equals_Vw(i == 0 ? Q6_V_lo_W(w1) : Q6_V_hi_W(w1));
-        f0 = Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(f0, c0), vb);
-        f1 = Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_vmpy_VsfVsf(f1, c1), vb);
-        if (wa != 0.0f) {
-          /* the rows the earlier segments left: 64 u16, tile d then d + 1 */
-          HVX_Vector old[1] __attribute__((aligned(128)));
-          if (two) {
-            old[0] = *(const HVX_UVector *)dst;
-          } else {
-            old[0] = Q6_V_vzero();
-            memcpy(old, dst, 64u);
-          }
-          const HVX_VectorPair ow = Q6_Wuw_vunpack_Vuh(old[0]);
-          const HVX_Vector va = hvx_splat_sf(wa);
-          f0 = Q6_Vsf_vadd_VsfVsf(
-            f0,
-            Q6_Vsf_vmpy_VsfVsf(
-              Q6_Vsf_vsub_VsfVsf(Q6_Vsf_equals_Vw(Q6_V_lo_W(ow)), vzp), va));
-          f1 = Q6_Vsf_vadd_VsfVsf(
-            f1,
-            Q6_Vsf_vmpy_VsfVsf(
-              Q6_Vsf_vsub_VsfVsf(Q6_Vsf_equals_Vw(Q6_V_hi_W(ow)), vzp), va));
-        }
-        f0 = Q6_Vsf_vadd_VsfVsf(f0, vzp);
-        f1 = Q6_Vsf_vadd_VsfVsf(f1, vzp);
-        const HVX_Vector u =
-          Q6_Vuh_vpack_VwVw_sat(hvx_sf_to_w_rne(f1), hvx_sf_to_w_rne(f0));
+  for (uint32_t r = r_lo; r < r_end; ++r) {
+    const float wa = c->seg ? c->seg->wa[wi + r] : 0.0f;
+    const float wb = c->seg ? c->seg->wb[wi + r] : 1.0f;
+    if (wb == 0.0f) {
+      continue;
+    }
+    const uint32_t h = it->h;
+    const uint32_t q = it->q0 + r;
+    const float s_o = c->io->out_enc[2u * h];
+    const HVX_Vector vzp = hvx_splat_sf(c->io->out_enc[2u * h + 1u]);
+    const HVX_Vector va = hvx_splat_sf(wa);
+    const int32_t l = rs[hvx_softmax_q_rowsum_index(r)];
+    const HVX_Vector vf = hvx_splat_sf(
+      l > 0 ? wb * unit / ((s_o > 0.0f ? s_o : 1.0f) * (float)l) : 0.0f);
+    uint16_t *row =
+      c->io->out + (size_t)q * c->io->out_stride + (size_t)h * c->hd;
+    for (uint32_t d = 0; d < c->dt; d += 2u) {
+      const int two = d + 1u < c->dt;
+      const HVX_Vector *a0 =
+        (const HVX_Vector *)(o32 + ((size_t)d * HEXKL_ATTN_Q2_ROWS + r) * 32u);
+      const HVX_Vector *a1 = a0 + (two ? HEXKL_ATTN_Q2_TILE32 / 128u : 0u);
+      const HVX_Vector c0 =
+        Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * d), vf);
+      const HVX_Vector c1 =
+        two ? Q6_Vsf_vmpy_VsfVsf(hvx_tile_load_u(sv + 32u * (d + 1u)), vf) : c0;
+      HVX_Vector f0 = Q6_Vsf_vmpy_VsfVsf(*a0, c0);
+      HVX_Vector f1 = Q6_Vsf_vmpy_VsfVsf(*a1, c1);
+      uint16_t *dst = row + 32u * d;
+      if (wa != 0.0f) {
+        /* the row the earlier segments left: 64 u16, tile d then d + 1 */
+        HVX_Vector old[1] __attribute__((aligned(128)));
         if (two) {
-          *(HVX_UVector *)dst = u;
+          old[0] = *(const HVX_UVector *)dst;
         } else {
-          HVX_Vector tmp[1] __attribute__((aligned(128)));
-          tmp[0] = u;
-          memcpy(dst, tmp, 64u);
+          old[0] = Q6_V_vzero();
+          memcpy(old, dst, 64u);
         }
+        const HVX_VectorPair ow = Q6_Wuw_vunpack_Vuh(old[0]);
+        f0 = Q6_Vsf_vadd_VsfVsf(
+          f0, Q6_Vsf_vmpy_VsfVsf(
+                Q6_Vsf_vsub_VsfVsf(Q6_Vsf_equals_Vw(Q6_V_lo_W(ow)), vzp), va));
+        f1 = Q6_Vsf_vadd_VsfVsf(
+          f1, Q6_Vsf_vmpy_VsfVsf(
+                Q6_Vsf_vsub_VsfVsf(Q6_Vsf_equals_Vw(Q6_V_hi_W(ow)), vzp), va));
+      }
+      f0 = Q6_Vsf_vadd_VsfVsf(f0, vzp);
+      f1 = Q6_Vsf_vadd_VsfVsf(f1, vzp);
+      const HVX_Vector u =
+        Q6_Vuh_vpack_VwVw_sat(hvx_sf_to_w_rne(f1), hvx_sf_to_w_rne(f0));
+      if (two) {
+        *(HVX_UVector *)dst = u;
+      } else {
+        /* A lone last tile: its 32 values are the low half. */
+        HVX_Vector tmp[1] __attribute__((aligned(128)));
+        tmp[0] = u;
+        memcpy(dst, tmp, 64u);
       }
     }
   }
   if (r_lo == 0) {
     it->us_epi = (uint32_t)(now_us() - t0);
-  }
-}
-
-/** @brief The epilogue of an item: the plain one, or a segment's merge. */
-static inline void run_epilogue(ctx *c, item_t *it, uint32_t r_lo,
-                                uint32_t r_hi) {
-  if (c->seg) {
-    stage_epilogue_seg(c, it, r_lo, r_hi);
-  } else {
-    stage_epilogue(c, it, r_lo, r_hi);
   }
 }
 
@@ -606,8 +541,9 @@ static void worker_job(uint32_t n_threads, uint32_t idx, void *arg) {
   }
   if (j->epi_item != NO_ITEM) {
     for (uint32_t task = idx; task < 2u; task += n_threads) {
-      run_epilogue(c, &c->items[j->epi_item], task * (HEXKL_ATTN_Q2_ROWS / 2u),
-                   (task + 1u) * (HEXKL_ATTN_Q2_ROWS / 2u));
+      stage_epilogue(c, &c->items[j->epi_item],
+                     task * (HEXKL_ATTN_Q2_ROWS / 2u),
+                     (task + 1u) * (HEXKL_ATTN_Q2_ROWS / 2u));
     }
   }
 }
@@ -818,6 +754,80 @@ static inline void two_sweeps(ctx *c, const uint8_t *act_hi,
   zip_add_i16(a_lo, a_hi, b_lo, b_hi, dst);
 }
 
+/**
+ * @brief dst = mul * w + (acc ? dst : 0) over one tile, w the int24 of
+ *        three convert planes: w = b0 + 256 b1 + 65536 sext(b2), plane
+ *        byte p (row p / 32, column p % 32) to word p. vshuff(-1) pairs
+ *        the bytes into halfwords as zip_add_i16 does, vshuff(-2) the
+ *        halfwords into words, in element order.
+ */
+static inline void planes_to_f32(const uint8_t *q0, const uint8_t *q1,
+                                 const uint8_t *q2, float mul, int acc,
+                                 float *dst) {
+  const HVX_Vector *b0 = (const HVX_Vector *)q0;
+  const HVX_Vector *b1 = (const HVX_Vector *)q1;
+  const HVX_Vector *b2 = (const HVX_Vector *)q2;
+  HVX_Vector *d = (HVX_Vector *)dst;
+  const HVX_Vector zero = Q6_V_vzero();
+  const HVX_Vector ones = Q6_V_vnot_V(zero);
+  const HVX_Vector vmul = hvx_splat_sf(mul);
+  for (uint32_t i = 0; i < HEXKL_CVT_PLANE_BYTES / 128u; ++i) {
+    const HVX_Vector sign =
+      Q6_V_vmux_QVV(Q6_Q_vcmp_gt_VbVb(zero, b2[i]), ones, zero);
+    const HVX_VectorPair lo16 = Q6_W_vshuff_VVR(b1[i], b0[i], -1);
+    const HVX_VectorPair hi16 = Q6_W_vshuff_VVR(sign, b2[i], -1);
+    const HVX_VectorPair w0 =
+      Q6_W_vshuff_VVR(Q6_V_lo_W(hi16), Q6_V_lo_W(lo16), -2);
+    const HVX_VectorPair w1 =
+      Q6_W_vshuff_VVR(Q6_V_hi_W(hi16), Q6_V_hi_W(lo16), -2);
+    const HVX_Vector w[4] = {Q6_V_lo_W(w0), Q6_V_hi_W(w0), Q6_V_lo_W(w1),
+                             Q6_V_hi_W(w1)};
+    for (uint32_t k = 0; k < 4u; ++k) {
+      HVX_Vector f = Q6_Vsf_vmpy_VsfVsf(Q6_Vsf_equals_Vw(w[k]), vmul);
+      if (acc) {
+        f = Q6_Vsf_vadd_VsfVsf(f, d[4u * i + k]);
+      }
+      d[4u * i + k] = f;
+    }
+  }
+}
+
+/**
+ * @brief One f32 output tile of P'.V: the high-byte and the low-byte sweep
+ *        over @a n_pk packets, each read as floor(acc / 2^s) through the
+ *        three PV blocks, dst = 256 hi + lo (in units of 2^s).
+ */
+static inline void pv_sweeps(ctx *c, const uint8_t *p_hi, const uint8_t *p_lo,
+                             const uint8_t *wt, uint32_t wt_step, uint32_t n_pk,
+                             float *dst) {
+  uint8_t *pl = planes(c);
+  uint8_t *h0 = pl, *h1 = pl + HEXKL_CVT_PLANE_BYTES,
+          *h2 = pl + 2u * HEXKL_CVT_PLANE_BYTES;
+  uint8_t *l0 = pl + 3u * HEXKL_CVT_PLANE_BYTES,
+          *l1 = pl + 4u * HEXKL_CVT_PLANE_BYTES,
+          *l2 = pl + 5u * HEXKL_CVT_PLANE_BYTES;
+  const uint8_t *blk = cvt_pv(c);
+  hexkl_micro_hmx_acc_clear_int32();
+  for (uint32_t p = 0; p < n_pk; ++p) {
+    hexkl_hmx_mm_u8i8(p_hi + (size_t)p * HEXKL_ATTN_Q2_TILE,
+                      wt + (size_t)p * wt_step);
+  }
+  hexkl_cvt_issue(blk, h0);
+  hexkl_cvt_issue(blk + HEXKL_CVT_BLOCK_BYTES, h1);
+  hexkl_cvt_issue(blk + 2u * HEXKL_CVT_BLOCK_BYTES, h2);
+  cvt_fence(h2);
+  hexkl_micro_hmx_acc_clear_int32();
+  for (uint32_t p = 0; p < n_pk; ++p) {
+    hexkl_hmx_mm_u8i8(p_lo + (size_t)p * HEXKL_ATTN_Q2_TILE,
+                      wt + (size_t)p * wt_step);
+  }
+  hexkl_cvt_issue(blk, l0);
+  hexkl_cvt_issue(blk + HEXKL_CVT_BLOCK_BYTES, l1);
+  hexkl_cvt_issue(blk + 2u * HEXKL_CVT_BLOCK_BYTES, l2);
+  planes_to_f32(h0, h1, h2, 256.0f, 0, dst);
+  planes_to_f32(l0, l1, l2, 1.0f, 1, dst);
+}
+
 /** @brief Stage 1: the block's score tiles. Per column tile the packets
  *         run over the dim tiles: Q tile d x K^T tile (col, d). */
 static void stage_qk(ctx *c, const item_t *it) {
@@ -842,14 +852,12 @@ static void stage_pv(ctx *c, item_t *it) {
   const uint64_t t0 = now_us();
   const uint8_t *p_lo = p_tiles_lo(c, it->slot);
   const uint8_t *p_hi = p_tiles_hi(c, it->slot);
-  const uint8_t *blocks = cvt_pv(c);
   const uint8_t *v0 =
     v_buf(c, it->n) + (size_t)(it->blk.lo - c->res.lo) * c->dt * 1024u;
-  uint8_t *o16 = o16_tiles(c, it->slot);
+  float *o32 = o32_tiles(c, it->slot);
   for (uint32_t d = 0; d < c->dt; ++d) {
-    two_sweeps(c, p_hi, p_lo, HEXKL_ATTN_Q2_TILE, v0 + d * 1024u, c->dt * 1024u,
-               it->blk.n, blocks,
-               (int16_t *)(o16 + (size_t)d * HEXKL_ATTN_Q2_TILE16));
+    pv_sweeps(c, p_hi, p_lo, v0 + d * 1024u, c->dt * 1024u, it->blk.n,
+              o32 + (size_t)d * (HEXKL_ATTN_Q2_TILE32 / 4u));
   }
   c->st.us_pv += now_us() - t0;
 }
@@ -1021,12 +1029,14 @@ static int q2_pass(uint8_t *vtcm_base, uint32_t arena_top,
     free_ctx(&c);
     return AEE_SUCCESS;
   }
-  // The PV blocks are constants of the kernel.
+  // The PV blocks are constants of the kernel: bytes 0, 1, 2 of
+  // floor(acc / 2^s) = floor(acc * scale / 512) at 2^(9-s), 2^(1-s), 2^(-7-s)
   {
+    const int s_pv = (int)c.L.pv_shift;
     uint8_t *blk = cvt_pv(&c);
-    set_cvt_block(blk, pow2_hf(PV_KV + 8));
-    set_cvt_block(blk + HEXKL_CVT_BLOCK_BYTES, pow2_hf(PV_KV));
-    set_cvt_block(blk + 2u * HEXKL_CVT_BLOCK_BYTES, pow2_hf(PV_KV - 8));
+    set_cvt_block(blk, pow2_hf(9 - s_pv));
+    set_cvt_block(blk + HEXKL_CVT_BLOCK_BYTES, pow2_hf(1 - s_pv));
+    set_cvt_block(blk + 2u * HEXKL_CVT_BLOCK_BYTES, pow2_hf(-7 - s_pv));
   }
 
   const uint64_t t_start = now_us();
@@ -1136,7 +1146,7 @@ static int q2_pass(uint8_t *vtcm_base, uint32_t arena_top,
     c.st.us_wait += now_us() - t0;
   }
   if (rc == AEE_SUCCESS) {
-    run_epilogue(&c, &c.items[N - 1u], 0u, HEXKL_ATTN_Q2_ROWS);
+    stage_epilogue(&c, &c.items[N - 1u], 0u, HEXKL_ATTN_Q2_ROWS);
   }
 
   c.st.us_total = now_us() - t_start;
