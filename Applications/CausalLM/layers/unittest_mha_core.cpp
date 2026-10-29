@@ -24,10 +24,9 @@
  *  - The per-row cases run on every architecture. The host flash (gemm) arm
  *    is what x86 picks for every step; elsewhere it needs a 32-row step and
  *    never takes a decode step, so the gemm cases are x86-only.
- *  - Built and run in the enable-fp16=false x86 cell, the only one that
- *    builds CausalLM tests. The cases feed FP32 activations, so they also
- *    pass in an enable-fp16 build; the FP16 activations an Android fp16
- *    build runs are not covered.
+ *  - CI builds and runs it in the x86 enable-fp16=false and enable-fp16=true
+ *    cells. The fp16_* cases feed FP16 activations, the type an Android fp16
+ *    build runs, and need enable-fp16; they are held to 1e-2.
  *  - A sliding window is tested on causal cases only. With a non-causal
  *    input the per-row arm ignores the window and the flash arm applies it;
  *    the reference follows the per-row arm.
