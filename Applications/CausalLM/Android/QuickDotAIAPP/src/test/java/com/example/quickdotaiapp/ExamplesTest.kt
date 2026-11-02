@@ -28,7 +28,7 @@ class ExamplesTest {
 
     @Test
     fun requiredPathIsTheFolderForNativeAndTheFileForLiteRt() {
-        assertEquals("/m/fake-npu", Examples.requiredPath(npu, "/m/"))
+        assertEquals("/m/fake-npu/nntr_config.json", Examples.requiredPath(npu, "/m/"))
         assertEquals("/m/gemma-4-E2B-it/gemma-4-E2B-it.litertlm", Examples.requiredPath(litert, "/m"))
         assertEquals("/m/gemma-4-E2B-it/gemma-4-E2B-it.litertlm", Examples.modelPath(litert, "/m"))
     }

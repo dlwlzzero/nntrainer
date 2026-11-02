@@ -36,13 +36,15 @@ class Examples {
         fun modelPath(descriptor: ModelDescriptor, basePath: String): String =
             "${basePath.trimEnd('/')}/${modelPathById[descriptor.id] ?: descriptor.id}"
 
-        /** What must exist before a load replaces the current engine: the model
-         *  folder for Quick.AI models, the .litertlm file for LiteRT. */
+        /** What must exist before a load replaces the current engine: the folder's
+         *  nntr_config.json for Quick.AI models (the C API refuses a folder without
+         *  it, and a half-copied folder must not cost the loaded model), the
+         *  .litertlm file for LiteRT. */
         fun requiredPath(descriptor: ModelDescriptor, basePath: String): String {
             val rel = modelPathById[descriptor.id] ?: descriptor.id
             val base = basePath.trimEnd('/')
             return if (descriptor.runtime == RuntimeKind.LITERT) "$base/$rel"
-            else "$base/${rel.substringBefore('/')}"
+            else "$base/${rel.substringBefore('/')}/nntr_config.json"
         }
 
         fun runtimeLabel(runtime: RuntimeKind): String = when (runtime) {

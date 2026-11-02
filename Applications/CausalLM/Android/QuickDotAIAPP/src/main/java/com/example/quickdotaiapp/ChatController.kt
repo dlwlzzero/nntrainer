@@ -173,7 +173,7 @@ class ChatController(
         val required = Examples.requiredPath(d, req.modelBasePath ?: DEFAULT_BASE_PATH)
         if (!pathExists(required)) {
             // Checked before anything is torn down: a typo must not cost the loaded model.
-            update { copy(status = "Load failed: model folder not found: $required", notice = "Model folder not found: $required") }
+            update { copy(status = "Load failed: not found: $required", notice = "Not found: $required") }
             return null
         }
         if (current != null && state.value.streaming) {
@@ -262,7 +262,9 @@ class ChatController(
         if (!state.value.streaming) return
         cancelRequested = true
         // Status first: once the engine is signalled it may finish and write "Done." at once.
-        setStatus("Stopping…")
+        // LiteRT-LM only flags its callback: tokens stop showing, but the engine runs the answer
+        // to its end and an Unload or Reload queues behind it, so say so.
+        setStatus(if (e.chatSessionId != null) "Stopping… LiteRT finishes the current answer first" else "Stopping…")
         e.cancel()
         e.chatCancel()
     }

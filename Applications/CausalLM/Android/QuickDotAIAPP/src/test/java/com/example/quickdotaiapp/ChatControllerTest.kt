@@ -35,7 +35,7 @@ class ChatControllerTest {
     private val executor = Executors.newSingleThreadExecutor()
     val engines: MutableList<FakeQuickDotAI> = java.util.Collections.synchronizedList(mutableListOf())
     var nextEngine: () -> FakeQuickDotAI = { FakeQuickDotAI() }
-    val existing = mutableSetOf("/m/fake-npu", "/m/qwen3-0.6b", "/m/gemma-4-E2B-it/gemma-4-E2B-it.litertlm")
+    val existing = mutableSetOf("/m/fake-npu/nntr_config.json", "/m/qwen3-0.6b/nntr_config.json", "/m/gemma-4-E2B-it/gemma-4-E2B-it.litertlm")
     @Volatile var clockMs = 0L
     var publishInterval = 0L
 
@@ -92,7 +92,7 @@ class ChatControllerTest {
         assertEquals(listOf("load:fake-npu"), engines.single().calls)
         c.setBasePath("/m/missing-model")
         c.load(); c.awaitIdle()
-        assertEquals("Load failed: model folder not found: /m/missing-model/fake-npu", c.state.value.status)
+        assertEquals("Load failed: not found: /m/missing-model/fake-npu/nntr_config.json", c.state.value.status)
         assertTrue(c.state.value.load is LoadState.Loaded)        // the old engine stayed
         assertFalse(engines.single().closed)
         assertEquals(1, engines.size)
@@ -217,6 +217,20 @@ class ChatControllerTest {
         c.setRawJson("""[{"role":"user","content":"raw"}]"""); c.sendRaw(); c.awaitIdle()
         c.setDraft("chat"); c.send(); c.awaitIdle()
         assertEquals(listOf("chat"), engines.single().lastMessages!!.map { (it.parts.single() as PromptPart.Text).text })
+    }
+
+    @Test
+    fun cancelOnLiteRtSaysTheEngineFinishesFirst() {
+        val c = controller(); c.selectFamily("gemma4"); c.setBasePath("/m"); c.load(); c.awaitIdle()
+        val e = engines.single()
+        e.gate = CountDownLatch(1); e.parked = CountDownLatch(1)
+        c.setDraft("go"); c.send()
+        assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
+        assertEquals("s1", e.chatSessionId)                  // LiteRT runs inside its chat session
+        c.cancel()
+        assertEquals("Stopping… LiteRT finishes the current answer first", c.state.value.status)
+        e.gate!!.countDown(); c.awaitIdle()
+        assertTrue(c.state.value.turns.last().stopped)
     }
 
     @Test
@@ -347,7 +361,7 @@ class ChatControllerTest {
 
     @Test
     fun loadFailureKeepsTheDraftAndImages() {
-        existing.remove("/m/fake-npu")
+        existing.remove("/m/fake-npu/nntr_config.json")
         val c = controller(); c.selectNpu()
         c.setDraft("hello"); c.addDraftImages(listOf(byteArrayOf(1)))
         c.send(); c.awaitIdle()
