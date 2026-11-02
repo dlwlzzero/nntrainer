@@ -228,6 +228,7 @@ class ChatControllerTest {
         c.setDraft("go"); c.send()
         assertTrue(e.parked!!.await(2, TimeUnit.SECONDS))
         assertEquals("s1", e.chatSessionId)                  // LiteRT runs inside its chat session
+        e.releaseGateOnCancel = false                         // the status is read before the engine can finish
         c.cancel()
         assertEquals("Stopping… LiteRT finishes the current answer first", c.state.value.status)
         e.gate!!.countDown(); c.awaitIdle()
