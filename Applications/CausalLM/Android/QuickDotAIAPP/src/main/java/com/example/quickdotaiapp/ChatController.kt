@@ -120,6 +120,7 @@ class ChatController(
     fun setScreen(screen: Screen) = update { copy(screen = screen) }
     override val isLiteRt: Boolean get() = state.value.descriptor?.runtime == RuntimeKind.LITERT
     override val isLoaded: Boolean get() = state.value.load is LoadState.Loaded
+    override val loadedKey: String? get() = state.value.loadedRequest?.let { "${it.modelId}:${it.backend}:${it.modelPath}" }
     override fun composerText(): String = state.value.draft
     fun setRawMode(on: Boolean) = update { copy(rawMode = on) }
     fun setTheme(theme: ThemeMode) = update { copy(theme = theme) }
@@ -270,6 +271,8 @@ class ChatController(
         if (body.isEmpty()) { setStatus("Prompt is empty."); return false }
         if (s.busy) { setStatus("Busy."); return false }
         if (s.loadedRequest == null) { setStatus("Load a model first."); return false }
+        // The sheet's selection must be what is loaded: a run must never include a load.
+        if (buildRequest() != s.loadedRequest) { setStatus("Load the selected model first."); return false }
         runGeneration(ChatTurn(nextId(), TurnRole.USER, body), mode = "power", onStarted = {}) { e, d, sink ->
             if (d.runtime == RuntimeKind.LITERT) sendLiteRt(e, body, emptyList(), sink) else sendNative(e, sink)
         }
@@ -349,14 +352,16 @@ class ChatController(
                 )
             }
             val startedMs = now()
-            observer?.onSend(startedMs)
-            val collector = StreamCollector(assistantId, startedMs)
+            // Only the Power tab's own sends are observed; a chat turn during a session is noise to it.
+            val obs = if (mode == "power") observer else null
+            obs?.onSend(startedMs)
+            val collector = StreamCollector(assistantId, startedMs, obs)
             val result: BackendResult<*> = withContext(engineDispatcher) {
                 try { invoke(e, d, collector) } catch (t: Throwable) { BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message) }
             }
             collector.flush()
             val metrics = withContext(engineDispatcher) { (e.metrics() as? BackendResult.Ok)?.value }
-            finishTurn(e, assistantId, result, collector.error, metrics, mode, startedMs, d, collector.tokens)
+            finishTurn(e, assistantId, result, collector.error, metrics, mode, startedMs, d, collector.tokens, obs)
         }
     }
 
@@ -404,7 +409,7 @@ class ChatController(
 
     private fun finishTurn(
         ran: QuickDotAI, turnId: Long, result: BackendResult<*>, sinkError: String?, metrics: PerformanceMetrics?,
-        mode: String, startedMs: Long, d: ModelDescriptor, generatedTokens: Int,
+        mode: String, startedMs: Long, d: ModelDescriptor, generatedTokens: Int, obs: GenerationObserver?,
     ) {
         val stopped = cancelRequested
         cancelRequested = false
@@ -439,11 +444,13 @@ class ChatController(
                 )).takeLast(20),
             )
         }
-        observer?.onDone(now(), generatedTokens, metrics?.prefillTokens, stopped, error)
+        obs?.onDone(now(), generatedTokens, metrics?.prefillTokens, stopped, error)
     }
 
     /** Accumulates deltas on the engine thread and publishes at most every [publishIntervalMs]. */
-    private inner class StreamCollector(private val turnId: Long, private val startedMs: Long) : StreamSink {
+    private inner class StreamCollector(
+        private val turnId: Long, private val startedMs: Long, private val obs: GenerationObserver?,
+    ) : StreamSink {
         private val buffer = StringBuilder()
         var tokens = 0
             private set
@@ -454,8 +461,8 @@ class ChatController(
             buffer.append(text)
             tokens++
             val t = now()
-            if (tokens == 1) observer?.onFirstToken(t)
-            observer?.onToken(tokens, t)
+            if (tokens == 1) obs?.onFirstToken(t)
+            obs?.onToken(tokens, t)
             if (t - lastPublishMs >= publishIntervalMs) publish(t)
         }
         override fun onDone() {}

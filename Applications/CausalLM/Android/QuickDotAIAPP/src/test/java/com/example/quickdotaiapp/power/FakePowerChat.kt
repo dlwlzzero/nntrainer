@@ -10,6 +10,9 @@ import kotlinx.coroutines.launch
 class FakePowerChat(private val scope: CoroutineScope, private val now: () -> Long) : PowerChat {
     override var isLiteRt = false
     override var isLoaded = true
+    override var loadedKey: String? = "m1"
+    /** Returns true from sendPrompt but never emits an event (a generation that died before onSend). */
+    var silent = false
     override var observer: GenerationObserver? = null
     var composer = "composer text"
     var tokens = 100
@@ -32,6 +35,7 @@ class FakePowerChat(private val scope: CoroutineScope, private val now: () -> Lo
     override fun sendPrompt(text: String): Boolean {
         sends++
         cancelled = false
+        if (silent) return true
         val obs = observer ?: return true
         obs.onSend(now())
         job = scope.launch {

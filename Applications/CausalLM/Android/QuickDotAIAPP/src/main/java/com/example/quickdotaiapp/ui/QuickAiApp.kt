@@ -47,7 +47,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -82,6 +84,13 @@ fun QuickAiApp(vm: AppViewModel) {
 private fun AppScaffold(state: UiState, power: com.example.quickdotaiapp.power.PowerUi, vm: AppViewModel) {
     val controller = vm.controller
     val context = LocalContext.current
+    // The gauge must see the screen on for the whole Power session, whichever tab is shown.
+    val view = LocalView.current
+    val measuring = power.phase.measuring
+    DisposableEffect(measuring) {
+        view.keepScreenOn = measuring
+        onDispose { view.keepScreenOn = false }
+    }
     var modelSheetOpen by rememberSaveable { mutableStateOf(false) }
     var attachSheetOpen by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }

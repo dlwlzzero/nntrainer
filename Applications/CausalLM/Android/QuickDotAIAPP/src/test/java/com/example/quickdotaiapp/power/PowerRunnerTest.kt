@@ -159,4 +159,62 @@ class PowerRunnerTest {
         assertEquals(0.8, h.state.liveW!!, 1e-9)
         assertEquals(0.2, h.state.gaugeHz!!, 1e-9)                   // one distinct reading over the 5 s probe
     }
+
+    @Test fun aForeignGenerationDuringTheBaselineIsIgnored() = runTest {
+        val h = Harness(this, settings = settings.copy(repeats = 1))
+        h.runner.start(meta)
+        advanceTimeBy(3_500); runCurrent()                            // in the baseline
+        h.chat.observer!!.run { onSend(h.now()); onFirstToken(h.now()); onToken(64, h.now()); onDone(h.now(), 64, null, false, null) }
+        advanceTimeBy(30_000); runCurrent()
+        val m = h.state.runs.single().marks!!
+        assertTrue(m.sendMs >= 3_000 + 2_000)                          // the runner's own send, after the baseline
+        assertTrue(m.firstTokenMs!! > m.sendMs)
+        assertEquals(64, m.generatedTokens)
+        assertEquals(1, h.chat.sends)
+    }
+
+    @Test fun anExternalStopSkipsTheRun() = runTest {
+        val h = Harness(this, settings = settings.copy(repeats = 1))
+        h.chat.isLiteRt = true                                        // no cancel from the window
+        h.runner.start(meta)
+        advanceTimeBy(3_000 + 2_000 + 500 + 1_000); runCurrent()      // 20 tokens in
+        assertTrue(h.chat.generating)
+        h.chat.cancel()                                               // Chat's Stop button
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals("stopped", h.state.runs.single().skipped)
+    }
+
+    @Test fun unloadingEndsTheSession() = runTest {
+        val h = Harness(this)
+        h.runner.start(meta)
+        advanceTimeBy(9_500); runCurrent()                            // run 1 done, cool-down
+        assertEquals(1, h.state.runs.size)
+        h.chat.isLoaded = false; h.chat.loadedKey = null
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(1, h.state.runs.size)
+        assertEquals(PowerPhase.DONE, h.state.phase)
+        assertTrue(h.state.error!!, h.state.error!!.contains("unloaded"))
+        assertEquals(1, h.chat.sends)
+    }
+
+    @Test fun aModelChangeEndsTheSession() = runTest {
+        val h = Harness(this)
+        h.runner.start(meta)
+        advanceTimeBy(3_000 + 2_000 + 500 + 1_000); runCurrent()      // run 1 generating
+        h.chat.loadedKey = "other-model"
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(PowerPhase.DONE, h.state.phase)
+        assertTrue(h.state.runs.size <= 1)
+        assertTrue(h.state.error!!, h.state.error!!.contains("changed"))
+        assertEquals(1, h.chat.sends)
+    }
+
+    @Test fun aSilentSendIsSkippedAfterTheTimeout() = runTest {
+        val h = Harness(this)
+        h.chat.silent = true
+        h.runner.start(meta)
+        advanceTimeBy(3_000 + 2 * (2_000 + PowerRunner.SEND_TIMEOUT_MS + 1_000) + 5_000); runCurrent()
+        assertEquals(PowerPhase.DONE, h.state.phase)
+        assertEquals(listOf("send lost", "send lost"), h.state.runs.map { it.skipped })
+    }
 }

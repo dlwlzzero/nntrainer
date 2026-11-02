@@ -35,7 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,7 +48,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -71,7 +70,7 @@ import java.util.Locale
 
 private fun fmt(v: Double?, pattern: String): String = v?.let { String.format(Locale.US, pattern, it) } ?: "—"
 
-private val PowerPhase.measuring: Boolean get() = this != PowerPhase.IDLE && this != PowerPhase.DONE
+internal val PowerPhase.measuring: Boolean get() = this != PowerPhase.IDLE && this != PowerPhase.DONE
 
 @Composable
 fun PowerScreen(
@@ -84,17 +83,13 @@ fun PowerScreen(
 ) {
     var showSetup by rememberSaveable { mutableStateOf(false) }
     val measuring = power.phase.measuring
-    // The gauge must see the screen on for the whole session; brightness is part of the baseline.
-    val view = LocalView.current
-    DisposableEffect(measuring) {
-        view.keepScreenOn = measuring
-        onDispose { view.keepScreenOn = false }
-    }
+    // Back to the result only once a session really started; a refused start stays on the setup with its error.
+    LaunchedEffect(measuring) { if (measuring) showSetup = false }
     when {
         measuring -> Measuring(power, runner, modifier)
         power.phase == PowerPhase.DONE && power.runs.isNotEmpty() && !showSetup ->
             Result(power, onAgain = { showSetup = true }, onCopy = onCopy, modifier = modifier)
-        else -> Setup(chat, power, runner, onMeasure = { showSetup = false; onMeasure() }, modifier = modifier)
+        else -> Setup(chat, power, runner, onMeasure = onMeasure, modifier = modifier)
     }
 }
 
@@ -316,6 +311,7 @@ private fun Result(power: PowerUi, onAgain: () -> Unit, onCopy: (String) -> Unit
             power.savedPath?.let { "saved to $it" } ?: "not saved: the power folder could not be written",
             style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        power.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
         val log = power.log
         OutlinedButton(
             onClick = { log?.let { onCopy(PowerLog.csv(it)) } },

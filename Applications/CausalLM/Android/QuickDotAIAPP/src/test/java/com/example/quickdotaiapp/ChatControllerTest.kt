@@ -464,4 +464,30 @@ class ChatControllerTest {
         assertTrue(c.isLiteRt); assertFalse(c.isLoaded)
         c.setDraft("hello"); assertEquals("hello", c.composerText())
     }
+
+    @Test
+    fun observerHearsOnlyPowerGenerations() {
+        val c = controller(); c.selectFamily("fake-npu"); c.setBasePath("/m"); c.load(); c.awaitIdle()
+        val events = mutableListOf<String>()
+        c.observer = object : GenerationObserver {
+            override fun onSend(tMs: Long) { events += "send" }
+            override fun onFirstToken(tMs: Long) { events += "first" }
+            override fun onToken(count: Int, tMs: Long) { events += "tok" }
+            override fun onDone(tMs: Long, tokens: Int, promptTokens: Int?, stopped: Boolean, error: String?) { events += "done" }
+        }
+        c.setDraft("hello"); c.send(); c.awaitIdle()                  // the user's own chat turn
+        assertTrue(events.toString(), events.isEmpty())
+        assertTrue(c.sendPrompt("measure")); c.awaitIdle()
+        assertEquals("send", events.first())
+    }
+
+    @Test
+    fun sendPromptRefusesWhenTheSelectionDiffersFromTheLoadedModel() {
+        val c = controller(); c.selectFamily("fake-npu"); c.setBasePath("/m"); c.load(); c.awaitIdle()
+        assertEquals("fake-npu", c.loadedKey?.substringBefore(':'))
+        c.selectFamily("qwen3-0.6b")
+        assertFalse(c.sendPrompt("x"))
+        assertEquals("Load the selected model first.", c.state.value.status)
+        assertEquals(1, engines.size)                                 // nothing was loaded by the refusal
+    }
 }

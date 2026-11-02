@@ -22,20 +22,25 @@ class BatterySampler(private val context: Context) {
     /** Block → the temp files of its zones, found once; the S26 names them nsphvx/nsphmx (NPU), cpu-N-N-N, gpuss-N. */
     private val zones: Map<String, List<File>> = enumerateZones()
     private var tick = 0
+    private var status = 0
+    private var headroom = Float.NaN
     private var npu: Float? = null
     private var cpu: Float? = null
     private var gpu: Float? = null
 
-    /** Called every 250 ms by the runner; the block temperatures are refreshed on every 4th call (1 Hz). */
+    /** Called every 250 ms by the runner; the thermal reads happen on every 4th call (1 Hz) and are carried in between. */
     fun sample(): PowerSample {
         val sticky = runCatching { context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) }.getOrNull()
+        // An unsupported property reads as Int.MIN_VALUE, not as an exception.
         val microAmps = runCatching { battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) }.getOrDefault(0)
+            .let { if (it == Int.MIN_VALUE) 0 else it }
         val milliVolts = sticky?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
         val tenths = sticky?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
         val plugged = (sticky?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-        val status = runCatching { power.currentThermalStatus }.getOrDefault(0)
-        val headroom = runCatching { power.getThermalHeadroom(10) }.getOrDefault(Float.NaN)
         if (tick++ % 4 == 0) {
+            status = runCatching { power.currentThermalStatus }.getOrDefault(0)
+            // getThermalHeadroom returns NaN when called much faster than once a second.
+            headroom = runCatching { power.getThermalHeadroom(10) }.getOrDefault(Float.NaN)
             npu = maxTemp("npu"); cpu = maxTemp("cpu"); gpu = maxTemp("gpu")
         }
         return PowerSample(System.currentTimeMillis(), microAmps, milliVolts, tenths, plugged, status, headroom, npu, cpu, gpu)

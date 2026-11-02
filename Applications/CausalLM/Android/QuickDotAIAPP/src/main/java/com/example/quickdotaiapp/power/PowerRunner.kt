@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class PowerRunner(
     private val scope: CoroutineScope,
@@ -37,6 +38,9 @@ class PowerRunner(
     private var session: Job? = null
     private var sampling: Job? = null
     private var meta: SessionMeta? = null
+    private var sessionKey: String? = null
+    /** Why the session ended early, shown as the error of the result. */
+    @Volatile private var endReason: String? = null
 
     /** The run in progress; the engine thread writes the marks, the session coroutine reads them. */
     private class RunState(val windowTokens: Int, val baselineStartMs: Long) {
@@ -49,6 +53,8 @@ class PowerRunner(
         var stopped = false
         var error: String? = null
         var cancelSent = false
+        /** Set right before the runner's own sendPrompt; onSend is accepted only while this is true. */
+        var awaitingSend = false
         val done = CompletableDeferred<Unit>()
     }
 
@@ -64,6 +70,8 @@ class PowerRunner(
         }
         if (!chat.isLoaded) { _state.update { it.copy(error = "Load a model first") }; return }
         this.meta = meta
+        sessionKey = chat.loadedKey
+        endReason = null
         synchronized(lock) { samples.clear(); run = null }
         _state.update {
             PowerUi(settings = it.settings, phase = PowerPhase.WAIT_UNPLUG, plugged = it.plugged, thermalStatus = it.thermalStatus)
@@ -107,6 +115,10 @@ class PowerRunner(
     private fun latest(): PowerSample? = synchronized(lock) { samples.lastOrNull() }
     private fun snapshot(): List<PowerSample> = synchronized(lock) { samples.toList() }
 
+    /** False once the model was unloaded or another one loaded; [whyNotLoaded] says which. */
+    private fun stillLoaded(): Boolean = chat.isLoaded && chat.loadedKey == sessionKey
+    private fun whyNotLoaded(): String = if (!chat.isLoaded) "Model unloaded; session ended" else "Model changed; session ended"
+
     private fun cool(): Boolean {
         val s = latest() ?: return false
         return s.thermalStatus == 0 && (s.headroom.isNaN() || s.headroom < GATE_HEADROOM)
@@ -130,6 +142,7 @@ class PowerRunner(
                 _state.update { it.copy(runs = runs.toList()) }
                 continue
             }
+            if (!stillLoaded()) { endReason = whyNotLoaded(); return }
             chat.clearConversation()
             val rs = RunState(settings.windowTokens, now())
             synchronized(lock) { run = rs }
@@ -137,24 +150,34 @@ class PowerRunner(
             delay(settings.baselineSec * 1000L)
             val baselineW = PowerMath.median(snapshot().filter { it.tMs > rs.baselineStartMs }.map { it.watts })
             _state.update { it.copy(liveBaselineW = baselineW) }
+            if (!stillLoaded()) { endReason = whyNotLoaded(); return }
 
+            synchronized(lock) { rs.awaitingSend = true }
+            val sentAt = now()
             if (!chat.sendPrompt(prompt)) {
                 synchronized(lock) { run = null }
                 runs += skipped(i, "send refused")
                 _state.update { it.copy(runs = runs.toList()) }
                 continue
             }
-            // Wait for the generation; a cable plugged back in ends the run and the session.
+            // Wait for the generation. A cable plugged back in or a model change ends the run and the
+            // session; a send that never reports onSend is treated as lost after SEND_TIMEOUT_MS.
             var replugged = false
+            var ended: String? = null
+            var lost = false
             while (!rs.done.isCompleted) {
-                if (!settings.allowPlugged && latest()?.plugged == true) {
-                    replugged = true
-                    chat.cancel()
-                    break
-                }
+                if (!settings.allowPlugged && latest()?.plugged == true) { replugged = true; chat.cancel(); break }
+                if (!stillLoaded()) { ended = whyNotLoaded(); chat.cancel(); break }
+                if (synchronized(lock) { rs.sendMs } == null && now() - sentAt >= SEND_TIMEOUT_MS) { lost = true; break }
                 delay(samplePeriodMs)
             }
-            rs.done.await()
+            if (lost) {
+                synchronized(lock) { run = null }
+                runs += skipped(i, "send lost")
+                _state.update { it.copy(runs = runs.toList()) }
+                continue
+            }
+            withTimeoutOrNull(DONE_WAIT_MS) { rs.done.await() }
             synchronized(lock) { run = null }
             val marks = RunMarks(
                 baselineStartMs = rs.baselineStartMs, sendMs = rs.sendMs ?: now(), firstTokenMs = rs.firstTokenMs,
@@ -162,11 +185,17 @@ class PowerRunner(
                 generatedTokens = rs.generated, promptTokens = rs.promptTokens, stopped = rs.stopped,
             )
             var result = PowerMath.evaluate(i, marks, snapshot())
-            if (replugged) result = result.copy(skipped = "plugged")
-            else if (rs.error != null) result = result.copy(skipped = "error: ${rs.error}")
+            when {
+                replugged -> result = result.copy(skipped = "plugged")
+                ended != null -> result = result.copy(skipped = if (chat.isLoaded) "model changed" else "model unloaded")
+                rs.error != null -> result = result.copy(skipped = "error: ${rs.error}")
+                // Stopped by something other than the window (Chat's Stop, an unload): not a measurement.
+                rs.stopped && !rs.cancelSent -> result = result.copy(skipped = "stopped")
+            }
             runs += result
             _state.update { it.copy(runs = runs.toList(), livePrefillW = result.prefillW, liveDecodeW = result.decodeW) }
             if (replugged) return
+            if (ended != null) { endReason = ended; return }
             if (i < settings.repeats) {
                 _state.update { it.copy(phase = PowerPhase.COOLDOWN) }
                 delay(settings.cooldownSec * 1000L)
@@ -187,18 +216,29 @@ class PowerRunner(
         val m = meta
         val log = if (runs.isNotEmpty() && m != null) PowerSessionLog(m, state.value.settings, state.value.gaugeHz, runs) else null
         val path = log?.let { l -> runCatching { onSessionDone(l) }.getOrNull() }
-        _state.update { it.copy(phase = PowerPhase.DONE, savedPath = path, log = log) }
+        _state.update { it.copy(phase = PowerPhase.DONE, savedPath = path, log = log, error = endReason) }
     }
 
     // ----- generation events (engine thread) ------------------------------------
 
+    // A generation the runner did not send (a chat turn during the baseline) is ignored: onSend is
+    // accepted only right after the runner's own sendPrompt, the rest only once sendMs is known.
     override fun onSend(tMs: Long) {
-        synchronized(lock) { run?.sendMs = tMs }
+        synchronized(lock) {
+            val rs = run ?: return
+            if (!rs.awaitingSend) return
+            rs.awaitingSend = false
+            rs.sendMs = tMs
+        }
         _state.update { it.copy(phase = PowerPhase.PREFILL) }
     }
 
     override fun onFirstToken(tMs: Long) {
-        synchronized(lock) { run?.firstTokenMs = tMs }
+        synchronized(lock) {
+            val rs = run ?: return
+            if (rs.sendMs == null) return
+            rs.firstTokenMs = tMs
+        }
         _state.update { it.copy(phase = PowerPhase.DECODE) }
     }
 
@@ -207,6 +247,7 @@ class PowerRunner(
         var first: Long? = null
         synchronized(lock) {
             val rs = run ?: return
+            if (rs.sendMs == null) return
             rs.generated = count
             first = rs.firstTokenMs
             if (count >= rs.windowTokens && rs.windowEndMs == null) {
@@ -225,6 +266,7 @@ class PowerRunner(
     override fun onDone(tMs: Long, tokens: Int, promptTokens: Int?, stopped: Boolean, error: String?) {
         val rs = synchronized(lock) {
             val rs = run ?: return
+            if (rs.sendMs == null) return
             rs.doneMs = tMs
             if (tokens > rs.generated) rs.generated = tokens
             if (rs.windowEndMs == null) rs.windowEndMs = tMs
@@ -240,6 +282,10 @@ class PowerRunner(
         const val SETTLE_MS = 3_000L
         const val GATE_MAX_MS = 90_000L
         const val GATE_POLL_MS = 500L
+        /** A send that produces no onSend within this time is treated as lost. */
+        const val SEND_TIMEOUT_MS = 10_000L
+        /** How long to wait for the engine after a cancel before the run is evaluated anyway. */
+        const val DONE_WAIT_MS = 10_000L
         const val GATE_HEADROOM = 0.80f
         const val GAUGE_PROBE_MS = 5_000L
         const val LIVE_POINTS = 120

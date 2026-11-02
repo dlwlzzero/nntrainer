@@ -18,6 +18,8 @@ interface GenerationObserver {
 interface PowerChat {
     val isLiteRt: Boolean
     val isLoaded: Boolean
+    /** Identifies the loaded model (null when nothing is loaded); a session ends when it changes. */
+    val loadedKey: String?
     var observer: GenerationObserver?
     fun composerText(): String
     fun clearConversation()

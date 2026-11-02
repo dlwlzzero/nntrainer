@@ -55,8 +55,16 @@ class PowerMathTest {
     @Test fun evaluateWithoutGaugeDataGivesNulls() {
         val marks = RunMarks(0, 10_000, 11_000, 15_000, 15_000, 64, 64, null, false)
         val run = PowerMath.evaluate(1, marks, listOf(s(0, 0.2), s(12_000, 0.2)))
-        assertNull(run.mJPerToken); assertNull(run.decodeW); assertNull(run.runEnergyJ)
+        assertNull(run.mJPerToken); assertNull(run.baselineW); assertNull(run.runEnergyJ)
         assertEquals("no gauge data", run.skipped)
+    }
+
+    @Test fun aShortSpanWithOneSampleStillHasAMean() {
+        // prefill of 300 ms at a 250 ms cadence: one sample inside (send, first] is the only reading there is
+        val samples = (0..12_000 step 250).map { s(it.toLong(), if (it in 10_001..10_300) 1.25 else if (it > 10_300) 1.0 else 0.2) }
+        val run = PowerMath.evaluate(1, RunMarks(0, 10_000, 10_300, 12_000, 12_000, 64, 64, null, false), samples)
+        assertEquals(5.0, run.prefillW!!, 1e-9)
+        assertNull(run.skipped)
     }
 
     @Test fun windowShorterThanASecondOrWithoutTokensGivesNoEnergyPerToken() {
@@ -73,5 +81,13 @@ class PowerMathTest {
         val series = PowerSeries(listOf(run(1, 180.0), run(2, 200.0, throttled = true), run(3, null, "hot"), run(4, 190.0)))
         assertEquals(190.0, series.medianMJPerToken!!, 1e-9)
         assertEquals(1, series.throttledRuns); assertEquals(1, series.skippedRuns)
+    }
+
+    @Test fun evaluateWithAConstantGaugeGivesNoGaugeData() {
+        // a gauge that never moves (unsupported property, or 0 µA throughout) cannot give an energy per token
+        val samples = (0..15_000 step 250).map { s(it.toLong(), 0.0) }
+        val run = PowerMath.evaluate(1, RunMarks(0, 10_000, 11_000, 15_000, 15_000, 64, 64, null, false), samples)
+        assertEquals("no gauge data", run.skipped)
+        assertNull(run.mJPerToken)
     }
 }

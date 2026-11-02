@@ -35,9 +35,9 @@ object PowerMath {
         return joules
     }
 
-    /** Mean watts over (fromMs, toMs]; null with fewer than two samples. */
+    /** Mean watts over (fromMs, toMs]; null without a sample. A short prefill may hold a single reading. */
     fun meanW(samples: List<PowerSample>, fromMs: Long, toMs: Long): Double? =
-        ending(samples, fromMs, toMs).takeIf { it.size >= 2 }?.map { it.watts }?.average()
+        ending(samples, fromMs, toMs).takeIf { it.isNotEmpty() }?.map { it.watts }?.average()
 
     fun maxW(samples: List<PowerSample>, fromMs: Long, toMs: Long): Double? =
         within(samples, fromMs, toMs).maxOfOrNull { it.watts }
@@ -53,16 +53,18 @@ object PowerMath {
         val windowMs = if (first != null && end != null) end - first else 0L
         val windowOk = tokens >= 1 && windowMs >= 1000
         val tokensPerSec = if (windowOk) tokens / (windowMs / 1000.0) else null
-        val mJPerToken = if (windowOk && baselineW != null)
-            integrateJ(samples, first!!, end!!, baselineW)?.let { it / tokens * 1000 } else null
         val runEnd = end ?: marks.sendMs
+        val whole = within(samples, marks.baselineStartMs, runEnd)
+        // A reading that never changes (unsupported property, 0 µA) is no measurement at all.
+        val gaugeMoves = whole.map { it.microAmps }.distinct().size > 1
+        val mJPerToken = if (windowOk && baselineW != null && gaugeMoves)
+            integrateJ(samples, first!!, end!!, baselineW)?.let { it / tokens * 1000 } else null
         val runEnergyJ = integrateJ(samples, marks.sendMs, runEnd)
         val runSpan = within(samples, marks.sendMs, runEnd)
         val thermalMax = runSpan.maxOfOrNull { it.thermalStatus } ?: 0
-        val whole = within(samples, marks.baselineStartMs, runEnd)
         val skipped = when {
             first == null -> "no tokens"
-            baselineW == null || decodeW == null -> "no gauge data"
+            baselineW == null || decodeW == null || !gaugeMoves -> "no gauge data"
             else -> null
         }
         return PowerRun(
