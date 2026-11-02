@@ -90,7 +90,7 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 | 단계 | 내용 | 검증 | 선행 |
 |---|---|---|---|
 | 6c-2 | **구현 완료 (11-02, §12)**: host flash arm(`gemm_attention`)과 두 host arm 사이 선택(`min_prefill_thr`, `host_decode_prefers_per_row`)을 `CpuComputeOps::attention` 안으로. `gemm_attention` 안의 CUDA arm(`cuda_attention_interleaved_fp16`)은 `CudaComputeOps::attention` override로 분리 | x86, S26 (qemu 없음) | #4469 머지 후 PR |
-| 6d | CPU K-OHWI scatter와 int8 쓰기를 `kv_cache_write` 뒤로. `KVCacheView`에 layout과 element 타입 추가 | x86, qemu | Q4 답 (int8 유지 여부) |
+| 6d | CPU K-OHWI scatter와 int8 쓰기를 `kv_cache_write` 뒤로. `KVCacheView`에 layout과 element 타입 추가 | x86, S26 | Q4 = 유지(11-02 결정) → 시작 가능 |
 | (테스트) | `unittest_mha_core`의 device 버전 (#4452) | 빌드만 | 7a 전에 필요 |
 | 7a | OpenCL concat 쓰기와 attention을 `ClComputeOps`로 | 빌드만, 장비 필요 | |
 | 7b | OpenCL image mirror와 `KVCacheState` | Adreno 필요 | Q2 |
@@ -101,7 +101,9 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 
 **메인테이너 질문** (#4466 본문):
 - **Q1** (host 커널 위치): 사용자 결정으로 **core**. #4469에 반영했다.
-- **Q2~Q5:** 답 없음.
+- **Q4** (int8 KV 유지 여부): 11-02 사용자 결정으로 **유지**. 6d는 int8 쓰기를 `kv_cache_write` 뒤로 옮긴다(막힘 해제).
+- **Q2** (`KVCacheState` 소유권): 답 없음. 7b가 여기에 막혀 있다.
+- **Q3, Q5:** 사용자 결정으로 **보류**.
 
 ## 6. 발견했지만 아직 처리하지 않은 것
 
