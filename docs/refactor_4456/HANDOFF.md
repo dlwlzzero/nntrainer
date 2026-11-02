@@ -272,8 +272,16 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - x86 non-OpenCL 빌드에서는 device 코드가 `#if defined(ENABLE_OPENCL)`로 빠지며 문법 검사 통과(build16 컴파일 플래그). CI의 `ubuntu_opencl_build`는 CausalLM을 빌드하지 않으므로 이 코드는 Android OpenCL 빌드에서만 컴파일된다.
 - PR은 6c-2 위에 있지만 코드상 6c-2에 의존하지 않는다(#4462의 테스트 파일에만 의존). #4469 재배치 뒤 6c-2와 함께, 또는 #4469 위로 옮겨 따로 올릴 수 있다.
 
+### 12.3.1 `no_rope_gemm` device 실패의 원인과 수정 (#4473, 11-02 밤)
+
+- 원인: `attention_fp32_on_device()`가 FP32 Q/K/V를 device 커널로 FP16 plane에 좁혀 두는데(drain 없음, 같은 큐의 device arm이 읽는 전제), RoPE 없는 레이어의 no-RoPE 분기는 K/V를 **host**가 캐시에 쓴다. 그 host 읽기 전에 `settle_act_stage_for_host()`(plane을 map)를 안 해서 stale 바이트가 캐시에 들어갔다. host RoPE fallback 경로는 이미 settle을 호출한다.
+- 확인: devtest 트리의 no-RoPE 분기에 `settle_act_stage_for_host()` 한 줄을 넣고 S26에서 `no_rope_gemm` 통과(나머지 케이스 영향 없음).
+- 수정 PR: **#4473** (upstream main 기준, fork 브랜치 `claude/mha-core-settle-planes-no-rope`, 워크트리 `~/nntrainer-norope`). 8줄, `ENABLE_OPENCL` 가드 안. x86 빌드는 이 줄을 컴파일하지 않으므로 Android OpenCL 빌드(devtest)에서의 컴파일·실행이 검증 근거다.
+- 영향 범위: gpu 엔진 + FP32 activation + RoPE 없는 attention 레이어. `Applications/CausalLM/models`에 `rope_theta=0` 레이어를 쓰는 모델은 현재 없다.
+
 ### 12.4 fork 브랜치 (11-02 저녁 추가)
 
 - `claude/cpu-backend-drop-unused-hsumq` (#4472, upstream main 기준)
 - `claude/nntrainer-refactoring-priority-80xzum-flash` (6c-2, c27af69; 아래에 #4466/#4469 재배치 커밋 포함)
 - `claude/nntrainer-refactoring-priority-80xzum-devtest` (device 하네스, b0dfa2c; 6c-2 위)
+- `claude/mha-core-settle-planes-no-rope` (#4473, upstream main 기준)
