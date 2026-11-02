@@ -19,7 +19,7 @@
 | #4464 | `rotary_embedding` op | `...-80xzum-rope` | 3c06690 | #4462 | 승인 2, READY2MERGE |
 | #4465 | softcap 버그 수정 (#4461) | `...-80xzum-softcap` | 41d12ee | #4462 | 승인 2, READY2MERGE |
 | #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | b3d57b4 | #4464 | 승인 1, 봇 COMMENT |
-| #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | e800656 | #4466 | 봇 **REQUEST_CHANGES** |
+| #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | b558643 | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 |
 
 머지 순서는 #4462 → (#4464, #4465는 서로 독립) → #4466 → #4469이다.
 
@@ -53,25 +53,18 @@
 - 아래 PR이 머지될 때마다 같은 방식으로 rebase한다.
 - #4466 본문의 Dependency 줄("608e158, ten commits")은 오래됐으니 rebase할 때 고친다.
 
-## 4. #4469 리뷰 대응 (다음에 할 일)
+## 4. #4469 리뷰 대응 (완료, 재리뷰 대기)
 
-myungjoo-bot이 e800656에 REQUEST_CHANGES를 남겼다 (2026-11-02 04:21 UTC). 원문은 PR 페이지에 있다.
+myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응했다 (squash + force-push, 2026-11-02). 내용은 다음과 같다.
+- op 단위 테스트 3개 추가. FP32/FP16 query, FP32·fp16 비트·int8 cache, decode/prefill, window, softcap, sink, non-causal을 다룬다.
+- `cpu_attention.cpp` 커버리지 93% (GCC 13 gcov 기준 339/364줄).
+- `attention()`에 캐시 높이와 dtype 검사 추가.
+- CodeQL 수정 커밋 squash.
+- 오래된 주석 수정.
 
-1. **Blocking: `cpu_attention.cpp` 커버리지 49.8% (230/462줄), 목표 370줄 이상.**
-   `test/unittest/unittest_compute_ops_dispatch.cpp`의 `AttentionDispatchesAndMatchesTheFormula` 옆에 op 단위 케이스를 추가한다. 각 케이스는 단순한 기준값 계산과 비교한다.
-   - UINT8 plane + `key_scale` / `value_scale`: decode와 다중 행, `ENABLE_FP16` 빌드에서. int8을 dtype으로 판별하는 부분과 scale 전달을 확인한다.
-   - FP32 cache plane: decode와 다중 행.
-   - FP16 query + sink: decode와 다중 행. `softmax_row<_FP16>`(x86 forwarder)를 실행한다.
-   - FP16 softcap, FP16 non-causal.
-
-   추가한 뒤 `-Db_coverage=true`로 커버리지를 다시 잰다.
-2. **Blocking: e800656 squash.** e800656(CodeQL `size_t` 캐스트)을 afa62f8에 합치고 force-push한다 (**사용자 승인 필요**). PR 본문의 커밋 목록과 "two commits" 문구도 고친다.
-3. **Minor:**
-   - `attention()`에 `p.kv_len <= kv.key->height()`(value도 같이), `q`와 `out`의 dtype 일치, FP32 `q`일 때 UINT8 plane 거부 검사를 추가한다.
-   - 각각에 `EXPECT_THROW` 케이스를 만든다.
-   - 문서가 약속한 "shapes that do not match"를 지키는 변경이다.
-4. **NIT:** `mha_core.cpp` 1751행 근처의 주석("pick these up through layer members")을 `KVCacheView`를 통해 전달한다는 내용으로 고친다.
-5. **Minor (기존 공백, 답만):** ARM FP16 per-row arm을 도는 CI 셀이 없다. 로컬 qemu 결과로 답한다.
+남은 일은 다음 두 가지다.
+- 봇 재리뷰 결과를 확인한다.
+- ARM FP16 per-row arm을 도는 CI 셀이 없다는 지적(Minor 4)은 기존 공백이라 답만 했다.
 
 ## 5. 남은 단계 (#4466 설계의 6~10)
 
@@ -176,7 +169,27 @@ qemu-aarch64 ./Applications/CausalLM/unittest_mha_core
 - 변이 테스트: 고친 부분을 일부러 되돌려서 해당 테스트가 실패하는지 확인한다. 예를 들어 cache 행을 +1 밀기, softcap을 제거하기, 홀수 `head_dim`을 convert-only 경로로 보내기.
 - CUDA: 툴킷이 없어서 `mha_core.cpp`만 `-DENABLE_CUDA=1`과 stub 헤더(`cuda_runtime.h` 등)로 `-fsyntax-only` 컴파일한다.
 
-## 10. 참고
+## 10. fork 브랜치 정리 (미완료)
+
+2026-11-02에 사용자가 아래 7개 원격 브랜치의 삭제를 요청했다. 하지만 세션의 git 권한이 `claude/` 브랜치로 제한돼 있어서 push가 403으로 거부됐고, 우회하지 않았다. GitHub 웹(https://github.com/dlwlzzero/nntrainer/branches)에서 직접 지워야 한다. 복구가 필요할 때를 위해 삭제 당시의 SHA를 함께 적는다.
+
+| 브랜치 | SHA | 상태 |
+|---|---|---|
+| `refactor/manager-input-lifespan` | c23579e04960668e103a04342d89e6402da993ae | #4458 머지 완료 |
+| `security/4334-h1-safetensors-bounds` | 1cdfd7316c414a8f57f78632a9c2d5098a2c5554 | #4342 닫힘 (미머지) |
+| `htp/258-fcwh-q8-act` | 25124a1ee24a3b2eaf6b0c738fe9b7e88ea08cca | PR 없음 |
+| `htp/4428-attn-q2-from-4432` | 5614d403dcc07e6e4a38f19daf29bb39373cd958 | PR 없음 |
+| `htp/4428-prefill-readers` | c8ca04c9567c3c37dcc40e1d52b61534b0099b82 | PR 없음 |
+| `htp_hadamard` | 63167235ff936ffd3269a0f511614ad0c6d17508 | PR 없음 |
+| `htp_libs_integration` | e2047e9971c8fa37f53c3dfed8a1577f2f7f4680 | PR 없음 |
+
+남겨 둔 브랜치는 다음과 같다.
+- 이번 작업 브랜치 6개 (PR 5개 + docs)와 `main`.
+- 열린 PR이 연결된 브랜치: `htp_decode`(#4412), `htp_first_version`(#4385), `htp_moe`(#4366), `htp_profiling`(#4417), `hvx_impl`(#4282), `refactor/graph-output-lifespan`(#4459).
+
+#4458이 머지됐으므로, #4459는 rebase가 필요할 수 있다.
+
+## 11. 참고
 
 - umbrella: https://github.com/nntrainer/nntrainer/issues/4456
 - 백엔드 분기 이동: https://github.com/nntrainer/nntrainer/issues/4451
