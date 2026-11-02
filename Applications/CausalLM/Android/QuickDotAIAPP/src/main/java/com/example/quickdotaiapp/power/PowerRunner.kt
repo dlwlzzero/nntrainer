@@ -228,7 +228,7 @@ class PowerRunner(
             rs.doneMs = tMs
             if (tokens > rs.generated) rs.generated = tokens
             if (rs.windowEndMs == null) rs.windowEndMs = tMs
-            rs.promptTokens = promptTokens
+            rs.promptTokens = promptTokens?.takeIf { it > 0 }     // LiteRT reports 0: unknown, not zero
             rs.stopped = stopped
             rs.error = error
             rs

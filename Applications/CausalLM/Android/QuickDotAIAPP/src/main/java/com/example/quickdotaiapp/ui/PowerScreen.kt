@@ -300,13 +300,13 @@ private fun Result(power: PowerUi, onAgain: () -> Unit, onCopy: (String) -> Unit
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(horizontal = 14.dp)) {
             power.runs.asReversed().forEachIndexed { i, r ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Run ${r.index}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text("Run ${r.index}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(0.75f))
                     if (r.skipped != null) {
-                        Text(r.skipped, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(3.3f))
+                        Text(r.skipped, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(3.45f))
                     } else {
-                        Text("${fmt(r.mJPerToken, "%.0f")} mJ/tok", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1.2f))
-                        Text("${fmt(r.decodeW, "%.1f")} W", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
-                        Text("${fmt(r.tokensPerSec, "%.1f")} tok/s", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1.1f))
+                        Text("${fmt(r.mJPerToken, "%.0f")} mJ/tok", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, maxLines = 1, modifier = Modifier.weight(1.3f))
+                        Text("${fmt(r.decodeW, "%.1f")} W", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, maxLines = 1, modifier = Modifier.weight(0.85f))
+                        Text("${fmt(r.tokensPerSec, "%.1f")} tok/s", style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, maxLines = 1, modifier = Modifier.weight(1.3f))
                     }
                 }
                 if (i < power.runs.lastIndex) HorizontalDivider()

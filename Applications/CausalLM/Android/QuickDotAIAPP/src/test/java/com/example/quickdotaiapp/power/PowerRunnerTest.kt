@@ -70,12 +70,14 @@ class PowerRunnerTest {
     @Test fun windowClosesOnceEvenIfDoneArrivesFirst() = runTest {
         val h = Harness(this, settings = settings.copy(repeats = 1))
         h.chat.tokens = 10
+        h.chat.promptTokens = 0                                       // LiteRT reports no prompt count
         h.runner.start(meta)
         advanceTimeBy(30_000); runCurrent()
         val run = h.state.runs.single()
         assertEquals(run.marks!!.doneMs, run.marks!!.windowEndMs)
         assertEquals(0, h.chat.cancels)
         assertEquals(10, run.marks!!.generatedTokens)
+        assertNull(run.marks!!.promptTokens)
     }
 
     @Test fun thermalGateWaitsThenSkipsAHotRun() = runTest {
