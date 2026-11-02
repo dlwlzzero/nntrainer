@@ -21,8 +21,8 @@ Android/
 `AppViewModel` owns the single engine executor and file reading, and
 `ChatController` (pure Kotlin, JVM-tested) holds all state in one
 `StateFlow<UiState>` and makes every engine call on that executor. Screens:
-Chat (transcript, composer, attach sheet), Raw (OpenAI JSON), Metrics; the
-model sheet opens from the top-bar chip.
+Chat (transcript, attach sheet, a composer that takes a message or OpenAI
+JSON) and Metrics; the model sheet opens from the top-bar chip.
 
 ## 🧱 QuickDotAI AAR
 

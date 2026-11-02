@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * @file  RawRequest.kt
- * @brief OpenAI-style request text as the Raw screen and the .json
+ * @brief OpenAI-style request text as the JSON composer and the .json
  *        attachment see it: detection, message conversion, image attach.
  */
 package com.example.quickdotaiapp
@@ -29,7 +29,7 @@ object RawRequest {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** Never throws: the Raw screen calls this on every keystroke. */
+    /** Never throws: the composer calls this on every keystroke. */
     fun parse(text: String): Parsed {
         val element = try {
             json.parseToJsonElement(text)

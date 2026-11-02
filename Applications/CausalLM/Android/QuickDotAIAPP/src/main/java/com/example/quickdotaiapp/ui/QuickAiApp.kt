@@ -2,7 +2,7 @@
 /**
  * @file  QuickAiApp.kt
  * @brief The scaffold: splash, top bar with the model chip, status strip,
- *        the three screens on a bottom bar, the sheets, the file pickers
+ *        the two screens on a bottom bar, the sheets, the file pickers
  *        and the snackbar.
  */
 package com.example.quickdotaiapp.ui
@@ -132,9 +132,6 @@ private fun AppScaffold(state: UiState, vm: AppViewModel) {
                 NavigationBarItem(selected = state.screen == Screen.CHAT, onClick = { controller.setScreen(Screen.CHAT) },
                     icon = { Icon(painterResource(R.drawable.ic_chat), null) }, label = { Text("Chat") },
                     modifier = Modifier.testTag(Tags.NAV_CHAT))
-                NavigationBarItem(selected = state.screen == Screen.RAW, onClick = { controller.setScreen(Screen.RAW) },
-                    icon = { Icon(painterResource(R.drawable.ic_braces), null) }, label = { Text("Raw") },
-                    modifier = Modifier.testTag(Tags.NAV_RAW))
                 NavigationBarItem(selected = state.screen == Screen.METRICS, onClick = { controller.setScreen(Screen.METRICS) },
                     icon = { Icon(painterResource(R.drawable.ic_chart), null) }, label = { Text("Metrics") },
                     modifier = Modifier.testTag(Tags.NAV_METRICS))
@@ -145,8 +142,7 @@ private fun AppScaffold(state: UiState, vm: AppViewModel) {
         Column(Modifier.padding(padding).fillMaxSize()) {
             StatusStrip(state)
             when (state.screen) {
-                Screen.CHAT -> ChatScreen(state, controller, onAttach = { attachSheetOpen = true }, modifier = Modifier.weight(1f))
-                Screen.RAW -> RawScreen(state, controller,
+                Screen.CHAT -> ChatScreen(state, controller, onAttach = { attachSheetOpen = true },
                     onLoadJson = { pickJson.launch(arrayOf("application/json", "text/*")) }, modifier = Modifier.weight(1f))
                 Screen.METRICS -> MetricsScreen(state, controller, modifier = Modifier.weight(1f))
             }

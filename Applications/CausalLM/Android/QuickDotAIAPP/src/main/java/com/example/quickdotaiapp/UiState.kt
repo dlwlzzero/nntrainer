@@ -13,7 +13,7 @@ import com.example.quickdotai.ModelDescriptor
 import com.example.quickdotai.PerformanceMetrics
 import com.example.quickdotai.RuntimeKind
 
-enum class Screen { CHAT, RAW, METRICS }
+enum class Screen { CHAT, METRICS }
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
@@ -53,7 +53,7 @@ data class ChatTurn(
     val images: List<ByteArray> = emptyList(),
     val streaming: Boolean = false,
     val stopped: Boolean = false,
-    /** Sent from the Raw screen; kept out of the chat history. */
+    /** Sent as OpenAI JSON from the composer; kept out of the chat history. */
     val raw: Boolean = false,
     val metrics: TurnMetrics? = null,
 )
@@ -91,6 +91,8 @@ data class UiState(
     val draftImages: List<ByteArray> = emptyList(),
     val session: SessionSettings = SessionSettings(),
     val rawJson: String = "",
+    /** The composer takes OpenAI JSON ([rawJson]) instead of a message ([draft]). */
+    val rawMode: Boolean = false,
     val lastMetrics: PerformanceMetrics? = null,
     val runs: List<RunRecord> = emptyList(),
     val status: String = "Idle.",

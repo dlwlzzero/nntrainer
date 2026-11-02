@@ -114,6 +114,7 @@ class ChatController(
     fun resetRawJson() = update { copy(rawJson = examples.rawJsonFor(descriptor), rawRevision = rawRevision + 1) }
     fun clearRuns() = update { copy(runs = emptyList(), lastMetrics = null) }
     fun setScreen(screen: Screen) = update { copy(screen = screen) }
+    fun setRawMode(on: Boolean) = update { copy(rawMode = on) }
     fun setTheme(theme: ThemeMode) = update { copy(theme = theme) }
     fun splashDone() = update { copy(splashShown = true) }
     fun consumeNotice() = update { copy(notice = null) }
@@ -240,7 +241,6 @@ class ChatController(
         if (parsed is RawRequest.Parsed.Invalid) { setStatus("Invalid JSON: ${parsed.reason}"); return }
         if (s.busy) { setStatus("Busy."); return }
         val images = s.draftImages
-        update { copy(screen = Screen.CHAT) }
         val onStarted = { update { copy(draftImages = if (draftImages == images) emptyList() else draftImages) } }
         runGeneration(ChatTurn(nextId(), TurnRole.USER, text, images, raw = true), mode = "raw", onStarted) { e, d, sink ->
             // The flat calls below need LiteRT's own conversation, which an open chat session replaces.
@@ -301,8 +301,8 @@ class ChatController(
         when (val p = RawRequest.parse(text)) {
             is RawRequest.Parsed.Messages ->
                 update {
-                    copy(rawJson = text, rawRevision = rawRevision + 1, screen = Screen.RAW,
-                        notice = "$name loaded into Raw (${p.messages.size} messages)")
+                    copy(rawJson = text, rawRevision = rawRevision + 1, rawMode = true, screen = Screen.CHAT,
+                        notice = "$name loaded as JSON (${p.messages.size} messages)")
                 }
             is RawRequest.Parsed.Other -> insertTextFile(name, text)
             is RawRequest.Parsed.Invalid -> update { copy(notice = "$name is not valid JSON: ${p.reason}") }

@@ -321,12 +321,26 @@ class ChatControllerTest {
     }
 
     @Test
+    fun rawModeIsAComposerToggle() {
+        val c = controller()
+        assertFalse(c.state.value.rawMode)
+        c.setRawMode(true)
+        assertTrue(c.state.value.rawMode)
+        assertEquals(Screen.CHAT, c.state.value.screen)
+        c.setRawMode(false)
+        assertFalse(c.state.value.rawMode)
+    }
+
+    @Test
     fun loadJsonFileRoutes() {
         val c = controller()
+        c.setScreen(Screen.METRICS)
         c.loadJsonFile("req.json", """{"messages":[{"role":"user","content":"u"}]}""")
-        assertEquals(Screen.RAW, c.state.value.screen)
+        // A messages file lands in the JSON composer on the Chat screen.
+        assertTrue(c.state.value.rawMode)
+        assertEquals(Screen.CHAT, c.state.value.screen)
         assertTrue(c.state.value.rawJson.contains("\"messages\""))
-        assertEquals("req.json loaded into Raw (1 messages)", c.state.value.notice)
+        assertEquals("req.json loaded as JSON (1 messages)", c.state.value.notice)
         c.setDraft("")
         c.loadJsonFile("other.json", """{"a":1}""")
         assertEquals("""{"a":1}""", c.state.value.draft)

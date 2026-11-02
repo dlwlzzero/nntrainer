@@ -3,6 +3,8 @@
  * @file  ChatScreen.kt
  * @brief The transcript (bubbles, notes, per-turn metrics, follow-the-
  *        stream scrolling) and the composer with attach, send and stop.
+ *        The composer has two modes: a message, or OpenAI JSON sent as-is
+ *        (the only path that forwards tools).
  */
 package com.example.quickdotaiapp.ui
 
@@ -28,6 +30,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,10 +56,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.example.quickdotaiapp.ChatController
 import com.example.quickdotaiapp.ChatTurn
+import com.example.quickdotai.Capability
+import com.example.quickdotai.RuntimeKind
 import com.example.quickdotaiapp.R
+import com.example.quickdotaiapp.RawRequest
 import com.example.quickdotaiapp.TurnRole
 import com.example.quickdotaiapp.UiState
 import kotlinx.coroutines.launch
@@ -68,6 +76,7 @@ fun ChatScreen(
     state: UiState,
     controller: ChatController,
     onAttach: () -> Unit,
+    onLoadJson: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -75,7 +84,7 @@ fun ChatScreen(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             Transcript(state, listState)
         }
-        Composer(state, controller, onAttach)
+        Composer(state, controller, onAttach, onLoadJson)
     }
 }
 
@@ -208,8 +217,11 @@ private fun AssistantBubble(turn: ChatTurn) {
 }
 
 @Composable
-private fun Composer(state: UiState, controller: ChatController, onAttach: () -> Unit) {
+private fun Composer(state: UiState, controller: ChatController, onAttach: () -> Unit, onLoadJson: () -> Unit) {
     var draft by rememberLocalText(state.draftRevision) { controller.state.value.draft }
+    var raw by rememberLocalText(state.rawRevision) { controller.state.value.rawJson }
+    val rawMode = state.rawMode
+    val parsed = remember(raw, rawMode) { if (rawMode) RawRequest.parse(raw) else null }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (state.draftImages.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
@@ -233,24 +245,49 @@ private fun Composer(state: UiState, controller: ChatController, onAttach: () ->
                 }
             }
         }
+        if (parsed != null) JsonHeader(parsed, state, onLoadJson, onReset = controller::resetRawJson)
         Row(verticalAlignment = Alignment.Bottom) {
             FilledTonalIconButton(onClick = onAttach, modifier = Modifier.size(48.dp).testTag(Tags.ATTACH)) {
                 Icon(painterResource(R.drawable.ic_attach), contentDescription = "Attach a file")
             }
             Spacer(Modifier.width(8.dp))
-            TextField(
-                value = draft,
-                onValueChange = { draft = it; controller.setDraft(it) },
-                placeholder = { Text("Type a message…") },
-                maxLines = 6,
-                shape = RoundedCornerShape(24.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                ),
-                modifier = Modifier.weight(1f).testTag(Tags.COMPOSER),
+            val fieldColors = TextFieldDefaults.colors(
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent,
             )
+            // The mode switch sits beside attach: braces lit = the field is the request itself.
+            FilledIconToggleButton(
+                checked = rawMode,
+                onCheckedChange = controller::setRawMode,
+                modifier = Modifier.size(48.dp).testTag(Tags.RAW_MODE),
+            ) {
+                Icon(painterResource(R.drawable.ic_braces),
+                    contentDescription = if (rawMode) "Back to a message" else "Send OpenAI JSON instead")
+            }
+            Spacer(Modifier.width(8.dp))
+            if (rawMode) {
+                TextField(
+                    value = raw,
+                    onValueChange = { raw = it; controller.setRawJson(it) },
+                    placeholder = { Text("OpenAI JSON: {\"messages\": […], \"tools\": […]}", style = MaterialTheme.typography.bodySmall) },
+                    maxLines = 10,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = fieldColors,
+                    modifier = Modifier.weight(1f).testTag(Tags.RAW_JSON),
+                )
+            } else {
+                TextField(
+                    value = draft,
+                    onValueChange = { draft = it; controller.setDraft(it) },
+                    placeholder = { Text("Type a message…") },
+                    maxLines = 6,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = fieldColors,
+                    modifier = Modifier.weight(1f).testTag(Tags.COMPOSER),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             if (state.streaming) {
                 FilledIconButton(
@@ -262,12 +299,39 @@ private fun Composer(state: UiState, controller: ChatController, onAttach: () ->
                     modifier = Modifier.size(48.dp).testTag(Tags.STOP),
                 ) { Icon(painterResource(R.drawable.ic_stop), contentDescription = "Stop generating") }
             } else {
+                val ready = if (rawMode) parsed !is RawRequest.Parsed.Invalid && raw.isNotBlank()
+                            else draft.isNotBlank() || state.draftImages.isNotEmpty()
                 FilledIconButton(
-                    onClick = controller::send,
-                    enabled = !state.busy && (draft.isNotBlank() || state.draftImages.isNotEmpty()),
+                    onClick = if (rawMode) controller::sendRaw else controller::send,
+                    enabled = !state.busy && ready,
                     modifier = Modifier.size(48.dp).testTag(Tags.SEND),
-                ) { Icon(painterResource(R.drawable.ic_send), contentDescription = "Send") }
+                ) { Icon(painterResource(R.drawable.ic_send), contentDescription = if (rawMode) "Send the JSON request" else "Send") }
             }
         }
+    }
+}
+
+/** Above the JSON field: whether it parses, how it will be routed, and the load / reset actions. */
+@Composable
+private fun JsonHeader(parsed: RawRequest.Parsed, state: UiState, onLoadJson: () -> Unit, onReset: () -> Unit) {
+    val d = state.descriptor
+    val path = when {
+        parsed is RawRequest.Parsed.Messages && d != null &&
+            (Capability.MESSAGES_API in d.capabilities || d.runtime == RuntimeKind.LITERT) -> "messages API"
+        else -> "JSON as-is"
+    }
+    val (ok, line) = when (parsed) {
+        is RawRequest.Parsed.Messages -> true to "${parsed.messages.size} messages${if (parsed.hasTools) " · tools" else ""} · $path"
+        RawRequest.Parsed.Other -> true to "Valid JSON, not a messages request · $path"
+        is RawRequest.Parsed.Invalid -> false to "Invalid JSON: ${parsed.reason}"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 4.dp)) {
+        Icon(painterResource(if (ok) R.drawable.ic_check else R.drawable.ic_warning), null,
+            tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(line, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2, modifier = Modifier.weight(1f))
+        TextButton(onClick = onLoadJson, contentPadding = PaddingValues(horizontal = 8.dp), modifier = Modifier.testTag(Tags.RAW_LOAD)) { Text("Load .json") }
+        TextButton(onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp), modifier = Modifier.testTag(Tags.RAW_RESET)) { Text("Reset") }
     }
 }
