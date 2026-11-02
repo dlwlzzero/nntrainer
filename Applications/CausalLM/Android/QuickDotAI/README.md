@@ -7,7 +7,7 @@ interface over two engine implementations:
   `libquickai_jni.so` and the native `quick_dot_ai_api.h` entry points.
 - `LiteRTLm`: LiteRT-LM path for Gemma-family `.litertlm` models.
 
-The current Gradle build includes `:QuickDotAI` and `:SampleTestAPP`.
+The current Gradle build includes `:QuickDotAI` and `:QuickDotAIAPP`.
 
 ## 📦 Dependency
 
@@ -30,14 +30,14 @@ export ANDROID_NDK=/path/to/your/android-ndk
 
 The CPU-only AAR mode stages `libcausallm.so`,
 `libquick_dot_ai_api.so`, and the nntrainer runtime, builds
-`libquickai_jni.so`, and assembles the QuickDotAI AAR plus SampleTestAPP. It is
+`libquickai_jni.so`, and assembles the QuickDotAI AAR plus QuickDotAIAPP. It is
 build-only: a connected device is not modified unless `--install` is supplied.
 The script forwards the selected NDK to Gradle. Direct Gradle builds must pass
 `-PnntrainerNdkPath=<absolute-path>`.
 
 Use `--qnn` (and set `QNN_SDK_ROOT`) for a QNN-enabled package; CPU is the
 default. `--install` pushes the
-native tools and libraries, and installs SampleTestAPP only when combined with
+native tools and libraries, and installs QuickDotAIAPP only when combined with
 `--app`. `--cache` reuses a compatible engine when available and rebuilds it
 on a cache miss.
 
