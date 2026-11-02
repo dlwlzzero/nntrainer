@@ -16,25 +16,25 @@
 | PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 |
 |---|---|---|---|---|---|
 | #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | 43ebf10 | main | 승인 4, READY2MERGE. 11-02에 커밋 2개 추가(Android 허용 오차, Android.mk 모듈) → CI·봇 재리뷰 대기 |
-| #4464 | `rotary_embedding` op | `...-80xzum-rope` | 3c06690 | #4462 | 승인 2, READY2MERGE |
-| #4465 | softcap 버그 수정 (#4461) | `...-80xzum-softcap` | 41d12ee | #4462 | 승인 2, READY2MERGE |
+| #4464 | `rotary_embedding` op | `...-80xzum-rope` | 564a6ec | #4462 (43ebf10) | 승인 2, READY2MERGE. 11-02 43ebf10 위로 rebase, force-push → CI·재리뷰 대기 |
+| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | c584e44 | **#4464** (564a6ec) | 승인 2, READY2MERGE. 11-02 #4464 위로 옮기고 커밋 1개 추가, force-push → CI·재리뷰 대기 |
 | #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | b3d57b4 | #4464 | 승인 1, 봇 COMMENT |
 | #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | b558643 | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 |
 
-머지 순서는 #4462 → (#4464, #4465는 서로 독립) → #4466 → #4469이다.
+머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469이다 (11-02부터 #4465가 #4464 위에 있다; #4466, #4469는 아직 #4464의 옛 head 3c06690 위에 있어서 #4464 머지 때 rebase한다).
 
 ## 3. 머지가 진행될 때 할 일
 
 ### 3.1 #4462가 머지되면
 - #4464와 #4465는 #4462의 **옛 head 867f4c6** 위에 쌓여 있다. #4462에는 11-02에 커밋 2개(bf327f5 Android 허용 오차, 43ebf10 Android.mk 모듈)가 더 붙었고, 둘 다 `unittest_mha_core.cpp`의 허용 오차 줄을 건드리므로 두 PR 모두 rebase 때 그 줄에서 충돌한다. rebase-merge로 SHA도 바뀌므로 어차피 `origin/main` 위로 rebase하고 force-push해야 한다.
 - 방법: `git rebase --onto origin/main 867f4c6 <branch>`
-- 이 워크스테이션에는 충돌을 이미 푼 브랜치가 로컬로 있다(push 안 함): `wt/4464-on-4462`(`~/nntrainer-4456-stack`), `wt/4465-on-4462`와 결합본 `wt/4465-on-4464`(`~/nntrainer-4456-stack65`). 모두 43ebf10 위에 있으므로 머지 뒤에는 `git rebase --onto origin/main 43ebf10 <wt-branch>`로 옮기면 되고, `git rerere`가 해결 내용을 기록해 두어 같은 충돌은 자동으로 풀린다.
+- 11-02에 사용자 승인으로 force-push했다: #4464 ← `wt/4464-on-4462`(564a6ec), #4465 ← 결합본 `wt/4465-on-4464`(c584e44). 그래서 두 PR은 이미 43ebf10 위에 있고 서로의 충돌도 풀려 있다. 머지 뒤에는 `git rebase --onto origin/main 43ebf10 <branch>`만 하면 되고, 이 워크스테이션의 `git rerere`(`~/nntrainer-4456-stack*`)가 해결 내용을 기록해 두었다. `wt/4465-on-4462`(#4465를 #4464 없이 43ebf10 위에만 올린 것)도 로컬에 남아 있다.
 - 확인: `git range-diff 867f4c6..<old-head> origin/main..<new-head>`. main이 141871a5보다 이미 6커밋 앞서 있어서(#4458 머지, ARM ISA 재작업 등) head끼리의 `git diff`에는 그 변경이 섞여 나온다.
 - force-push는 `--force-with-lease=<branch>:<old-sha>`로 하고, **반드시 사용자 승인 후** 진행한다.
 - 제목의 "[Wait for #4462]"도 지운다.
 
-### 3.2 #4464와 #4465 중 하나가 먼저 머지되면
-두 PR은 `Applications/CausalLM/layers/unittest_mha_core.cpp`에서 충돌하고, #4462의 새 커밋(bf327f5)까지 세 갈래다. 결합본은 `wt/4465-on-4464`에 풀어 두었다(위 3.1). 내용은 다음과 같다.
+### 3.2 #4464와 #4465의 결합 (11-02에 완료, #4465 브랜치에 반영됨)
+두 PR은 `Applications/CausalLM/layers/unittest_mha_core.cpp`에서 충돌했고, #4462의 새 커밋(bf327f5)까지 세 갈래였다. 11-02에 #4465를 #4464 위로 옮기면서 다음처럼 합쳤고, 그 결과가 #4465의 현재 head(c584e44)다. 머지 순서가 바뀌어 #4464를 #4465 위에 올려야 하면 같은 내용을 반대로 적용한다.
 
 - **허용 오차:**
   ```cpp
@@ -50,7 +50,7 @@
 - **헬퍼:** #4464의 `writeRows`/`readAt`와 #4465의 `flashStoresFp16Probs`가 같은 자리에 들어가므로 둘 다 남긴다.
 - **헤더 주석:** #4464의 CI 셀 설명(fp16=false/true), #4465의 "x86 밖에서는 32행 이상 step이 있는 gemm 케이스만 실행", bf327f5의 Android 축소 설명을 모두 남긴다.
 - **케이스 목록:** #4465의 softcap gemm 케이스들 뒤에 #4464의 `fp16_*` 케이스를 둔다.
-- **새 테스트 케이스:** 결합본에 별도 커밋으로 추가했다.
+- **새 테스트 케이스:** #4465의 세 번째 커밋(c584e44)으로 추가했다.
   ```cpp
   MhaCase("fp16_softcap_gemm_long_prefill", 4, 2, 16, {40, 1, 1})
     .softcapAt(0.1f).gemmArm().flashTile(16, 16).fp16Activations()
