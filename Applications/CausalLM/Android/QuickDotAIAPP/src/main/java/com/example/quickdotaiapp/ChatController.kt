@@ -24,6 +24,8 @@ import com.example.quickdotai.QuickAiError
 import com.example.quickdotai.QuickDotAI
 import com.example.quickdotai.RuntimeKind
 import com.example.quickdotai.StreamSink
+import com.example.quickdotaiapp.power.GenerationObserver
+import com.example.quickdotaiapp.power.PowerChat
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,13 +49,15 @@ class ChatController(
     private val now: () -> Long = System::currentTimeMillis,
     initialTheme: ThemeMode = ThemeMode.SYSTEM,
     private val publishIntervalMs: Long = 50,
-) {
+) : PowerChat {
     private val _state = MutableStateFlow(UiState(theme = initialTheme))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     /** Written only on [engineDispatcher]; read from the main thread by cancel(). */
     @Volatile private var engine: QuickDotAI? = null
     @Volatile private var cancelRequested = false
+    /** The Power tab listens to one generation at a time; set and cleared by the runner. */
+    @Volatile override var observer: GenerationObserver? = null
     // Turn ids are LazyColumn keys: unique across threads, never minted inside update {}.
     private val nextTurnId = AtomicLong(1)
     private val runIndex = AtomicInteger(0)
@@ -114,6 +118,9 @@ class ChatController(
     fun resetRawJson() = update { copy(rawJson = examples.rawJsonFor(descriptor), rawRevision = rawRevision + 1) }
     fun clearRuns() = update { copy(runs = emptyList(), lastMetrics = null) }
     fun setScreen(screen: Screen) = update { copy(screen = screen) }
+    override val isLiteRt: Boolean get() = state.value.descriptor?.runtime == RuntimeKind.LITERT
+    override val isLoaded: Boolean get() = state.value.load is LoadState.Loaded
+    override fun composerText(): String = state.value.draft
     fun setRawMode(on: Boolean) = update { copy(rawMode = on) }
     fun setTheme(theme: ThemeMode) = update { copy(theme = theme) }
     fun splashDone() = update { copy(splashShown = true) }
@@ -256,8 +263,21 @@ class ChatController(
         }
     }
 
+    /** The Power tab's send: one prompt as a user turn, only onto a loaded model, so the run never includes a load. */
+    override fun sendPrompt(text: String): Boolean {
+        val s = state.value
+        val body = text.trim()
+        if (body.isEmpty()) { setStatus("Prompt is empty."); return false }
+        if (s.busy) { setStatus("Busy."); return false }
+        if (s.loadedRequest == null) { setStatus("Load a model first."); return false }
+        runGeneration(ChatTurn(nextId(), TurnRole.USER, body), mode = "power", onStarted = {}) { e, d, sink ->
+            if (d.runtime == RuntimeKind.LITERT) sendLiteRt(e, body, emptyList(), sink) else sendNative(e, sink)
+        }
+        return true
+    }
+
     /** From the main thread: never waits for the engine. */
-    fun cancel() {
+    override fun cancel() {
         val e = engine ?: return
         if (!state.value.streaming) return
         cancelRequested = true
@@ -269,7 +289,7 @@ class ChatController(
         e.chatCancel()
     }
 
-    fun clearConversation() {
+    override fun clearConversation() {
         update { copy(turns = emptyList()) }
         val e = engine ?: return
         scope.launch {
@@ -329,13 +349,14 @@ class ChatController(
                 )
             }
             val startedMs = now()
+            observer?.onSend(startedMs)
             val collector = StreamCollector(assistantId, startedMs)
             val result: BackendResult<*> = withContext(engineDispatcher) {
                 try { invoke(e, d, collector) } catch (t: Throwable) { BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message) }
             }
             collector.flush()
             val metrics = withContext(engineDispatcher) { (e.metrics() as? BackendResult.Ok)?.value }
-            finishTurn(e, assistantId, result, collector.error, metrics, mode, startedMs, d)
+            finishTurn(e, assistantId, result, collector.error, metrics, mode, startedMs, d, collector.tokens)
         }
     }
 
@@ -383,7 +404,7 @@ class ChatController(
 
     private fun finishTurn(
         ran: QuickDotAI, turnId: Long, result: BackendResult<*>, sinkError: String?, metrics: PerformanceMetrics?,
-        mode: String, startedMs: Long, d: ModelDescriptor,
+        mode: String, startedMs: Long, d: ModelDescriptor, generatedTokens: Int,
     ) {
         val stopped = cancelRequested
         cancelRequested = false
@@ -418,12 +439,14 @@ class ChatController(
                 )).takeLast(20),
             )
         }
+        observer?.onDone(now(), generatedTokens, metrics?.prefillTokens, stopped, error)
     }
 
     /** Accumulates deltas on the engine thread and publishes at most every [publishIntervalMs]. */
     private inner class StreamCollector(private val turnId: Long, private val startedMs: Long) : StreamSink {
         private val buffer = StringBuilder()
-        private var tokens = 0
+        var tokens = 0
+            private set
         private var lastPublishMs = startedMs
         @Volatile var error: String? = null
 
@@ -431,6 +454,8 @@ class ChatController(
             buffer.append(text)
             tokens++
             val t = now()
+            if (tokens == 1) observer?.onFirstToken(t)
+            observer?.onToken(tokens, t)
             if (t - lastPublishMs >= publishIntervalMs) publish(t)
         }
         override fun onDone() {}
