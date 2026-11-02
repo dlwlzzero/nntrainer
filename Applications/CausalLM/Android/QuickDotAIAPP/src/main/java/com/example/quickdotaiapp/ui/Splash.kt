@@ -38,12 +38,38 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.quickdotaiapp.R
 import kotlinx.coroutines.delay
 
 const val SPLASH_TAGLINE = "On-device AI playground"
+
+/** The bolt and the Quick.AI wordmark, sized by the text; the splash and the top bar share it. */
+@Composable
+fun Wordmark(size: TextUnit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
+        Icon(
+            painter = painterResource(R.drawable.ic_bolt),
+            contentDescription = "Quick.AI lightning bolt",
+            tint = SkyBolt,
+            modifier = Modifier.size((size.value * 0.85f).dp),
+        )
+        Spacer(Modifier.width((size.value * 0.25f).dp))
+        Text(
+            text = buildAnnotatedString {
+                append("Quick")
+                withStyle(SpanStyle(color = scheme.primary)) { append(".AI") }
+            },
+            color = scheme.onSurface,
+            fontSize = size,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = (-size.value / 40f).sp,
+        )
+    }
+}
 
 @Composable
 fun Splash(onDone: () -> Unit) {
@@ -70,31 +96,13 @@ fun Splash(onDone: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            Wordmark(
+                size = 40.sp,
                 modifier = Modifier.graphicsLayer {
                     translationX = slide * 220.dp.toPx()
                     alpha = (1f - slide).coerceIn(0f, 1f)
                 },
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_bolt),
-                    contentDescription = "Quick.AI lightning bolt",
-                    tint = SkyBolt,
-                    modifier = Modifier.size(34.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = buildAnnotatedString {
-                        append("Quick")
-                        withStyle(SpanStyle(color = scheme.primary)) { append(".AI") }
-                    },
-                    color = scheme.onSurface,
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = (-1).sp,
-                )
-            }
+            )
             Spacer(Modifier.height(18.dp))
             Text(
                 text = SPLASH_TAGLINE.uppercase(),

@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.quickdotai.Capability
 import com.example.quickdotai.ModelDescriptor
@@ -104,20 +105,26 @@ private fun AppScaffold(state: UiState, vm: AppViewModel) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { ModelChip(descriptor, state.load) { modelSheetOpen = true } },
-                actions = {
-                    IconButton(onClick = controller::clearConversation, modifier = Modifier.testTag(Tags.CLEAR)) {
-                        Icon(painterResource(R.drawable.ic_delete), contentDescription = "Clear conversation")
-                    }
-                    IconButton(onClick = { vm.setTheme(nextTheme(state.theme)) }) {
-                        Icon(
-                            painterResource(if (state.theme == ThemeMode.DARK) R.drawable.ic_light_mode else R.drawable.ic_dark_mode),
-                            contentDescription = "Theme: ${state.theme.name.lowercase()}",
-                        )
-                    }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Wordmark(size = 20.sp) },
+                    actions = {
+                        IconButton(onClick = controller::clearConversation, modifier = Modifier.testTag(Tags.CLEAR)) {
+                            Icon(painterResource(R.drawable.ic_delete), contentDescription = "Clear conversation")
+                        }
+                        IconButton(onClick = { vm.setTheme(nextTheme(state.theme)) }) {
+                            Icon(
+                                painterResource(if (state.theme == ThemeMode.DARK) R.drawable.ic_light_mode else R.drawable.ic_dark_mode),
+                                contentDescription = "Theme: ${state.theme.name.lowercase()}",
+                            )
+                        }
+                    },
+                )
+                // The model chip gets its own row so the name above it never squeezes it.
+                Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 6.dp)) {
+                    ModelChip(descriptor, state.load) { modelSheetOpen = true }
+                }
+            }
         },
         bottomBar = {
             NavigationBar {
