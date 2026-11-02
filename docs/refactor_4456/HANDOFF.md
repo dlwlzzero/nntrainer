@@ -23,6 +23,14 @@
 
 머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469이다 (11-02부터 #4465가 #4464 위에 있다; #4466, #4469는 아직 #4464의 옛 head 3c06690 위에 있어서 #4464 머지 때 rebase한다).
 
+11-02 저녁에 그 다음 단계를 로컬에서 먼저 쌓았다 (fork에 push, PR은 아직). 자세한 내용은 §12.
+
+| 브랜치 (fork) | head | 내용 | 쌓인 위치 |
+|---|---|---|---|
+| (로컬 `wt/4466-on-4465`, 워크트리 `~/nntrainer-4456-stack65`) | c7bc1c5 | #4466 두 커밋 + #4469 두 커밋을 c584e44 위로 cherry-pick (충돌 없음) | #4465 (c584e44) |
+| `claude/nntrainer-refactoring-priority-80xzum-flash` | c27af69 | 6c-2: host flash arm + host arm 선택 → `CpuComputeOps::attention`, CUDA arm → `CudaComputeOps::attention` | 위 재배치본 |
+| `claude/nntrainer-refactoring-priority-80xzum-devtest` | b0dfa2c | `unittest_mha_core`의 device 모드 `NNTR_ENGINE=gpu` (#4452, 7a 준비; 워크트리 `~/nntrainer-4456-devtest`) | 6c-2 |
+
 ## 3. 머지가 진행될 때 할 일
 
 ### 3.1 #4462가 머지되면
@@ -62,6 +70,7 @@
 ### 3.3 #4466, #4469
 - 아래 PR이 머지될 때마다 같은 방식으로 rebase한다.
 - #4466 본문의 Dependency 줄("608e158, ten commits")은 오래됐으니 rebase할 때 고친다.
+- 11-02 저녁: 두 PR을 #4465의 새 head(c584e44) 위로 옮긴 결과가 로컬 브랜치 `wt/4466-on-4465`(c7bc1c5, `~/nntrainer-4456-stack65`)에 있다. `git cherry-pick 2e14a9de8 b3d57b4 fd51d4855 b55864311`로 충돌 없이 올라갔다. #4469는 다른 세션 담당이므로 그 PR 브랜치에는 push하지 않았다. #4464가 머지되면 이 브랜치를 `git rebase --onto origin/main c584e44`(또는 머지된 SHA)로 옮겨 force-push하면 된다(승인 필요).
 
 ## 4. #4469 리뷰 대응 (완료, 재리뷰 대기)
 
@@ -80,7 +89,7 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 
 | 단계 | 내용 | 검증 | 선행 |
 |---|---|---|---|
-| 6c-2 | host flash arm(`gemm_attention`)과 두 host arm 사이 선택(`min_prefill_thr`, `host_decode_prefers_per_row`)을 `CpuComputeOps::attention` 안으로. `gemm_attention` 안의 CUDA arm(`cuda_attention_interleaved_fp16`)은 `CudaComputeOps` override로 분리 | x86, qemu | #4469 |
+| 6c-2 | **구현 완료 (11-02, §12)**: host flash arm(`gemm_attention`)과 두 host arm 사이 선택(`min_prefill_thr`, `host_decode_prefers_per_row`)을 `CpuComputeOps::attention` 안으로. `gemm_attention` 안의 CUDA arm(`cuda_attention_interleaved_fp16`)은 `CudaComputeOps::attention` override로 분리 | x86, S26 (qemu 없음) | #4469 머지 후 PR |
 | 6d | CPU K-OHWI scatter와 int8 쓰기를 `kv_cache_write` 뒤로. `KVCacheView`에 layout과 element 타입 추가 | x86, qemu | Q4 답 (int8 유지 여부) |
 | (테스트) | `unittest_mha_core`의 device 버전 (#4452) | 빌드만 | 7a 전에 필요 |
 | 7a | OpenCL concat 쓰기와 attention을 `ClComputeOps`로 | 빌드만, 장비 필요 | |
@@ -99,7 +108,7 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 - **`ScopedEnv` 공유 헤더:**
   - `unittest_mha_core.cpp`, `unittest_kv_ring.cpp`(`_WIN32` 분기 없음), `test/unittest/unittest_util_func.cpp`에 복사본이 각각 있다.
   - 하나의 테스트 헤더로 합치고, copy/move를 삭제한다 (#4462 jaemini-shin NIT).
-- **ARM `-Werror` 빌드 실패:** `nntrainer/tensor/cpu_backend/arm/neon_impl_fp16.cpp`의 사용하지 않는 `hsumq_f16` 때문에 GCC 13 `-Werror`에서 빌드가 멈춘다. 로컬 ARM 빌드는 `werror=false`로 우회했다.
+- **ARM `-Werror` 빌드 실패:** `nntrainer/tensor/cpu_backend/arm/neon_impl_fp16.cpp`의 사용하지 않는 `hsumq_f16` 때문에 GCC 13 `-Werror`에서 빌드가 멈춘다. 로컬 ARM 빌드는 `werror=false`로 우회했다. → **11-02 #4472로 올렸다** (fork 브랜치 `claude/cpu-backend-drop-unused-hsumq`, 함수 삭제 한 건; NDK clang `-Wunused-function`으로 전후 확인).
 - **ARM `copy_fp32_u16` 버그:** ARM에서는 `__fallback_copy_fp32_u16`이 fp16 변환이 아니라 정수 캐스트를 한다. #4466이 KV 쓰기 경로만 고쳤고, 다른 호출처는 그대로다.
 - **non-causal + sliding window:** per-row arm에서는 결과가 정의되지 않는다(소프트맥스와 K/V 커널의 범위가 다름). flash arm은 window를 적용한다. Gemma3/4가 이 설정을 쓸 수 있다. #4469에서는 문서화만 했다.
 - **batch > 1:** `unittest_mha_core` 하네스가 batch 1만 지원한다 (`write_kv_cache`의 batch offset 미검증).
@@ -112,7 +121,8 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 
 - #4458 (머지됨) / #4459 (승인, READY2MERGE, GitHub 기준 MERGEABLE이라 rebase 불필요): Manager, NetworkGraph가 레이어 종류를 직접 판단하는 문제
 - #4449, #4450, #4463: 작은 정리 항목
-- #4452: device 테스트 하네스
+- #4452: device 테스트 하네스 (11-02에 `unittest_mha_core` device 모드로 착수, §12.3)
+- #4472: `hsumq_f16` 삭제 (이 작업 중 발견한 ARM `-Werror` 실패, 독립 PR)
 - #4453: CausalLM ↔ core 경계
 - #4454: singleton 상태
 - #4455: 큰 파일 분리 (`mha_core.cpp`는 #4451 이후)
@@ -179,7 +189,7 @@ qemu-aarch64 ./Applications/CausalLM/unittest_mha_core
 - `unittest_mha_core`를 `VJEPA_BQ=0`으로 실행해도 통과해야 한다 (#4462에서 테스트가 tile 환경변수를 직접 관리하게 바꿨다).
 - 커널이 어느 라이브러리에 있는지 확인: `nm -DC --defined-only build16/Applications/CausalLM/layers/libmha_core_layer.so | grep compute_kcaches`의 결과가 0이어야 한다.
 - 변이 테스트: 고친 부분을 일부러 되돌려서 해당 테스트가 실패하는지 확인한다. 예를 들어 cache 행을 +1 밀기, softcap을 제거하기, 홀수 `head_dim`을 convert-only 경로로 보내기.
-- CUDA: 툴킷이 없어서 `mha_core.cpp`만 `-DENABLE_CUDA=1`과 stub 헤더(`cuda_runtime.h` 등)로 `-fsyntax-only` 컴파일한다.
+- CUDA: 툴킷이 없어서 `mha_core.cpp`만 `-DENABLE_CUDA=1`과 stub 헤더(`cuda_runtime.h` 등)로 `-fsyntax-only` 컴파일한다. 11-02에 `nntrainer/cuda/cuda_compute_ops.cpp` 전체가 통과하는 stub 세트(`cuda.h`, `cuda_runtime.h`, `nvrtc.h`, `cublas_v2.h`)를 이 폴더의 `cuda_stubs/`에 두었다. 사용: `build16/compile_commands.json`에서 `cpu_attention.cpp`의 컴파일 명령을 가져와 `-o/-MD/-c`를 빼고 `-fsyntax-only -DENABLE_CUDA=1 -I <cuda_stubs> -I nntrainer/cuda nntrainer/cuda/cuda_compute_ops.cpp`를 붙인다.
 
 ### 9.1 Android 실기 (위 표와 다른 워크스테이션: qemu·aarch64 cross 툴체인 없음, Galaxy S26 Ultra 두 대 연결)
 
@@ -231,3 +241,37 @@ qemu-aarch64 ./Applications/CausalLM/unittest_mha_core
 - softcap 버그: https://github.com/nntrainer/nntrainer/issues/4461
 - 설계 요약: #4466 본문
 - `docs/backend_guide/ARCHITECTURE_REFACTOR.md` §4, §10 (각 PR에서 갱신)
+
+## 12. 11-02 저녁 작업 (6c-2, #4472, device 하네스)
+
+### 12.1 6c-2: host flash arm과 host arm 선택을 op로 (브랜치 `claude/nntrainer-refactoring-priority-80xzum-flash`, c27af69)
+
+- 커밋 한 개. `mha_core.cpp`에서 약 830줄이 빠진다 (`gemm_attention` 본문, `mha_hsgemm_avx2`, `vjepa_expq_f32`, fp16 커널 재선언, 두 host-path guard, `host_decode_prefers_per_row`).
+- `AttentionOpParams::flash` 추가 (= 레이어의 `use_gemm_attention`; "flash 계열 arm을 써도 된다", 어떤 arm을 쓸지는 백엔드가 정함).
+- `cpu_attention.cpp`: `FlashAttention` 구조체(필드 이름은 레이어 멤버 그대로, 본문은 그대로 이동, `vjepa_expq_f32` → `neon_mathfun`의 `exp_ps`), `flash_min_rows()`(= `min_prefill_thr`, NNTR_MIN_PREFILL/NNTR_MHA_GPU를 그대로 읽음), `decode_prefers_per_row()`. 선택 규칙: `p.flash && !sink && cache != FP32 && rows >= flash_min_rows() && !(rows == 1 && decode_prefers_per_row())`. ARM fp16 커널 호출은 `ENABLE_FP16` 가드 뒤로(ARM fp16=false libnntrainer도 빌드되므로); 그 밖의 경우(generic)는 K/V 타일을 fp32로 넓혀 fp32 sgemm — 예전 레이어의 `#else` 분기는 `uint16_t*`를 sgemm에 넘겨 컴파일이 안 되던 코드였다. Windows ARM64 CI(clang-cl, fp16 없음)가 이 generic 분기를 실제로 컴파일한다.
+- `cuda_compute_ops.cpp`: `attention` override = CUDA arm 그대로(p.flash, NNTR_CUDA_ATTN, FP16 q/o, int8 아님, dev_accessible) → 아니면 device-only 메모리 거부(레이어의 옛 메시지) + `drain_if_async()` → `CpuComputeOps::attention`. 레이어의 `MhaAttnTimerScope` 버킷은 CUDA arm에 더 이상 없음(진단용).
+- 레이어: OpenCL arm 블록은 그대로 두고(조건에서 `_cuda_attn_on`, `per_row_decode` 제거), 두 host tail을 하나로 합쳐 `attend()`(옛 `attend_rowwise`)를 호출. ring guard는 op가(메시지에 힌트 포함), host-readable guard는 CUDA op가 맡는다.
+- **동작 차이 두 가지(PR 본문에 적음):** ARM에서 device arm이 decode step을 거절하면 예전엔 host flash(M=1, 2.5~5배 느림)였고 지금은 per-row; CUDA arm의 ATTN_TIMER 버킷 삭제.
+- 테스트: `unittest_compute_ops_dispatch`에 `AttentionFlashArm`, `AttentionFlashArmFp16Query` 추가(40행, 8x8 타일, softcap/window/non-causal/chunk/decode/int8, sink·FP32 cache는 per-row로 떨어짐 확인). 기존 attention 케이스의 q 진폭을 0.3→2.0으로 키워 softcap/window를 빼면 허용 오차를 넘게 했다(처음엔 2e-3로 통과해 버려서 x86 1e-4 / ARM 2e-3로 나눔).
+- 검증: x86 fp16=true 27/27 + 33/33, fp16=false 23 통과/4 skip + 30/30, `VJEPA_BQ=0`도 통과. S26 dispatch 33/33, `unittest_mha_core` 15 통과/12 skip. 변이 4종(x86): softcap 삭제 → mha 5 + dispatch 2 실패; window 하한 삭제 → dispatch 2 실패; flash 출력 ×1.01 → mha gemm 13 + dispatch fp32 flash 실패; generic 분기를 x86에서 강제 → 모두 통과. NDK clang `-fsyntax-only` fp16/nofp16 통과(nofp16에서 `Qp_fp16` 미사용 경고 → `[[maybe_unused]]`). CUDA stub 문법 검사 통과.
+- 커버리지(봇이 6c-1에서 요구했던 것): x86 enable-fp16 `-Db_coverage=true`(`buildcov`, tflite 옵션 둘 다 false 필요) 빌드에서 두 테스트를 돌린 gcov(GCC 13) 기준 `cpu_attention.cpp` **94.65% (617줄)**. 미실행 33줄 중 flash 영역은 11줄: ARM 전용 FP16-Q 복사 경로(x86에선 컴파일만 됨, S26에서 실행됨), `NNTR_MIN_PREFILL` 환경변수 분기, 오류 메시지 3개.
+- PR 본문 초안은 세션 스크래치패드 `pr_6c2_body.md`(세션 종료 시 사라짐)와 같은 내용이 커밋 메시지에 있다. **PR은 #4469가 c584e44 위로 재배치된 뒤에 연다** (지금 열면 #4466/#4469 커밋이 PR 본체와 다른 SHA로 섞여 보인다).
+
+### 12.2 #4472 (`hsumq_f16` 삭제)
+
+upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하게 머지 가능.
+
+### 12.3 #4452 device 하네스: `unittest_mha_core`의 `NNTR_ENGINE=gpu` 모드 (브랜치 `claude/nntrainer-refactoring-priority-80xzum-devtest`, b0dfa2c)
+
+- 테스트 파일 하나만 바뀐다. `NNTR_ENGINE=gpu`이면(enable-opencl 빌드 + 장비) 입력 3개·출력·캐시 2개를 gpu context의 allocator 위 `TensorPool`(SVM)에서 받아 ContextData를 붙이고, 레이어가 latch하기 전에 `NNTR_MHA_GPU=1`, `NNTR_MHA_GPU_DECODE=1`을 테스트가 직접 세팅한다(이 모드에선 `kArmSelectingEnv` 검사와 ARM의 32행 gemm skip을 하지 않음). 모든 케이스 허용 오차 1e-2. 결과 읽기 전에 `cl_queue_finish()`. OpenCL 빌드가 아니거나 context가 없으면 skip. host 모드는 그대로.
+- **S26 첫 실행 (11-02):** host 모드 15 통과/12 skip(이전과 동일), **gpu 모드 26/27 통과, `no_rope_gemm` 1건 실패** (step [0,5) 원소 0: -0.801 vs 기대 0.603). `NNTR_MHA_ATTN_TIMER=1` 출력으로 device arm이 실제로 돌았음을 확인(decode 30회, prefill 17회). 이 형상(KV heads 2, head_dim 16, 512행)에서는 K/V image mirror 생성이 거부돼(`[IMG-ATTN] ... Image attention is OFF`) buffer(flash) arm이 돌았다. 즉 image arm(7b)은 아직 이 하네스로 못 본다 — 더 큰 head_dim/행 수 케이스가 필요.
+- **`no_rope_gemm` 실패의 의미:** `rope_theta=0`인 gemm 레이어의 device 경로. RoPE가 있으면 K는 device(`rope_inplace_f16_cl`)가 캐시에 쓰고, 없으면 host가 `write_kv_cache(..., rotate_key=false)`로 SVM 캐시에 쓴 뒤 device attention arm이 읽는다. 같은 설정의 host 경로(`no_rope_rowwise`, 그리고 host 모드의 모든 케이스)는 통과하므로 device 경로 쪽 문제다. 원인은 아직 확인하지 않았다(후보: host 쓰기 → device 읽기 사이의 SVM coherence, 또는 no-RoPE 케이스에서 GPU arm의 Q/K 전처리). 7a에서 KV write/attention이 `ClComputeOps`로 들어갈 때 "op가 coherence를 소유한다" 규칙으로 자연히 다뤄질 자리이며, 그 전에 별도 수정 PR로 잡을 수도 있다. upstream 이슈는 아직 안 올렸다.
+- 빌드/실행 절차(§9.1에 더해): `cd Applications/CausalLM && ANDROID_NDK=~/android-ndk-r30 ./build_android.sh -Denable-opencl=true` (엔진에 `-DENABLE_OPENCL`이 들어가고 `android_build_result/nntrainer-abi.ini`로 app 빌드에도 전달됨; 산출물에 `builddir/jni/arm64-v8a/libOpenCL.so` 로더 스텁 포함). `Applications/CausalLM/jni/googletest` 심볼릭 링크 필요. ndk-build는 §9.1과 같고, 기기에는 `libOpenCL.so`도 올린다. **`LD_LIBRARY_PATH`에 `/vendor/lib64`를 넣으면 안 된다** (`CANNOT LINK EXECUTABLE ... libandroidfw.so`로 죽는다; 스텁 로더가 vendor 라이브러리를 알아서 연다). 실행: `NNTR_ENGINE=gpu NNTR_MHA_ATTN_TIMER=1 LD_LIBRARY_PATH=<dir> ./unittest_mha_core`.
+- x86 non-OpenCL 빌드에서는 device 코드가 `#if defined(ENABLE_OPENCL)`로 빠지며 문법 검사 통과(build16 컴파일 플래그). CI의 `ubuntu_opencl_build`는 CausalLM을 빌드하지 않으므로 이 코드는 Android OpenCL 빌드에서만 컴파일된다.
+- PR은 6c-2 위에 있지만 코드상 6c-2에 의존하지 않는다(#4462의 테스트 파일에만 의존). #4469 재배치 뒤 6c-2와 함께, 또는 #4469 위로 옮겨 따로 올릴 수 있다.
+
+### 12.4 fork 브랜치 (11-02 저녁 추가)
+
+- `claude/cpu-backend-drop-unused-hsumq` (#4472, upstream main 기준)
+- `claude/nntrainer-refactoring-priority-80xzum-flash` (6c-2, c27af69; 아래에 #4466/#4469 재배치 커밋 포함)
+- `claude/nntrainer-refactoring-priority-80xzum-devtest` (device 하네스, b0dfa2c; 6c-2 위)

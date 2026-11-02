@@ -9,3 +9,4 @@ Working notes for the `mha_core.cpp` part of #4451 (umbrella #4456), written for
   - [PR_4465.md](PR_4465.md): softcap fix for the host flash and CUDA arms (#4461)
   - [PR_4466.md](PR_4466.md): `kv_cache_write` whole-op, plus the design of the remaining steps
   - [PR_4469.md](PR_4469.md): `attention` whole-op, host per-row arm (6c-1)
+- `cuda_stubs/`: CUDA 툴킷 없이 `nntrainer/cuda/*.cpp`를 `-fsyntax-only`로 검사할 때 쓰는 stub 헤더 (HANDOFF §9).
