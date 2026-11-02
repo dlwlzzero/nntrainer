@@ -10,6 +10,8 @@ package com.example.quickdotaiapp.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,10 +66,9 @@ fun QuickAiApp(vm: AppViewModel) {
     val controller = vm.controller
     val state by controller.state.collectAsStateWithLifecycle()
     QuickAiTheme(state.theme) {
-        if (!state.splashShown) {
-            Splash(onDone = controller::splashDone)
-        } else {
-            AppScaffold(state, vm)
+        // The splash cross-fades into the app instead of being swapped out.
+        Crossfade(targetState = state.splashShown, animationSpec = tween(350), label = "splash") { shown ->
+            if (shown) AppScaffold(state, vm) else Splash(onDone = controller::splashDone)
         }
     }
 }

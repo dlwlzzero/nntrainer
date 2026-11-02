@@ -16,6 +16,7 @@ import com.example.quickdotaiapp.ThemeMode
 
 /** The lightning bolt's own colour, identical in both schemes. */
 val SkyBolt = Color(0xFF38BDF8)
+val SkyStreak = Color(0xFF7DD3FC)
 
 private val LightScheme = lightColorScheme(
     primary = Color(0xFF006492), onPrimary = Color(0xFFFFFFFF),
