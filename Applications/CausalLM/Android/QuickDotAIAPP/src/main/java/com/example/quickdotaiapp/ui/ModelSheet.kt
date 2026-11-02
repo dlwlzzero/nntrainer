@@ -9,6 +9,8 @@ package com.example.quickdotaiapp.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -55,7 +57,7 @@ import com.example.quickdotaiapp.ThinkingChoice
 import com.example.quickdotaiapp.UiState
 import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ModelSheet(state: UiState, controller: ChatController, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -75,30 +77,26 @@ fun ModelSheet(state: UiState, controller: ChatController, onDismiss: () -> Unit
             Label("FAMILY")
             FamilyDropdown(state, controller)
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Label("RUNTIME")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        state.runtimesFor(state.selection.family).forEach { rt ->
-                            FilterChip(
-                                selected = rt == state.selection.runtime,
-                                onClick = { controller.selectRuntime(rt) },
-                                label = { Text(Examples.runtimeLabel(rt)) },
-                            )
-                        }
-                    }
+            // Each chip row takes the full width and wraps whole chips, so a label such as
+            // "LiteRT" never breaks inside its chip.
+            Label("RUNTIME")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.runtimesFor(state.selection.family).forEach { rt ->
+                    FilterChip(
+                        selected = rt == state.selection.runtime,
+                        onClick = { controller.selectRuntime(rt) },
+                        label = { Text(Examples.runtimeLabel(rt), maxLines = 1) },
+                    )
                 }
-                Column(Modifier.weight(1f)) {
-                    Label("BACKEND")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        state.backendsFor(state.selection.family, state.selection.runtime).forEach { be ->
-                            FilterChip(
-                                selected = be == state.selection.backend,
-                                onClick = { controller.selectBackend(be) },
-                                label = { Text(be.name) },
-                            )
-                        }
-                    }
+            }
+            Label("BACKEND")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.backendsFor(state.selection.family, state.selection.runtime).forEach { be ->
+                    FilterChip(
+                        selected = be == state.selection.backend,
+                        onClick = { controller.selectBackend(be) },
+                        label = { Text(be.name, maxLines = 1) },
+                    )
                 }
             }
 
