@@ -120,5 +120,7 @@ data class PowerUi(
     val savedPath: String? = null,
     /** Distinct current readings per second, measured once at the start of a session. */
     val gaugeHz: Double? = null,
+    /** The finished session, for Copy CSV. */
+    val log: PowerSessionLog? = null,
     val error: String? = null,
 )

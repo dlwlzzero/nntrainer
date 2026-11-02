@@ -185,10 +185,9 @@ class PowerRunner(
         sampling?.cancel()
         val runs = state.value.runs
         val m = meta
-        val path = if (runs.isNotEmpty() && m != null)
-            runCatching { onSessionDone(PowerSessionLog(m, state.value.settings, state.value.gaugeHz, runs)) }.getOrNull()
-        else null
-        _state.update { it.copy(phase = PowerPhase.DONE, savedPath = path) }
+        val log = if (runs.isNotEmpty() && m != null) PowerSessionLog(m, state.value.settings, state.value.gaugeHz, runs) else null
+        val path = log?.let { l -> runCatching { onSessionDone(l) }.getOrNull() }
+        _state.update { it.copy(phase = PowerPhase.DONE, savedPath = path, log = log) }
     }
 
     // ----- generation events (engine thread) ------------------------------------
