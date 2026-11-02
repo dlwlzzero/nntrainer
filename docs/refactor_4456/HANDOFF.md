@@ -90,7 +90,7 @@ myungjoo-bot이 e800656에 남긴 REQUEST_CHANGES는 b558643에서 모두 대응
 | 단계 | 내용 | 검증 | 선행 |
 |---|---|---|---|
 | 6c-2 | **구현 완료 (11-02, §12)**: host flash arm(`gemm_attention`)과 두 host arm 사이 선택(`min_prefill_thr`, `host_decode_prefers_per_row`)을 `CpuComputeOps::attention` 안으로. `gemm_attention` 안의 CUDA arm(`cuda_attention_interleaved_fp16`)은 `CudaComputeOps::attention` override로 분리 | x86, S26 (qemu 없음) | #4469 머지 후 PR |
-| 6d | CPU K-OHWI scatter와 int8 쓰기를 `kv_cache_write` 뒤로. `KVCacheView`에 layout과 element 타입 추가 | x86, S26 | Q4 = 유지(11-02 결정) → 시작 가능 |
+| 6d | **구현 완료 (11-02 밤, §12.5)**: CPU K-OHWI scatter와 int8 쓰기를 `kv_cache_write` 뒤로. `KVCacheView`에 layout과 int8 element 추가 | x86, S26 | 6c-2 위; #4469 머지 후 PR |
 | (테스트) | `unittest_mha_core`의 device 버전 (#4452) | 빌드만 | 7a 전에 필요 |
 | 7a | OpenCL concat 쓰기와 attention을 `ClComputeOps`로 | 빌드만, 장비 필요 | |
 | 7b | OpenCL image mirror와 `KVCacheState` | Adreno 필요 | Q2 |
@@ -285,3 +285,24 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - `claude/nntrainer-refactoring-priority-80xzum-flash` (6c-2, c27af69; 아래에 #4466/#4469 재배치 커밋 포함)
 - `claude/nntrainer-refactoring-priority-80xzum-devtest` (device 하네스, b0dfa2c; 6c-2 위)
 - `claude/mha-core-settle-planes-no-rope` (#4473, upstream main 기준)
+- `claude/nntrainer-refactoring-priority-80xzum-kvlayout` (6d, accc699; 6c-2 위)
+
+### 12.5 6d: K-OHWI와 int8 KV 쓰기를 `kv_cache_write` 뒤로 (브랜치 `claude/nntrainer-refactoring-priority-80xzum-kvlayout`, accc699, 6c-2 위)
+
+- 커밋 한 개. Q4(int8 유지) 결정에 따라 int8은 없애지 않고 op로 옮겼다.
+- `KVCacheView`: `layout`(`KVCacheLayout::Concat` / `KOhwi`, K plane의 레이아웃)과 int8 element(UINT8 plane + fp16 scale plane 포인터 `key_scale`/`value_scale`, 쓰기 위해 non-const로 변경) 추가.
+- `CpuComputeOps::kv_cache_write`: UINT8 plane이면 step을 fp16 bits로(K는 회전) 만든 뒤 (row, head)마다 amax/127 scale로 int8 양자화해 같은 행의 scale plane에 기록. `KOhwi` K plane이면 concat 순서의 fp16 step을 만든 뒤 head별 stride로 scatter. FP32 step도 fp16으로 바꿔 받으므로 이제 int8/OHWI 쓰기에 FP16 step이 필요 없다. scatter/gather/quantizer는 레이어에서 그대로 옮겨 `nntrainer/tensor/cpu_backend/kv_cache_layout.h`(내부 헤더, 미설치)에 두고 두 op가 공유.
+- `CpuComputeOps::attention`: `KOhwi` plane이면 arm 전에 [0, kv_len) 행을 concat으로 gather(레이어가 하던 대로).
+- 레이어: `kv_layout`을 finalize에서 한 번 고정(`NNTR_KV_OHWI` && !int8 && fp16 cache). 이전 write 조건은 "FP16 step"도 요구해 x86 FP32-activation 실행에선 concat으로 쓰고 read는 OHWI로 gather하는 불일치가 있었다(env 조합 버그, 이제 일치). 세 write 지점이 `write_kv_cache()`로 layout과(int8이면) scale plane을 넘긴다. int8 분기는 Q RoPE와 read용 scale 포인터 stash만 남김. **read 쪽 gather는 레이어에 남겼다**: OpenCL two_conv arm이 concat을 읽고 host 복사본(`svm_inputs=false`로 업로드)을 소비하기 때문에, 그 arm이 7a에서 op로 들어갈 때 같이 간다. op에는 gather된 Concat plane이 전달된다.
+- 동작 차이(env 경로만): int8 write가 `key_step`을 제자리 회전하지 않음(이후 아무도 안 읽음); `NNTR_KV_OHWI` + FP32 activation x86에서 write/read 레이아웃 일치.
+- 테스트: `unittest_mha_core`에 `internal_cache_rowwise`(3입력 모드), `int8_rowwise`, `int8_gemm_long_prefill`(FP16 activation, 허용 오차 2e-2: 레이어는 fp16 회전·참조는 fp32 회전이라 양자화 경계 근처 값이 한 step 어긋날 수 있음), `ohwi_rowwise`, `ohwi_no_rope_rowwise`, `ohwi_gemm_long_prefill`. 이 케이스들은 `NNTR_KV_INT8`/`NNTR_KV_OHWI`를 스스로 세팅(레이어가 finalize마다 읽으므로 가능; `kArmSelectingEnv` skip에서 제외). dispatch에 `KvCacheWriteScattersAKOhwiKeyPlane`, `AttentionReadsAKOhwiKeyPlane`(concat과 bit 동일), `KvCacheWriteQuantizesAnInt8Cache`(공식 정확 일치 + scale 없으면 거부), `AttentionReadsWhatKvCacheWriteQuantized`(fp16 빌드).
+- 검증: x86 fp16=true 33/33 + 37/37; fp16=false 24 통과/9 skip(fp16·int8·OHWI 케이스) + 33/33; S26 37/37 + 21 통과/12 skip(새 6개 모두 통과, int8 NEON 커널이 op가 쓴 캐시를 읽음). 변이 4종: scatter stride 틀림 → ohwi 레이어 3 + dispatch 2 실패; int8 K 미회전 → int8 레이어 2 + dispatch 1; scale amax/126 → dispatch 1(레이어는 2e-2 안); gather 높이 틀림 → dispatch 1. NDK clang 문법 검사 fp16/nofp16 통과. 커버리지(gcov): `kv_cache_layout.h` 100%, `cpu_attention.cpp` 94.59%, `cpu_ops_table.cpp` 전체 49.73%(다른 op 포함; `kv_cache_write` 안 미실행은 오류 메시지 2개, FP16 step의 copyData 분기, "whole heads" 검사).
+- PR 본문 초안은 커밋 메시지 + 위 검증 내용. **PR은 6c-2 PR 뒤에 연다**(6c-2 위에 쌓임).
+
+### 12.6 이 시점의 전체 그림 (11-02 밤)
+
+- 머지 대기: #4462 → #4464 → #4465(승인/CI 통과) → #4466 → #4469(재리뷰 대기, 다른 세션).
+- 로컬·fork에 준비됨(PR 전): 재배치본(c7bc1c5) → 6c-2(c27af69) → 6d(accc699); device 하네스(b0dfa2c, 6c-2 위).
+- 독립 PR: #4472(hsumq), #4473(no-RoPE settle). 둘 다 CI 통과/리뷰 대기.
+- 결정: Q1 core, Q2 shared_ptr<KVCacheState> in view, Q4 int8 유지, Q3/Q5 보류.
+- 다음 구현 후보: 7a(OpenCL concat write + attention을 `ClComputeOps`로; device 하네스로 검증, S26 있음), 7b(image mirror + `KVCacheState`, Q2 결정대로).
