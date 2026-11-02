@@ -32,7 +32,9 @@ class NativeQuickDotAI(
     override var architecture: String? = null
         private set
 
-    private var handle: Long = 0L
+    /** Serializes cancel() against the moment close() retires the handle. */
+    private val handleLock = Any()
+    @Volatile private var handle: Long = 0L
     private var loaded: Boolean = false
 
     // Image processor for multimodal inference
@@ -305,18 +307,17 @@ class NativeQuickDotAI(
     }
 
     override fun cancel() {
-        Log.d(TAG, "cancel(): START, handle=0x${handle.toString(16)}")
-        if (handle != 0L) {
-            Log.d(TAG, "cancel(): calling NativeCausalLm.cancelModelHandleNative(handle=0x${handle.toString(16)})")
-            val result = NativeCausalLm.cancelModelHandleNative(handle)
-            Log.d(TAG, "cancel(): cancelModelHandleNative returned $result")
-        } else {
-            Log.w(TAG, "cancel(): no valid handle to cancel")
+        // The UI thread cancels while the worker may be closing the model.
+        synchronized(handleLock) {
+            if (handle != 0L) {
+                NativeCausalLm.cancelModelHandleNative(handle)
+            }
         }
     }
 
     override fun chatCancel() {
-        activeSession?.cancel()
+        // The session reads the handle through handleProvider: same guard as cancel().
+        synchronized(handleLock) { activeSession?.cancel() }
     }
 
     override fun chatRebuild(
@@ -534,13 +535,16 @@ class NativeQuickDotAI(
     override fun close() {
         activeSession?.close()
         activeSession = null
-        if (handle != 0L) {
+        // Retire the handle under the lock, destroy outside it: a concurrent
+        // cancel() then sees 0 and returns instead of touching a model that is
+        // being deleted, and never waits out a multi-gigabyte teardown.
+        val h = synchronized(handleLock) { handle.also { handle = 0L } }
+        if (h != 0L) {
             try {
-                NativeCausalLm.destroyModelHandleNative(handle)
+                NativeCausalLm.destroyModelHandleNative(h)
             } catch (t: Throwable) {
                 Log.w(TAG, "destroyModelHandleNative threw", t)
             }
-            handle = 0L
         }
         loaded = false
     }
