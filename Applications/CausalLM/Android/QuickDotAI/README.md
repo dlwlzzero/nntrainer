@@ -121,7 +121,7 @@ Use `runModelHandleWithMessagesStreaming()` for OpenAI-style message lists and
 `runModelHandleWithJsonStreaming()` for full OpenAI JSON requests containing
 `tools` or legacy `functions`.
 
-End-to-end Chat tab and OpenAI tab examples live in
+End-to-end Chat and Raw request examples live in
 [`../../docs/ChatAndOpenAIUsage.md`](../../docs/ChatAndOpenAIUsage.md).
 
 ## 🖼️ Multimodal Usage

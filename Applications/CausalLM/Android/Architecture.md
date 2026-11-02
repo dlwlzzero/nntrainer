@@ -17,6 +17,13 @@ Android/
 `Android/settings.gradle.kts` includes only `:QuickDotAI` and
 `:QuickDotAIAPP`.
 
+`QuickDotAIAPP` is a Jetpack Compose app: `MainActivity` sets the content,
+`AppViewModel` owns the single engine executor and file reading, and
+`ChatController` (pure Kotlin, JVM-tested) holds all state in one
+`StateFlow<UiState>` and makes every engine call on that executor. Screens:
+Chat (transcript, composer, attach sheet), Raw (OpenAI JSON), Metrics; the
+model sheet opens from the top-bar chip.
+
 ## 🧱 QuickDotAI AAR
 
 `QuickDotAI` exposes the public Kotlin API in
@@ -87,7 +94,9 @@ merged in at the Kotlin layer.
 
 ### 3-axis cascading UI
 
-`QuickDotAIAPP` presents a 3-axis cascading UI:
+`QuickDotAIAPP`'s model sheet presents the same three axes as cascading
+controls (a family dropdown, then runtime chips, then backend chips); the
+`NATIVE` runtime is labelled `Quick.AI` in the UI:
 
 1. **Family** — populated from `ModelCatalog.selectableFamilies()`
 2. **Runtime chip row** — populated from `ModelCatalog.runtimesFor(selectedFamily)`
@@ -136,7 +145,9 @@ Apps that update UI must marshal callbacks to the main thread.
 
 `QuickDotAIAPP` is the current runnable Android sample. It links the
 `:QuickDotAI` module directly; it does not start a REST service and does not
-communicate over sockets.
+communicate over sockets. Its three destinations are Chat, Raw and Metrics;
+`ChatController` is covered by JVM unit tests under `src/test`, and there is
+no device test on this branch.
 
 ## 🗺️ Planned Service Layer
 
