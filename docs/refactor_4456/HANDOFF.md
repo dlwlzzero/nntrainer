@@ -335,3 +335,12 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **장비 메모**: 태그별 디렉터리를 쓰는 `run_devtest_on_device.sh`는 `/data/local/tmp/refactor4456_1102/libc++_shared.so`가 있어야 한다(R3CY70LV96T·R5KL30G6MCX 모두 넣어 둠). Android 엔진은 meson의 custom command(ndk-build)로 빌드되므로 `ninja -C builddir && meson install --no-rebuild --skip-subprojects`로 증분 재빌드, 로그의 컴파일 줄은 `Compile++`.
 - **다음 조각(7a-2)**: OpenCL concat 쓰기(`rope_inplace_f16_cl` K→cache slice, `gpu_copy_f16_cl` V)를 `ClComputeOps::kv_cache_write`로; 스테이징(q_cl/k_stage/undrained 평면) 소유권은 7b의 `KVCacheState`와 함께.
 
+### 12.10 2026-11-04: 7a 2차 조각 (OpenCL RoPE·concat KV 쓰기) → #4479 둘째 커밋 fcb4cf5
+
+- **옮긴 것**: `ClComputeOps::rotary_embedding`(FP16 SVM 활성값 in-place `rope_inplace_f16_cl`, drain)과 `ClComputeOps::kv_cache_write`(K를 `rope_inplace_f16_cl`로 cache 행에 직접 회전, V를 `gpu_copy_f16_cl`, 둘 다 drain; no-RoPE·OHWI·int8 쓰기는 host 유지). 게이트: NNTR_MHA_GPU, NNTR_NO_GPU_ROPE 아님, NNTR_MIN_PREFILL 행 또는 NNTR_MHA_GPU_DECODE 단일행, FP16 SVM, 표의 fp16 행이 위치를 덮음. op가 받는 `RotaryTable.cos_fp16/sin_fp16`은 레이어의 flat LUT와 같은 포인터라 커널의 상주 LUT 캐시(포인터 키)가 그대로 맞는다. 레이어: concat-RoPE device 블록 게이트에 `!plain_svm`(image arm·staging·cl_mem 핸들이 없으면 op로) 추가. **함정**: `NNTR_MHA_CLMEM`은 기본 ON이라 plain 조건에 넣으면 안 됨(스테이징·image에서만 의미).
+- **중요한 사실**: Adreno에서는 gpu 컨텍스트가 `NNTR_KV_IMG_ATTN=1`을 기본으로 켠다(`nntrainer/cl_context.cpp:232`) → `imageAttnLayer()`가 kFast arm에서 모든 레이어에 true → gemm 레이어는 레이어의 **image 변형** RoPE 블록(7b 대상)을 그대로 탄다. 하네스에서 첫 케이스만 img=0인 것도 이 때문(컨텍스트 등록 전 finalize). plain 경로는 per-row 레이어, 또는 `NNTR_KV_IMG_ATTN=0`/image arm 없는 장비.
+- **검증(R3CY70LV96T)**: image arm 기본(on): host 21/12skip, gpu 32/33(기존 OHWI 건). image arm off(`NNTR_KV_IMG_ATTN=0`): **33/33**(OHWI 건도 통과 → 그 실패는 image arm 문제, 7b). 추적(off): RoPE arm 63/63 step, 쓰기 arm 54/54 — RoPE 있는 FP16·스테이징 케이스 전부; int8·OHWI 쓰기는 host로 거절. 변이(K 비회전 쓰기, off): 그 15케이스 전부 실패, 나머지 18 통과. image arm on에서는 FP16 per-row 2케이스만 새 arm(8/8).
+- **사고 2건과 교훈**: ① 추적 사이클의 `git checkout -- file`이 미커밋 op 코드를 지움 → 사이클 전에 반드시 커밋. ② `git cherry-pick -q`는 없는 옵션(usage 출력, 아무 일 안 함) → 그 사이 PR 본문·답글이 먼저 올라갔다가 바로 정정. push 뒤에는 항상 live head를 확인할 것.
+- **브랜치**: `wt/7a-verify`(=7a 두 조각 + 하네스 + #4473 수정, 9c61d4d), `wt/7a-cl-attention`(PR, fcb4cf5). 폰 실행 스크립트는 tag 디렉터리마다 새로 만드니 `/data/local/tmp/refactor4456_1102/libc++_shared.so` 필요(두 폰에 있음).
+- **다음 7b**: image arm(OHWI mirror, kvimg_view attention, staged Q/K, undrained 평면 bookkeeping)과 `KVCacheState`(Q2). 6d OHWI 케이스의 device 모드 실패도 거기서.
+
