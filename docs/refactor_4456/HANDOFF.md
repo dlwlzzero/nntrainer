@@ -15,9 +15,9 @@
 
 | PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 |
 |---|---|---|---|---|---|
-| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | 43ebf10 | main | 승인 4, READY2MERGE. 11-02에 커밋 2개 추가(Android 허용 오차, Android.mk 모듈) → CI·봇 재리뷰 대기 |
-| #4464 | `rotary_embedding` op | `...-80xzum-rope` | 564a6ec | #4462 (43ebf10) | 승인 2, READY2MERGE. 11-02 43ebf10 위로 rebase, force-push → CI·재리뷰 대기 |
-| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | c584e44 | **#4464** (564a6ec) | 승인 2, READY2MERGE. 11-02 #4464 위로 옮기고 커밋 1개 추가, force-push → CI·재리뷰 대기 |
+| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4, READY2MERGE. 11-02에 커밋 2개 추가(Android 허용 오차, Android.mk 모듈) → CI·봇 재리뷰 대기 11-03: 7번째 커밋 d987f6a(run_unittest_android.sh·TESTING.md 연결) 추가, fast-forward push. |
+| #4464 | `rotary_embedding` op | `...-80xzum-rope` | e9326dd | #4462 (43ebf10) | 승인 2, READY2MERGE. 11-02 43ebf10 위로 rebase, force-push → CI·재리뷰 대기 11-03: d987f6a 위로 재배치(내용 변화 없음), force-push. |
+| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | b0645a8 | **#4464** (564a6ec) | 승인 2, READY2MERGE. 11-02 #4464 위로 옮기고 커밋 1개 추가, force-push → CI·재리뷰 대기 11-03: e9326dd 위로 재배치 + 3번째 커밋 메시지 정정(봇 NIT 1), force-push. |
 | #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | b3d57b4 | #4464 | 승인 1, 봇 COMMENT |
 | #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | b558643 | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 |
 
@@ -306,3 +306,11 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - 독립 PR: #4472(hsumq), #4473(no-RoPE settle). 둘 다 CI 통과/리뷰 대기.
 - 결정: Q1 core, Q2 shared_ptr<KVCacheState> in view, Q4 int8 유지, Q3/Q5 보류.
 - 다음 구현 후보: 7a(OpenCL concat write + attention을 `ClComputeOps`로; device 하네스로 검증, S26 있음), 7b(image mirror + `KVCacheState`, Q2 결정대로).
+
+### 12.7 2026-11-03: 리뷰 대응 3건 (사용자 지시 "1.2.3 모두 진행")
+
+- **#4462 (A안)**: 봇 Should fix 대응 커밋 d987f6a — `run_unittest_android.sh`가 `unittest_mha_core`를 같은 ndk-build로 빌드·push·실행하고 `--filter`를 두 바이너리에 전달, 둘 중 하나라도 실패하면 exit≠0(종전엔 `set -e` 때문에 첫 바이너리 실패 시 요약 줄 전에 종료). `TESTING.md` 동반 수정. CI(`causallm_android.yml`)는 테스트 바이너리를 하나도 안 만들므로 별건으로 남김. 스크립트를 처음으로 끝까지 돌린 결과(S26, NDK r30, 엔진 재빌드): `unittest_mha_core` 10 pass/9 skip; `unittest_causallm_models` 104/109 — `*_Q40_FP16 PromptProducesExpectedLogits` 4개(logit 0 vs fixture)와 `Gemma4DifferentialTest.QINT4CloseToFP32Reference`(nntr_quantize가 QINT4 저장 거부 "This dtype is not supported in save with quantization") 실패. 이 PR은 production 소스를 안 건드리므로 PR과 무관한 기존 문제(Android 빌드 또는 fixture 문제인지는 미조사). fixture는 tarball과 동일함을 확인. 로그: scratchpad `run_unittest_android-4462.log`.
+- **#4464/#4465 재배치**: `wt/4464-on-4462` → e9326dd, `wt/4465-on-4464` → b0645a8 (모두 `~/nntrainer-4456-stack`). 옛 head 대비 diff는 d987f6a의 두 파일뿐. #4465 3번째 커밋 메시지 정정: "the path runs wherever enable-fp16 is on" → 케이스는 모든 enable-fp16 빌드에서 돌지만 FP16 score 경로는 `#if !x86 && __ARM_NEON` 아래라 x86 CI는 FP32 score 경로를 탐. S26 변이 근거(11-02 15:46 KST, 트리 c584e44, `if (softcap > 0.0f)`→`if (false)`: long_prefill 두 케이스만 0.0108/0.0375로 실패)를 답글로 게시.
+- **#4473 재구성**: 하네스(devtest 브랜치, 6c-2 기반)를 #4462 head로 포팅(충돌 2곳: ARM skip 블록, tolerance 블록) + device 모드에서는 `c.softcap_applied = true`(OpenCL arm은 softcap을 적용하므로 `softcap_gemm_not_applied`가 device에서 0.0105로 실패하던 것을 reference 쪽에서 반영). 커밋 c647890(하네스) + 1202418(수정, f83bb92 cherry-pick). S26 OpenCL 빌드: host 10/9skip(수정 전후 동일); gpu 수정 전 18/19(`no_rope_gemm` 1.40 at step [0,5) element 0), 수정 후 19/19. x86 fp16=false: 19/19, `NNTR_ENGINE=gpu`는 19 skip. 브랜치 `claude/mha-core-settle-planes-no-rope` force-push, 워크트리 `~/nntrainer-4456-devtest`(`wt/4473-on-4462`, OpenCL builddir)와 `~/nntrainer-norope`(같은 커밋). 옛 `wt/device-harness`(6c-2 기반, b0dfa2c)와 fork 브랜치 `...-80xzum-devtest`는 이제 불필요.
+- **후속 영향**: 하네스가 `unittest_mha_core.cpp`의 두 블록을 바꾸므로 #4464/#4465/#4466/#4469/6c-2/6d 중 #4473 뒤에 머지되는 쪽은 그 파일에서 작은 rebase 충돌을 겪는다(rerere에 해결 기록 없음 — 포팅 때 수동 해결). #4469는 다른 세션 소유.
+- **push 교훈**: `--force-with-lease=<ref>:<sha>`의 `<ref>`는 원격 브랜치 이름(`claude/...`)이어야 한다. `refs/remotes/origin/...`을 쓰면 lease가 적용되지 않아 일반 push로 처리되어 non-fast-forward 거부가 난다(11-03 한 번 발생, 재push로 해결; 그 사이 올라간 답글·본문은 결과적으로 사실과 일치).
