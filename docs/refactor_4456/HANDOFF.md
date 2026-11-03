@@ -18,8 +18,8 @@
 | #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4, READY2MERGE. 11-02에 커밋 2개 추가(Android 허용 오차, Android.mk 모듈) → CI·봇 재리뷰 대기 11-03: 7번째 커밋 d987f6a(run_unittest_android.sh·TESTING.md 연결) 추가, fast-forward push. |
 | #4464 | `rotary_embedding` op | `...-80xzum-rope` | e9326dd | #4462 (43ebf10) | 승인 2, READY2MERGE. 11-02 43ebf10 위로 rebase, force-push → CI·재리뷰 대기 11-03: d987f6a 위로 재배치(내용 변화 없음), force-push. |
 | #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | b0645a8 | **#4464** (564a6ec) | 승인 2, READY2MERGE. 11-02 #4464 위로 옮기고 커밋 1개 추가, force-push → CI·재리뷰 대기 11-03: e9326dd 위로 재배치 + 3번째 커밋 메시지 정정(봇 NIT 1), force-push. |
-| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | b3d57b4 | #4464 | 승인 1, 봇 COMMENT |
-| #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | b558643 | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 |
+| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 38c94a8 | #4464 | 승인 1, 봇 COMMENT 11-03: #4465(b0645a8) 위로 재배치, 제목 [Wait for #4465]. |
+| #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | 9f5578b | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 11-03: #4466(38c94a8) 위로 재배치 + 봇 Minor 2개(sink 검사, 거부 테스트) 둘째 커밋에 병합. 이 세션이 처리함. |
 
 머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469이다 (11-02부터 #4465가 #4464 위에 있다; #4466, #4469는 아직 #4464의 옛 head 3c06690 위에 있어서 #4464 머지 때 rebase한다).
 
@@ -314,3 +314,13 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **#4473 재구성**: 하네스(devtest 브랜치, 6c-2 기반)를 #4462 head로 포팅(충돌 2곳: ARM skip 블록, tolerance 블록) + device 모드에서는 `c.softcap_applied = true`(OpenCL arm은 softcap을 적용하므로 `softcap_gemm_not_applied`가 device에서 0.0105로 실패하던 것을 reference 쪽에서 반영). 커밋 c647890(하네스) + 1202418(수정, f83bb92 cherry-pick). S26 OpenCL 빌드: host 10/9skip(수정 전후 동일); gpu 수정 전 18/19(`no_rope_gemm` 1.40 at step [0,5) element 0), 수정 후 19/19. x86 fp16=false: 19/19, `NNTR_ENGINE=gpu`는 19 skip. 브랜치 `claude/mha-core-settle-planes-no-rope` force-push, 워크트리 `~/nntrainer-4456-devtest`(`wt/4473-on-4462`, OpenCL builddir)와 `~/nntrainer-norope`(같은 커밋). 옛 `wt/device-harness`(6c-2 기반, b0dfa2c)와 fork 브랜치 `...-80xzum-devtest`는 이제 불필요.
 - **후속 영향**: 하네스가 `unittest_mha_core.cpp`의 두 블록을 바꾸므로 #4464/#4465/#4466/#4469/6c-2/6d 중 #4473 뒤에 머지되는 쪽은 그 파일에서 작은 rebase 충돌을 겪는다(rerere에 해결 기록 없음 — 포팅 때 수동 해결). #4469는 다른 세션 소유.
 - **push 교훈**: `--force-with-lease=<ref>:<sha>`의 `<ref>`는 원격 브랜치 이름(`claude/...`)이어야 한다. `refs/remotes/origin/...`을 쓰면 lease가 적용되지 않아 일반 push로 처리되어 non-fast-forward 거부가 난다(11-03 한 번 발생, 재push로 해결; 그 사이 올라간 답글·본문은 결과적으로 사실과 일치).
+
+### 12.8 2026-11-03 오후: 이슈 1·2·3·6 처리 (사용자 지시 "1,2,3,6 이슈 해결해")
+
+- **1 재배치**: 체인 전체를 #4465 새 head(b0645a8) 위로: #4466 38c94a8 → #4469 9f5578b → 6c-2 66bd5b5 → 6d 9c2406b. 옛 체인 대비 내용 차이는 #4462의 wiring 두 파일과 #4469 수정뿐. push: `...-kvwrite`(#4466), `...-attn`(#4469), `...-flash`(6c-2), `...-kvlayout`(6d). 로컬 브랜치 `wt/4466-on-4465`=#4469 head(이름과 달리 #4469까지 포함), `wt/6c2-flash`, `wt/6d-kvwrite`(`~/nntrainer-4456-stack65`). x86 fp16: #4469 시점 dispatch 31/31 + mha 27/27, 6d 시점 37/37 + 33/33. 6c-2를 다시 올릴 때 `compute_ops.h` 문서와 dispatch 테스트 주석 위치에서 충돌 2곳(rerere 기록됨).
+- **2 #4469 봇 Minor**: `CpuComputeOps::attention`이 sink의 size≠num_heads_q 또는 dtype≠q를 거부; `AttentionRejectsShortCacheAndBadDtypes`에 short-K, sink 크기·dtype, (ENABLE_FP16) FP16 q over FP32 planes 추가; 커밋 메시지 정정; Co-Authored-By에 이 세션 추가. PR 본문·답글 게시.
+- **3 폰 실패 5건 → upstream 이슈 2개**:
+  - **#4475 QINT4**: `Layer::save`에 QINT4 분기가 없어 `nntr_quantize --fc_dtype QINT4`가 모든 tiny fixture에서 실패(x86 호스트 재현, gdb bt: Layer::save ← LayerNode::save ← NeuralNetwork::save ← Transformer::save_weight). x86 테스트는 그 전에 skip.
+  - **#4476 Q40_FP16**: Android fp16 빌드에서 로짓 전부 0. 폰 프로브(`$S/probe/probe_q4_0_fp16.cpp`, libnntrainer 링크)로 `gemm_q4_0<_FP16>`는 정상 확인(fp32 arm과 동일 오차, 0 없음). x86 fp16은 meson 게이트를 풀어 빌드해도 `NYI : __fallback_gemm_q4_0`로 실행 불가 → 이 경로는 CI 어디서도 안 돎. 원인 미확정(embedding Q4_0→FP16, FP16 RMSNorm/residual, tied lm_head 모두 코드상 이상 없음). 호스트 `~/nntrainer-4456-base/build16x`는 게이트를 임시로 푼 fp16 빌드(소스는 되돌림).
+- **6 정리**: fork `...-80xzum-devtest` 삭제; worktree attn/attn-nofp16/softcap/hsumq/norope 삭제; 로컬 브랜치 wt/device-harness, wt/4462-android-tol, wt/4465-on-4462 삭제; 폰 `/data/local/tmp/refactor4456_1102` 삭제(`nntr_causallm_test`는 스크립트용으로 유지).
+- **다음**: 6c-2·6d PR 열기(#4469 재배치 끝났으므로 가능; 본문 초안 `pr_6c2_body.md`, `pr_6d_body.md`는 base 갱신 필요), #4473 하네스와의 충돌은 머지 순서에 따라 처리.
