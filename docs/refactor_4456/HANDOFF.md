@@ -18,11 +18,11 @@
 | #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4(봇 11-03 APPROVED), READY2MERGE. NIT만 남음. |
 | #4464 | `rotary_embedding` op | `...-80xzum-rope` | de17c3c | main | 승인 3, READY2MERGE. 11-05 #4462 머지 뒤 main 위로 rebase(내용 동일). |
 | #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | df8f16c | #4464 (11-05 재배치) | 승인 2, READY2MERGE. **봇 11-03 NIT 1(TESTING.md 문장) 미답.** |
-| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 38c94a8 | #4465 | 승인 1. 봇 11-03 COMMENT(결함 없음, batch>1 NIT). |
-| #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | 9f5578b | #4466 | 봇 11-03 APPROVED. 사람 승인 없음. |
-| #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | 66bd5b5 | #4469 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
-| #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | 9c2406b | #4477 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
-| #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | fcb4cf5 | #4478 | **봇 11-03 REQUEST_CHANGES, Blocking 2 미답.** |
+| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | e24b2a1 | #4465 (11-05 재배치) | 승인 1. 봇 11-03 COMMENT(결함 없음, batch>1 NIT). |
+| #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | d3fa318 | #4466 (11-05 재배치) | 봇 11-03 APPROVED. 사람 승인 없음. |
+| #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | f3fc9f4 | #4469 (11-05 재배치) | **봇 11-03 COMMENT, Should-fix 2 미답.** |
+| #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | c3a42c7 | #4477 (11-05 재배치) | **봇 11-03 COMMENT, Should-fix 2 미답.** |
+| #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | 81bb05d | #4478 (11-05 재배치) | **봇 11-03 REQUEST_CHANGES, Blocking 2 미답.** |
 | #4473 | no-RoPE settle 수정 + device 하네스 | `claude/mha-core-settle-planes-no-rope` | 1202418 | #4462 | **봇 11-03 COMMENT, Should fix 3 미답.** |
 | #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | f4e146f | main | 승인 2, READY2MERGE. 11-05 main 위로 rebase. |
 | #4459 | 순환 셀 출력 lifespan (#4456 다른 항목) | `refactor/graph-output-lifespan` | 33c2da7 | main | 승인 3, READY2MERGE. 봇 NIT 4 미답(non-blocking). |
@@ -360,3 +360,5 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **진척 지표** (`mha_core.cpp`, main e0bc83769 → #4479 head fcb4cf5): 6216 → 4237줄; `ENABLE_OPENCL` `#if` 27 → 25; `ENABLE_CUDA` `#if` 11 → 8; 아키텍처 `#if` 24 → 5(남은 것: x86 기본값 하나, `ENABLE_FP16 && __ANDROID__` FP32→FP16 축소 네 곳); `getenv`/`nntr_env_on` 53 → 50.
 - **남은 단계**: 7b(image arm: OHWI mirror, kvimg attention, staged Q/K, undrained 평면 + `KVCacheState`, Q2 결정대로; 6d OHWI device 실패도 여기), 8(CUDA 쓰기·attention → `CudaComputeOps`, CUDA 장비 필요), 9(레이어의 남은 `#if`와 device 멤버 정리), 10(arm 선택 env → DeviceCaps/ExecPlan), 그 뒤 `incremental_forwarding` 제거. §6의 미처리 항목(`ScopedEnv` 공유 헤더, ARM `copy_fp32_u16`, non-causal + window, batch > 1, fallback NYI, Android FP32→FP16 축소)도 그대로 남아 있다. Q3/Q5는 보류.
 - **로컬 상태**: `~/nntrainer-4456-*` 워크트리는 11-04에 모두 삭제(이 문서 작업용 `~/nntrainer-4456-docs`만 11-05에 다시 만듦). 브랜치는 남아 있음: `wt/4462-wiring`, `wt/7a-verify`, `wt/7a-verify-stack65`, `wt/docs-update`, `wt/4465-on-4464`.
+- **11-05 오후: #4462·#4459 머지(main 640ac6e0e).** 사용자 지시로 재배치·force-push: #4464 de17c3c(main 위, 제목의 Wait 제거), #4465 df8f16c, #4472 f4e146f, 그리고 체인 #4466 e24b2a1 → #4469 d3fa318 → #4477 f3fc9f4 → #4478 c3a42c7 → #4479 81bb05d(`git rebase --onto df8f16c b0645a8`로 8커밋 한 번에). 모두 충돌 없음, `range-diff` 전부 `=`. x86 fp16: #4464 22/22+23/23, #4465 26/26+23/23, #4466 27/27+27/27, #4469 27/27+31/31, #4479 33/33+37/37. 본문 Dependency 갱신·코멘트 게시. 로컬 브랜치 `wt/4464-on-main`, `wt/4465-on-main`, `wt/4472-on-main`, `wt/chain-on-main`. **#4473은 아직 #4462 옛 head d987f6a 위**라 main 위로 옮겨야 한다(머지된 #4462 커밋 7개가 PR에 섞여 보임).
+- 새 워크트리 함정: `Applications/CausalLM/xgrammar` 안에서도 `git submodule update --init`을 해야 meson setup이 통과한다(dlpack).
