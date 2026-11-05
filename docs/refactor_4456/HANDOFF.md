@@ -1,4 +1,4 @@
-# #4456 / #4451 리팩토링 handoff (2026-11-02 기준, 같은 날 Android 실기 결과 반영)
+# #4456 / #4451 리팩토링 handoff (2026-11-02 작성, 2026-11-05 상태 갱신)
 
 이 문서는 `Applications/CausalLM/layers/mha_core.cpp`의 백엔드 분기를 `ComputeOps` whole-op 뒤로 옮기는 작업(#4451, umbrella #4456)을 이어받는 사람을 위한 문서다. 현재 열린 PR, 머지 후 할 일, 남은 단계, 작업 규칙과 로컬 검증 방법을 정리한다. PR별 상세 내용은 같은 폴더의 `PR_<번호>.md`에 있다.
 
@@ -13,23 +13,23 @@
 
 모든 PR의 head 브랜치는 fork `dlwlzzero/nntrainer`에 있고, base는 `nntrainer/nntrainer:main`이다. 저장소는 **rebase-merge만 허용**하므로 PR에 merge 커밋이 있으면 머지할 수 없다. 각 PR은 아래 표의 "쌓인 위치" 위에 일렬로 쌓여 있다.
 
-| PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 |
+| PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 (2026-11-05) |
 |---|---|---|---|---|---|
-| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4, READY2MERGE. 11-02에 커밋 2개 추가(Android 허용 오차, Android.mk 모듈) → CI·봇 재리뷰 대기 11-03: 7번째 커밋 d987f6a(run_unittest_android.sh·TESTING.md 연결) 추가, fast-forward push. |
-| #4464 | `rotary_embedding` op | `...-80xzum-rope` | e9326dd | #4462 (43ebf10) | 승인 2, READY2MERGE. 11-02 43ebf10 위로 rebase, force-push → CI·재리뷰 대기 11-03: d987f6a 위로 재배치(내용 변화 없음), force-push. |
-| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | b0645a8 | **#4464** (564a6ec) | 승인 2, READY2MERGE. 11-02 #4464 위로 옮기고 커밋 1개 추가, force-push → CI·재리뷰 대기 11-03: e9326dd 위로 재배치 + 3번째 커밋 메시지 정정(봇 NIT 1), force-push. |
-| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 38c94a8 | #4464 | 승인 1, 봇 COMMENT 11-03: #4465(b0645a8) 위로 재배치, 제목 [Wait for #4465]. |
-| #4469 | `attention` op, per-row arm 이동 (6c-1) | `...-80xzum-attn` | 9f5578b | #4466 | 봇 리뷰 대응 완료, 재리뷰 대기 11-03: #4466(38c94a8) 위로 재배치 + 봇 Minor 2개(sink 검사, 거부 테스트) 둘째 커밋에 병합. 이 세션이 처리함. |
+| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4(봇 11-03 APPROVED), READY2MERGE. NIT만 남음. |
+| #4464 | `rotary_embedding` op | `...-80xzum-rope` | e9326dd | #4462 | 승인 3(봇 11-03 APPROVED), READY2MERGE. |
+| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | b0645a8 | #4464 | 승인 2, READY2MERGE. **봇 11-03 NIT 1(TESTING.md 문장) 미답.** |
+| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 38c94a8 | #4465 | 승인 1. 봇 11-03 COMMENT(결함 없음, batch>1 NIT). |
+| #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | 9f5578b | #4466 | 봇 11-03 APPROVED. 사람 승인 없음. |
+| #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | 66bd5b5 | #4469 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
+| #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | 9c2406b | #4477 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
+| #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | fcb4cf5 | #4478 | **봇 11-03 REQUEST_CHANGES, Blocking 2 미답.** |
+| #4473 | no-RoPE settle 수정 + device 하네스 | `claude/mha-core-settle-planes-no-rope` | 1202418 | #4462 | **봇 11-03 COMMENT, Should fix 3 미답.** |
+| #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | bb7af34 | main | 승인 2, READY2MERGE. |
+| #4459 | 순환 셀 출력 lifespan (#4456 다른 항목) | `refactor/graph-output-lifespan` | 33c2da7 | main | 승인 3, READY2MERGE. 봇 NIT 4 미답(non-blocking). |
 
-머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469이다 (11-02부터 #4465가 #4464 위에 있다; #4466, #4469는 아직 #4464의 옛 head 3c06690 위에 있어서 #4464 머지 때 rebase한다).
+머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469 → #4477 → #4478 → #4479이다. #4473은 #4462 뒤 아무 때나, #4472·#4459는 독립. 미답 리뷰의 내용은 각 `PR_<번호>.md`의 "남은 항목"과 §12.11에 있다. #4480(HTP/QuickDotAI, draft)은 이 리팩토링과 별개 트랙이지만 같은 사용자의 열린 PR이라 `PR_4480.md`로 기록만 해 둔다.
 
-11-02 저녁에 그 다음 단계를 로컬에서 먼저 쌓았다 (fork에 push, PR은 아직). 자세한 내용은 §12.
-
-| 브랜치 (fork) | head | 내용 | 쌓인 위치 |
-|---|---|---|---|
-| (로컬 `wt/4466-on-4465`, 워크트리 `~/nntrainer-4456-stack65`) | c7bc1c5 | #4466 두 커밋 + #4469 두 커밋을 c584e44 위로 cherry-pick (충돌 없음) | #4465 (c584e44) |
-| `claude/nntrainer-refactoring-priority-80xzum-flash` | c27af69 | 6c-2: host flash arm + host arm 선택 → `CpuComputeOps::attention`, CUDA arm → `CudaComputeOps::attention` | 위 재배치본 |
-| `claude/nntrainer-refactoring-priority-80xzum-devtest` | b0dfa2c | `unittest_mha_core`의 device 모드 `NNTR_ENGINE=gpu` (#4452, 7a 준비; 워크트리 `~/nntrainer-4456-devtest`) | 6c-2 |
+아래 §2~§12.10의 날짜별 내용은 그 시점의 기록이다. 최신 상태는 이 표와 §12.11을 본다.
 
 ## 3. 머지가 진행될 때 할 일
 
@@ -335,7 +335,7 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **장비 메모**: 태그별 디렉터리를 쓰는 `run_devtest_on_device.sh`는 `/data/local/tmp/refactor4456_1102/libc++_shared.so`가 있어야 한다(R3CY70LV96T·R5KL30G6MCX 모두 넣어 둠). Android 엔진은 meson의 custom command(ndk-build)로 빌드되므로 `ninja -C builddir && meson install --no-rebuild --skip-subprojects`로 증분 재빌드, 로그의 컴파일 줄은 `Compile++`.
 - **다음 조각(7a-2)**: OpenCL concat 쓰기(`rope_inplace_f16_cl` K→cache slice, `gpu_copy_f16_cl` V)를 `ClComputeOps::kv_cache_write`로; 스테이징(q_cl/k_stage/undrained 평면) 소유권은 7b의 `KVCacheState`와 함께.
 
-### 12.10 2026-11-04: 7a 2차 조각 (OpenCL RoPE·concat KV 쓰기) → #4479 둘째 커밋 fcb4cf5
+### 12.10 2026-11-03 오후: 7a 2차 조각 (OpenCL RoPE·concat KV 쓰기) → #4479 둘째 커밋 fcb4cf5
 
 - **옮긴 것**: `ClComputeOps::rotary_embedding`(FP16 SVM 활성값 in-place `rope_inplace_f16_cl`, drain)과 `ClComputeOps::kv_cache_write`(K를 `rope_inplace_f16_cl`로 cache 행에 직접 회전, V를 `gpu_copy_f16_cl`, 둘 다 drain; no-RoPE·OHWI·int8 쓰기는 host 유지). 게이트: NNTR_MHA_GPU, NNTR_NO_GPU_ROPE 아님, NNTR_MIN_PREFILL 행 또는 NNTR_MHA_GPU_DECODE 단일행, FP16 SVM, 표의 fp16 행이 위치를 덮음. op가 받는 `RotaryTable.cos_fp16/sin_fp16`은 레이어의 flat LUT와 같은 포인터라 커널의 상주 LUT 캐시(포인터 키)가 그대로 맞는다. 레이어: concat-RoPE device 블록 게이트에 `!plain_svm`(image arm·staging·cl_mem 핸들이 없으면 op로) 추가. **함정**: `NNTR_MHA_CLMEM`은 기본 ON이라 plain 조건에 넣으면 안 됨(스테이징·image에서만 의미).
 - **중요한 사실**: Adreno에서는 gpu 컨텍스트가 `NNTR_KV_IMG_ATTN=1`을 기본으로 켠다(`nntrainer/cl_context.cpp:232`) → `imageAttnLayer()`가 kFast arm에서 모든 레이어에 true → gemm 레이어는 레이어의 **image 변형** RoPE 블록(7b 대상)을 그대로 탄다. 하네스에서 첫 케이스만 img=0인 것도 이 때문(컨텍스트 등록 전 finalize). plain 경로는 per-row 레이어, 또는 `NNTR_KV_IMG_ATTN=0`/image arm 없는 장비.
@@ -344,3 +344,19 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **브랜치**: `wt/7a-verify`(=7a 두 조각 + 하네스 + #4473 수정, 9c61d4d), `wt/7a-cl-attention`(PR, fcb4cf5). 폰 실행 스크립트는 tag 디렉터리마다 새로 만드니 `/data/local/tmp/refactor4456_1102/libc++_shared.so` 필요(두 폰에 있음).
 - **다음 7b**: image arm(OHWI mirror, kvimg_view attention, staged Q/K, undrained 평면 bookkeeping)과 `KVCacheState`(Q2). 6d OHWI 케이스의 device 모드 실패도 거기서.
 
+
+### 12.11 2026-11-05: 상태 점검 (리뷰·문서·남은 일)
+
+- **머지된 것 없음.** upstream main은 아직 e0bc83769이고, 12개 PR(#4459, #4462, #4464, #4465, #4466, #4469, #4472, #4473, #4477, #4478, #4479, #4480) 모두 open. 마지막 리뷰 활동은 11-03 08:16 UTC의 봇 리뷰이고, 11-04·11-05에 새 리뷰나 코멘트는 없다.
+- **답하지 않은 봇 리뷰 6건** (모두 11-03, 상세는 각 `PR_<번호>.md`의 "남은 항목"):
+  1. #4479 REQUEST_CHANGES — Blocking 2: ring 캐시 높이 검사로 `NNTR_KV_WINDOW_RING=1`이 `Wcap` 이후 throw; `o_cl` 출력을 bridge/drain 없이 `clmem_raise_cl`로 올림. Should-fix 3(`gpu_decode_rope` 속성 무시, int8/OHWI Q RoPE가 device로, ring 게이트 host 테스트).
+  2. #4477 — Should-fix 2: 어떤 arm이 돌았는지 보는 테스트; host-readable 검사를 `CpuComputeOps::attention`에도.
+  3. #4478 — Should-fix 2: non-fp16 빌드 `NNTR_KV_OHWI` throw; KOhwi + ring이면 `kv_layout = Concat`.
+  4. #4473 — Should fix 3: 하네스 SVM map; non-fp16 OpenCL에서 device 모드 skip; CI가 OpenCL+transformer를 컴파일하지 않음(job 추가 또는 이슈).
+  5. #4465 — NIT 1: `TESTING.md:179-181` 문장 수정(104bdc8).
+  6. #4459 — NIT 4개(non-blocking, 주석·기본값 중복·그래프 경로 테스트·본문 사본).
+- 이 중 #4477·#4478·#4479는 스택 위쪽이라 고치면 위로 연쇄 rebase가 필요하다. #4465 NIT은 104bdc8을 고치는 것이라 #4466 이후 전부 rebase.
+- **문서**: 11-05에 PR별 문서를 모두 갱신하고 없던 7개(`PR_4459`, `PR_4472`, `PR_4473`, `PR_4477`, `PR_4478`, `PR_4479`, `PR_4480`)를 추가. §2 표를 현재 상태로 교체. §12.10 제목 날짜를 11-03으로 정정(커밋 fcb4cf5 시각 11-03 14:13 KST, 봇 리뷰 11-03 17:14 KST).
+- **진척 지표** (`mha_core.cpp`, main e0bc83769 → #4479 head fcb4cf5): 6216 → 4237줄; `ENABLE_OPENCL` `#if` 27 → 25; `ENABLE_CUDA` `#if` 11 → 8; 아키텍처 `#if` 24 → 5(남은 것: x86 기본값 하나, `ENABLE_FP16 && __ANDROID__` FP32→FP16 축소 네 곳); `getenv`/`nntr_env_on` 53 → 50.
+- **남은 단계**: 7b(image arm: OHWI mirror, kvimg attention, staged Q/K, undrained 평면 + `KVCacheState`, Q2 결정대로; 6d OHWI device 실패도 여기), 8(CUDA 쓰기·attention → `CudaComputeOps`, CUDA 장비 필요), 9(레이어의 남은 `#if`와 device 멤버 정리), 10(arm 선택 env → DeviceCaps/ExecPlan), 그 뒤 `incremental_forwarding` 제거. §6의 미처리 항목(`ScopedEnv` 공유 헤더, ARM `copy_fp32_u16`, non-causal + window, batch > 1, fallback NYI, Android FP32→FP16 축소)도 그대로 남아 있다. Q3/Q5는 보류.
+- **로컬 상태**: `~/nntrainer-4456-*` 워크트리는 11-04에 모두 삭제(이 문서 작업용 `~/nntrainer-4456-docs`만 11-05에 다시 만듦). 브랜치는 남아 있음: `wt/4462-wiring`, `wt/7a-verify`, `wt/7a-verify-stack65`, `wt/docs-update`, `wt/4465-on-4464`.
