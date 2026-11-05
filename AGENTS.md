@@ -6,6 +6,15 @@ this repository. Read it before building, testing, committing, or opening a PR.
 Detailed rules live in `docs/` — this file links to them rather than copying, so
 the source of truth stays in one place.
 
+## 📍 Directory rules (read before editing there)
+
+Some directories carry their own `AGENTS.md` with rules that apply only there.
+Before you edit a file under one of these paths, read that file too:
+
+| Editing under | Also read |
+|---|---|
+| `Applications/CausalLM/` | [`Applications/CausalLM/AGENTS.md`](Applications/CausalLM/AGENTS.md) |
+
 ## ⚡ Non-negotiable rules (do these before every commit / PR)
 
 - **Sign off every commit:** `git commit -s` (DCO). A `Signed-off-by:` line is
