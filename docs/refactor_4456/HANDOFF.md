@@ -16,15 +16,15 @@
 | PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 (2026-11-05) |
 |---|---|---|---|---|---|
 | #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4(봇 11-03 APPROVED), READY2MERGE. NIT만 남음. |
-| #4464 | `rotary_embedding` op | `...-80xzum-rope` | e9326dd | #4462 | 승인 3(봇 11-03 APPROVED), READY2MERGE. |
-| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | b0645a8 | #4464 | 승인 2, READY2MERGE. **봇 11-03 NIT 1(TESTING.md 문장) 미답.** |
+| #4464 | `rotary_embedding` op | `...-80xzum-rope` | de17c3c | main | 승인 3, READY2MERGE. 11-05 #4462 머지 뒤 main 위로 rebase(내용 동일). |
+| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | df8f16c | #4464 (11-05 재배치) | 승인 2, READY2MERGE. **봇 11-03 NIT 1(TESTING.md 문장) 미답.** |
 | #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 38c94a8 | #4465 | 승인 1. 봇 11-03 COMMENT(결함 없음, batch>1 NIT). |
 | #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | 9f5578b | #4466 | 봇 11-03 APPROVED. 사람 승인 없음. |
 | #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | 66bd5b5 | #4469 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
 | #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | 9c2406b | #4477 | **봇 11-03 COMMENT, Should-fix 2 미답.** |
 | #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | fcb4cf5 | #4478 | **봇 11-03 REQUEST_CHANGES, Blocking 2 미답.** |
 | #4473 | no-RoPE settle 수정 + device 하네스 | `claude/mha-core-settle-planes-no-rope` | 1202418 | #4462 | **봇 11-03 COMMENT, Should fix 3 미답.** |
-| #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | bb7af34 | main | 승인 2, READY2MERGE. |
+| #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | f4e146f | main | 승인 2, READY2MERGE. 11-05 main 위로 rebase. |
 | #4459 | 순환 셀 출력 lifespan (#4456 다른 항목) | `refactor/graph-output-lifespan` | 33c2da7 | main | 승인 3, READY2MERGE. 봇 NIT 4 미답(non-blocking). |
 
 머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469 → #4477 → #4478 → #4479이다. #4473은 #4462 뒤 아무 때나, #4472·#4459는 독립. 미답 리뷰의 내용은 각 `PR_<번호>.md`의 "남은 항목"과 §12.11에 있다. #4480(HTP/QuickDotAI, draft)은 이 리팩토링과 별개 트랙이지만 같은 사용자의 열린 PR이라 `PR_4480.md`로 기록만 해 둔다.
