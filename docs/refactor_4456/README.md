@@ -18,5 +18,5 @@ Working notes for the `mha_core.cpp` part of #4451 (umbrella #4456), written for
     - [PR_4472.md](PR_4472.md): drop the unused `hsumq_f16` (independent)
     - [PR_4459.md](PR_4459.md): recurrent cells declare their output lifespan (another #4456 item, independent)
   - Separate track, kept for reference: [PR_4480.md](PR_4480.md) (Gemma4 MoE HTP in QuickDotAI without the OpenCL series, draft)
-- [AGENTS_RULES.md](AGENTS_RULES.md): 별도 트랙. upstream용 폴더별 `AGENTS.md` 규칙 파일 작업 (근거 수집 방법, PR 1 = 루트 수정 + CausalLM, fork `docs/agents-rules`에 push, upstream PR 미생성).
+- [agents_rules/SESSION.md](agents_rules/SESSION.md): 별도 트랙. upstream용 폴더별 `AGENTS.md` 규칙 파일 작업의 세션 기록 (대화 흐름, 결정, 근거 수집 방법) + `agents_rules/records/` 근거 자료. 규칙 파일 자체는 main에서 딴 `dlwlzzero:docs/agents-rules` 브랜치에 있고 upstream PR은 미생성.
 - `cuda_stubs/`: CUDA 툴킷 없이 `nntrainer/cuda/*.cpp`를 `-fsyntax-only`로 검사할 때 쓰는 stub 헤더 (HANDOFF §9).
