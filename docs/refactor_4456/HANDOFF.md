@@ -13,21 +13,21 @@
 
 모든 PR의 head 브랜치는 fork `dlwlzzero/nntrainer`에 있고, base는 `nntrainer/nntrainer:main`이다. 저장소는 **rebase-merge만 허용**하므로 PR에 merge 커밋이 있으면 머지할 수 없다. 각 PR은 아래 표의 "쌓인 위치" 위에 일렬로 쌓여 있다.
 
-| PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 (2026-11-05) |
+| PR | 내용 | head 브랜치 (fork) | head | 쌓인 위치 | 상태 (2026-11-05 저녁) |
 |---|---|---|---|---|---|
-| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | 승인 4(봇 11-03 APPROVED), READY2MERGE. NIT만 남음. |
-| #4464 | `rotary_embedding` op | `...-80xzum-rope` | de17c3c | main | 승인 3, READY2MERGE. 11-05 #4462 머지 뒤 main 위로 rebase(내용 동일). |
-| #4465 | softcap 버그 수정 (#4461) + `fp16_softcap_gemm_long_prefill` | `...-80xzum-softcap` | df8f16c | #4464 (11-05 재배치) | 승인 2, READY2MERGE. **봇 11-03 NIT 1(TESTING.md 문장) 미답.** |
-| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | e24b2a1 | #4465 (11-05 재배치) | 승인 1. 봇 11-03 COMMENT(결함 없음, batch>1 NIT). |
-| #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | d3fa318 | #4466 (11-05 재배치) | 봇 11-03 APPROVED. 사람 승인 없음. |
-| #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | f3fc9f4 | #4469 (11-05 재배치) | **봇 11-03 COMMENT, Should-fix 2 미답.** |
-| #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | c3a42c7 | #4477 (11-05 재배치) | **봇 11-03 COMMENT, Should-fix 2 미답.** |
-| #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | 81bb05d | #4478 (11-05 재배치) | **봇 11-03 REQUEST_CHANGES, Blocking 2 미답.** |
-| #4473 | no-RoPE settle 수정 + device 하네스 | `claude/mha-core-settle-planes-no-rope` | 1202418 | #4462 | **봇 11-03 COMMENT, Should fix 3 미답.** |
-| #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | f4e146f | main | 승인 2, READY2MERGE. 11-05 main 위로 rebase. |
-| #4459 | 순환 셀 출력 lifespan (#4456 다른 항목) | `refactor/graph-output-lifespan` | 33c2da7 | main | 승인 3, READY2MERGE. 봇 NIT 4 미답(non-blocking). |
+| #4462 | `unittest_mha_core` 테스트 안전망 | `claude/nntrainer-refactoring-priority-80xzum` | d987f6a | main | **11-05 머지** (main 640ac6e0e). |
+| #4459 | 순환 셀 출력 lifespan (#4456 다른 항목) | `refactor/graph-output-lifespan` | 33c2da7 | main | **11-05 머지** (07f18afc9). |
+| #4464 | `rotary_embedding` op | `...-80xzum-rope` | de17c3c | main | 승인 3, READY2MERGE. 머지 대기. |
+| #4465 | softcap 버그 수정 (#4461) | `...-80xzum-softcap` | e809d74 | #4464 | 승인 2, READY2MERGE. 봇 NIT 1 반영(11-05). |
+| #4466 | `kv_cache_write` op + 설계 요약 | `...-80xzum-kvwrite` | 84b31c5 | #4465 | 승인 1. 결함 없음. |
+| #4469 | `attention` op, per-row arm (6c-1) | `...-80xzum-attn` | c6b3645 | #4466 | 봇 APPROVED. 사람 승인 없음. |
+| #4477 | 6c-2: host flash arm + arm 선택 → op | `...-80xzum-flash` | 8c9da07 | #4469 | 봇 리뷰 대응(11-05). **Should-fix 1 사용자 결정 대기.** |
+| #4478 | 6d: K-OHWI·int8 쓰기 → `kv_cache_write` | `...-80xzum-kvlayout` | 0fef59b | #4477 | 봇 리뷰 대응 완료(11-05). |
+| #4479 | 7a: OpenCL attention·RoPE·concat 쓰기 → `ClComputeOps` | `...-80xzum-clattn` | 712931a | #4478 | REQUEST_CHANGES 대응(11-05, Blocking 1 등). **Blocking 2 사용자 결정 대기.** |
+| #4473 | no-RoPE settle 수정 + device 하네스 | `claude/mha-core-settle-planes-no-rope` | feb4731 | main | 봇 재리뷰 대응 완료(11-05), CI 항목은 이슈 #4482. |
+| #4472 | `hsumq_f16` 삭제 (독립) | `claude/cpu-backend-drop-unused-hsumq` | f4e146f | main | 승인 2, READY2MERGE. |
 
-머지 순서는 #4462 → #4464 → #4465 → #4466 → #4469 → #4477 → #4478 → #4479이다. #4473은 #4462 뒤 아무 때나, #4472·#4459는 독립. 미답 리뷰의 내용은 각 `PR_<번호>.md`의 "남은 항목"과 §12.11에 있다. #4480(HTP/QuickDotAI, draft)은 이 리팩토링과 별개 트랙이지만 같은 사용자의 열린 PR이라 `PR_4480.md`로 기록만 해 둔다.
+머지 순서는 #4464 → #4465 → #4466 → #4469 → #4477 → #4478 → #4479이다(#4462는 11-05 머지). #4473은 아무 때나(main 위), #4472는 독립. 미답 리뷰의 내용은 각 `PR_<번호>.md`의 "남은 항목"과 §12.11에 있다. #4480(HTP/QuickDotAI, draft)은 이 리팩토링과 별개 트랙이지만 같은 사용자의 열린 PR이라 `PR_4480.md`로 기록만 해 둔다.
 
 아래 §2~§12.10의 날짜별 내용은 그 시점의 기록이다. 최신 상태는 이 표와 §12.11을 본다.
 
@@ -362,3 +362,4 @@ upstream PR, CI 통과 중, 리뷰 대기. 독립적이라 스택과 무관하�
 - **로컬 상태**: `~/nntrainer-4456-*` 워크트리는 11-04에 모두 삭제(이 문서 작업용 `~/nntrainer-4456-docs`만 11-05에 다시 만듦). 브랜치는 남아 있음: `wt/4462-wiring`, `wt/7a-verify`, `wt/7a-verify-stack65`, `wt/docs-update`, `wt/4465-on-4464`.
 - **11-05 오후: #4462·#4459 머지(main 640ac6e0e).** 사용자 지시로 재배치·force-push: #4464 de17c3c(main 위, 제목의 Wait 제거), #4465 df8f16c, #4472 f4e146f, 그리고 체인 #4466 e24b2a1 → #4469 d3fa318 → #4477 f3fc9f4 → #4478 c3a42c7 → #4479 81bb05d(`git rebase --onto df8f16c b0645a8`로 8커밋 한 번에). 모두 충돌 없음, `range-diff` 전부 `=`. x86 fp16: #4464 22/22+23/23, #4465 26/26+23/23, #4466 27/27+27/27, #4469 27/27+31/31, #4479 33/33+37/37. 본문 Dependency 갱신·코멘트 게시. 로컬 브랜치 `wt/4464-on-main`, `wt/4465-on-main`, `wt/4472-on-main`, `wt/chain-on-main`. **#4473은 아직 #4462 옛 head d987f6a 위**라 main 위로 옮겨야 한다(머지된 #4462 커밋 7개가 PR에 섞여 보임).
 - 새 워크트리 함정: `Applications/CausalLM/xgrammar` 안에서도 `git submodule update --init`을 해야 meson setup이 통과한다(dlpack).
+- **11-05 밤: 리뷰 대응 라운드** (사용자 지시 "나머지 작업들은 다 승인"; #4479 Blocking 2와 #4477 Should-fix 1은 설명만 하고 사용자 결정 대기). #4465 NIT 1(TESTING.md), #4469 본문, #4477 Should-fix 2·Nit, #4478 Should-fix 2개·Nit, #4479 Blocking 1·Should-fix 1~3·Nit, #4473 rebase + Should fix 1·2·NIT + 이슈 #4482(CI). 모두 fixup/autosquash 또는 `edit` rebase로 해당 커밋에 넣고 force-push(lease), 본문 재생성(`regen_body.py`: 본문의 `<details>` 커밋 메시지 사본을 실제 커밋에서 다시 채움), PR마다 답글. 검증은 각 PR 문서의 진행 이력. 로컬: `wt/chain-on-main`(712931a), `wt/4473-on-main`(feb4731), 검증 전용 `wt/verify-1105`(체인 + #4473, 기기 실행용). **#4480은 손대지 않음**: 같은 시각 다른 세션이 push 중(90b7162 → e91beb3). CodeQL 곱셈 캐스트 2건은 그 트랙에 남김.
