@@ -20,4 +20,5 @@ Working notes for the `mha_core.cpp` part of #4451 (umbrella #4456), written for
     - [PR_4459.md](PR_4459.md): recurrent cells declare their output lifespan (another #4456 item, independent)
   - Separate track, kept for reference: [PR_4480.md](PR_4480.md) (Gemma4 MoE HTP in QuickDotAI without the OpenCL series, draft)
 - [agents_rules/SESSION.md](agents_rules/SESSION.md): 별도 트랙. upstream용 폴더별 `AGENTS.md` 규칙 파일 작업의 세션 기록 (대화 흐름, 결정, 근거 수집 방법) + `agents_rules/records/` 근거 자료. 규칙 파일 자체는 main에서 딴 `dlwlzzero:docs/agents-rules` 브랜치에 있고 upstream PR은 미생성.
+- [ARCH_MAP_SESSION.md](ARCH_MAP_SESSION.md): 별도 트랙. `qc_npu_rebase` 기준 현재 백엔드 구조와 `ARCHITECTURE_REFACTOR.md` 목표 구조를 비교한 HTML 페이지 작업의 세션 기록 (사용자 프롬프트와 AI 응답 시간순, 결정 요약). 페이지 링크와 버전은 [ARCH_MAP_PAGE.md](ARCH_MAP_PAGE.md), PDF 사본은 [ARCH_MAP_PAGE.pdf](ARCH_MAP_PAGE.pdf).
 - `cuda_stubs/`: CUDA 툴킷 없이 `nntrainer/cuda/*.cpp`를 `-fsyntax-only`로 검사할 때 쓰는 stub 헤더 (HANDOFF §9).
