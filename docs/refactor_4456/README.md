@@ -4,6 +4,7 @@ Working notes for the `mha_core.cpp` part of #4451 (umbrella #4456), written for
 
 - [HANDOFF.md](HANDOFF.md): open PR stack, what to do when each PR merges, the remaining steps, known issues, working conventions and how to verify locally (Korean). The current state is the table in §2 and §12.11.
 - One file per PR, each with its status, open review items, history, and the PR description as posted:
+  - PR_4462.md, PR_4464.md and PR_4472.md instead hold the user prompts and AI replies that produced each PR, in time order (this session and the user's other session), followed by the commits and the PR description.
   - `mha_core` stack, in merge order:
     - [PR_4462.md](PR_4462.md): `unittest_mha_core`, the characterization test (merged 11-05)
     - [PR_4464.md](PR_4464.md): `rotary_embedding` whole-op (merged 11-06)
