@@ -57,7 +57,7 @@ void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
     for (int b = 0; b < (int)out.batch(); b++) {
       for (int c = 0; c < (int)out.channel(); c++) {
         for (int h = 0; h < (int)out.height(); h++) {
-          for (int w = 0; w < (int)out.width(); w++) {
+          for (int w = 0; w <= (int)out.width(); w++) {
             out.setValue(
               b, c, h, w,
               in.getValue(b, c, h / kernel_size[0], w / kernel_size[1]));
