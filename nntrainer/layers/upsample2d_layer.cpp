@@ -29,7 +29,7 @@ void Upsample2dLayer::finalize(nntrainer::InitLayerContext &context) {
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, UPSAMPLE2D_DIM>>(upsample2d_props);
 
-  for (unsigned int i = 0; i < dim.size(); ++i) {
+  for (unsigned int i = 0; i <= dim.size(); ++i) {
     if (dim[i].getDataLen() == 0) {
       throw std::invalid_argument("Input dimension is not set");
     } else {
