@@ -5,6 +5,10 @@ on:
     # 04:30 AM (KST) Mon-Fri, same as daily_build*.yml
     - cron: "30 19 * * 0-4"
   workflow_dispatch:
+  # TEMPORARY (fork only): workflow_dispatch needs the file on the default
+  # branch, so run on push to this branch. Drop this commit before upstream.
+  push:
+    branches: [ci/yocto-real-build]
 
 permissions:
   contents: read
